@@ -1,7 +1,7 @@
 use super::*;
 use mlx_sys::{
     MlxQuantizationMode, clear_cache, contiguous, eval, get_peak_memory, matmul, quantize,
-    quantized_matmul, reset_peak_memory, transpose,
+    quantized_matmul, quantized_matmul_with_mode, reset_peak_memory, transpose, view,
 };
 
 /// Run `measure` in a fresh process so the process-global MLX peak counter
@@ -2954,4 +2954,384 @@ fn weight_view_never_outlives_its_tensor() {
         "stale view after a swap"
     );
     assert_ne!(expected_old.data_f32(), expected_new.data_f32());
+}
+
+// ---------------------------------------------------------------------------
+// Exactness audits against the MLX op each custom qmv kernel mirrors.
+//
+// Every assertion below compares raw element bits, never a tolerance: the
+// kernels claim to reproduce MLX's `qmv_fast` arithmetic for the same shape,
+// so any difference is a defect rather than drift.
+// ---------------------------------------------------------------------------
+
+/// Raw 16-bit element bits of an evaluated bf16/f16 array.
+fn raw_u16_bits(array: &MlxArray) -> Vec<u16> {
+    eval(&[array]);
+    let viewed = view(array, MlxDtype::Uint16, None);
+    eval(&[&viewed]);
+    let count = viewed.nbytes() / 2;
+    assert_eq!(
+        count as i64,
+        array
+            .shape()
+            .iter()
+            .map(|dim| i64::from(*dim))
+            .product::<i64>(),
+        "view must not change the element count"
+    );
+    let mut bits = vec![0_u16; count];
+    // SAFETY: `viewed` is evaluated and contiguous, so `data_raw` points at
+    // `count * 2` initialised bytes owned by the array.
+    unsafe {
+        std::ptr::copy_nonoverlapping(viewed.data_raw() as *const u16, bits.as_mut_ptr(), count);
+    }
+    bits
+}
+
+/// True when `bits` is a NaN payload of the given 16-bit float dtype.
+fn is_nan_bits(dtype: MlxDtype, bits: u16) -> bool {
+    match dtype {
+        MlxDtype::Bfloat16 => bits & 0x7f80 == 0x7f80 && bits & 0x007f != 0,
+        MlxDtype::Float16 => bits & 0x7c00 == 0x7c00 && bits & 0x03ff != 0,
+        _ => false,
+    }
+}
+
+/// Bit-exact equality against MLX. `±0.0`, every finite value and every
+/// infinity must match exactly. Only the payload of a NaN may differ, because
+/// neither backend promises to preserve it.
+#[track_caller]
+fn assert_raw_bits_equal(actual: &MlxArray, expected: &MlxArray, context: &str) {
+    assert_eq!(actual.dtype(), expected.dtype(), "{context}: dtype");
+    assert_eq!(actual.shape(), expected.shape(), "{context}: shape");
+    let left = raw_u16_bits(actual);
+    let right = raw_u16_bits(expected);
+    assert_eq!(left.len(), right.len(), "{context}: element count");
+    for (index, (left_bits, right_bits)) in left.iter().zip(right.iter()).enumerate() {
+        if left_bits == right_bits {
+            continue;
+        }
+        assert!(
+            is_nan_bits(actual.dtype(), *left_bits) && is_nan_bits(actual.dtype(), *right_bits),
+            "{context}: element {index}: {left_bits:#06x} != {right_bits:#06x}"
+        );
+    }
+}
+
+/// One verify-window row of `array` as `[1, 1, width]`.
+fn window_row(array: &MlxArray, row: i32, width: i32) -> MlxArray {
+    contiguous(
+        &slice(array, &[0, row, 0], &[1, row + 1, width], &[1, 1, 1], None),
+        None,
+    )
+}
+
+fn mlx_affine_qmm(x: &MlxArray, weight: &QuantizedWeight) -> MlxArray {
+    quantized_matmul_with_mode(
+        x,
+        &weight.weight,
+        weight.scales.as_ref().expect("affine group scales"),
+        weight.biases.as_ref(),
+        true,
+        Some(weight.group_size),
+        Some(weight.bits),
+        MlxQuantizationMode::Affine,
+        None,
+    )
+}
+
+/// Affine weight with all-zero quantized magnitudes, so a projection reduces
+/// to `bias * sum(x)`. That isolates the `load_vector` reduction MLX 0.32.4
+/// widened to f32 (`mlx#4516`) from the weight dot product.
+fn affine_bias_only_weight(
+    dtype: MlxDtype,
+    out_dim: i32,
+    input_dim: i32,
+    bits: i32,
+    group_size: i32,
+    bias: f32,
+) -> QuantizedWeight {
+    let groups = input_dim / group_size;
+    let sidecar = vec![1.0_f32; (out_dim * groups) as usize];
+    let scales = astype(&array_f32(&sidecar, &[out_dim, groups]), dtype, None);
+    let biases = astype(
+        &array_f32(&vec![bias; (out_dim * groups) as usize], &[out_dim, groups]),
+        dtype,
+        None,
+    );
+    QuantizedWeight {
+        weight: mlx_sys::zeros(&[out_dim, input_dim * bits / 32], MlxDtype::Uint32, None),
+        scales: Some(scales),
+        biases: Some(biases),
+        group_size,
+        bits,
+        mode: "affine".to_string(),
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+        weight_t_view: Default::default(),
+    }
+}
+
+/// `[big, tiny, tiny, tiny]` four-value groups whose f32 sum is exact but
+/// whose bf16/f16 chain rounds the partial away. Two positive and two negative
+/// groups per lane cancel, so the residual is exactly the double-rounding
+/// error a kernel accumulates when it sums `x` in `OutT` instead of widening
+/// each element to f32 first, as MLX now does.
+fn double_rounding_row(dtype: MlxDtype, input_dim: i32) -> Vec<f32> {
+    let (big, tiny) = match dtype {
+        MlxDtype::Bfloat16 => (2048.0_f32, 3.0_f32),
+        MlxDtype::Float16 => (2048.0_f32, 0.25_f32),
+        other => panic!("no double-rounding pattern defined for {other:?}"),
+    };
+    let lane = [
+        big, tiny, tiny, tiny, big, tiny, tiny, tiny, -big, tiny, tiny, tiny, -big, tiny, tiny,
+        tiny,
+    ];
+    (0..input_dim)
+        .map(|index| lane[index as usize % lane.len()])
+        .collect()
+}
+
+fn invariant_projection_rows(
+    x: &MlxArray,
+    weight: &QuantizedWeight,
+    bf16_q4: bool,
+    context: &str,
+    compare: impl Fn(&MlxArray) -> MlxArray,
+) {
+    let shape = x.shape().to_vec();
+    let rows = shape[shape.len() - 2];
+    let width = shape[shape.len() - 1];
+    let out_dim = weight.weight.shape()[0];
+    let microbatch = invariant_projection_metal_impl_with_kernel(x, weight, bf16_q4)
+        .unwrap_or_else(|| panic!("{context}: invariant kernel must accept the shape"));
+    for row in 0..rows {
+        let expected = compare(&window_row(x, row, width));
+        let actual = window_row(&microbatch, row, out_dim);
+        assert_raw_bits_equal(&actual, &expected, &format!("{context}: row {row}"));
+    }
+}
+
+#[test]
+fn invariant_affine_qmv_fast_matches_mlx_qmm_raw_bits_on_double_rounding_groups() {
+    // MLX's affine `qmv_fast` derives the bias term from `sum(x)`, and 0.32.4
+    // changed `load_vector` to widen every element to f32 before summing
+    // (mlx#4516). A kernel that sums the four-value partial in the activation
+    // dtype first rounds those values twice and lands on a different result;
+    // these rows are built so that residual survives to the stored bits.
+    for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+        for (bits, group_size, input_dim) in [
+            (4_i32, 32_i32, 512_i32),
+            (4, 64, 512),
+            (6, 32, 256),
+            (6, 64, 256),
+            (8, 32, 256),
+            (8, 64, 256),
+        ] {
+            let out_dim = 16;
+            let weight = affine_bias_only_weight(dtype, out_dim, input_dim, bits, group_size, 1.0);
+            let data = double_rounding_row(dtype, input_dim * 4);
+            let x = astype(&array_f32(&data, &[1, 4, input_dim]), dtype, None);
+            // The double-rounding residual is only visible when the bias term
+            // survives, so confirm the fixture actually discriminates before
+            // trusting the comparison below.
+            let probe = quantized_matmul_with_mode(
+                &window_row(&x, 0, input_dim),
+                &weight.weight,
+                weight.scales.as_ref().expect("scales"),
+                weight.biases.as_ref(),
+                true,
+                Some(group_size),
+                Some(bits),
+                MlxQuantizationMode::Affine,
+                None,
+            );
+            eval(&[&probe]);
+            // Guard the fixture: the f32 reduction must be non-zero, because
+            // the OutT-chain reduction of these rows cancels to exactly zero.
+            // Without this the test would pass against a kernel that dropped
+            // the `sum(x) * bias` term entirely.
+            let probe_f32 = astype(&probe, MlxDtype::Float32, None);
+            eval(&[&probe_f32]);
+            assert!(
+                probe_f32.data_f32().iter().any(|value| *value != 0.0),
+                "{dtype:?} bits={bits} gs={group_size}: fixture must not cancel"
+            );
+            let kernels: &[(bool, &str)] = if dtype == MlxDtype::Bfloat16 && bits == 4 {
+                &[(false, "generic"), (true, "bf16_q4")]
+            } else {
+                &[(false, "generic")]
+            };
+            for (bf16_q4, kernel) in kernels {
+                let context = format!("{dtype:?} bits={bits} gs={group_size} kernel={kernel}");
+                invariant_projection_rows(&x, &weight, *bf16_q4, &context, |row| {
+                    mlx_affine_qmm(row, &weight)
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn invariant_affine_qmv_fast_matches_mlx_qmm_raw_bits_on_extreme_inputs() {
+    // Same route, real quantized weights, activation patterns that stress the
+    // f32 widening: large opposite-sign values, signed zero, subnormals and
+    // non-finite values.
+    for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+        for (bits, group_size, input_dim) in [(4_i32, 32_i32, 512_i32), (8, 32, 256)] {
+            let out_dim = 16;
+            let weight_data: Vec<f32> = (0..(input_dim * out_dim) as usize)
+                .map(|index| ((index % 251) as f32 - 125.0) * 0.0078125)
+                .collect();
+            let source = array_f32(&weight_data, &[out_dim, input_dim]);
+            let quantized = quantize(
+                &source,
+                Some(group_size),
+                Some(bits),
+                MlxQuantizationMode::Affine,
+                None,
+                None,
+            );
+            let weight = QuantizedWeight {
+                weight: quantized[0].clone(),
+                scales: Some(astype(&quantized[1], dtype, None)),
+                biases: Some(astype(&quantized[2], dtype, None)),
+                group_size,
+                bits,
+                mode: "affine".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
+                weight_t_view: Default::default(),
+            };
+            // Four rows, one per hostile pattern: cancelling signs, signed
+            // zero and subnormals, non-finite values, then NaN.
+            let cancelling: Vec<f32> = (0..input_dim)
+                .map(|index| if index % 2 == 0 { 1.0 } else { -1.0 })
+                .collect();
+            let patterns: [Vec<f32>; 4] = [
+                cancelling.clone(),
+                (0..input_dim)
+                    .map(|index| {
+                        if index % 3 == 0 {
+                            -0.0_f32
+                        } else if index % 3 == 1 {
+                            1.0
+                        } else {
+                            2.0_f32.powi(-20)
+                        }
+                    })
+                    .collect(),
+                (0..input_dim)
+                    .map(|index| match index % 5 {
+                        0 => f32::INFINITY,
+                        1 => f32::NEG_INFINITY,
+                        2 => -0.0,
+                        3 => 1.0,
+                        _ => 2.0_f32.powi(-20),
+                    })
+                    .collect(),
+                (0..input_dim)
+                    .map(|index| {
+                        if index % 7 == 0 {
+                            f32::NAN
+                        } else {
+                            ((index % 29) as f32 - 14.0) * 0.25
+                        }
+                    })
+                    .collect(),
+            ];
+            let mut data = Vec::with_capacity((input_dim * 4) as usize);
+            for pattern in &patterns {
+                data.extend_from_slice(pattern);
+            }
+            let x = astype(&array_f32(&data, &[1, 4, input_dim]), dtype, None);
+            let kernels: &[(bool, &str)] = if dtype == MlxDtype::Bfloat16 && bits == 4 {
+                &[(false, "generic"), (true, "bf16_q4")]
+            } else {
+                &[(false, "generic")]
+            };
+            for (bf16_q4, kernel) in kernels {
+                let context =
+                    format!("{dtype:?} bits={bits} gs={group_size} kernel={kernel} extreme inputs");
+                invariant_projection_rows(&x, &weight, *bf16_q4, &context, |row| {
+                    mlx_affine_qmm(row, &weight)
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn invariant_mxfp4_qmv_fast_matches_mlx_mxfp4_qmm_raw_bits() {
+    // The production gate only routes a two-row verify window, so two rows is
+    // the shape that has to be exact. The impl is called directly because the
+    // `AX_MLX_INVARIANT_MXFP4_QMV_FAST` flag is process-cached.
+    let (out_dim, input_dim, group_size, bits) = (16_i32, 512_i32, 32_i32, 4_i32);
+    for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+        let weight_data: Vec<f32> = (0..(input_dim * out_dim) as usize)
+            .map(|index| ((index * 7 % 251) as f32 - 125.0) / 512.0)
+            .collect();
+        // Quantize from f32 so both dtypes share one packed weight; MXFP4
+        // packs to uint32 with e8m0 uint8 scales, independent of the
+        // activation dtype the reference op is later called with.
+        let source = array_f32(&weight_data, &[out_dim, input_dim]);
+        let quantized = quantize(
+            &source,
+            Some(group_size),
+            Some(bits),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: None,
+            group_size,
+            bits,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: Default::default(),
+        };
+        let mut data: Vec<f32> = (0..input_dim)
+            .map(|index| if index % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        data.extend((0..input_dim).map(|index| {
+            if index % 3 == 0 {
+                -0.0
+            } else if index % 3 == 1 {
+                2048.0
+            } else {
+                2.0_f32.powi(-20)
+            }
+        }));
+        let x = astype(&array_f32(&data, &[1, 2, input_dim]), dtype, None);
+        let microbatch = invariant_mxfp4_qmv_fast_impl(&x, &weight)
+            .unwrap_or_else(|| panic!("{dtype:?}: MXFP4 invariant kernel must accept the shape"));
+        for row in 0..2 {
+            let expected = quantized_matmul_with_mode(
+                &window_row(&x, row, input_dim),
+                &weight.weight,
+                weight.scales.as_ref().expect("mxfp4 e8m0 scales"),
+                None,
+                true,
+                Some(group_size),
+                Some(bits),
+                MlxQuantizationMode::Mxfp4,
+                None,
+            );
+            let actual = window_row(&microbatch, row, out_dim);
+            assert_raw_bits_equal(&actual, &expected, &format!("{dtype:?}: MXFP4 row {row}"));
+        }
+    }
 }

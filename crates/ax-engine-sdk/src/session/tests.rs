@@ -33,6 +33,7 @@ use crate::{LlamaCppBackendError, MlxLmConfig};
 
 fn sample_submission() -> RequestSubmission {
     RequestSubmission {
+        prefill_hints: Default::default(),
         request_id: RequestId(1),
         model_id: ModelId("qwen3".into()),
         input_tokens: vec![1, 2, 3, 4],
@@ -541,6 +542,7 @@ fn preview_session_config_factory_builds_mlx_lm_delegated_backend() {
 #[test]
 fn delegated_generate_validation_rejects_gemma4_multimodal_inputs() {
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "gemma-4-12b-it".to_string(),
         input_tokens: vec![10, 258880, 11],
         input_text: None,
@@ -570,6 +572,7 @@ fn delegated_generate_validation_rejects_gemma4_multimodal_inputs() {
 #[test]
 fn native_generate_validation_allows_gemma4_multimodal_inputs() {
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "gemma-4-12b-it".to_string(),
         input_tokens: vec![10, 255999, 258880, 258882, 11],
         input_text: None,
@@ -587,6 +590,7 @@ fn native_generate_validation_allows_gemma4_multimodal_inputs() {
 #[test]
 fn native_generate_validation_rejects_multimodal_prompt_over_max_batch_tokens() {
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "gemma-4-12b-it".to_string(),
         input_tokens: vec![10, 255999, 258880, 258882, 11],
         input_text: None,
@@ -614,6 +618,7 @@ fn native_generate_validation_rejects_multimodal_prompt_over_max_batch_tokens() 
 
     // The same prompt without multimodal inputs is fine: text prefill chunks.
     let text_request = GenerateRequest {
+        prefill_hints: Default::default(),
         multimodal_inputs: Default::default(),
         ..request
     };
@@ -629,6 +634,7 @@ fn low_level_submit_rejects_multimodal_prompt_over_max_batch_tokens() {
     let mut session = shared_stream_test_session(4);
     session.config.max_batch_tokens = 4;
     let submission = RequestSubmission {
+        prefill_hints: Default::default(),
         request_id: RequestId(1),
         model_id: ModelId("gemma-4-12b-it".into()),
         input_tokens: vec![10, 255999, 258880, 258882, 11],
@@ -657,6 +663,7 @@ fn caller_chosen_request_ids_do_not_define_arrival_order() {
     // already-running request, and a large id must not preempt older ones.
     let mut session = shared_stream_test_session(8);
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,
@@ -700,6 +707,7 @@ fn low_level_submit_advances_the_auto_arrival_sequence() {
     session.submit(submission).expect("low-level submit");
 
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,
@@ -736,6 +744,7 @@ fn max_explicit_request_id_does_not_stall_auto_allocation() {
     // `submit_generate` collided with the retained request.
     let mut session = shared_stream_test_session(8);
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,
@@ -761,6 +770,7 @@ fn auto_allocation_wraps_past_a_used_max_id() {
     // the next must skip the retained MAX id instead of failing duplicate.
     let mut session = shared_stream_test_session(8);
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,
@@ -793,6 +803,7 @@ fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
         .span
         .soft_token_count = 2;
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "gemma-4-12b-it".to_string(),
         input_tokens: vec![10, 255999, 258880, 258882, 11],
         input_text: None,
@@ -820,6 +831,7 @@ fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
 #[test]
 fn generate_validation_rejects_no_repeat_ngram_larger_than_window() {
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "unlimited_ocr".to_string(),
         input_tokens: vec![1, 2, 3],
         input_text: None,
@@ -930,6 +942,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         max_prefill_tokens_per_request_per_step: 16,
         max_inflight_prefill_requests: 3,
         prefill_stall_target_ms: 0,
+        max_concurrent_requests: Some(2),
     })
     .expect("valid config constants");
 
@@ -1073,6 +1086,7 @@ fn llama_cpp_stream_generate_supports_server_completion_adapter() {
 
     let events = session
         .stream_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1161,6 +1175,7 @@ fn llama_cpp_stream_backend_error_terminal_chunk_fails_the_request() {
 
     let events = session
         .stream_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1228,6 +1243,7 @@ fn llama_cpp_stream_generate_rejects_cli_fallback_adapter() {
 
     let error = session
         .stream_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: Some("cli fallback stream".to_string()),
@@ -1269,6 +1285,7 @@ fn llama_cpp_cli_submit_generate_fails_closed() {
 
     let error = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: Some("unsupported lifecycle".to_string()),
@@ -1318,6 +1335,7 @@ fn llama_cpp_stepwise_lifecycle_supports_server_completion_adapter() {
 
     let request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1416,6 +1434,7 @@ fn llama_cpp_stepwise_lifecycle_reports_delegated_prompt_cache_hits() {
 
     let request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1494,6 +1513,7 @@ fn llama_cpp_stepwise_lifecycle_rejects_duplicate_request_id() {
     );
     let mut session = llama_cpp_server_session(server_url);
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".to_string(),
         input_tokens: vec![1, 2, 3],
         input_text: None,
@@ -1555,6 +1575,7 @@ fn llama_cpp_stepwise_lifecycle_advances_multiple_active_requests() {
 
     let first_request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1568,6 +1589,7 @@ fn llama_cpp_stepwise_lifecycle_advances_multiple_active_requests() {
 
     let second_request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![7, 8, 9],
             input_text: None,
@@ -1650,6 +1672,7 @@ fn llama_cpp_cancelled_request_does_not_block_other_active_requests() {
 
     let first_request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1662,6 +1685,7 @@ fn llama_cpp_cancelled_request_does_not_block_other_active_requests() {
         .expect("first llama.cpp submit should succeed");
     let second_request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![7, 8, 9],
             input_text: None,
@@ -1801,6 +1825,7 @@ fn llama_cpp_premature_disconnect_does_not_poison_a_batch_sibling() {
 
     let first_request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -1813,6 +1838,7 @@ fn llama_cpp_premature_disconnect_does_not_poison_a_batch_sibling() {
         .expect("first llama.cpp submit should succeed");
     let second_request_id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![7, 8, 9],
             input_text: None,
@@ -2075,6 +2101,7 @@ fn assert_shared_stream_terminal(
     let mut session = shared_stream_test_session(blocks);
     session.config.max_batch_tokens = chunk;
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,
@@ -2161,6 +2188,7 @@ fn shared_stream_reports_scheduled_completion_once() {
 fn live_native_route_survives_eviction_pressure_and_reaches_terminal_report() {
     let mut session = shared_stream_test_session(4);
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,
@@ -2306,6 +2334,7 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         llama_terminal_request_order: VecDeque::new(),
     };
     let request = |token| GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".to_string(),
         input_tokens: vec![token, token + 1],
         input_text: None,
@@ -2422,6 +2451,7 @@ fn dropping_native_generate_stream_cancels_in_flight_request() {
         llama_terminal_request_order: VecDeque::new(),
     };
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".to_string(),
         input_tokens: vec![1, 2],
         input_text: None,
@@ -2472,6 +2502,7 @@ fn dropping_native_generate_stream_after_terminal_step_does_not_cancel_finished_
     // it with cancel_requested set, corrupting its final report.
     let mut session = EngineSession::new_deterministic_native_for_tests();
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".to_string(),
         input_tokens: vec![1, 2],
         input_text: None,
@@ -2588,6 +2619,7 @@ fn has_active_stepwise_requests_reflects_llama_cpp_terminal_state() {
 
     session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -2644,6 +2676,7 @@ fn native_generate_response_surfaces_runner_route_metadata() {
         .generate_with_request_id(
             41,
             GenerateRequest {
+                prefill_hints: Default::default(),
                 model_id: "qwen3".to_string(),
                 input_tokens: vec![1, 2, 3, 4],
                 input_text: None,
@@ -2735,6 +2768,7 @@ fn shared_decode_reports_every_selected_read_delta_without_full_routes() {
     );
     let id = session
         .submit_generate(GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".into(),
             input_tokens: vec![7; 8],
             input_text: None,
@@ -2799,6 +2833,7 @@ fn resubmitting_a_recycled_request_id_drops_the_previous_route() {
     assert!(session.native_request_routes.contains_key(&7));
 
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: "qwen3".into(),
         input_tokens: vec![7; 8],
         input_text: None,

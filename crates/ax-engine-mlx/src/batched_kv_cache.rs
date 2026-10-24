@@ -556,6 +556,17 @@ mod tests {
         a.data_f32().to_vec()
     }
 
+    /// Total hits per op name for one `mlx_sys::op_trace_*` window.
+    fn op_histogram(
+        entries: &[mlx_sys::OpTraceEntry],
+    ) -> std::collections::BTreeMap<&'static str, u64> {
+        let mut hist = std::collections::BTreeMap::new();
+        for entry in entries {
+            *hist.entry(entry.op).or_insert(0) += entry.count;
+        }
+        hist
+    }
+
     /// Build a `[1, heads, tokens, dim]` f32 array from `data`. The caller must
     /// keep `data` alive until the array is materialized (`from_raw_data`
     /// borrows), which every test below does by holding its Vecs in `keep`.
@@ -1164,6 +1175,260 @@ mod tests {
                 for d in 0..dim {
                     let idx = ((row * heads + h) * 4 + 3) * dim + d;
                     assert_eq!(vd[idx], val(100 + row, 3, h, d), "row {row} decode token");
+                }
+            }
+        }
+    }
+
+    /// Ragged speculative acceptance across one batch: each row must keep
+    /// exactly its own accepted length, and the positions a row rolled back to
+    /// (still zero in the backing buffer) must never receive attention weight.
+    ///
+    /// A zeroed key is not inert: with `q = 0` every in-range key ties at
+    /// `exp(0) = 1`, so an unmasked stale slot dilutes the row's output by
+    /// `accepted / key_len`. The per-row validity mask is the only thing
+    /// keeping rolled-back positions out of the softmax.
+    #[test]
+    fn ragged_acceptance_keeps_own_length_and_masks_rolled_back_positions() {
+        use mlx_sys::{
+            ScaledDotProductAttentionMask, astype, scaled_dot_product_attention_with_mask,
+        };
+
+        let (heads, dim) = (1usize, 2usize);
+        // Draft tokens accepted per row: 0, 2 and 5 over a one-token prompt.
+        let accepted = [0usize, 2, 5];
+        let base = 1usize;
+        let batch = accepted.len();
+        let lengths: Vec<usize> = accepted.iter().map(|n| base + n).collect();
+        let max_len = *lengths.iter().max().expect("rows"); // 6
+        const VALUE_BASE: f32 = 10.0;
+
+        let mut keep: Vec<Vec<f32>> = Vec::new();
+        let mut cache = BatchedKvCache::new(1, batch);
+        // Row r keeps `lengths[r]` positions; its K is zero everywhere and V is
+        // a constant per row, so a diluted softmax is directly visible.
+        for (row, &len) in lengths.iter().enumerate() {
+            let k_data = vec![0.0f32; heads * len * dim];
+            let v_data = vec![(row + 1) as f32 * VALUE_BASE; heads * len * dim];
+            keep.push(k_data);
+            keep.push(v_data);
+            let k = arr(
+                keep[keep.len() - 2].as_slice(),
+                heads as i32,
+                len as i32,
+                dim as i32,
+            );
+            let v = arr(
+                keep[keep.len() - 1].as_slice(),
+                heads as i32,
+                len as i32,
+                dim as i32,
+            );
+            cache.seed_row_layer(0, row, &k, &v);
+        }
+
+        assert_eq!(
+            cache.lengths(),
+            lengths.as_slice(),
+            "each row must keep exactly its own accepted length"
+        );
+        assert_eq!(cache.max_len(), max_len);
+
+        let (k, v) = cache.layer_view(0).expect("view spans the ragged max");
+        assert_eq!(
+            k.shape(),
+            vec![batch as i32, heads as i32, max_len as i32, dim as i32]
+        );
+
+        let mask = crate::attention_mask::batched_decode_validity_mask(&lengths, max_len);
+        let mask_f32 = astype(&mask, MlxDtype::Float32, None);
+        eval(&[&mask_f32]);
+        let mask_values = mask_f32.data_f32();
+        for row in 0..batch {
+            for key in 0..max_len {
+                let attend = mask_values[row * max_len + key] != 0.0;
+                assert_eq!(
+                    attend,
+                    key < lengths[row],
+                    "row {row} key {key}: rolled-back positions must be masked"
+                );
+            }
+        }
+
+        // End to end with q = 0: each row's output must equal its own constant
+        // V, i.e. the average over that row's accepted keys only.
+        keep.push(vec![0.0f32; batch * heads * dim]);
+        let q_data = keep.last().expect("q row").clone();
+        let q = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            std::mem::size_of_val(q_data.as_slice()),
+            &[batch as i32, heads as i32, 1, dim as i32],
+            MlxDtype::Float32,
+        );
+        let out = scaled_dot_product_attention_with_mask(
+            &q,
+            &k,
+            &v,
+            1.0,
+            ScaledDotProductAttentionMask::Array(&mask),
+            None,
+        );
+        eval(&[&out]);
+        let out = out.data_f32();
+        for row in 0..batch {
+            let expected = (row + 1) as f32 * VALUE_BASE;
+            for d in 0..dim {
+                let got = out[(row * heads) * dim + d];
+                assert!(
+                    (got - expected).abs() < 1e-3,
+                    "row {row} dim {d}: got {got}, expected {expected} \
+                     (rolled-back slots diluted the softmax)"
+                );
+            }
+        }
+    }
+
+    /// Batched decode slices the K/V buffers; it must not copy them per layer
+    /// per step. The attention view `append_decode_layer` returns and
+    /// `layer_view` must alias the backing buffer — a `contiguous()` copy would
+    /// live in a different allocation and would have to move the whole chunk,
+    /// so no `AX_MLX_BATCHED_KV_NO_COPY` switch is needed (and none exists).
+    ///
+    /// The evidence is the MLX op census rather than `data_raw()`: the views
+    /// span far less than the allocated chunk and are strided, and MLX refuses
+    /// `mlx_array_data_*` on a non-row-contiguous array. So the test
+    /// (1) traces the ops issued *inside* each call and requires them to be
+    /// exactly the slice/view ops, unchanged by a 260-token (two-chunk) context
+    /// — a copy would show up as `contiguous`/`copy` and would scale with the
+    /// cached length — and (2) compares values through a contiguous copy this
+    /// test makes itself after the trace window closes.
+    #[test]
+    fn decode_attention_views_alias_the_kv_buffer_without_copying() {
+        let (heads, dim, batch) = (1usize, 2usize, 2usize);
+        // 3 tokens = inside one KV chunk; 260 tokens = spans two chunks. Both
+        // must cost the same per-decode-step op census.
+        for seed_len in [3usize, 260usize] {
+            let mut keep: Vec<Vec<f32>> = Vec::new();
+            let mut cache = BatchedKvCache::new(1, batch);
+            for row in 0..batch {
+                let kd = seq_block(row, 0, seed_len, heads, dim);
+                keep.push(kd);
+                let k = arr(
+                    keep.last().unwrap().as_slice(),
+                    heads as i32,
+                    seed_len as i32,
+                    dim as i32,
+                );
+                cache.seed_row_layer(0, row, &k, &k);
+            }
+
+            let mut bd = Vec::new();
+            for row in 0..batch {
+                for h in 0..heads {
+                    for d in 0..dim {
+                        bd.push(val(row, seed_len, h, d));
+                    }
+                }
+            }
+            keep.push(bd);
+            let s = keep.last().unwrap().as_slice();
+            let bk = MlxArray::from_raw_data(
+                s.as_ptr().cast(),
+                std::mem::size_of_val(s),
+                &[batch as i32, heads as i32, 1, dim as i32],
+                MlxDtype::Float32,
+            );
+
+            // Op census #1: `append_decode_layer` must only slice the buffer
+            // (the returned view), slice each row's token out of the input, and
+            // write it back with `slice_update`. Anything else — above all a
+            // `contiguous`/`copy` of the cache — fails here.
+            mlx_sys::op_trace_begin();
+            let (view_k, view_v) = cache.append_decode_layer(0, &bk, &bk);
+            let append_ops = mlx_sys::op_trace_end();
+            cache.advance_all(1);
+
+            // Op census #2: `layer_view` must be a pure slice of the buffer.
+            mlx_sys::op_trace_begin();
+            let (full_k, full_v) = cache.layer_view(0).expect("layer view");
+            let view_ops = mlx_sys::op_trace_end();
+
+            let rows = batch as u64;
+            let mut expected_append = std::collections::BTreeMap::new();
+            // 2 slices per row out of the [B,H,1,D] input + 2 view slices.
+            expected_append.insert("slice", 2 * rows + 2);
+            // 2 writes per row ([write_row_block] k and v).
+            expected_append.insert("slice_update", 2 * rows);
+            assert_eq!(
+                op_histogram(&append_ops),
+                expected_append,
+                "append_decode_layer (seed_len {seed_len}) must slice/view the KV \
+                 buffer and write one token per row, never copy it: {append_ops:?}"
+            );
+            assert_eq!(
+                op_histogram(&view_ops),
+                std::collections::BTreeMap::from([("slice", 2)]),
+                "layer_view (seed_len {seed_len}) must be a pure slice of the KV \
+                 buffer: {view_ops:?}"
+            );
+            // Explicit copy-op guard, so a regression names the culprit even if
+            // the exact census above ever changes. The trace's `caller` is not
+            // asserted: `append_decode_layer` inlines into the test in a debug
+            // build, so the attributed frame is the test itself.
+            for entry in append_ops.iter().chain(view_ops.iter()) {
+                assert!(
+                    !matches!(entry.op, "contiguous" | "copy" | "astype" | "reshape"),
+                    "`{}` issued by {}: the attention view must alias the KV \
+                     buffer, not copy it",
+                    entry.op,
+                    entry.caller
+                );
+            }
+
+            // The view spans seed_len + 1 of the chunk, so it is only expressible
+            // as a strided window of the backing buffer.
+            let view_len = seed_len + 1;
+            assert_eq!(
+                view_k.shape(),
+                vec![batch as i32, heads as i32, view_len as i32, dim as i32],
+                "seed_len {seed_len}: decode view must include the token it wrote"
+            );
+            assert_eq!(full_k.shape(), view_k.shape());
+
+            // Values: copy through the test's own `contiguous()` AFTER the trace
+            // window, then compare the decode view, the layer view and the
+            // authored values.
+            let (view_k, view_v) = (dense(&view_k), dense(&view_v));
+            let (full_k, full_v) = (dense(&full_k), dense(&full_v));
+            eval(&[&view_k, &view_v, &full_k, &full_v]);
+            assert_eq!(
+                view_k.data_f32(),
+                full_k.data_f32(),
+                "seed_len {seed_len}: decode K view and layer_view must read the same buffer"
+            );
+            assert_eq!(
+                view_v.data_f32(),
+                full_v.data_f32(),
+                "seed_len {seed_len}: decode V view and layer_view must read the same buffer"
+            );
+            for row in 0..batch {
+                for h in 0..heads {
+                    for t in 0..view_len {
+                        for d in 0..dim {
+                            let idx = ((row * heads + h) * view_len + t) * dim + d;
+                            let expected = val(row, t, h, d);
+                            assert_eq!(
+                                view_k.data_f32()[idx],
+                                expected,
+                                "seed_len {seed_len}: K row {row} head {h} tok {t} dim {d}"
+                            );
+                            assert_eq!(
+                                view_v.data_f32()[idx],
+                                expected,
+                                "seed_len {seed_len}: V row {row} head {h} tok {t} dim {d}"
+                            );
+                        }
+                    }
                 }
             }
         }

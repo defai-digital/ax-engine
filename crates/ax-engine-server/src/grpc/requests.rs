@@ -23,12 +23,16 @@ use crate::openai::requests::{
 /// prefixes here while the HTTP surfaces render the family template. The
 /// DeepSeek V4 framing is resolved from the same family hint, mirroring the
 /// HTTP edge, instead of leaving the renderer's model-id heuristic in place.
+///
+/// Returns the rendered prompt *and* the assistant-turn byte offsets, so gRPC
+/// requests can carry the same typed `PrefillHints` (semantic snapshot cut
+/// points) as the OpenAI HTTP edge.
 fn render_grpc_chat_prompt(
     model_id: &str,
     family_hint: Option<&str>,
     messages: &[(String, String)],
-) -> Result<String, String> {
-    chat::render_prompt_with_template_and_framing(
+) -> Result<chat::RenderedPrompt, String> {
+    chat::render_prompt_with_template_and_framing_offsets(
         model_id,
         chat::resolve_chat_template(model_id, family_hint),
         messages,
@@ -61,16 +65,23 @@ pub(super) fn openai_error_to_status(
     }
 }
 
-/// Tokenize `input_text` for native MLX when required (parity with OpenAI HTTP).
+/// Tokenize `input_text` for native MLX when required (parity with OpenAI
+/// HTTP), mapping `assistant_byte_starts` into typed `PrefillHints`.
 pub(super) fn finalize_native_generate_request(
     live: &LiveState,
     mut request: GenerateRequest,
+    assistant_byte_starts: &[usize],
 ) -> Result<GenerateRequest, Status> {
-    let (input_tokens, input_text) =
-        tokenize_native_mlx_text_input(live, request.input_tokens, request.input_text)
-            .map_err(openai_error_to_status)?;
+    let (input_tokens, input_text, prefill_hints) = tokenize_native_mlx_text_input(
+        live,
+        request.input_tokens,
+        request.input_text,
+        assistant_byte_starts,
+    )
+    .map_err(openai_error_to_status)?;
     request.input_tokens = input_tokens;
     request.input_text = input_text;
+    request.prefill_hints = prefill_hints;
     Ok(request)
 }
 
@@ -89,9 +100,11 @@ pub(super) fn build_chat_generate_request(
         .map(|m| (m.role.clone(), m.content.clone()))
         .collect();
     let artifact_family = crate::metadata::model_family_from_artifacts(live);
-    let input_text =
+    let rendered =
         render_grpc_chat_prompt(live.model_id.as_ref(), artifact_family.as_deref(), &pairs)
             .map_err(Status::invalid_argument)?;
+    let assistant_byte_starts = rendered.assistant_byte_starts;
+    let input_text = rendered.text;
     let max_output_tokens = if req.max_tokens == 0 {
         256
     } else {
@@ -133,6 +146,7 @@ pub(super) fn build_chat_generate_request(
     finalize_native_generate_request(
         live,
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: live.model_id.to_string(),
             input_tokens: Vec::new(),
             input_text: Some(input_text),
@@ -142,6 +156,7 @@ pub(super) fn build_chat_generate_request(
             stop_sequences,
             metadata: None,
         },
+        &assistant_byte_starts,
     )
 }
 
@@ -180,6 +195,7 @@ pub(super) fn build_completion_generate_request(
     finalize_native_generate_request(
         live,
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: live.model_id.to_string(),
             input_tokens: Vec::new(),
             input_text: Some(req.prompt.clone()),
@@ -189,6 +205,8 @@ pub(super) fn build_completion_generate_request(
             stop_sequences: req.stop.clone(),
             metadata: None,
         },
+        // Raw completions carry no chat turns, so there are no cut points.
+        &[],
     )
 }
 
@@ -245,15 +263,17 @@ mod tests {
     fn grpc_chat_prompt_disables_thinking_for_qwen_reasoning_models() {
         // Mirror of the native OpenAI chat renderer: short chat responses should
         // not spend their output budget on visible Qwen thinking text.
-        let no_thinking =
-            render_grpc_chat_prompt("Qwen3.6-35B-A3B-4bit", None, &user("hi")).expect("render");
+        let no_thinking = render_grpc_chat_prompt("Qwen3.6-35B-A3B-4bit", None, &user("hi"))
+            .expect("render")
+            .text;
         assert!(
             no_thinking.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
             "thinking-disabled suffix should pre-close the think block: {no_thinking}"
         );
 
-        let coder =
-            render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", None, &user("hi")).expect("render");
+        let coder = render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", None, &user("hi"))
+            .expect("render")
+            .text;
         assert!(
             coder.ends_with("<|im_start|>assistant\n"),
             "Coder-Next follows its non-thinking-only template without pre-closing a think block: {coder}"
@@ -262,7 +282,9 @@ mod tests {
 
     #[test]
     fn grpc_chat_prompt_keeps_no_think_suffix_for_ax_qwen3_alias() {
-        let prompt = render_grpc_chat_prompt("qwen3", None, &user("hi")).expect("render");
+        let prompt = render_grpc_chat_prompt("qwen3", None, &user("hi"))
+            .expect("render")
+            .text;
         assert!(
             prompt.ends_with("<|im_start|>assistant\n"),
             "the ax qwen3 alias follows Qwen3-Coder-Next's no-think template: {prompt}"
@@ -280,8 +302,9 @@ mod tests {
         // A Hy-MT2 artifact served under a custom model id must resolve the
         // registry chat contract (ADR-025 D2) exactly like the OpenAI and
         // Ollama surfaces, not fall back to the plain-role-prefix heuristic.
-        let prompt =
-            render_grpc_chat_prompt("translation-30b", Some("hy_v3"), &user("hi")).expect("render");
+        let prompt = render_grpc_chat_prompt("translation-30b", Some("hy_v3"), &user("hi"))
+            .expect("render")
+            .text;
         assert!(
             prompt.starts_with(chat::HY_V3_BOS),
             "family hint selects the HyV3 template: {prompt}"
@@ -486,7 +509,9 @@ mod tests {
             ("assistant".to_string(), "hi".to_string()),
             ("user".to_string(), "again".to_string()),
         ];
-        let prompt = render_grpc_chat_prompt("gemma-4-e2b", None, &messages).expect("render");
+        let prompt = render_grpc_chat_prompt("gemma-4-e2b", None, &messages)
+            .expect("render")
+            .text;
         assert_eq!(
             prompt,
             "<bos>\
@@ -512,7 +537,8 @@ mod tests {
             ("user".to_string(), "continue".to_string()),
         ];
         let prompt = render_grpc_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", None, &messages)
-            .expect("render");
+            .expect("render")
+            .text;
         assert_eq!(
             prompt,
             "[gMASK]<sop>\

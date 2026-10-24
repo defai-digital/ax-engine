@@ -63,6 +63,7 @@ fn submit(
         .map(|t| t.wrapping_mul(31).wrapping_add(id as u32 * 7_919))
         .collect();
     engine.submit(RequestSubmission {
+        prefill_hints: Default::default(),
         request_id: RequestId(id),
         model_id: ModelId("qwen3".into()),
         input_tokens,

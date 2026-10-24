@@ -160,6 +160,24 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
     std::env::var(name).map_or(true, |raw| parse_bool_value(&raw))
 }
 
+/// Opt-in value-priced prefix restore (`AX_MLX_PREFIX_RESTORE_VALUE`).
+/// Unset/`0` keeps the historical longest-prefix restore decision exactly.
+pub(crate) const PREFIX_RESTORE_VALUE_ENV: &str = "AX_MLX_PREFIX_RESTORE_VALUE";
+
+/// Opt-in semantic snapshot cut points (`AX_MLX_PREFIX_SEMANTIC_CUTS`).
+/// Unset/`0` keeps block-aligned-only capture exactly.
+pub(crate) const PREFIX_SEMANTIC_CUTS_ENV: &str = "AX_MLX_PREFIX_SEMANTIC_CUTS";
+
+pub(crate) fn prefix_restore_value_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag(PREFIX_RESTORE_VALUE_ENV))
+}
+
+pub(crate) fn prefix_semantic_cuts_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag(PREFIX_SEMANTIC_CUTS_ENV))
+}
+
 /// Activation dtype policy for the Qwen hybrid (`qwen3_5`) runtime,
 /// `AX_MLX_ACTIVATION_DTYPE`:
 ///
@@ -6742,6 +6760,27 @@ env_flag_default_on!(
     "AX_MLX_BATCHED_SHARED_PROJ"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_BATCHED_STATE_MATERIALIZE` — schedule the batched gated-delta
+    /// conv/recurrent state for evaluation at the end of every batched decode
+    /// step.
+    ///
+    /// **Default: ON** (kill switch via `AX_MLX_BATCHED_STATE_MATERIALIZE=0`,
+    /// which restores the purely lazy state update).
+    ///
+    /// Each step's state is a fresh kernel output consumed by the *next* step's
+    /// kernel; nothing on the logits path reads it, so without an explicit
+    /// materialization the state node stays pending and the next step's kernel
+    /// graph is built on top of it. A long-running cohort therefore keeps one
+    /// suspended graph per step alive for the whole session — the failure mode
+    /// that drove another engine into Metal's resource limit after ~40 minutes.
+    /// The commit uses `async_eval`, not a blocking `eval`: the decode step
+    /// already blocks once on argmax, and scheduling alone releases the
+    /// intermediate nodes. State bytes are unchanged.
+    batched_state_materialize_enabled,
+    "AX_MLX_BATCHED_STATE_MATERIALIZE"
+);
+
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
 pub(crate) fn diffusion_entropy_threshold() -> Option<f32> {
@@ -6975,6 +7014,40 @@ pub(crate) fn gemma4_loop_detection_mode_for(raw: Option<&str>) -> Gemma4LoopDet
         "force" => Gemma4LoopDetectionMode::Force,
         _ => Gemma4LoopDetectionMode::Default,
     }
+}
+
+/// `AX_MLX_PRICED_MEMORY` — kill switch for the priced expert-stream memory
+/// plan. Unset means on; only an explicit false-y value restores the legacy
+/// fixed-headroom Auto formula. Read once: the plan is resolved at admission,
+/// never per decode step.
+pub(crate) fn priced_memory_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| std::env::var("AX_MLX_PRICED_MEMORY").ok())
+        .clone()
+}
+
+/// `AX_STREAM_EXPERT_CACHE_BYTES` — explicit byte budget for resident expert
+/// layer stacks. Unset means "no operator byte cap". Read once: the loader
+/// resolves the budget when it builds the expert layer stacks.
+pub(crate) fn stream_expert_cache_bytes_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| std::env::var("AX_STREAM_EXPERT_CACHE_BYTES").ok())
+        .clone()
+}
+
+/// `AX_MLX_MEMORY_CEILING_BYTES` — explicit load-admission ceiling in bytes.
+/// Unset means "derive it from host RAM". The priced plan still keeps the last
+/// 4 GiB for the system, so an override can never page the kernel out. Read
+/// once: the ceiling is resolved at admission, never per decode step.
+pub(crate) fn memory_ceiling_override_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var(ax_engine_core::memory_budget::MEMORY_PLAN_CEILING_OVERRIDE_ENV).ok()
+        })
+        .clone()
 }
 
 #[cfg(test)]

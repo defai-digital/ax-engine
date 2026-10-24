@@ -37,6 +37,7 @@ pub(super) fn proto_to_generate_request(
 ) -> Result<GenerateRequest, tonic::Status> {
     let sampling = req.sampling.map(proto_sampling_to_sdk).unwrap_or_default();
     let request = GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: live.model_id.to_string(),
         input_tokens: req.input_tokens,
         input_text: if req.input_text.is_empty() {
@@ -58,8 +59,9 @@ pub(super) fn proto_to_generate_request(
             Some(req.metadata)
         },
     };
-    // Native MLX rejects bare input_text; tokenize like OpenAI HTTP.
-    super::requests::finalize_native_generate_request(live, request)
+    // Native MLX rejects bare input_text; tokenize like OpenAI HTTP. The SDK
+    // generate call carries no rendered chat turns, so it has no cut points.
+    super::requests::finalize_native_generate_request(live, request, &[])
 }
 
 pub(super) fn sdk_response_to_proto(r: ax_engine_sdk::GenerateResponse) -> proto::GenerateResponse {

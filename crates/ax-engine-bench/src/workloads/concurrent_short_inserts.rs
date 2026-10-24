@@ -83,6 +83,7 @@ impl ConcurrentShortInserts {
 
     fn build_long_request(&self, seed: u64) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             input_tokens: synthetic_prompt_tokens(
                 self.long_prefill_tokens,
@@ -103,6 +104,7 @@ impl ConcurrentShortInserts {
 
     fn build_short_request(&self, seed: u64, ordinal: u32) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             input_tokens: synthetic_prompt_tokens(
                 self.short_prefix_tokens,

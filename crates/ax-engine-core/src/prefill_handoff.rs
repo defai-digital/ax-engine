@@ -727,6 +727,7 @@ mod tests {
             max_output_tokens,
             arrival_sequence: SequenceNo(arrival),
             metadata: None,
+            prefill_hints: Default::default(),
         }
     }
 
@@ -758,6 +759,7 @@ mod tests {
             generation_kind: GenerationKind::Autoregressive,
             diffusion_denoise_steps_in_block: 0,
             diffusion_commit_ready: false,
+            prefill_hints: Default::default(),
             diffusion_block_committed: false,
             route_deferred_steps: 0,
         }

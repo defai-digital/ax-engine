@@ -6,7 +6,9 @@
 //! [`ExpertStackPager`] then pages one layer's expert stack in on demand,
 //! hands the MoE forward the same [`QuantizedWeight`] values the resident
 //! path would have built, and evicts least-recently-used layer stacks once the
-//! budget (`AX_STREAM_EXPERT_LAYERS`, default 1) is exceeded.
+//! budget (`AX_STREAM_EXPERT_LAYERS`, default 1, plus the
+//! `AX_STREAM_EXPERT_CACHE_BYTES` byte cap the priced plan derives) is
+//! exceeded.
 //!
 //! v1 is layer-stack paging only: the existing `gather_qmm` kernel runs
 //! unchanged on the paged packed tensors. No per-expert unfused kernels.
@@ -32,10 +34,20 @@ pub(crate) const EXPERT_STREAM_MODE_LAYER_STACK: &str = "layer-stack";
 pub(crate) const STREAM_EXPERTS_ENV: &str = "AX_STREAM_EXPERTS";
 /// Number of layer expert stacks kept resident concurrently (minimum 1).
 pub(crate) const STREAM_EXPERT_LAYERS_ENV: &str = "AX_STREAM_EXPERT_LAYERS";
-/// Extra unified-memory reserve (OS + KV + activations) when Auto decides
-/// whether a pack can stay fully resident. 48 GiB matches a serve process
-/// on a 192 GB Flash host without flipping the certified resident path.
+/// Legacy extra unified-memory reserve (OS + KV + activations) when Auto
+/// decides whether a pack can stay fully resident. 48 GiB matches a serve
+/// process on a 192 GB Flash host without flipping the certified resident
+/// path.
+///
+/// Retained for `AX_MLX_PRICED_MEMORY=0` and for callers with no priced
+/// inputs (doctor, raw constructors). With the priced plan on, Auto charges
+/// the real components instead of this flat headroom.
 pub const AUTO_RESIDENT_HEADROOM_BYTES: u64 = 48 * 1024 * 1024 * 1024;
+
+// The `AX_MLX_PRICED_MEMORY`, `AX_STREAM_EXPERT_CACHE_BYTES`, and
+// `AX_MLX_MEMORY_CEILING_BYTES` environment reads live in `fastpath` (the
+// cached-accessor home), so a new knob here cannot become an unnoticed
+// per-call read on a dispatch path.
 
 /// How AX Engine admits SSD expert streaming.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -155,8 +167,30 @@ pub enum ExpertStreamError {
     InvalidManifest(String),
     #[error("invalid {env} value: {0}", env = STREAM_EXPERTS_ENV)]
     InvalidMode(String),
+    #[error(
+        "insufficient unified memory for this pack: the resident part needs about {fixed_bytes} \
+         bytes (non-expert weights, KV cache, hybrid state, prefill scratch, and runtime \
+         reserves) but only about {ceiling_bytes} bytes fit after the OS reserve. Reduce the \
+         context/pool, or use a smaller pack; paging experts cannot free the resident part"
+    )]
+    InsufficientMemory {
+        fixed_bytes: u64,
+        ceiling_bytes: u64,
+    },
     #[error("expert stream paging failed: {0}")]
     Paging(String),
+    #[error(
+        "the priced plan can only keep {expert_cache_bytes} bytes of streamed expert cache \
+         resident, but one layer stack of this pack needs about {layer_bytes} bytes. Every \
+         decode step would re-read a whole layer from disk, so the load is refused instead of \
+         thrashing. Raise AX_MLX_MEMORY_CEILING_BYTES, shrink the context/pool, or select a \
+         smaller pack; an explicit --stream-experts load skips this byte cap and uses the \
+         layer-count budget (AX_STREAM_EXPERT_LAYERS) instead"
+    )]
+    ExpertCacheBelowLayerStack {
+        expert_cache_bytes: u64,
+        layer_bytes: u64,
+    },
 }
 
 /// `n` from the first `layers.<n>.` segment of a tensor name, when present.
@@ -390,6 +424,362 @@ pub(crate) fn expert_layer_budget() -> usize {
     expert_layer_budget_from_env(std::env::var(STREAM_EXPERT_LAYERS_ENV).ok().as_deref())
 }
 
+/// Parse `AX_MLX_PRICED_MEMORY`. Unset means on: the priced plan is the
+/// product default, and only an explicit false-y value restores the legacy
+/// 48 GiB fixed headroom.
+pub(crate) fn priced_memory_enabled_from_env(value: Option<&str>) -> bool {
+    !value.is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+pub(crate) fn priced_memory_enabled() -> bool {
+    priced_memory_enabled_from_env(crate::fastpath::priced_memory_env().as_deref())
+}
+
+/// Parse `AX_STREAM_EXPERT_CACHE_BYTES`: an explicit positive byte budget for
+/// resident expert layer stacks. Blank, zero, and unparsable values mean "no
+/// byte cap", leaving `AX_STREAM_EXPERT_LAYERS` as the only limit.
+pub(crate) fn expert_cache_bytes_from_env(value: Option<&str>) -> Option<u64> {
+    value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|bytes| *bytes > 0)
+}
+
+/// Explicit `AX_MLX_MEMORY_CEILING_BYTES` ceiling for this process, if one is
+/// set. The plan still bounds it at `RAM - 4 GiB` when RAM is known.
+pub(crate) fn memory_ceiling_override_bytes() -> Option<u64> {
+    ax_engine_core::memory_budget::parse_memory_plan_ceiling_override(
+        crate::fastpath::memory_ceiling_override_env().as_deref(),
+    )
+}
+
+/// Per-session costs the priced plan charges besides the pack's weights.
+///
+/// The runner installs this before the weights load on the same thread that
+/// builds the runner, mirroring [`set_stream_experts_mode`]. Every field is
+/// bytes; `None` capacity means the corresponding probe failed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AutoResidencyContext {
+    /// KV cache bytes for the configured context at the admitted pool.
+    pub kv_bytes: u64,
+    /// GDN/QSA/PLE per-request state for the served concurrency.
+    pub state_bytes: u64,
+    /// Bound on prefill activations for one chunk.
+    pub prefill_scratch_bytes: u64,
+    /// Whole n-gram lexical table (weights plus scales/biases). Priced as
+    /// disk/virtual: reported, never charged to the resident working set.
+    pub ngram_table_bytes: u64,
+    /// Sum of the tensors the loader actually keeps resident: every tensor
+    /// the artifacts directory ships except the streamable expert stack and
+    /// the disk-served n-gram table. A publisher's
+    /// `estimated_*_resident_bytes` can understate what the loader
+    /// materializes (MTP/vision sidecars), so the plan floors its non-expert
+    /// share with this inventory instead of trusting the file. It never raises
+    /// the expert term: experts are priced from the manifest and are never
+    /// double counted.
+    /// Zero when the caller has no artifacts (raw constructors, doctor).
+    pub resident_tensor_inventory_bytes: u64,
+    /// Physical unified memory (`hw.memsize`).
+    pub host_ram_bytes: Option<u64>,
+    /// Metal `recommendedMaxWorkingSetSize`, when the platform reports it.
+    ///
+    /// Advisory: the plan warns when the priced working set goes above it and
+    /// keeps the RAM-derived ceiling either way.
+    pub metal_recommended_max_working_set_bytes: Option<u64>,
+    /// Explicit `AX_MLX_MEMORY_CEILING_BYTES` override, bounded by
+    /// `RAM - 4 GiB` once the plan knows RAM.
+    pub ceiling_override_bytes: Option<u64>,
+}
+
+thread_local! {
+    /// Priced-plan inputs for the session loading on this thread. Plain data
+    /// that every session build replaces (including with `None`), so a later
+    /// load cannot inherit an earlier session's KV pool.
+    static AUTO_RESIDENCY_CONTEXT: std::cell::RefCell<Option<AutoResidencyContext>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// Expert cache byte budget the priced plan derived for this session.
+    /// Zero means "the plan did not bound bytes".
+    static PRICED_EXPERT_CACHE_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Install (or clear) the priced-plan inputs for the session about to load on
+/// this thread.
+pub fn set_auto_residency_context(context: Option<AutoResidencyContext>) {
+    AUTO_RESIDENCY_CONTEXT.with(|slot| *slot.borrow_mut() = context);
+}
+
+/// Priced-plan inputs installed for the current thread, if any.
+pub fn auto_residency_context() -> Option<AutoResidencyContext> {
+    AUTO_RESIDENCY_CONTEXT.with(|slot| *slot.borrow())
+}
+
+fn set_priced_expert_cache_bytes(bytes: u64) {
+    PRICED_EXPERT_CACHE_BYTES.with(|cell| cell.set(bytes));
+}
+
+fn priced_expert_cache_bytes() -> Option<u64> {
+    let bytes = PRICED_EXPERT_CACHE_BYTES.with(|cell| cell.get());
+    (bytes > 0).then_some(bytes)
+}
+
+/// Byte budget for resident expert layer stacks: `AX_STREAM_EXPERT_CACHE_BYTES`
+/// wins, then the priced plan's remainder, then no byte cap.
+fn resolved_expert_cache_budget() -> Option<u64> {
+    expert_cache_bytes_from_env(crate::fastpath::stream_expert_cache_bytes_env().as_deref())
+        .or_else(priced_expert_cache_bytes)
+}
+
+/// Metal `recommendedMaxWorkingSetSize`, plus the operator's `iogpu.wired_limit_mb`
+/// cap when one is set.
+///
+/// The authoritative value is MLX's own device query. It is safe to call on
+/// the loading thread before the weights load: the runner already queries it
+/// at startup for `set_wired_limit`, on this same thread, so this read cannot
+/// pull new device work into the load. The kernel's `iogpu.wired_limit_mb` is
+/// an operator override whose default is `0` (no override), so it only
+/// contributes when non-zero — and then only as a cap.
+///
+/// The result is advisory: the priced plan warns when the working set exceeds
+/// it, but never clamps the ceiling to it (a measured 6-bit Flash Next session
+/// ran resident at a higher peak RSS with no swap growth).
+pub fn metal_recommended_working_set_bytes() -> Option<u64> {
+    let recommended = mlx_sys::device_recommended_working_set_bytes();
+    let explicit_cap = crate::hardware::sysctl_string(&["-n", "iogpu.wired_limit_mb"])
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|mebibytes| *mebibytes > 0)
+        .map(|mebibytes| mebibytes.saturating_mul(1024 * 1024));
+    select_metal_working_set(recommended, explicit_cap)
+}
+
+/// Ceiling selection: the tighter of MLX's recommendation and an operator's
+/// explicit wired-limit cap, whichever is known when the other is not, and
+/// `None` when neither probe answers (in which case the plan cannot prove
+/// residency and pages instead).
+fn select_metal_working_set(recommended: Option<u64>, explicit_cap: Option<u64>) -> Option<u64> {
+    match (recommended, explicit_cap) {
+        (Some(recommended), Some(cap)) => Some(recommended.min(cap)),
+        (Some(recommended), None) => Some(recommended),
+        (None, Some(cap)) => Some(cap),
+        (None, None) => None,
+    }
+}
+
+/// Price one candidate stream manifest with this session's non-weight costs.
+///
+/// `None` when the manifest does not price its resident share: charging zero
+/// non-expert bytes would make any pack look resident, so such a manifest
+/// keeps the legacy formula rather than being priced from a missing number.
+pub(crate) fn memory_plan_for(
+    manifest: &ExpertStreamManifest,
+    context: &AutoResidencyContext,
+) -> Option<ax_engine_core::memory_budget::MemoryPlan> {
+    if manifest.estimated_resident_bytes == 0 || manifest.estimated_full_resident_bytes == 0 {
+        return None;
+    }
+    // Never trust a manifest estimate that is smaller than the tensors the
+    // artifacts directory actually ships: MTP and vision sidecars are routinely
+    // missing from the publisher's resident estimate, and charging them as
+    // expert (streamable) bytes would admit a resident load that pages later.
+    // The delta lands on the resident share, which is the conservative side.
+    let (resident_non_expert_bytes, expert_bytes) = priced_weight_split(manifest, context);
+    Some(ax_engine_core::memory_budget::MemoryPlan {
+        resident_non_expert_bytes,
+        expert_bytes,
+        ngram_table_bytes: context.ngram_table_bytes,
+        kv_bytes: context.kv_bytes,
+        state_bytes: context.state_bytes,
+        prefill_scratch_bytes: context.prefill_scratch_bytes,
+        host_ram_bytes: context.host_ram_bytes,
+        metal_recommended_max_working_set_bytes: context.metal_recommended_max_working_set_bytes,
+        ceiling_override_bytes: context.ceiling_override_bytes,
+        ..ax_engine_core::memory_budget::MemoryPlan::default()
+    })
+}
+
+/// Split the plan's weight bytes into resident and streamable shares.
+///
+/// The resident share is floored by
+/// [`AutoResidencyContext::resident_tensor_inventory_bytes`], which the caller
+/// prices from the artifacts' own tensor list minus the streamable experts and
+/// the disk-served n-gram table. That is what lets the floor raise only
+/// genuinely resident bytes: the n-gram table is already discounted out of the
+/// manifest estimate (see [`discount_never_loaded_bytes`]), and the expert
+/// share is priced once from the manifest, so neither is double counted.
+fn priced_weight_split(
+    manifest: &ExpertStreamManifest,
+    context: &AutoResidencyContext,
+) -> (u64, u64) {
+    let resident_estimate = manifest.estimated_resident_bytes;
+    let expert_estimate = manifest
+        .estimated_full_resident_bytes
+        .saturating_sub(resident_estimate);
+    let resident = resident_estimate.max(context.resident_tensor_inventory_bytes);
+    // Do not let a stale/understated full estimate shrink the total below the
+    // resident floor plus the experts the manifest can page.
+    let full = manifest
+        .estimated_full_resident_bytes
+        .max(resident.saturating_add(expert_estimate));
+    (resident, full.saturating_sub(resident))
+}
+
+/// Activation element width used by the prefill scratch bound (f16/bf16).
+const ACTIVATION_BYTES: u64 = 2;
+/// Copies of one chunk's hidden state a prefill step can hold at once: the
+/// residual stream, the attention output, and the gate/up pair.
+const PREFILL_SCRATCH_MULTIPLIER: u64 = 4;
+/// KV bytes charged when the manifest geometry cannot be priced (diffusion, or
+/// a manifest that predates the KV estimator). Matches the flat floor the
+/// unpriced admission path already used. MLA packs no longer land here: their
+/// latent cache is priced by `estimated_kv_pool_bytes`.
+pub(crate) const UNKNOWN_KV_BYTES: u64 = 768 * 1024 * 1024;
+
+/// Number of live decode sequences to charge per-request state for.
+///
+/// `configured` is the session's admitted concurrency bound (the server's
+/// `--max-concurrent-requests` when it has one); `batched_cap` is the runner's
+/// hard batched-cohort capacity. The configured bound is capped by the cohort
+/// capacity, and an absent bound falls back to the capacity. The result is
+/// never zero because one request always exists.
+pub(crate) fn resolved_live_sequences(configured: Option<u32>, batched_cap: usize) -> u32 {
+    let capacity = u32::try_from(batched_cap).unwrap_or(u32::MAX).max(1);
+    configured.map_or(capacity, |live| live.max(1).min(capacity))
+}
+
+/// KV-cache, hybrid-state, and prefill-scratch bytes this session charges.
+///
+/// Conservative bounds, not allocator limits. The KV term is the pool-wide
+/// worst case from the manifest geometry at the admitted pool. The state term
+/// splits by ownership: gated-delta-net conv/recurrent state is per live
+/// sequence (each live row owns one), while per-token state (the QSA index
+/// keys and their pooled blocks) lives inside the shared KV pool and can never
+/// exceed it, so it is charged once at the pool token bound. Charging the
+/// index per sequence at full context double-counts the pool by the
+/// concurrency and priced a resident pack out of the default eight-row
+/// cohort. The scratch term bounds one prefill chunk's activations.
+///
+/// `max_live_sequences` is the served concurrency (`MemoryPlan::state_bytes`
+/// means exactly that). It is the runner's live-row bound, never zero: one
+/// request always exists. The runner resolves it with
+/// [`resolved_live_sequences`].
+pub(crate) fn estimate_auto_residency_costs(
+    manifest: &ax_engine_core::NativeModelManifest,
+    budget: SessionResidencyBudget,
+    max_live_sequences: u32,
+) -> (u64, u64, u64) {
+    let kv_bytes = manifest_kv_geometry(manifest)
+        .and_then(|geometry| {
+            ax_engine_core::memory_budget::estimated_kv_pool_bytes(&geometry, budget.kv_pool_tokens)
+        })
+        .unwrap_or(UNKNOWN_KV_BYTES);
+    let sequence_state =
+        hybrid_state_bytes(manifest).saturating_mul(u64::from(max_live_sequences.max(1)));
+    let pool_state = qsa_index_state_bytes(manifest, budget.kv_pool_tokens);
+    let state_bytes = sequence_state.saturating_add(pool_state);
+    let prefill_scratch_bytes = (budget.prefill_chunk as u64)
+        .saturating_mul(u64::from(manifest.hidden_size))
+        .saturating_mul(ACTIVATION_BYTES)
+        .saturating_mul(PREFILL_SCRATCH_MULTIPLIER);
+    (kv_bytes, state_bytes, prefill_scratch_bytes)
+}
+
+/// Project the typed manifest into the tolerant KV-geometry view.
+fn manifest_kv_geometry(
+    manifest: &ax_engine_core::NativeModelManifest,
+) -> Option<ax_engine_core::memory_budget::ManifestKvGeometry> {
+    serde_json::to_value(manifest)
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+/// One request's gated-delta-net state: the causal-conv ring plus the
+/// recurrent state for every linear-attention layer.
+fn hybrid_state_bytes(manifest: &ax_engine_core::NativeModelManifest) -> u64 {
+    let config = &manifest.linear_attention;
+    let (Some(key_heads), Some(value_heads), Some(key_dim), Some(value_dim)) = (
+        config.num_key_heads,
+        config.num_value_heads,
+        config.key_head_dim,
+        config.value_head_dim,
+    ) else {
+        return 0;
+    };
+    let conv_width = u64::from(key_heads)
+        .saturating_mul(u64::from(key_dim))
+        .saturating_mul(2)
+        .saturating_add(u64::from(value_heads).saturating_mul(u64::from(value_dim)));
+    let conv_taps = u64::from(config.conv_kernel_dim.unwrap_or(1)).saturating_sub(1);
+    let recurrent = u64::from(value_heads)
+        .saturating_mul(u64::from(key_dim))
+        .saturating_mul(u64::from(value_dim));
+    let per_layer = conv_width
+        .saturating_mul(conv_taps)
+        .saturating_add(recurrent);
+    // f32 conv ring and recurrent state.
+    u64::from(manifest.layer_count)
+        .saturating_mul(per_layer)
+        .saturating_mul(4)
+}
+
+/// QSA per-request index state for the Flash Next (`qwen4_exp`) trunk: the raw
+/// index-key history plus the mean-pooled block keys per layer.
+///
+/// The index describes prompt positions, so it is bounded by the shared KV
+/// pool, not by one request's context: the pool admits at most
+/// `kv_pool_tokens` positions across every live sequence. It is therefore
+/// charged once at the pool size in
+/// [`estimate_auto_residency_costs`], never multiplied by the concurrency.
+/// Every layer is charged: the indexer is built per layer, and a test-only
+/// subset would under-price the decode working set that the plan exists to
+/// prove.
+fn qsa_index_state_bytes(manifest: &ax_engine_core::NativeModelManifest, pool_tokens: u64) -> u64 {
+    let config = &manifest.qwen4_exp;
+    let (Some(head_dim), Some(compress_ratio)) =
+        (config.indexer_head_dim, config.indexer_compress_ratio)
+    else {
+        return 0;
+    };
+    if head_dim == 0 || compress_ratio == 0 {
+        return 0;
+    }
+    let head_dim = u64::from(head_dim);
+    let compress_ratio = u64::from(compress_ratio);
+    let raw_keys = pool_tokens
+        .saturating_mul(head_dim)
+        .saturating_mul(ACTIVATION_BYTES);
+    // One pooled block per complete `compress_ratio` window.
+    let pooled = pool_tokens
+        .saturating_div(compress_ratio)
+        .saturating_mul(head_dim)
+        .saturating_mul(ACTIVATION_BYTES);
+    u64::from(manifest.layer_count).saturating_mul(raw_keys.saturating_add(pooled))
+}
+
+/// Merge the session's installed context with this pack's n-gram table, the
+/// host probes, and the explicit ceiling override, giving the priced plan
+/// everything it needs.
+pub(crate) fn session_auto_residency_context(
+    installed: Option<AutoResidencyContext>,
+    ngram_table_bytes: u64,
+) -> AutoResidencyContext {
+    let mut context = installed.unwrap_or_default();
+    context.ngram_table_bytes = ngram_table_bytes;
+    if context.host_ram_bytes.is_none() {
+        context.host_ram_bytes = unified_memory_bytes();
+    }
+    if context.metal_recommended_max_working_set_bytes.is_none() {
+        context.metal_recommended_max_working_set_bytes = metal_recommended_working_set_bytes();
+    }
+    if context.ceiling_override_bytes.is_none() {
+        context.ceiling_override_bytes = memory_ceiling_override_bytes();
+    }
+    context
+}
+
 const STREAM_MODE_UNSET: u8 = 0;
 const STREAM_MODE_OFF: u8 = 1;
 const STREAM_MODE_AUTO: u8 = 2;
@@ -476,6 +866,11 @@ pub fn unified_memory_bytes() -> Option<u64> {
 pub struct SessionResidencyBudget {
     pub kv_pool_tokens: u64,
     pub prefill_chunk: usize,
+    /// Configured session bound on concurrently live decode sequences (the
+    /// server's admitted concurrency). `None` falls back to the runner's
+    /// batched cohort capacity, which is the hard live-row bound. Either way
+    /// the effective value is never zero: one request always exists.
+    pub max_live_sequences: Option<u32>,
 }
 
 /// Whether the bounded Tiel session exception permits residency. This probes
@@ -510,6 +905,27 @@ pub(crate) fn discount_never_loaded_bytes(
     manifest
 }
 
+/// Sum of the tensors the loader keeps resident.
+///
+/// Excludes the streamable expert stack, which is priced once from the manifest
+/// ([`priced_weight_split`]) and must not be counted twice. When
+/// `discount_ngram` mirrors `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM`, the
+/// disk-served n-gram table is excluded too, exactly as
+/// [`discount_never_loaded_bytes`] removes it from the manifest estimate. With
+/// the switch off the table stays in the inventory, matching an undiscounted
+/// manifest.
+pub(crate) fn resident_tensor_inventory_bytes(
+    tensors: &[NativeTensorSpec],
+    discount_ngram: bool,
+) -> u64 {
+    tensors
+        .iter()
+        .filter(|spec| expert_role_to_proj(spec.role).is_none())
+        .filter(|spec| !(discount_ngram && crate::weights::qwen4_exp::is_ngram_table_tensor(spec)))
+        .map(|spec| spec.length_bytes)
+        .fold(0u64, u64::saturating_add)
+}
+
 pub(crate) fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
     match available_bytes {
         // Unknown capacity (both sysctl probes failed, e.g. a sandboxed
@@ -526,7 +942,13 @@ pub(crate) fn should_auto_stream(full_resident_bytes: u64, available_bytes: Opti
 /// - **Off:** resident load; `required=true` fails closed.
 /// - **On:** use the file manifest, or infer packed expert roles.
 /// - **Auto:** stream required packs, or optional/inferred packs that cannot
-///   fit in unified memory plus [`AUTO_RESIDENT_HEADROOM_BYTES`].
+///   fit in unified memory. With the priced plan on (default) Auto compares
+///   the real components against the ceiling; `AX_MLX_PRICED_MEMORY=0`
+///   restores the legacy [`AUTO_RESIDENT_HEADROOM_BYTES`] formula.
+///
+/// The priced inputs are the ones [`set_auto_residency_context`] installed for
+/// this session (the runner installs them before loading). Callers that need
+/// to price a pack-specific table use [`resolve_expert_stream_with_plan`].
 pub fn resolve_expert_stream<F>(
     mode: StreamExpertsMode,
     file: Option<ExpertStreamManifest>,
@@ -536,6 +958,57 @@ pub fn resolve_expert_stream<F>(
 where
     F: FnOnce() -> Result<ExpertStreamManifest, ExpertStreamError>,
 {
+    let installed = auto_residency_context();
+    resolve_expert_stream_inner(
+        mode,
+        file,
+        infer,
+        available_bytes,
+        installed.as_ref(),
+        priced_memory_enabled(),
+    )
+}
+
+/// Priced Auto resolution: the same contract as [`resolve_expert_stream`],
+/// with this session's [`AutoResidencyContext`] charged against the ceiling.
+///
+/// Explicit modes and required packs keep precedence, and the plan never
+/// overrides an operator's `off`/`on`. When the plan is disabled at runtime
+/// or cannot price the pack, the legacy formula decides.
+pub fn resolve_expert_stream_with_plan<F>(
+    mode: StreamExpertsMode,
+    file: Option<ExpertStreamManifest>,
+    infer: F,
+    available_bytes: Option<u64>,
+    plan_context: Option<&AutoResidencyContext>,
+) -> Result<Option<ExpertStreamManifest>, ExpertStreamError>
+where
+    F: FnOnce() -> Result<ExpertStreamManifest, ExpertStreamError>,
+{
+    resolve_expert_stream_inner(
+        mode,
+        file,
+        infer,
+        available_bytes,
+        plan_context,
+        priced_memory_enabled(),
+    )
+}
+
+fn resolve_expert_stream_inner<F>(
+    mode: StreamExpertsMode,
+    file: Option<ExpertStreamManifest>,
+    infer: F,
+    available_bytes: Option<u64>,
+    plan_context: Option<&AutoResidencyContext>,
+    priced_memory: bool,
+) -> Result<Option<ExpertStreamManifest>, ExpertStreamError>
+where
+    F: FnOnce() -> Result<ExpertStreamManifest, ExpertStreamError>,
+{
+    // A new admission clears the previous session's remainder so a resident
+    // decision can never inherit a stale expert cache budget.
+    set_priced_expert_cache_bytes(0);
     match mode {
         StreamExpertsMode::Off => {
             if let Some(manifest) = &file
@@ -563,20 +1036,139 @@ where
                     Err(error) => return Err(error),
                 },
             };
-            match candidate {
-                Some(manifest)
-                    if manifest.required
-                        || should_auto_stream(
-                            manifest.estimated_full_resident_bytes,
-                            available_bytes,
-                        ) =>
-                {
-                    Ok(Some(manifest))
-                }
-                _ => Ok(None),
+            let Some(manifest) = candidate else {
+                return Ok(None);
+            };
+            // Required packs always stream, whatever the plan prices.
+            if manifest.required {
+                return Ok(Some(manifest));
             }
+            if priced_memory
+                && let Some(context) = plan_context
+                && let Some(plan) = memory_plan_for(&manifest, context)
+            {
+                let decision = plan.decide();
+                let line = plan.log_line();
+                if plan.exceeds_recommended_working_set() {
+                    // Keep the RAM-derived decision, but surface both numbers:
+                    // the priced working set is above the platform's
+                    // recommendation, which is advisory rather than a limit.
+                    tracing::warn!(
+                        target: "ax_engine_mlx::expert_stream",
+                        working_set_bytes = plan.resident_working_set_bytes(),
+                        recommended_working_set_bytes = plan.metal_recommended_max_working_set_bytes,
+                        "{line}"
+                    );
+                } else {
+                    tracing::info!(target: "ax_engine_mlx::expert_stream", "{line}");
+                }
+                return match decision {
+                    ax_engine_core::memory_budget::MemoryPlanDecision::Resident { .. } => Ok(None),
+                    ax_engine_core::memory_budget::MemoryPlanDecision::Stream {
+                        expert_cache_bytes,
+                        ceiling_bytes,
+                        ..
+                    } => {
+                        let expert_cache_bytes = enforce_layer_stack_floor(
+                            &manifest,
+                            expert_cache_bytes,
+                            ceiling_bytes,
+                        )?;
+                        set_priced_expert_cache_bytes(expert_cache_bytes);
+                        Ok(Some(manifest))
+                    }
+                    ax_engine_core::memory_budget::MemoryPlanDecision::Refuse {
+                        fixed_bytes,
+                        ceiling_bytes,
+                    } => Err(ExpertStreamError::InsufficientMemory {
+                        fixed_bytes,
+                        ceiling_bytes,
+                    }),
+                };
+            }
+            if priced_memory && plan_context.is_none() {
+                note_priced_memory_skipped();
+            }
+            Ok(
+                should_auto_stream(manifest.estimated_full_resident_bytes, available_bytes)
+                    .then_some(manifest),
+            )
         }
     }
+}
+
+/// Refuse a streamed byte cap that cannot hold one layer stack.
+///
+/// `expert_cache_bytes` is the plan's remainder (`ceiling - fixed`). When it is
+/// below the largest streamed layer, the pager must evict the stack that the
+/// next decode step immediately needs, so every step re-reads a whole layer
+/// from disk: a hard stall, not a graceful degradation. The remainder cannot be
+/// raised without crossing the ceiling, so the load fails with an actionable
+/// error instead. Both numbers are named in the warning and in the error.
+fn enforce_layer_stack_floor(
+    manifest: &ExpertStreamManifest,
+    expert_cache_bytes: u64,
+    ceiling_bytes: Option<u64>,
+) -> Result<u64, ExpertStreamError> {
+    // No known ceiling means `decide()` returned the "unknown capacity" page
+    // path with a zero cap: the layer-count budget alone decides, so there is
+    // nothing to floor.
+    if ceiling_bytes.is_none() {
+        return Ok(expert_cache_bytes);
+    }
+    let layer_bytes = manifest.estimated_max_layer_expert_bytes;
+    if layer_bytes == 0 || expert_cache_bytes >= layer_bytes {
+        return Ok(expert_cache_bytes);
+    }
+    tracing::warn!(
+        target: "ax_engine_mlx::expert_stream",
+        expert_cache_bytes,
+        largest_layer_expert_bytes = layer_bytes,
+        "priced expert cache is smaller than one layer stack; refusing a load that would re-read the layer on every decode step"
+    );
+    Err(ExpertStreamError::ExpertCacheBelowLayerStack {
+        expert_cache_bytes,
+        layer_bytes,
+    })
+}
+
+/// Tell the operator once per process that Auto admission had no priced inputs
+/// and fell back to the legacy headroom formula.
+fn note_priced_memory_skipped() {
+    static FIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if note_priced_memory_skipped_once(&FIRED) {
+        PRICED_MEMORY_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            target: "ax_engine_mlx::expert_stream",
+            "priced memory inputs are not installed for this session; Auto expert-stream admission used the legacy headroom formula"
+        );
+    }
+}
+
+/// Claim the once-per-process note. Returns `true` only for the caller that
+/// won the latch, so the note's idempotence is testable on its own state
+/// instead of on the process-wide counter another test may already have
+/// advanced.
+fn note_priced_memory_skipped_once(fired: &std::sync::atomic::AtomicBool) -> bool {
+    fired
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
+}
+
+/// Process-wide count of the once-per-process skipped-priced-memory note.
+/// The latch bounds it at one; exposed so the note's idempotence is testable
+/// without capturing tracing output.
+static PRICED_MEMORY_SKIPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// How many times the skipped-priced-memory note fired in this process.
+#[cfg(test)]
+pub(crate) fn priced_memory_skip_count() -> u32 {
+    PRICED_MEMORY_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -744,6 +1336,36 @@ impl LayerExpertStack {
             && self.up_exps.is_none()
             && self.down_exps.is_none()
     }
+
+    /// Materialized payload bytes of this stack: the packed weights plus their
+    /// quantization sidecars and dense bias. This is what the pager's byte
+    /// budget charges for a resident layer stack.
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        [
+            self.gate_up_exps_packed.as_ref(),
+            self.gate_exps.as_ref(),
+            self.up_exps.as_ref(),
+            self.down_exps.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(quantized_weight_bytes)
+        .fold(0u64, u64::saturating_add)
+    }
+}
+
+fn quantized_weight_bytes(weight: &QuantizedWeight) -> u64 {
+    [
+        Some(&weight.weight),
+        weight.scales.as_ref(),
+        weight.biases.as_ref(),
+        weight.linear_bias.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0u64, |total, array| {
+        total.saturating_add(array.nbytes() as u64)
+    })
 }
 
 struct PagerCache {
@@ -751,6 +1373,71 @@ struct PagerCache {
     entries: HashMap<u32, LayerExpertStack>,
     /// LRU order: front = least recently used.
     order: VecDeque<u32>,
+    /// Materialized payload bytes per resident layer stack.
+    entry_bytes: HashMap<u32, u64>,
+    /// Sum of `entry_bytes` over `entries`.
+    resident_bytes: u64,
+}
+
+impl PagerCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            entry_bytes: HashMap::new(),
+            resident_bytes: 0,
+        }
+    }
+
+    /// Move `layer` to the most-recently-used end.
+    fn touch(&mut self, layer: u32) {
+        if let Some(pos) = self.order.iter().position(|l| *l == layer) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(layer);
+    }
+
+    fn insert(&mut self, layer: u32, stack: LayerExpertStack, bytes: u64) {
+        self.touch(layer);
+        if let Some(previous) = self.entry_bytes.insert(layer, bytes) {
+            self.resident_bytes = self.resident_bytes.saturating_sub(previous);
+        }
+        self.resident_bytes = self.resident_bytes.saturating_add(bytes);
+        self.entries.insert(layer, stack);
+    }
+
+    /// Evict least-recently-used stacks until both the layer count and the
+    /// byte budget hold. `keep` (the stack this load just made resident) is
+    /// never evicted: it is the one the current forward is about to read.
+    ///
+    /// Eviction is an accounting decision only. Handed-out stacks are cheap
+    /// clones of MLX arrays, so an in-flight forward keeps the arrays alive
+    /// even if the cache drops its slot.
+    fn enforce_budget(&mut self, budget_layers: usize, budget_bytes: Option<u64>, keep: u32) {
+        loop {
+            let over_layers = self.order.len() > budget_layers;
+            let over_bytes = budget_bytes.is_some_and(|budget| self.resident_bytes > budget);
+            if !over_layers && !over_bytes {
+                return;
+            }
+            if self.order.len() <= 1 {
+                // Only the protected stack is left; a budget smaller than one
+                // layer stack cannot be honoured without evicting it.
+                return;
+            }
+            let Some(evict) = self.order.front().copied() else {
+                return;
+            };
+            if evict == keep {
+                return;
+            }
+            self.order.pop_front();
+            self.entries.remove(&evict);
+            if let Some(bytes) = self.entry_bytes.remove(&evict) {
+                self.resident_bytes = self.resident_bytes.saturating_sub(bytes);
+            }
+        }
+    }
 }
 
 /// Layer-stack pager: on MoE forward for layer L, `ensure_layer` loads L's
@@ -761,6 +1448,10 @@ pub struct ExpertStackPager {
     manifest: Arc<ExpertStreamManifest>,
     root: PathBuf,
     budget_layers: usize,
+    /// Byte budget for resident layer stacks (`AX_STREAM_EXPERT_CACHE_BYTES`,
+    /// else the priced plan's remainder). `None` leaves the layer count as the
+    /// only cap.
+    cache_budget_bytes: Option<u64>,
     /// When true, concatenate paged `gate`+`up` into one packed projection
     /// (DeepSeek V4 resident path). MiniMax-M3 mlxcel uses split SwitchLinear
     /// (`gate_proj` / `up_proj` / `down_proj`) and never fuses; Super-class
@@ -790,19 +1481,38 @@ impl ExpertStackPager {
         budget_layers: usize,
         fuse_split_experts: bool,
     ) -> Self {
+        let cache_budget_bytes = resolved_expert_cache_budget();
+        if let Some(bytes) = cache_budget_bytes {
+            tracing::info!(
+                target: "ax_engine_mlx::expert_stream",
+                expert_cache_bytes = bytes,
+                "expert layer cache byte budget (AX_STREAM_EXPERT_CACHE_BYTES overrides)"
+            );
+        }
         Self {
             manifest,
             root,
             budget_layers: budget_layers.max(1),
+            cache_budget_bytes,
             fuse_split_experts,
             selected_readers: Mutex::new(HashMap::new()),
             quantization_modes: None,
-            cache: Mutex::new(PagerCache {
-                entries: HashMap::new(),
-                order: VecDeque::new(),
-            }),
+            cache: Mutex::new(PagerCache::new()),
             selected_prefill_capacity_fallbacks: Mutex::new(HashSet::new()),
         }
+    }
+
+    #[cfg(test)]
+    /// Pager with an explicit byte budget, bypassing the env/plan resolution.
+    pub(crate) fn new_with_cache_budget(
+        manifest: Arc<ExpertStreamManifest>,
+        root: PathBuf,
+        budget_layers: usize,
+        cache_budget_bytes: Option<u64>,
+    ) -> Self {
+        let mut pager = Self::new_with_fuse(manifest, root, budget_layers, false);
+        pager.cache_budget_bytes = cache_budget_bytes;
+        pager
     }
 
     /// Bind every projection to the native mode. The map and caches belong
@@ -861,6 +1571,21 @@ impl ExpertStackPager {
 
     pub(crate) fn budget_layers(&self) -> usize {
         self.budget_layers
+    }
+
+    /// Byte budget for resident layer stacks, if one applies.
+    #[cfg(test)]
+    pub(crate) fn cache_budget_bytes(&self) -> Option<u64> {
+        self.cache_budget_bytes
+    }
+
+    #[cfg(test)]
+    /// Materialized bytes currently held by the page cache.
+    pub(crate) fn cached_resident_bytes(&self) -> u64 {
+        self.cache
+            .lock()
+            .expect("expert stream cache lock")
+            .resident_bytes
     }
 
     #[cfg(test)]
@@ -965,15 +1690,12 @@ impl ExpertStackPager {
 
     /// Make layer `layer`'s expert stack resident and return cheap clones of
     /// its `QuantizedWeight`s. Loads from disk on a cache miss, then evicts
-    /// LRU layers beyond the budget.
+    /// LRU layers beyond the layer count and byte budgets.
     pub(crate) fn ensure_layer(&self, layer: u32) -> Result<LayerExpertStack, ExpertStreamError> {
         {
             let mut cache = self.cache.lock().expect("expert stream cache lock");
             if let Some(stack) = cache.entries.get(&layer).cloned() {
-                if let Some(pos) = cache.order.iter().position(|l| *l == layer) {
-                    cache.order.remove(pos);
-                }
-                cache.order.push_back(layer);
+                cache.touch(layer);
                 #[cfg(test)]
                 crate::model::qwen4_exp::profiling::layer_cache_hit(layer);
                 return Ok(stack);
@@ -981,26 +1703,17 @@ impl ExpertStackPager {
         }
 
         let stack = self.load_layer(layer)?;
+        let bytes = stack.resident_bytes();
 
         let mut cache = self.cache.lock().expect("expert stream cache lock");
         // A racing thread may have filled the layer while we read from disk;
         // keep the existing entry rather than double-counting it.
         if let Some(existing) = cache.entries.get(&layer).cloned() {
-            if let Some(pos) = cache.order.iter().position(|l| *l == layer) {
-                cache.order.remove(pos);
-            }
-            cache.order.push_back(layer);
+            cache.touch(layer);
             return Ok(existing);
         }
-        cache.entries.insert(layer, stack.clone());
-        cache.order.push_back(layer);
-        while cache.order.len() > self.budget_layers {
-            let evict = cache
-                .order
-                .pop_front()
-                .expect("LRU order must be non-empty when over budget");
-            cache.entries.remove(&evict);
-        }
+        cache.insert(layer, stack.clone(), bytes);
+        cache.enforce_budget(self.budget_layers, self.cache_budget_bytes, layer);
         Ok(stack)
     }
 
@@ -2517,5 +3230,719 @@ mod tests {
         let expert3_offset = (3 * 2 * SYN_INTER * SYN_HIDDEN) as usize;
         assert_eq!(values[expert3_offset], 23.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Priced memory plan -------------------------------------------------
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// Optional Auto candidate that prices both its resident share and its
+    /// experts, so the priced plan can judge it.
+    fn priced_manifest(expert_bytes: u64, resident_bytes: u64) -> ExpertStreamManifest {
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "mode": "layer-stack",
+            "required": false,
+            "num_experts": 8,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": resident_bytes,
+            "estimated_full_resident_bytes": resident_bytes + expert_bytes,
+            "estimated_max_layer_expert_bytes": expert_bytes,
+            "resident_roles": ["embedding", "attention", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [stream_tensor_json(
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                0,
+                "down"
+            )],
+        });
+        ExpertStreamManifest::parse(&serde_json::to_vec(&json).expect("manifest json"))
+            .expect("priced manifest")
+    }
+
+    #[test]
+    fn expert_cache_byte_budget_ignores_blank_zero_and_unparsable_values() {
+        // Only a positive integer is an operator byte cap; anything else must
+        // leave the layer-count budget as the sole limit.
+        assert_eq!(expert_cache_bytes_from_env(None), None);
+        for raw in ["", "   ", "0", "-1", "abc", "1.5", "8GiB"] {
+            assert_eq!(
+                expert_cache_bytes_from_env(Some(raw)),
+                None,
+                "{raw:?} must not become a byte cap"
+            );
+        }
+        assert_eq!(
+            expert_cache_bytes_from_env(Some("8589934592")),
+            Some(8 * 1024 * 1024 * 1024)
+        );
+        // Surrounding whitespace is trimmed before the parse.
+        assert_eq!(
+            expert_cache_bytes_from_env(Some(" 1073741824\n")),
+            Some(1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn metal_ceiling_uses_the_mlx_recommendation_and_caps_only_on_override() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // What MLX's device query reports on a 128 GiB M5 Max (measured
+        // 2026-10-24). With the kernel default `iogpu.wired_limit_mb = 0`
+        // (no operator override) this is the advisory value the plan reports.
+        const M5_MAX_RECOMMENDED: u64 = 115_448_725_504;
+        assert_eq!(
+            select_metal_working_set(Some(M5_MAX_RECOMMENDED), None),
+            Some(M5_MAX_RECOMMENDED)
+        );
+        // A non-zero wired limit is an explicit cap: lower wins...
+        assert_eq!(
+            select_metal_working_set(Some(M5_MAX_RECOMMENDED), Some(64 * GIB)),
+            Some(64 * GIB)
+        );
+        // ...and an override above the recommendation never raises it.
+        assert_eq!(
+            select_metal_working_set(Some(M5_MAX_RECOMMENDED), Some(128 * GIB)),
+            Some(M5_MAX_RECOMMENDED)
+        );
+        // Without a device answer (non-Metal), an explicit override stands.
+        assert_eq!(
+            select_metal_working_set(None, Some(64 * GIB)),
+            Some(64 * GIB)
+        );
+        // Neither probe answered: capacity is unknown, so the plan pages.
+        assert_eq!(select_metal_working_set(None, None), None);
+    }
+
+    #[test]
+    fn priced_plan_ceiling_ignores_the_metal_recommendation() {
+        // 10 GiB resident non-expert weights plus 80 GiB of experts on a
+        // 128 GiB host: 93 GiB of working set against a 115.20 GiB ceiling.
+        // The recommendation sits far below both, and it still only warns.
+        let manifest = priced_manifest(80 * GIB, 10 * GIB);
+        let context = AutoResidencyContext {
+            host_ram_bytes: Some(128 * GIB),
+            metal_recommended_max_working_set_bytes: Some(64 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let plan = memory_plan_for(&manifest, &context).expect("priced plan");
+        assert_eq!(plan.ceiling_bytes(), Some(128 * GIB - 128 * GIB / 10));
+        assert!(plan.exceeds_recommended_working_set());
+        let line = plan.log_line();
+        for component in [
+            "metal-recommended=64.00GiB",
+            "metal-recommended-exceeded=true",
+            "ceiling-source=ram",
+            "ceiling=115.20GiB",
+            "warning=working-set-exceeds-metal-recommended",
+            "decision=resident",
+        ] {
+            assert!(line.contains(component), "missing {component:?} in {line}");
+        }
+    }
+
+    #[test]
+    fn explicit_ceiling_override_flows_through_the_priced_plan() {
+        let manifest = priced_manifest(80 * GIB, 10 * GIB);
+        let tightened = AutoResidencyContext {
+            host_ram_bytes: Some(128 * GIB),
+            ceiling_override_bytes: Some(64 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let plan = memory_plan_for(&manifest, &tightened).expect("priced plan");
+        assert_eq!(plan.ceiling_bytes(), Some(64 * GIB));
+        assert!(plan.log_line().contains("ceiling-source=override"));
+        // 93 GiB of working set no longer fits the operator's 64 GiB ceiling,
+        // so the experts page with the remainder instead of the load being
+        // refused: the fixed part still fits.
+        let decision = plan.decide();
+        assert_eq!(
+            decision.expert_cache_bytes(),
+            Some(64 * GIB - plan.fixed_bytes())
+        );
+        assert!(plan.log_line().contains("decision=stream"));
+
+        // The override is bounded by `RAM - 4 GiB` once RAM is known, so an
+        // over-large request cannot starve the kernel.
+        let raised = AutoResidencyContext {
+            ceiling_override_bytes: Some(200 * GIB),
+            ..tightened
+        };
+        let plan = memory_plan_for(&manifest, &raised).expect("priced plan");
+        assert_eq!(plan.ceiling_bytes(), Some(128 * GIB - 4 * GIB));
+    }
+
+    #[test]
+    fn priced_plan_kill_switch_restores_legacy_formula() {
+        // The switch is on unless explicitly disabled.
+        assert!(priced_memory_enabled_from_env(None));
+        assert!(priced_memory_enabled_from_env(Some("1")));
+        assert!(priced_memory_enabled_from_env(Some(" auto ")));
+        assert!(priced_memory_enabled_from_env(Some("")));
+        for disabled in ["0", "false", "no", "off", " OFF "] {
+            assert!(
+                !priced_memory_enabled_from_env(Some(disabled)),
+                "{disabled:?} must disable the priced plan"
+            );
+        }
+
+        // 10 GiB resident + 40 GiB of experts on a 64 GiB host. The priced
+        // plan fits it (53 GiB against the 56 GiB ceiling); the legacy
+        // formula pages it (50 GiB + 48 GiB headroom > 64 GiB).
+        let manifest = priced_manifest(40 * GIB, 10 * GIB);
+        let context = AutoResidencyContext {
+            host_ram_bytes: Some(64 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let available = Some(64 * GIB);
+        let priced = resolve_expert_stream_inner(
+            StreamExpertsMode::Auto,
+            Some(manifest.clone()),
+            || Err(ExpertStreamError::ManifestMissing),
+            available,
+            Some(&context),
+            true,
+        )
+        .expect("priced admission");
+        assert!(
+            priced.is_none(),
+            "priced plan must keep a pack whose whole working set fits resident"
+        );
+
+        let legacy = resolve_expert_stream_inner(
+            StreamExpertsMode::Auto,
+            Some(manifest.clone()),
+            || Err(ExpertStreamError::ManifestMissing),
+            available,
+            Some(&context),
+            false,
+        )
+        .expect("legacy admission");
+        assert!(
+            legacy.is_some(),
+            "AX_MLX_PRICED_MEMORY=0 must restore the 48 GiB headroom formula"
+        );
+
+        // An explicit mode is never overridden by the plan.
+        assert!(
+            resolve_expert_stream_inner(
+                StreamExpertsMode::Off,
+                Some(manifest.clone()),
+                || Err(ExpertStreamError::ManifestMissing),
+                available,
+                Some(&context),
+                true,
+            )
+            .expect("off")
+            .is_none(),
+            "explicit Off must not be overridden"
+        );
+        assert!(
+            resolve_expert_stream_inner(
+                StreamExpertsMode::On,
+                Some(manifest.clone()),
+                || Err(ExpertStreamError::ManifestMissing),
+                available,
+                Some(&context),
+                true,
+            )
+            .expect("on")
+            .is_some(),
+            "explicit On must not be overridden"
+        );
+
+        // A required pack streams even when the plan says it fits.
+        let mut required = manifest.clone();
+        required.required = true;
+        assert!(
+            resolve_expert_stream_inner(
+                StreamExpertsMode::Auto,
+                Some(required),
+                || Err(ExpertStreamError::ManifestMissing),
+                available,
+                Some(&context),
+                true,
+            )
+            .expect("required")
+            .is_some(),
+            "required packs always stream"
+        );
+    }
+
+    #[test]
+    fn pager_cache_respects_byte_budget() {
+        let dir = synth_fixture("cache_bytes");
+        let manifest = Arc::new(synth_manifest());
+        // One synthetic layer stack is 4*4*4 f32 (gate_up) plus 4*4*2 f32
+        // (down) = 384 bytes.
+        let pager =
+            ExpertStackPager::new_with_cache_budget(manifest.clone(), dir.clone(), 8, Some(500));
+        assert_eq!(pager.cache_budget_bytes(), Some(500));
+        let per_layer = pager
+            .ensure_layer(0)
+            .expect("layer 0 must page in")
+            .resident_bytes();
+        assert_eq!(per_layer, 384);
+        assert_eq!(pager.cached_layer_count(), 1);
+        assert_eq!(pager.cached_resident_bytes(), per_layer);
+
+        // A second stack would exceed 500 bytes, so the LRU stack goes first.
+        pager.ensure_layer(1).expect("layer 1 must page in");
+        assert_eq!(pager.cached_layer_count(), 1);
+        assert_eq!(pager.cached_layer_indices(), vec![1]);
+        assert_eq!(pager.cached_resident_bytes(), per_layer);
+
+        // The byte budget is an extra cap; the layer budget still applies on
+        // its own when no byte budget is set.
+        let layers_only =
+            ExpertStackPager::new_with_cache_budget(manifest.clone(), dir.clone(), 8, None);
+        layers_only.ensure_layer(0).expect("layer 0");
+        layers_only.ensure_layer(1).expect("layer 1");
+        assert_eq!(layers_only.cached_layer_count(), 2);
+
+        // A budget smaller than one stack must never evict the stack in use.
+        let tight = ExpertStackPager::new_with_cache_budget(manifest, dir.clone(), 8, Some(1));
+        tight.ensure_layer(0).expect("layer 0 under a tiny budget");
+        assert_eq!(tight.cached_layer_count(), 1);
+        assert_eq!(tight.cached_resident_bytes(), per_layer);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Priced state and KV components -------------------------------------
+
+    /// Minimal Flash Next manifest: three linear-attention layers plus the
+    /// QSA indexer contract, so both per-request state terms are priceable.
+    fn flash_next_state_manifest() -> ax_engine_core::NativeModelManifest {
+        let json = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen4_exp",
+            "tensor_format": "safetensors",
+            "layer_count": 4,
+            "hidden_size": 128,
+            "attention_head_count": 4,
+            "attention_head_dim": 64,
+            "kv_head_count": 1,
+            "vocab_size": 1024,
+            "tensors": [],
+            "linear_attention": {
+                "num_key_heads": 4,
+                "num_value_heads": 4,
+                "key_head_dim": 16,
+                "value_head_dim": 16,
+                "conv_kernel_dim": 4
+            },
+            "qwen4_exp": {
+                "indexer_head_dim": 32,
+                "indexer_compress_ratio": 8,
+                "indexer_n_heads": 2,
+                "indexer_kv_heads": 1,
+                "indexer_budget": 64
+            }
+        });
+        serde_json::from_value(json).expect("flash next state manifest")
+    }
+
+    fn session_budget(kv_pool_tokens: u64) -> SessionResidencyBudget {
+        SessionResidencyBudget {
+            kv_pool_tokens,
+            prefill_chunk: 16,
+            max_live_sequences: None,
+        }
+    }
+
+    #[test]
+    fn resolved_live_sequences_uses_the_configured_bound_and_caps_at_the_cohort() {
+        // The server's admitted concurrency wins over the generic batched cap.
+        assert_eq!(resolved_live_sequences(Some(1), 8), 1);
+        assert_eq!(resolved_live_sequences(Some(4), 8), 4);
+        // Never price more live rows than the runner can actually hold.
+        assert_eq!(resolved_live_sequences(Some(32), 8), 8);
+        // An absent bound falls back to the cohort capacity...
+        assert_eq!(resolved_live_sequences(None, 8), 8);
+        // ...and neither path can price zero live sequences.
+        assert_eq!(resolved_live_sequences(Some(0), 8), 1);
+        assert_eq!(resolved_live_sequences(None, 0), 1);
+    }
+
+    #[test]
+    fn state_bytes_scale_with_live_sequences_and_price_the_qsa_index() {
+        let manifest = flash_next_state_manifest();
+        // One request: conv ring 4*16*2 + 4*16 = 192 wide, 3 taps; recurrent
+        // 4*16*16 = 1024; 1600 per layer * 4 layers * 4 bytes (f32).
+        let gdn = 4 * 1_600 * 4;
+        assert_eq!(hybrid_state_bytes(&manifest), gdn);
+        // QSA index: 4 layers * (1000 raw keys + 125 pooled blocks) * 32 dims
+        // * 2 bytes.
+        let qsa = 4 * (1_000 * 32 * 2 + 125 * 32 * 2);
+        assert_eq!(qsa_index_state_bytes(&manifest, 1_000), qsa);
+
+        let budget = session_budget(1_000);
+        let (_, one, _) = estimate_auto_residency_costs(&manifest, budget, 1);
+        let (_, eight, _) = estimate_auto_residency_costs(&manifest, budget, 8);
+        // The gated-delta-net state is per live row; the QSA index is priced
+        // once at the pool bound because the pool already caps every position
+        // it can describe.
+        assert_eq!(one, gdn + qsa);
+        assert_eq!(eight, gdn * 8 + qsa);
+
+        // A zero concurrency still charges the one request that exists.
+        let (_, zero, _) = estimate_auto_residency_costs(&manifest, budget, 0);
+        assert_eq!(zero, one);
+
+        // A manifest without the QSA contract prices only the GDN state.
+        let mut plain = flash_next_state_manifest();
+        plain.qwen4_exp.indexer_head_dim = None;
+        plain.qwen4_exp.indexer_compress_ratio = None;
+        assert_eq!(qsa_index_state_bytes(&plain, 1_000), 0);
+        let (_, plain_state, _) = estimate_auto_residency_costs(&plain, budget, 2);
+        assert_eq!(plain_state, gdn * 2);
+    }
+
+    #[test]
+    fn mla_pack_prices_the_latent_cache_not_the_unknown_floor() {
+        let json = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "glm4_moe",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 128,
+            "attention_head_count": 4,
+            "attention_head_dim": 64,
+            "kv_head_count": 1,
+            "vocab_size": 1024,
+            "tensors": [],
+            "mla_attention": {"kv_lora_rank": 512, "qk_rope_head_dim": 64}
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(json).expect("mla manifest");
+        let (kv_bytes, _, _) = estimate_auto_residency_costs(&manifest, session_budget(1_000), 1);
+        // 2 layers * 1000 tokens * (512 + 64) latent elements * 2 bytes.
+        assert_eq!(kv_bytes, 2 * 1_000 * 576 * 2);
+        assert_ne!(
+            kv_bytes, UNKNOWN_KV_BYTES,
+            "MLA must be priced, not collapsed onto the flat 768 MiB floor"
+        );
+    }
+
+    #[test]
+    fn resident_inventory_floors_the_resident_share_without_double_counting_experts() {
+        // The manifest claims 10 GiB resident and 30 GiB streamable experts.
+        let manifest = priced_manifest(30 * GIB, 10 * GIB);
+        let context = AutoResidencyContext {
+            host_ram_bytes: Some(128 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let plan = memory_plan_for(&manifest, &context).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 10 * GIB);
+        assert_eq!(plan.expert_bytes, 30 * GIB);
+
+        // The artifacts directory ships 3 GiB more *resident* tensors than the
+        // manifest admits (MTP/vision sidecars). That delta is resident, never
+        // "streamable".
+        let floored = AutoResidencyContext {
+            resident_tensor_inventory_bytes: 13 * GIB,
+            ..context
+        };
+        let plan = memory_plan_for(&manifest, &floored).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 13 * GIB);
+        // Experts are priced once from the manifest: the resident floor never
+        // leaks into the expert term.
+        assert_eq!(plan.expert_bytes, 30 * GIB);
+        // Weights are exactly resident floor + experts; the plan's fixed
+        // runtime reserves sit on top of them.
+        assert_eq!(
+            plan.resident_working_set_bytes(),
+            plan.fixed_bytes() + 30 * GIB
+        );
+        assert!(plan.fixed_bytes() >= 13 * GIB);
+
+        // A smaller resident inventory cannot shrink the manifest's estimate.
+        let smaller = AutoResidencyContext {
+            resident_tensor_inventory_bytes: 5 * GIB,
+            ..context
+        };
+        let plan = memory_plan_for(&manifest, &smaller).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 10 * GIB);
+        assert_eq!(plan.expert_bytes, 30 * GIB);
+
+        // The floor applies only to the resident side even when the manifest's
+        // own full estimate is stale and smaller than the real resident bytes.
+        let stale = ExpertStreamManifest {
+            estimated_resident_bytes: GIB,
+            estimated_full_resident_bytes: 2 * GIB,
+            ..priced_manifest(30 * GIB, 10 * GIB)
+        };
+        let plan = memory_plan_for(&stale, &floored).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 13 * GIB);
+        assert_eq!(plan.expert_bytes, GIB);
+        assert_eq!(plan.resident_working_set_bytes(), plan.fixed_bytes() + GIB);
+    }
+
+    #[test]
+    fn resident_tensor_inventory_excludes_experts_and_the_ngram_table() {
+        let specs = vec![
+            infer_spec(
+                "language_model.model.embed_tokens.weight",
+                NativeTensorRole::TokenEmbedding,
+                0,
+                1,
+                4 * GIB,
+            ),
+            infer_spec(
+                "language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                NativeTensorRole::FfnGateExps,
+                0,
+                4,
+                10 * GIB,
+            ),
+            infer_spec(
+                "language_model.model.layers.0.ngram_embedding.shards.0.weight",
+                NativeTensorRole::NgramEmbedding,
+                0,
+                1,
+                20 * GIB,
+            ),
+            // The quantized table's scales/biases do not carry the role; the
+            // name segment is what prices the whole table.
+            infer_spec(
+                "language_model.model.layers.0.ngram_embedding.shards.0.scales",
+                NativeTensorRole::LayerScalar,
+                0,
+                1,
+                3 * GIB,
+            ),
+        ];
+        // With the production default the table is disk-served: only the
+        // embedding is genuinely resident.
+        assert_eq!(resident_tensor_inventory_bytes(&specs, true), 4 * GIB);
+        // With the discount disabled the table is priced resident, matching an
+        // undiscounted manifest estimate.
+        assert_eq!(
+            resident_tensor_inventory_bytes(&specs, false),
+            4 * GIB + 20 * GIB + 3 * GIB
+        );
+    }
+
+    #[test]
+    fn real_flash_next_packs_price_resident_for_one_live_sequence() {
+        // The two pinned Flash Next packs on the qualification host. The test
+        // skips (not fails) on machines without them, and never writes into
+        // the model cache.
+        const PACKS: [&str; 2] = [
+            "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+            "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+        ];
+        const HOST_RAM: u64 = 128 * GIB;
+        // 4096 blocks x 16 tokens: the configured pool the log line reports.
+        const POOL_TOKENS: u64 = 4_096 * 16;
+        // The default server passes no `--max-concurrent-requests`, so the plan
+        // resolves the runner's cohort cap (`resolved_live_sequences(None, 8)`).
+        const NO_LIMIT_LIVE_SEQUENCES: u32 = 8;
+        let mut planned = 0usize;
+        for pack in PACKS {
+            for live_sequences in [1u32, NO_LIMIT_LIVE_SEQUENCES] {
+                let Some(plan) = real_pack_plan(
+                    std::path::Path::new(pack),
+                    HOST_RAM,
+                    POOL_TOKENS,
+                    live_sequences,
+                ) else {
+                    eprintln!("skipping {pack}: local pack metadata not readable");
+                    break;
+                };
+                planned += 1;
+                println!("{pack} ({live_sequences} live): {}", plan.log_line());
+                assert!(
+                    plan.decide().is_resident(),
+                    "{live_sequences} live sequences must keep the pack resident: {}",
+                    plan.log_line()
+                );
+                // The 128 GiB host ceiling is `RAM - max(8 GiB, RAM/10)` =
+                // 115.20 GiB; the priced working set must stay under it.
+                let ceiling = plan.ceiling_bytes().expect("128 GiB host has a ceiling");
+                assert!(
+                    plan.resident_working_set_bytes() <= ceiling,
+                    "the working set must stay under the 115.20 GiB ceiling: {}",
+                    plan.log_line()
+                );
+            }
+        }
+        if planned == 0 {
+            eprintln!("skipping: no Flash Next pack metadata is present on this host");
+        }
+    }
+
+    #[test]
+    fn real_flash_next_6bit_streams_when_the_host_cannot_hold_the_experts() {
+        const PACK: &str = "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP";
+        // 96 GiB cannot hold the 6-bit pack's ~91 GiB expert set next to its
+        // ~23 GiB fixed part, so the plan must page experts. The 128 GiB case
+        // at the same pool and cohort is resident (see the test above): the
+        // corrected per-token pricing is what moved it.
+        const HOST_RAM: u64 = 96 * GIB;
+        const POOL_TOKENS: u64 = 4_096 * 16;
+        const LIVE_SEQUENCES: u32 = 8;
+        let Some(plan) = real_pack_plan(
+            std::path::Path::new(PACK),
+            HOST_RAM,
+            POOL_TOKENS,
+            LIVE_SEQUENCES,
+        ) else {
+            eprintln!("skipping {PACK}: local pack metadata not readable");
+            return;
+        };
+        println!("{PACK} (8 live, 96 GiB): {}", plan.log_line());
+        assert!(
+            matches!(
+                plan.decide(),
+                ax_engine_core::memory_budget::MemoryPlanDecision::Stream { .. }
+            ),
+            "a host that cannot hold the expert set must stream: {}",
+            plan.log_line()
+        );
+    }
+
+    /// Price one real pack exactly as the runner does at load admission.
+    ///
+    /// Returns `None` when the directory (or its metadata) is absent, so the
+    /// tests skip on a host without the pinned packs. It only reads the
+    /// native manifest, `ax_expert_stream.json`, `config.json` and safetensors
+    /// headers; no tensor payload is loaded.
+    fn real_pack_plan(
+        dir: &std::path::Path,
+        host_ram_bytes: u64,
+        pool_tokens: u64,
+        live_sequences: u32,
+    ) -> Option<ax_engine_core::memory_budget::MemoryPlan> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let artifacts = real_pack_artifacts(dir)?;
+        let file_manifest = ExpertStreamManifest::read_from_dir(dir).ok()??;
+        let discount_ngram = crate::fastpath::expert_stream_discount_ngram_enabled();
+        let never_loaded_bytes = if discount_ngram {
+            crate::weights::qwen4_exp::never_loaded_ngram_bytes(artifacts.tensor_specs())
+        } else {
+            0
+        };
+        let manifest = discount_never_loaded_bytes(file_manifest, never_loaded_bytes);
+        let budget = SessionResidencyBudget {
+            kv_pool_tokens: pool_tokens,
+            prefill_chunk: crate::generate::DEFAULT_PREFILL_CHUNK,
+            max_live_sequences: Some(live_sequences),
+        };
+        let (kv_bytes, state_bytes, prefill_scratch_bytes) =
+            estimate_auto_residency_costs(artifacts.manifest(), budget, live_sequences);
+        let context = AutoResidencyContext {
+            kv_bytes,
+            state_bytes,
+            prefill_scratch_bytes,
+            ngram_table_bytes: never_loaded_bytes,
+            resident_tensor_inventory_bytes: resident_tensor_inventory_bytes(
+                artifacts.tensor_specs(),
+                discount_ngram,
+            ),
+            host_ram_bytes: Some(host_ram_bytes),
+            metal_recommended_max_working_set_bytes: Some(115_448_725_504),
+            ceiling_override_bytes: None,
+        };
+        memory_plan_for(&manifest, &context)
+    }
+
+    /// Read a real pack's native manifest without writing into the pack.
+    ///
+    /// Some pinned packs ship `config.json` plus safetensors headers without a
+    /// generated `model-manifest.json`; those are converted in memory so the
+    /// test never mutates the model cache.
+    fn real_pack_artifacts(dir: &std::path::Path) -> Option<ax_engine_core::NativeModelArtifacts> {
+        if let Ok(artifacts) = ax_engine_core::NativeModelArtifacts::from_dir(dir) {
+            return Some(artifacts);
+        }
+        let manifest = ax_engine_core::convert::convert_hf_model_dir(dir).ok()?;
+        ax_engine_core::NativeModelArtifacts::from_manifest_and_root(dir.to_path_buf(), manifest)
+            .ok()
+    }
+
+    #[test]
+    fn auto_refuses_an_expert_cache_smaller_than_one_layer_stack() {
+        // 10 GiB resident + 80 GiB of experts on a 64 GiB host: the plan's
+        // remainder (57.6 GiB ceiling - 13 GiB fixed) cannot hold one layer.
+        let manifest = priced_manifest(80 * GIB, 10 * GIB);
+        let context = AutoResidencyContext {
+            host_ram_bytes: Some(64 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let error = resolve_expert_stream_inner(
+            StreamExpertsMode::Auto,
+            Some(manifest.clone()),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(64 * GIB),
+            Some(&context),
+            true,
+        )
+        .expect_err("a cache below one layer stack must refuse");
+        assert!(matches!(
+            error,
+            ExpertStreamError::ExpertCacheBelowLayerStack {
+                expert_cache_bytes,
+                layer_bytes
+            } if expert_cache_bytes < layer_bytes
+        ));
+
+        // Unknown capacity pages with no byte cap at all, so the pager's
+        // layer-count budget decides and there is nothing to floor.
+        let unknown = AutoResidencyContext::default();
+        assert!(
+            resolve_expert_stream_inner(
+                StreamExpertsMode::Auto,
+                Some(manifest),
+                || Err(ExpertStreamError::ManifestMissing),
+                None,
+                Some(&unknown),
+                true,
+            )
+            .expect("unknown capacity must still admit")
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn auto_without_priced_inputs_uses_the_legacy_formula_and_notes_it_once() {
+        // The latch is exercised on its own state: an earlier test in this
+        // process may already have fired the process-wide note, which would
+        // make a bare counter assertion pass without testing anything.
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            note_priced_memory_skipped_once(&fired),
+            "the first caller must win the latch"
+        );
+        assert!(
+            !note_priced_memory_skipped_once(&fired),
+            "the latch must refuse every later caller"
+        );
+        assert!(!note_priced_memory_skipped_once(&fired));
+
+        // Re-calling the process-wide note never adds more than the one claim
+        // it is allowed, whatever the rest of the test binary did.
+        let before = priced_memory_skip_count();
+        note_priced_memory_skipped();
+        note_priced_memory_skipped();
+        let delta = priced_memory_skip_count().saturating_sub(before);
+        assert!(delta <= 1, "the note fired {delta} times in two calls");
+
+        set_auto_residency_context(None);
+        // 10 GiB resident + 40 GiB experts: the legacy formula pages this
+        // (50 GiB + 48 GiB headroom > 64 GiB).
+        let manifest = priced_manifest(40 * GIB, 10 * GIB);
+        assert!(
+            resolve_expert_stream(
+                StreamExpertsMode::Auto,
+                Some(manifest),
+                || Err(ExpertStreamError::ManifestMissing),
+                Some(64 * GIB),
+            )
+            .expect("legacy admission")
+            .is_some()
+        );
     }
 }

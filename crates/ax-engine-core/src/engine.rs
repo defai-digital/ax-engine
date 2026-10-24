@@ -24,7 +24,7 @@ use crate::runner::RequestLogitsOutput;
 use crate::runner::{
     DeterministicRunner, ExecutionRunner, ResolvedBlockTable, RunnerInput, RunnerOutput,
     RunnerRequestContext, RunnerRequestJsonGrammar, RunnerRequestLogitBias,
-    RunnerRequestMultimodalInput,
+    RunnerRequestMultimodalInput, RunnerRequestPrefillHints,
 };
 use crate::sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
@@ -1402,6 +1402,7 @@ impl EngineCore {
         let mut request_multimodal_inputs = Vec::new();
         let mut request_logit_biases = Vec::new();
         let mut request_json_grammars = Vec::new();
+        let mut request_prefill_hints = Vec::new();
 
         for item in &execution_batch.items {
             block_tables.push(ResolvedBlockTable {
@@ -1429,6 +1430,12 @@ impl EngineCore {
                     request_json_grammars.push(RunnerRequestJsonGrammar {
                         request_id: item.request_id,
                         grammar: grammar.clone(),
+                    });
+                }
+                if !record.prefill_hints.is_empty() {
+                    request_prefill_hints.push(RunnerRequestPrefillHints {
+                        request_id: item.request_id,
+                        hints: record.prefill_hints.clone(),
                     });
                 }
                 request_contexts.push(RunnerRequestContext {
@@ -1473,6 +1480,7 @@ impl EngineCore {
             request_multimodal_inputs,
             request_logit_biases,
             request_json_grammars,
+            request_prefill_hints,
         })
     }
 
@@ -3012,6 +3020,7 @@ mod tests {
         max_output_tokens: u32,
     ) -> RequestSubmission {
         RequestSubmission {
+            prefill_hints: Default::default(),
             request_id: RequestId(request_id),
             model_id: ModelId("qwen3".into()),
             input_tokens,
@@ -5390,6 +5399,7 @@ mod tests {
 
         engine
             .submit(RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(1),
                 model_id: ModelId("gemma-4-27b-it".into()),
                 input_tokens: vec![1, 2, 3, 4],
@@ -5522,6 +5532,7 @@ mod tests {
 
         engine
             .submit(RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(1),
                 model_id: ModelId("qwen3".into()),
                 input_tokens: vec![1, 2, 3, 4],
@@ -5534,6 +5545,7 @@ mod tests {
             .unwrap();
         engine
             .submit(RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(2),
                 model_id: ModelId("gemma".into()),
                 input_tokens: vec![5, 6, 7, 8],

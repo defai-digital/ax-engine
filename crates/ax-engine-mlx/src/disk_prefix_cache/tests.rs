@@ -49,6 +49,9 @@ fn test_key(
         route_policy,
         layer_layout,
         kv_payload_version: 3,
+        kv_quantization: "",
+        kv_dtype: "",
+        execution_signature: "",
         block_size_tokens,
         token_count,
         tokens,
@@ -1092,6 +1095,9 @@ fn canonical_key_v3_changes_for_every_identity_field() {
         layer_layout: "l",
         kv_payload_version: 3,
         block_size_tokens: 16,
+        kv_quantization: "",
+        kv_dtype: "",
+        execution_signature: "",
         token_count: 4,
         tokens: &[1, 2, 3, 4],
     };
@@ -1139,6 +1145,45 @@ fn canonical_key_v3_changes_for_every_identity_field() {
         ..base
     });
     assert_ne!(reference, shifted, "string boundaries must be unambiguous");
+}
+
+#[test]
+fn disk_key_changes_with_kv_quant() {
+    let base = DiskPrefixKeyFields {
+        model_id: "m",
+        artifact_fingerprint_sha256: "aa",
+        route_policy: "p",
+        layer_layout: "l",
+        kv_payload_version: 3,
+        kv_quantization: "f16",
+        kv_dtype: "float16",
+        execution_signature: "route=direct",
+        block_size_tokens: 16,
+        token_count: 4,
+        tokens: &[1, 2, 3, 4],
+    };
+    let reference = canonical_key_bytes(&base);
+    for variant in [
+        DiskPrefixKeyFields {
+            kv_quantization: "4b/g64",
+            ..base
+        },
+        DiskPrefixKeyFields {
+            kv_dtype: "bfloat16",
+            ..base
+        },
+        DiskPrefixKeyFields {
+            execution_signature: "route=ngram",
+            ..base
+        },
+    ] {
+        assert_ne!(
+            reference,
+            canonical_key_bytes(&variant),
+            "resolved KV quant/dtype and execution signature must change the key"
+        );
+    }
+    assert_eq!(reference, canonical_key_bytes(&base));
 }
 
 #[test]

@@ -769,6 +769,42 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
     }
 }
 
+/// One rendered prompt plus the byte offsets where assistant turns start
+/// (history turns and the generation prompt). The offsets index `text`
+/// exactly as rendered, so one full tokenization can map them to token
+/// indices without re-encoding individual messages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RenderedPrompt {
+    pub(crate) text: String,
+    pub(crate) assistant_byte_starts: Vec<usize>,
+}
+
+/// Map assistant byte starts to token indices through the token offsets of
+/// the **single full-prompt tokenization**. Returns indices in input order,
+/// deduplicated; every index is a valid position in `token_offsets`.
+pub(crate) fn token_starts_for_byte_starts(
+    token_offsets: &[(usize, usize)],
+    assistant_byte_starts: &[usize],
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    for start in assistant_byte_starts {
+        // The token that consumes the first byte of the turn: its end is past
+        // the offset. A zero-width token sitting exactly on the boundary does
+        // not consume that byte (special tokens carry `(n, n)` offsets), so it
+        // must not be selected as the cut.
+        let index = token_offsets
+            .iter()
+            .position(|(_, token_end)| *token_end > *start);
+        if let Some(index) = index {
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            if out.last() != Some(&index) {
+                out.push(index);
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn render_prompt(
     model_id: &str,
     messages: &[(String, String)],
@@ -810,6 +846,25 @@ pub(crate) fn render_prompt_with_template_and_framing(
     qwen_thinking_enabled: bool,
     deepseek_v4_framing: Option<bool>,
 ) -> Result<String, String> {
+    render_prompt_with_template_and_framing_offsets(
+        model_id,
+        template,
+        messages,
+        qwen_thinking_enabled,
+        deepseek_v4_framing,
+    )
+    .map(|rendered| rendered.text)
+}
+
+/// Offset-preserving variant of
+/// [`render_prompt_with_template_and_framing`].
+pub(crate) fn render_prompt_with_template_and_framing_offsets(
+    model_id: &str,
+    template: ChatPromptTemplate,
+    messages: &[(String, String)],
+    qwen_thinking_enabled: bool,
+    deepseek_v4_framing: Option<bool>,
+) -> Result<RenderedPrompt, String> {
     if messages.is_empty() {
         return Err("chat.completions requires at least one message".to_string());
     }
@@ -847,6 +902,7 @@ pub(crate) fn render_prompt_with_template(
         qwen_thinking_enabled,
         None,
     )
+    .map(|rendered| rendered.text)
 }
 
 fn render_prompt_internal(
@@ -856,11 +912,12 @@ fn render_prompt_internal(
     qwen_generation_prompt: &str,
     thinking_enabled: bool,
     deepseek_v4_framing: Option<bool>,
-) -> Result<String, String> {
+) -> Result<RenderedPrompt, String> {
     // Resolved once per render (ADR-025 Phase 2): the registry contract
     // wins when known; model-id heuristics remain the manifest-less fallback.
     let deepseek_v4 = deepseek_v4_framing.unwrap_or_else(|| is_deepseek_v4_model(model_id));
     let mut prompt = String::new();
+    let mut assistant_byte_starts = Vec::new();
     let mut qwen_tool_response_open = false;
     let mut deepseek_tool_response_open = false;
     match template {
@@ -961,6 +1018,9 @@ fn render_prompt_internal(
     }
     for (msg_index, (role, content)) in messages.iter().enumerate() {
         let role = normalize_role(role)?;
+        if role == "assistant" {
+            assistant_byte_starts.push(prompt.len());
+        }
         match template {
             ChatPromptTemplate::QwenChatMl => {
                 if matches!(role, "tool" | "function") {
@@ -1325,6 +1385,9 @@ fn render_prompt_internal(
             prompt.push_str("<|end|>");
         }
     }
+    // The generation prompt opens an assistant turn: record its start
+    // before any template-specific header is appended.
+    assistant_byte_starts.push(prompt.len());
     match template {
         ChatPromptTemplate::QwenChatMl => {
             prompt.push_str(qwen_generation_prompt);
@@ -1400,7 +1463,10 @@ fn render_prompt_internal(
             return Err(format!("unsupported chat template: {}", family.label()));
         }
     }
-    Ok(prompt)
+    Ok(RenderedPrompt {
+        text: prompt,
+        assistant_byte_starts,
+    })
 }
 
 fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &'static str {
@@ -1791,6 +1857,95 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn assistant_offsets_match_full_tokenization() {
+        // Tokenize the whole rendered prompt once (one token per byte here)
+        // and map each assistant byte start through those offsets.
+        let prompt = "<|im_start|>system\nrules<|im_end|>\n<|im_start|>assistant\none<|im_end|>\n<|im_start|>assistant\n";
+        let assistant_byte_starts = prompt
+            .match_indices("<|im_start|>assistant")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_byte_starts.len(), 2);
+        let token_offsets = (0..prompt.len()).map(|i| (i, i + 1)).collect::<Vec<_>>();
+        let cuts = token_starts_for_byte_starts(&token_offsets, &assistant_byte_starts);
+        assert_eq!(
+            cuts,
+            assistant_byte_starts
+                .iter()
+                .map(|start| *start as u32)
+                .collect::<Vec<_>>()
+        );
+
+        // Summing per-message encode lengths cannot reproduce these indices:
+        // template headers and separators belong to no message.
+        let per_message_sum = "rules".len() + "one".len();
+        assert_ne!(cuts[1] as usize, per_message_sum);
+
+        // Multi-byte tokens: the start maps to the token covering it, not to
+        // a position derived from token counts.
+        let token_offsets = (0..prompt.len() / 2)
+            .map(|i| (i * 2, (i + 1) * 2))
+            .collect::<Vec<_>>();
+        let cuts = token_starts_for_byte_starts(&token_offsets, &assistant_byte_starts);
+        assert_eq!(
+            cuts,
+            assistant_byte_starts
+                .iter()
+                .map(|start| (*start / 2) as u32)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn assistant_offsets_skip_zero_width_tokens_on_the_boundary() {
+        // A special token with a zero-width offset sits exactly on the turn
+        // start. It does not consume the turn's first byte, so the cut must be
+        // the following token.
+        let token_offsets = vec![(0usize, 4usize), (4, 4), (4, 9), (9, 12)];
+        let cuts = token_starts_for_byte_starts(&token_offsets, &[4]);
+        assert_eq!(cuts, vec![2]);
+        // The first turn starts at byte 0, which the first token covers.
+        assert_eq!(token_starts_for_byte_starts(&token_offsets, &[0]), vec![0]);
+    }
+
+    #[test]
+    fn two_turn_qwen_chat_reports_a_semantic_cut_after_a_long_first_turn() {
+        // The WP07 shape: a ~300-byte first user turn, an assistant reply and a
+        // second user turn. The assistant turn and the generation prompt are
+        // both cut candidates, and the first one must sit past the 256-token
+        // minimum spacing the snapshot planner applies.
+        let long_user = "word ".repeat(60);
+        let messages = vec![
+            ("user".to_string(), long_user.clone()),
+            ("assistant".to_string(), "ack".to_string()),
+            ("user".to_string(), "and now?".to_string()),
+        ];
+        let rendered = render_prompt_with_template_and_framing_offsets(
+            "Qwen3.8-27B-4bit",
+            ChatPromptTemplate::QwenChatMl,
+            &messages,
+            false,
+            None,
+        )
+        .expect("two-turn qwen chat renders");
+        assert_eq!(rendered.assistant_byte_starts.len(), 2);
+        // One token per byte stands in for the full tokenization: the point is
+        // that the offsets index the rendered prompt, not per-message encodes.
+        let token_offsets = (0..rendered.text.len())
+            .map(|index| (index, index + 1))
+            .collect::<Vec<_>>();
+        let cuts = token_starts_for_byte_starts(&token_offsets, &rendered.assistant_byte_starts);
+        assert_eq!(cuts.len(), 2, "both assistant turns must map");
+        assert!(
+            cuts[0] >= 256,
+            "the first assistant turn starts well past the 256-token cut spacing, got {}",
+            cuts[0]
+        );
+        assert!((cuts[1] as usize) < rendered.text.len());
+        assert!(cuts[0] < cuts[1]);
+    }
 
     /// ADR-025 behavior-preservation gate: for every registered family, the
     /// registry-contract resolution must agree with the legacy model-id

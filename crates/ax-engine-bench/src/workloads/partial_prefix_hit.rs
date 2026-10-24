@@ -83,6 +83,7 @@ impl PartialPrefixHit {
         // second request only after the shared prefix has been consumed.
         let total = self.shared_prefix_tokens + self.variant_suffix_tokens;
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             input_tokens: synthetic_prompt_tokens(
                 total,

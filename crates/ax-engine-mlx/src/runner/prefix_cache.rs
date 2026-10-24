@@ -288,6 +288,21 @@ impl MlxPrefixCache {
                 .is_some_and(|entry| entry.snapshot.tokens == tokens)
     }
 
+    /// Non-mutating exact membership check that also returns the serialized
+    /// KV payload size. Used to price a *resident* RAM snapshot as a restore
+    /// candidate (semantic cuts live in L1 even when no disk layer is open).
+    pub(crate) fn resident_payload_bytes(
+        &self,
+        key: &MlxPrefixCacheKey,
+        tokens: &[u32],
+    ) -> Option<u64> {
+        if !self.policy.enabled() {
+            return None;
+        }
+        let entry = self.entries.get(key)?;
+        (entry.snapshot.tokens == tokens).then(|| entry.snapshot.kv_cache_payload.len() as u64)
+    }
+
     /// True when an entry for `key` already holds exactly `tokens` and would
     /// lose nothing if a fresh store were skipped: either the new snapshot
     /// carries no prefill-output token, or the stored one already has one;
@@ -1298,6 +1313,13 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) demotions: u32,
     pub(crate) demoted_bytes: u64,
     pub(crate) demotion_skips: u32,
+    /// In-place prefix snapshots stored at a semantic (assistant-turn) cut.
+    /// Zero without `AX_MLX_PREFIX_SEMANTIC_CUTS`.
+    pub(crate) semantic_cut_snapshots: u32,
+    /// Value-priced restore decisions, indexed by
+    /// [`RestoreValueDecision::index`]. Counted only when one of the two
+    /// pricing switches is on and the restore path prices candidates.
+    pub(crate) restore_value_decisions: [u32; RESTORE_VALUE_DECISION_COUNT],
     // F3 M2 — L2 disk cache counters. These count operations performed
     // by the durable file-backed prefix-cache layer, distinct from the
     // in-memory counters above. `disk_*` events fire only when the
@@ -1356,7 +1378,37 @@ pub(crate) const RESTORE_SOURCE_MEMORY_L1: u32 = 2;
 pub(crate) const RESTORE_SOURCE_DISK_L2: u32 = 3;
 pub(crate) const RESTORE_SOURCE_RECOMPUTED: u32 = 4;
 
+/// Outcome of a value-priced restore decision.
+///
+/// The variant order is the on-the-wire order: the runner emits one
+/// route-decision counter per variant, and the server's `/metrics` exporter
+/// labels them `semantic_cut`, `priced_restore`, `ram_baseline`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestoreValueDecision {
+    /// The chosen prefix is a semantic cut (an assistant-turn start).
+    SemanticCut,
+    /// The chosen prefix is a priced non-cut prefix.
+    PricedRestore,
+    /// No candidate cleared the safety margin, so the historical resident
+    /// RAM prefix stands.
+    RamBaseline,
+}
+
+pub(crate) const RESTORE_VALUE_DECISION_COUNT: usize = 3;
+
+impl RestoreValueDecision {
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 impl MlxPrefixCacheTelemetry {
+    /// Count one value-priced restore decision.
+    pub(crate) fn record_restore_value_decision(&mut self, decision: RestoreValueDecision) {
+        let slot = &mut self.restore_value_decisions[decision.index()];
+        *slot = slot.saturating_add(1);
+    }
+
     pub(crate) fn record_stats(&mut self, stats: MlxPrefixCacheStats) {
         self.entries = stats.entries;
         self.bytes = stats.bytes;
@@ -1399,6 +1451,16 @@ impl MlxPrefixCacheTelemetry {
         self.demotions = self.demotions.saturating_add(other.demotions);
         self.demoted_bytes = self.demoted_bytes.saturating_add(other.demoted_bytes);
         self.demotion_skips = self.demotion_skips.saturating_add(other.demotion_skips);
+        self.semantic_cut_snapshots = self
+            .semantic_cut_snapshots
+            .saturating_add(other.semantic_cut_snapshots);
+        for (mine, theirs) in self
+            .restore_value_decisions
+            .iter_mut()
+            .zip(other.restore_value_decisions.iter())
+        {
+            *mine = mine.saturating_add(*theirs);
+        }
         self.disk_hits = self.disk_hits.saturating_add(other.disk_hits);
         self.disk_misses = self.disk_misses.saturating_add(other.disk_misses);
         self.disk_inserts = self.disk_inserts.saturating_add(other.disk_inserts);
@@ -1527,6 +1589,22 @@ impl MlxPrefixCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTION_SKIPS,
                 self.demotion_skips,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_SEMANTIC_CUT_SNAPSHOTS,
+                self.semantic_cut_snapshots,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_SEMANTIC_CUT,
+                self.restore_value_decisions[RestoreValueDecision::SemanticCut.index()],
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_PRICED_RESTORE,
+                self.restore_value_decisions[RestoreValueDecision::PricedRestore.index()],
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_RAM_BASELINE,
+                self.restore_value_decisions[RestoreValueDecision::RamBaseline.index()],
             ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS, self.disk_hits),
             (
@@ -1819,6 +1897,88 @@ mod tests {
         assert_eq!(outcome.evictions, 0);
         assert_eq!(cache.entries.len(), 1);
         assert!(cache.entries.contains_key(&healthy_key));
+    }
+
+    /// Lookups decide from host metadata (the token vector), never from the KV
+    /// payload. Empty payloads make that explicit: a lookup that rehydrated,
+    /// evaluated or hashed the snapshot bytes would fail or miss, while a
+    /// host-side token comparison still hits. Pins the no-GPU-read contract of
+    /// `get` / `contains_exact_tokens` / `longest_prefix_len`.
+    #[test]
+    fn prefix_lookup_uses_host_tokens_not_the_kv_payload() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 4,
+        });
+        let tokens = vec![7u32, 8, 9, 10];
+        let key = native_prefix_key(9);
+        let snapshot = MlxPrefixSnapshot::from_shared_payload(
+            Arc::<[u8]>::from(Vec::new()),
+            tokens.clone(),
+            4,
+            None,
+            None,
+        );
+        assert!(cache.insert(key.clone(), snapshot).stored);
+
+        let hit = cache.get(&key, &tokens).expect("host token match must hit");
+        assert_eq!(hit.tokens, tokens);
+        assert!(
+            hit.kv_cache_payload.is_empty(),
+            "a lookup must not need the snapshot payload bytes"
+        );
+        assert!(
+            cache.get(&key, &[7, 8, 9, 11]).is_none(),
+            "same key with different tokens must miss"
+        );
+        assert!(cache.contains_exact_tokens(&key, &tokens));
+        assert!(!cache.contains_exact_tokens(&key, &[7, 8, 9, 11]));
+    }
+
+    /// A semantic cut is an assistant-turn start, so it is deliberately not
+    /// block aligned. The planner must keep it, and the store must accept a
+    /// snapshot captured at exactly that length: the restore side matches on
+    /// the token vector, not on a block multiple.
+    #[test]
+    fn semantic_cut_snapshot_is_stored_at_a_non_aligned_boundary() {
+        let cut = 300u32;
+        let prompt_len = 400usize;
+        let block_size = 16u32;
+        let plan = crate::runner::snapshot_cut_plan(
+            prompt_len,
+            block_size as usize,
+            &[cut, 900],
+            true,
+            "exec-signature",
+        );
+        assert!(
+            plan.cuts.contains(&(cut as usize)),
+            "the semantic cut must survive planning: {:?}",
+            plan.cuts
+        );
+        assert_ne!(
+            cut % block_size,
+            0,
+            "the case is only meaningful off a block boundary"
+        );
+
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 4,
+        });
+        let tokens: Vec<u32> = (0..cut).collect();
+        let mut key = native_prefix_key(9);
+        key.token_count = cut;
+        key.token_hash = u64::from(cut);
+        let snapshot = MlxPrefixSnapshot::from_shared_payload(
+            Arc::<[u8]>::from(Vec::new()),
+            tokens.clone(),
+            cut.try_into().unwrap(),
+            None,
+            None,
+        );
+        assert!(cache.insert(key.clone(), snapshot).stored);
+        assert!(cache.contains_exact_tokens(&key, &tokens));
     }
 
     fn native_prefix_key(token: u32) -> MlxPrefixCacheKey {
@@ -2239,6 +2399,9 @@ mod tests {
                 layer_layout: "writer-layout",
                 kv_payload_version: 3,
                 block_size_tokens: 16,
+                kv_quantization: "",
+                kv_dtype: "",
+                execution_signature: "",
                 token_count: 4,
                 tokens: &[5, 6, 7, 8],
             },

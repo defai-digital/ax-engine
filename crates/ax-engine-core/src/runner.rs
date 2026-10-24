@@ -31,6 +31,16 @@ pub struct RunnerInput {
     /// Grammars of the requests in this batch that are constrained;
     /// `json_grammar_active` in [`RunnerRequestContext`] marks them.
     pub request_json_grammars: Vec<RunnerRequestJsonGrammar>,
+    /// Typed prefill hints (semantic snapshot cut points) for the requests
+    /// in this batch that carry any. A sidecar, like `logit_bias`, because
+    /// [`RunnerRequestContext`] is `Copy`.
+    pub request_prefill_hints: Vec<RunnerRequestPrefillHints>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunnerRequestPrefillHints {
+    pub request_id: RequestId,
+    pub hints: crate::request::PrefillHints,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -134,6 +144,17 @@ impl RunnerInput {
             .iter()
             .find(|entry| entry.request_id == request_id)
             .map(|entry| &entry.grammar)
+    }
+
+    /// The request's typed prefill hints, when it carries any.
+    pub fn request_prefill_hints(
+        &self,
+        request_id: RequestId,
+    ) -> Option<&crate::request::PrefillHints> {
+        self.request_prefill_hints
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .map(|entry| &entry.hints)
     }
 }
 
@@ -509,6 +530,7 @@ mod tests {
             crossover_decisions: vec![("prefix_reused_requests".into(), 0)],
         };
         let output = runner.run(RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {
@@ -642,6 +664,7 @@ mod tests {
     fn deterministic_runner_counts_shared_blocks_once() {
         let runner = DeterministicRunner;
         let output = runner.run(RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {
@@ -716,6 +739,7 @@ mod tests {
     fn deterministic_runner_does_not_synthesize_stub_route_labels() {
         let runner = DeterministicRunner;
         let output = runner.run(RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {

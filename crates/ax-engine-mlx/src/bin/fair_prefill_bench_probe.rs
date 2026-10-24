@@ -147,6 +147,7 @@ fn run_decode_steps(
         ctx.generated_len = (step + 1) as u32;
         ctx.max_output_tokens = (decode_tokens + 2) as u32;
         let input = RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {
@@ -208,6 +209,7 @@ fn prefill_input(
 ) -> RunnerInput {
     let count = tokens.len() as u32;
     RunnerInput {
+        request_prefill_hints: Vec::new(),
         block_size_tokens: 16,
         memory_pressure: None,
         execution_batch: ExecutionBatch {

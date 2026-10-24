@@ -863,6 +863,7 @@ mod tests {
         model_id: &str,
     ) -> RequestSubmission {
         RequestSubmission {
+            prefill_hints: Default::default(),
             request_id: RequestId(request_id),
             model_id: ModelId(model_id.into()),
             input_tokens: vec![10, 11, 12],

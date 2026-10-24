@@ -176,6 +176,7 @@ pub(crate) fn generate_request_from_spec(
     manifest: &BenchmarkManifest,
 ) -> GenerateRequest {
     GenerateRequest {
+        prefill_hints: Default::default(),
         model_id: spec.model_family.clone(),
         input_tokens: spec.input_tokens.clone(),
         input_text: spec.input_text.clone(),

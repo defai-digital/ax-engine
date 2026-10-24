@@ -30,7 +30,7 @@ use crate::openai::chat_requests::{
     messages_contain_inline_non_image_media, openai_tool_choice_disables_tools,
     reject_video_chat_content, render_gemma4_unified_chat_with_media,
     render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
-    render_openai_chat_prompt_with_family, render_qwen3_vl_chat_with_media,
+    render_openai_chat_prompt_with_family_offsets, render_qwen3_vl_chat_with_media,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -49,6 +49,9 @@ struct OpenAiBuiltPayload {
     stop_sequences: Vec<String>,
     stream: bool,
     metadata: Option<String>,
+    /// Byte offsets of assistant-turn starts in `input_text`, when the
+    /// renderer could expose them.
+    assistant_byte_starts: Vec<usize>,
 }
 
 pub(crate) struct GenerateRequestParts {
@@ -59,6 +62,7 @@ pub(crate) struct GenerateRequestParts {
     pub(crate) sampling: GenerateSampling,
     pub(crate) stop_sequences: Vec<String>,
     pub(crate) metadata: Option<String>,
+    pub(crate) prefill_hints: ax_engine_core::PrefillHints,
 }
 
 pub(crate) struct OpenAiBuiltMlxLmChatRequest {
@@ -470,6 +474,9 @@ pub(crate) fn build_openai_completion_request(
         stop_sequences,
         stream: request.stream,
         metadata,
+        // Raw completion prompts carry no chat turns, so there are no
+        // semantic cut points to expose.
+        assistant_byte_starts: Vec::new(),
     };
 
     build_openai_generate_request(
@@ -623,6 +630,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         &multimodal_inputs,
         !input_tokens.is_empty(),
     )?;
+    let mut assistant_byte_starts = Vec::new();
     let input_text = if !input_tokens.is_empty() {
         // Keep message validation and raw-media rejection even when the AX
         // extension supplies an already-tokenized prompt.
@@ -745,14 +753,16 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         if media_rendered {
             None
         } else {
-            Some(render_openai_chat_prompt_with_family(
+            let rendered = render_openai_chat_prompt_with_family_offsets(
                 live.model_id.as_ref(),
                 artifact_family.as_deref(),
                 &request.messages,
                 request.tools.as_ref(),
                 request.tool_choice.as_ref(),
                 prompt_options,
-            )?)
+            )?;
+            assistant_byte_starts = rendered.assistant_byte_starts;
+            Some(rendered.text)
         }
     };
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
@@ -785,6 +795,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         ),
         stream: request.stream,
         metadata,
+        assistant_byte_starts,
     };
 
     build_openai_generate_request(
@@ -937,15 +948,16 @@ fn build_openai_generate_request(
     payload: OpenAiBuiltPayload,
     response_options: OpenAiResponseOptions,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    let (input_tokens, input_text) =
-        tokenize_native_mlx_text_input(live, input_tokens, input_text)?;
+    let mut payload = payload;
+    let assistant_byte_starts = std::mem::take(&mut payload.assistant_byte_starts);
+    let (input_tokens, input_text, prefill_hints) =
+        tokenize_native_mlx_text_input(live, input_tokens, input_text, &assistant_byte_starts)?;
     let max_output_tokens = fit_openai_max_output_tokens_to_context(
         live,
         &input_tokens,
         max_output_tokens,
         response_options.fit_max_tokens_to_context,
     )?;
-    let mut payload = payload;
     payload.sampling.json_schema = native_json_constraint(live, &response_options);
 
     Ok(OpenAiBuiltRequest {
@@ -959,6 +971,7 @@ fn build_openai_generate_request(
                 sampling: payload.sampling,
                 stop_sequences: payload.stop_sequences,
                 metadata: payload.metadata,
+                prefill_hints,
             },
         ),
         stream: payload.stream,
@@ -1058,23 +1071,34 @@ fn fit_openai_max_output_tokens_to_context(
     ))
 }
 
-/// `(tokens, optional decoded text)` on success, or an HTTP error response.
-type NativeMlxTokenizeResult =
-    Result<(Vec<u32>, Option<String>), (StatusCode, Json<ErrorResponse>)>;
+/// `(tokens, optional decoded text, prefill hints)` on success, or an HTTP
+/// error response.
+type NativeMlxTokenizeResult = Result<
+    (Vec<u32>, Option<String>, ax_engine_core::PrefillHints),
+    (StatusCode, Json<ErrorResponse>),
+>;
 
+/// Tokenize the OpenAI text prompt for the native MLX backend.
+///
+/// `assistant_byte_starts` holds byte offsets into `input_text` where
+/// assistant turns begin. They are mapped through this single full
+/// tokenization (never through per-message encodes) and returned as typed
+/// `PrefillHints`. Pre-tokenized inputs keep the caller's token array and
+/// report no hints.
 pub(crate) fn tokenize_native_mlx_text_input(
     live: &LiveState,
     input_tokens: Vec<u32>,
     input_text: Option<String>,
+    assistant_byte_starts: &[usize],
 ) -> NativeMlxTokenizeResult {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
-        return Ok((input_tokens, input_text));
+        return Ok((input_tokens, input_text, Default::default()));
     }
     if !input_tokens.is_empty() {
-        return Ok((input_tokens, input_text));
+        return Ok((input_tokens, input_text, Default::default()));
     }
     let Some(input_text) = input_text else {
-        return Ok((input_tokens, None));
+        return Ok((input_tokens, None, Default::default()));
     };
     let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
@@ -1090,15 +1114,36 @@ pub(crate) fn tokenize_native_mlx_text_input(
             format!("failed to load tokenizer for native MLX OpenAI text endpoint: {error}"),
         )
     })?;
-    let input_tokens = tokenizer.encode(&input_text, false).map_err(|error| {
-        error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            format!("failed to tokenize OpenAI text prompt for native MLX backend: {error}"),
-        )
-    })?;
+    let (input_tokens, byte_offsets) = if assistant_byte_starts.is_empty() {
+        let tokens = tokenizer.encode(&input_text, false).map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to tokenize OpenAI text prompt for native MLX backend: {error}"),
+            )
+        })?;
+        (tokens, Vec::new())
+    } else {
+        tokenizer
+            .encode_with_byte_offsets(&input_text)
+            .map_err(|error| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    format!(
+                        "failed to tokenize OpenAI text prompt for native MLX backend: {error}"
+                    ),
+                )
+            })?
+    };
+    let prefill_hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: chat::token_starts_for_byte_starts(
+            &byte_offsets,
+            assistant_byte_starts,
+        ),
+    };
 
-    Ok((input_tokens, None))
+    Ok((input_tokens, None, prefill_hints))
 }
 
 fn reject_openai_multimodal_inputs_without_native_mlx(
@@ -1208,6 +1253,7 @@ pub(crate) fn build_generate_request_internal(
     parts: GenerateRequestParts,
 ) -> GenerateRequest {
     GenerateRequest {
+        prefill_hints: parts.prefill_hints,
         model_id: live.model_id.to_string(),
         input_tokens: parts.input_tokens,
         input_text: parts.input_text,

@@ -30,7 +30,7 @@
 //! swap-remove so `slot → row` stays a compact prefix, matching the runner's
 //! slot bookkeeping.
 
-use mlx_sys::{MlxArray, concatenate, slice};
+use mlx_sys::{MlxArray, async_eval, concatenate, slice};
 
 /// One linear-attention layer's batched recurrent state.
 #[derive(Default)]
@@ -188,6 +188,36 @@ impl BatchedLinearState {
         let recurrent = slice_rows(l.recurrent.as_ref()?, row as i32, row as i32 + 1);
         Some((conv, recurrent))
     }
+
+    /// Schedule every layer's conv/recurrent state for evaluation.
+    ///
+    /// The kernel's per-step state output is only consumed by the *next* step's
+    /// kernel, so it is not an ancestor of the step's logits and stays pending
+    /// unless something asks for it. Materializing at the commit boundary keeps
+    /// the MLX graph one step wide instead of letting a long-running cohort
+    /// chain a suspended graph per step. Values are unchanged — scheduling only
+    /// enumerates already-built work.
+    ///
+    /// This is deliberately asynchronous: the batched decode step already
+    /// blocks once on `argmax_batched`, so a second blocking `eval` here would
+    /// add a CPU/GPU barrier per step for no correctness gain. `async_eval`
+    /// hands the pending graph to MLX, which releases the intermediate nodes as
+    /// the work completes; the next step's kernel waits on this state through
+    /// its own input dependency.
+    pub(crate) fn materialize(&self) {
+        let mut arrays: Vec<&MlxArray> = Vec::with_capacity(self.layers.len() * 2);
+        for layer in &self.layers {
+            if let Some(conv) = &layer.conv {
+                arrays.push(conv);
+            }
+            if let Some(recurrent) = &layer.recurrent {
+                arrays.push(recurrent);
+            }
+        }
+        if !arrays.is_empty() {
+            async_eval(&arrays);
+        }
+    }
 }
 
 /// Swap-remove row `slot`: move row `last` into `slot`, then drop the last row.
@@ -325,5 +355,128 @@ mod tests {
         eval(&[&c, &rec]);
         assert!(c.data_f32().iter().all(|&x| x == 0.0));
         assert!(rec.data_f32().iter().all(|&x| x == 0.0));
+    }
+
+    /// The commit-boundary materialization must be value-preserving: it only
+    /// schedules the pending kernel graph, never rewrites the state the next
+    /// step reads. Also pins that evaluating one step's state cannot reshape it.
+    #[test]
+    fn materialize_preserves_pending_state_values() {
+        const LAYERS: usize = 2;
+        let mut state = BatchedLinearState::with_capacity(LAYERS, 4);
+        let (c0, r0) = seed_states(1.0, LAYERS);
+        state.add_row(&c0, &r0);
+        // Two active rows, so the kernel-style update below matches `batch`.
+        let (c1, r1) = seed_states(2.0, LAYERS);
+        state.add_row(&c1, &r1);
+        assert_eq!(state.batch(), 2);
+
+        // A lazy kernel-style update: `concatenate` builds pending graph nodes
+        // whose rows are the two seeds (row 0 = seed 1, row 1 = seed 2).
+        for l in 0..LAYERS {
+            let conv = concatenate(&[&c0[l], &c1[l]], 0, None);
+            let recurrent = concatenate(&[&r0[l], &r1[l]], 0, None);
+            state.update_layer(l, conv, recurrent);
+        }
+
+        state.materialize();
+
+        assert_eq!(state.batch(), 2);
+        assert_row_matches(&state, 0, 1.0, LAYERS);
+        assert_row_matches(&state, 1, 2.0, LAYERS);
+    }
+
+    /// An empty cohort (no joiners yet) must not make the commit-boundary
+    /// materialization panic or fabricate state.
+    #[test]
+    fn materialize_without_rows_is_a_noop() {
+        let state = BatchedLinearState::with_capacity(2, 4);
+        assert_eq!(state.batch(), 0);
+        state.materialize();
+        assert!(state.layer_state(0).is_none());
+    }
+
+    /// A queue-ordering sync point that never touches the state arrays, so the
+    /// assertions below observe only what `materialize()` scheduled. A Metal
+    /// command queue is FIFO, so completing a later `add` on the same default
+    /// stream proves earlier scheduled work has completed.
+    fn sync_default_stream() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0]);
+        let b = MlxArray::from_f32_slice(&[3.0, 4.0]);
+        let sentinel = mlx_sys::ops::add(&a, &b, None);
+        eval(&[&sentinel]);
+    }
+
+    /// Two active rows whose state was just replaced by lazy kernel-style
+    /// updates, shared by the two materialization tests below.
+    fn state_with_pending_update() -> BatchedLinearState {
+        const LAYERS: usize = 1;
+        let mut state = BatchedLinearState::with_capacity(LAYERS, 4);
+        let (c0, r0) = seed_states(1.0, LAYERS);
+        state.add_row(&c0, &r0);
+        let (c1, r1) = seed_states(2.0, LAYERS);
+        state.add_row(&c1, &r1);
+        state.update_layer(
+            0,
+            concatenate(&[&c0[0], &c1[0]], 0, None),
+            concatenate(&[&r0[0], &r1[0]], 0, None),
+        );
+        state
+    }
+
+    /// The commit-boundary materialization must actually schedule the pending
+    /// per-layer state. If it were skipped (or made a no-op), every step's
+    /// kernel output would stay a pending primitive and a long-running cohort
+    /// would chain one suspended graph per step.
+    #[test]
+    fn materialize_schedules_the_pending_state_graph() {
+        let state = state_with_pending_update();
+        {
+            let (conv, recurrent) = state.layer_state(0).expect("state present");
+            assert!(
+                !conv.is_evaluated(),
+                "a fresh concatenate must start as a pending primitive"
+            );
+            assert!(
+                !recurrent.is_evaluated(),
+                "a fresh concatenate must start as a pending primitive"
+            );
+        }
+
+        state.materialize();
+        sync_default_stream();
+
+        let (conv, recurrent) = state.layer_state(0).expect("state present");
+        assert!(
+            conv.is_evaluated(),
+            "materialize() must schedule the conv state graph"
+        );
+        assert!(
+            recurrent.is_evaluated(),
+            "materialize() must schedule the recurrent state graph"
+        );
+    }
+
+    /// `AX_MLX_BATCHED_STATE_MATERIALIZE=0` skips the `materialize()` call at
+    /// the decode commit boundary. The state graph must then stay lazy: a queue
+    /// sync the arrays were never scheduled on cannot evaluate them.
+    #[test]
+    fn skipped_materialize_leaves_the_state_graph_lazy() {
+        let state = state_with_pending_update();
+        // The disabled branch of the call site: no `materialize()`.
+        sync_default_stream();
+
+        let (conv, recurrent) = state.layer_state(0).expect("state present");
+        assert!(
+            !conv.is_evaluated(),
+            "with the kill switch off the conv state must stay pending"
+        );
+        assert!(
+            !recurrent.is_evaluated(),
+            "with the kill switch off the recurrent state must stay pending"
+        );
+        // The values are still correct once something does force them.
+        assert_row_matches(&state, 0, 1.0, 1);
+        assert_row_matches(&state, 1, 2.0, 1);
     }
 }

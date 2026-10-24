@@ -1115,6 +1115,7 @@ mod tests {
             max_output_tokens,
             cancel_requested: false,
             has_multimodal_inputs: false,
+            prefill_hints: Default::default(),
             execution_plan_ref: None,
             route_metadata_hint: RouteMetadata::empty(),
             terminal_stop_reason: None,
