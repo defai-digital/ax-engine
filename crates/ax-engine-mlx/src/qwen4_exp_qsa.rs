@@ -19,9 +19,10 @@
 //! `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` (default off) scores a long prefill
 //! chunk as query tiles and keeps only the selected indices. A tile runs
 //! only for an MLX 0.32.4 `applegpu_g14d` (M2) or `applegpu_g17s` (M5)
-//! GEMM shape whose tests match the
-//! monolithic score bits. Every other shape keeps one score tensor and the
-//! 256 MiB workspace check.
+//! GEMM shape whose tests match the monolithic score bits: the proven head
+//! counts, and query widths 1024, 512, or 256 plus a folded tail of at least
+//! two queries. The production indexer is 4 heads of dim 128. Every other
+//! shape keeps one score tensor and the 256 MiB workspace check.
 
 #[cfg(test)]
 use mlx_sys::eval;
@@ -708,11 +709,14 @@ impl QsaIndexer {
             )?;
             #[cfg(test)]
             crate::model::qwen4_exp::profiling::mark("qsa_k_pool", &[&blocks]);
-            // The plan was built from the cache length. If the staged block
-            // count differs, the GEMM contract no longer applies: require the
-            // monolithic budget and score the whole chunk.
-            let tiled = match score_plan.as_ref() {
-                Some(plan) if plan.matches_blocks(n_complete) => Some(select_tokens_tiled(
+            // The plan was built from the estimated block count. A staged
+            // count that disagrees is re-planned. When that plan is refused,
+            // the monolithic scores run only if they fit the 256 MiB check.
+            let tiled = if let Some(plan) = score_plan
+                .as_ref()
+                .filter(|plan| plan.matches_blocks(n_complete))
+            {
+                Some(select_tokens_tiled(
                     cfg,
                     batch,
                     position_offset,
@@ -720,12 +724,32 @@ impl QsaIndexer {
                     &queries,
                     &blocks,
                     plan,
-                )?),
-                Some(_) => {
-                    ensure_score_workspace(batch, seq, cfg.query_heads, n_complete as usize)?;
-                    None
+                )?)
+            } else if score_plan.is_some() {
+                match ScoreTilePlan::try_new(
+                    batch,
+                    seq,
+                    cfg.query_heads,
+                    cfg.head_dim,
+                    n_complete,
+                    hidden.dtype(),
+                ) {
+                    Some(plan) => Some(select_tokens_tiled(
+                        cfg,
+                        batch,
+                        position_offset,
+                        n_complete,
+                        &queries,
+                        &blocks,
+                        &plan,
+                    )?),
+                    None => {
+                        ensure_score_workspace(batch, seq, cfg.query_heads, n_complete as usize)?;
+                        None
+                    }
                 }
-                None => None,
+            } else {
+                None
             };
             let scores = if tiled.is_none() {
                 let scores = block_scores(&queries, &blocks);
@@ -1462,6 +1486,9 @@ fn rope_block_starts(
 /// Largest query tile. One tile that covers every query is the monolithic GEMM,
 /// so that shape stays on the monolithic path.
 const QSA_TILE_MAX_QUERIES: i32 = 1024;
+/// Query widths whose f32 GEMM matched the monolithic scores. The planner
+/// picks the largest of these that fits. It does not search for another width.
+const QSA_PROVEN_TILE_WIDTHS: [i32; 3] = [1024, 512, 256];
 /// Scratch budget for one tile: the score graph plus the f32 casts.
 const QSA_TILE_WORKSPACE_BUDGET: usize = 128 * 1024 * 1024;
 /// Monolithic score-workspace ceiling. Each issued tile is checked against it.
@@ -1486,8 +1513,9 @@ impl ScoreTilePlan {
     }
 
     /// `None` keeps the monolithic scores. A plan exists only when every tile
-    /// is a GEMM shape that matched the monolithic score bits, the scratch
-    /// estimate fits the tile budget, and at least two tiles are required.
+    /// is a proven GEMM width (or the folded tail of at least two queries),
+    /// the scratch estimate fits the tile budget, and at least two tiles are
+    /// required.
     fn try_new(
         batch: i32,
         seq: i32,
@@ -1502,15 +1530,12 @@ impl ScoreTilePlan {
             || heads < 1
             || dim < 1
             || n_blocks < 1
-            || !tiled_score_contract(batch, dim, n_blocks, dtype)
+            || !tiled_score_contract(batch, heads, dim, n_blocks, dtype)
         {
             return None;
         }
         let (max_rows, budget) = tile_limits();
-        let width = max_tile_rows(batch, seq.min(max_rows), heads, dim, n_blocks, budget)?;
-        let query_rows = split_query_tiles(seq, width, heads, |rows| {
-            tile_within_budget(batch, rows, heads, dim, n_blocks, budget)
-        })?;
+        let query_rows = choose_query_tiles(batch, seq, heads, dim, n_blocks, max_rows, budget)?;
         let mut workspace_bytes = 0usize;
         for &rows in &query_rows {
             let bytes = estimate_tile_workspace(batch, rows, heads, dim, n_blocks)?;
@@ -1549,9 +1574,11 @@ fn tile_limits() -> (i32, usize) {
 }
 
 /// Shapes measured against the monolithic f32 GEMM on MLX 0.32.4.
-/// Head width 128 matches only once there are at least 129 key blocks.
-/// A one-row GEMV is rejected later, when the tiles are split.
-fn tiled_score_contract(batch: i32, dim: i32, n_blocks: i32, dtype: MlxDtype) -> bool {
+/// The production indexer is 4 heads of dim 128, and that width matches only
+/// once there are at least 129 key blocks (`context / 4`). The other pairs
+/// are the head counts the bit tests prove. A one-row GEMV is rejected later,
+/// when the tiles are split.
+fn tiled_score_contract(batch: i32, heads: i32, dim: i32, n_blocks: i32, dtype: MlxDtype) -> bool {
     if !(1..=2).contains(&batch) {
         return false;
     }
@@ -1561,12 +1588,18 @@ fn tiled_score_contract(batch: i32, dim: i32, n_blocks: i32, dtype: MlxDtype) ->
     ) {
         return false;
     }
-    let shape_ok = match dim {
-        4 | 8 | 16 | 32 | 64 => n_blocks >= 1,
-        128 => n_blocks >= 129,
+    let shape_ok = match (heads, dim) {
+        (4, 128) => n_blocks >= 129,
+        (1, 64) | (2, 32) | (2, 4) => n_blocks >= 1,
         _ => false,
     };
     shape_ok && tiled_score_runtime_matches()
+}
+
+/// Arch, MLX version, and the production indexer contract. Outer prefill
+/// chunks stay at the base size when this is false.
+pub(crate) fn flash_next_qsa_tiled_score_gate_open() -> bool {
+    tiled_score_contract(1, 4, 128, 129, MlxDtype::Float32)
 }
 
 fn tiled_score_runtime_matches() -> bool {
@@ -1607,8 +1640,9 @@ fn ensure_score_workspace(batch: i32, rows: i32, heads: i32, n_blocks: usize) ->
     Ok(())
 }
 
-/// `B * Qt * N * 4 * (2H + 1)` for the dots, ReLU, and head reduction, plus
-/// the f32 query cast, its contiguous copy, and the key cast and transpose.
+/// `B * Qt * N * 4 * (2H + 2)` for the dots, ReLU, summed reduction, and the
+/// divided output, plus the f32 query cast, its contiguous copy, and the key
+/// cast and transpose.
 fn estimate_tile_workspace(
     batch: i32,
     rows: i32,
@@ -1625,7 +1659,7 @@ fn estimate_tile_workspace(
         .checked_mul(q)?
         .checked_mul(n)?
         .checked_mul(4)?
-        .checked_mul(2 * h + 1)?;
+        .checked_mul(2 * h + 2)?;
     let q_cast = b
         .checked_mul(q)?
         .checked_mul(h)?
@@ -1656,37 +1690,50 @@ fn tile_within_budget(
             .is_some_and(|bytes| bytes <= QSA_SCORE_WORKSPACE_LIMIT)
 }
 
-fn max_tile_rows(
+fn candidate_tile_widths(max_rows: i32) -> Vec<i32> {
+    let mut widths = Vec::new();
+    for &width in &QSA_PROVEN_TILE_WIDTHS {
+        if width <= max_rows {
+            widths.push(width);
+        }
+    }
+    // Tests cap the tile below the proven set so a small GEMM can still be
+    // checked. Production never sets that cap, so it cannot invent a width.
+    #[cfg(test)]
+    if TILE_LIMITS_OVERRIDE.with(std::cell::Cell::get).is_some()
+        && (1..QSA_PROVEN_TILE_WIDTHS[2]).contains(&max_rows)
+        && !widths.contains(&max_rows)
+    {
+        widths.push(max_rows);
+    }
+    widths
+}
+
+fn choose_query_tiles(
     batch: i32,
-    hi_cap: i32,
+    seq: i32,
     heads: i32,
     dim: i32,
     n_blocks: i32,
+    max_rows: i32,
     budget: usize,
-) -> Option<i32> {
-    if hi_cap < 1 {
-        return None;
-    }
-    let mut lo = 1i32;
-    let mut hi = hi_cap;
-    let mut best = None;
-    while lo <= hi {
-        let mid = lo + (hi - lo) / 2;
-        if tile_within_budget(batch, mid, heads, dim, n_blocks, budget) {
-            best = Some(mid);
-            lo = mid + 1;
-        } else if mid == 1 {
-            break;
-        } else {
-            hi = mid - 1;
+) -> Option<Vec<i32>> {
+    for width in candidate_tile_widths(max_rows) {
+        if width > seq || !tile_within_budget(batch, width, heads, dim, n_blocks, budget) {
+            continue;
+        }
+        if let Some(rows) = split_query_tiles(seq, width, heads, |rows| {
+            tile_within_budget(batch, rows, heads, dim, n_blocks, budget)
+        }) {
+            return Some(rows);
         }
     }
-    best
+    None
 }
 
-/// Split `seq` into widths of at most `width`. A one-row tail with one head
-/// is a GEMV, which did not match the monolithic GEMM, so it folds into the
-/// previous tile when that tile still fits.
+/// Split `seq` into widths of at most `width`. A one-row tail is folded into
+/// the previous tile: with one head it is a GEMV, and a proven production
+/// width never keeps a one-query tile. The folded tail is at least two queries.
 fn split_query_tiles(
     seq: i32,
     width: i32,
@@ -1703,7 +1750,8 @@ fn split_query_tiles(
         rows.push(take);
         left -= take;
     }
-    if heads == 1 && rows.last().copied() == Some(1) {
+    let fold_one_row_tail = heads == 1 || width >= QSA_PROVEN_TILE_WIDTHS[2];
+    if fold_one_row_tail && rows.last().copied() == Some(1) {
         rows.pop();
         let last = rows.last_mut()?;
         *last = last.checked_add(1)?;
@@ -4642,6 +4690,14 @@ mod tests {
             .is_none(),
             "K=128 with fewer than 129 blocks stays monolithic"
         );
+        assert!(
+            planned(1, 1025, 8, 128, 129, MlxDtype::Float32).is_none(),
+            "an unproven head count stays monolithic"
+        );
+        assert!(
+            planned(1, 1025, 4, 64, 129, MlxDtype::Float32).is_none(),
+            "dim 64 is not a proven 4-head GEMM"
+        );
         assert!(planned(3, 6, 2, 64, 4, MlxDtype::Float32).is_none());
         assert!(planned(1, 6, 2, 96, 4, MlxDtype::Float32).is_none());
         assert!(
@@ -4656,6 +4712,133 @@ mod tests {
             wide.is_none(),
             "one tile of the whole chunk stays on the monolithic GEMM"
         );
+        assert_production_tiled_score_sweep();
+    }
+
+    /// Production matrix: 4 heads, dim 128, f32 GEMM after the cast. Every
+    /// listed sequence and block count appears, every width the planner can
+    /// choose is bit-compared, and the largest shape runs once.
+    fn assert_production_tiled_score_sweep() {
+        let shapes = [
+            (1025, 129),
+            (1025, 512),
+            (1025, 2048),
+            (1025, 8193),
+            (1025, 10000),
+            (2048, 129),
+            (2048, 8193),
+            (3000, 129),
+            (4096, 2048),
+            (5000, 512),
+            (8192, 129),
+            (8192, 10000),
+        ];
+        let previous_limit = mlx_sys::set_cache_limit(0);
+        struct RestoreCache(usize);
+        impl Drop for RestoreCache {
+            fn drop(&mut self) {
+                mlx_sys::set_cache_limit(self.0);
+            }
+        }
+        let _restore_cache = RestoreCache(previous_limit);
+        let mut saw_width = [false; 3];
+        for (seq, n_blocks) in shapes {
+            let (queries, blocks) = wave_pair(1, seq, 4, 128, n_blocks, MlxDtype::Float32);
+            let plan = planned(1, seq, 4, 128, n_blocks, MlxDtype::Float32)
+                .expect("production shape did not tile");
+            assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
+            assert!(plan.workspace_bytes <= QSA_TILE_WORKSPACE_BUDGET);
+            assert_proven_tile_rows(&plan.query_rows);
+            for (index, &width) in QSA_PROVEN_TILE_WIDTHS.iter().enumerate() {
+                if plan.query_rows.contains(&width) {
+                    saw_width[index] = true;
+                }
+            }
+            let monolithic = score_bits(&queries, &blocks);
+            let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
+            assert_same_bits_first(&tiled, &monolithic);
+            let offset = 7usize;
+            assert_ordered_indices_match(&monolithic, &tiled, seq, n_blocks, offset);
+        }
+        assert!(
+            saw_width.iter().all(|seen| *seen),
+            "planner widths {:?}, seen {saw_width:?}",
+            QSA_PROVEN_TILE_WIDTHS
+        );
+    }
+
+    fn assert_proven_tile_rows(rows: &[i32]) {
+        assert!(rows.len() >= 2, "production plan needs two tiles: {rows:?}");
+        for (index, &width) in rows.iter().enumerate() {
+            let tail = index + 1 == rows.len();
+            if QSA_PROVEN_TILE_WIDTHS.contains(&width) {
+                continue;
+            }
+            assert!(
+                tail && width >= 2,
+                "unproven tile width {width} in {rows:?}"
+            );
+        }
+    }
+
+    fn assert_same_bits_first(actual: &[u32], expected: &[u32]) {
+        assert_eq!(actual.len(), expected.len());
+        let mismatch = actual
+            .iter()
+            .zip(expected)
+            .position(|(got, want)| got != want);
+        let index = mismatch.unwrap_or(0);
+        assert!(
+            mismatch.is_none(),
+            "score bit mismatch at {index}: {:08x} vs {:08x}",
+            actual[index],
+            expected[index]
+        );
+    }
+
+    fn assert_ordered_indices_match(
+        monolithic: &[u32],
+        tiled: &[u32],
+        seq: i32,
+        n_blocks: i32,
+        offset: usize,
+    ) {
+        let cfg = QsaConfig::new(4, 1, 128, 2, 4, 16, 8, EPS, BASE).unwrap();
+        let n_u = n_blocks as usize;
+        let seq_u = seq as usize;
+        let queries: Vec<usize> = if seq_u <= 1025 {
+            (0..seq_u).collect()
+        } else {
+            [0, 1, seq_u / 2, seq_u.saturating_sub(1)]
+                .into_iter()
+                .filter(|query| *query < seq_u)
+                .collect()
+        };
+        let mut compared = 0usize;
+        for query in queries {
+            let visible = offset + query + 1;
+            if visible / 4 > n_u {
+                continue;
+            }
+            let row = query * n_u;
+            let host_scores: Vec<f32> = monolithic[row..row + n_u]
+                .iter()
+                .copied()
+                .map(f32::from_bits)
+                .collect();
+            let tile_scores: Vec<f32> = tiled[row..row + n_u]
+                .iter()
+                .copied()
+                .map(f32::from_bits)
+                .collect();
+            let host =
+                tokens_from_score_data(cfg, 1, 1, query, offset, n_blocks, &host_scores).unwrap();
+            let other =
+                tokens_from_score_data(cfg, 1, 1, query, offset, n_blocks, &tile_scores).unwrap();
+            assert_eq!(other, host, "offset={offset} query={query} seq={seq}");
+            compared += 1;
+        }
+        assert!(compared > 0, "offset={offset} seq={seq} compared nothing");
     }
 
     #[test]

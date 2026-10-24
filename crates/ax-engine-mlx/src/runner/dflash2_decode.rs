@@ -7,9 +7,9 @@
 //! committed since the previous round, verifies `[anchor, drafts...]` in one
 //! eight-row target forward on a clone of the cache while capturing the hidden
 //! states of layers 5/19/33/47/61, accepts the longest matching prefix, commits
-//! the accepted rows (adopting the clone, restoring a checkpoint, or replaying
-//! the hybrid model's linear state from the verify tape) and feeds the captured
-//! rows of the committed tokens to the next round.
+//! the rows that survive the EOS and output-budget cuts (adopting the clone,
+//! restoring a checkpoint, or replaying the hybrid model's linear state from
+//! the verify tape) and feeds the captured rows of those tokens to the next round.
 //!
 //! Greedy requests on the Qwen 3.8 hybrid dense model only. Anything else, and
 //! any request whose captured hidden states stop matching its cache, takes the
@@ -228,6 +228,21 @@ pub(crate) fn greedy_walk(drafts: &[u32], predicted: &[u32]) -> (usize, Vec<u32>
     let mut tokens = drafts[..accepted].to_vec();
     tokens.push(predicted[accepted]);
     (accepted, tokens)
+}
+
+/// Cut a linear verify window the way the tree path does, before anything is
+/// committed. `keep` is the anchor plus the emitted drafts, so the cache,
+/// captured rows, and pending hidden stop at the tokens the caller emits.
+fn linear_window_commit(
+    new_tokens: &[u32],
+    accepted: usize,
+    budget: usize,
+    eos: &[u32],
+) -> (Vec<u32>, usize) {
+    let (emitted, emitted_drafts) =
+        super::tree_verify::limit_commit(new_tokens, accepted, budget, eos);
+    let keep = 1 + emitted_drafts.min(accepted);
+    (emitted, keep)
 }
 
 impl RequestState {
@@ -517,24 +532,28 @@ impl MlxRunner {
         }
 
         // --- Accept and commit ---------------------------------------------
+        // Cut at EOS and the output budget before commit. Adopting the full
+        // window would leave KV, GDN state, and captured rows for drafts the
+        // caller never emits. `keep == verify_len` is the only full adopt.
         let (accepted, new_tokens) = greedy_walk(drafts, &predicted);
-        let keep = accepted + 1; // the anchor plus the accepted drafts
+        let (emitted, keep) =
+            linear_window_commit(&new_tokens, accepted, remaining, options.terminal_token_ids);
         let rollback_started = Instant::now();
-        let adopted = if accepted == drafts.len() {
+        let adopted = if keep == verify_len {
             if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
                 let refs = verify_cache.collect_eval_refs();
                 eval(&refs);
             }
             verify_cache.trim_to(token_offset + keep)
-        } else if accepted == 0 {
+        } else if keep == 1 {
             // The capture point is the committed anchor, so a complete miss
             // restores it; a tape-based verifier replays one row instead.
             (verify_cache.restore_linear_prefix_checkpoint()
-                || self.dflash2_replay_prefix(&state.cache, &mut verify_cache, 1))
-                && verify_cache.trim_to(token_offset + 1)
+                || self.dflash2_replay_prefix(&state.cache, &mut verify_cache, keep))
+                && verify_cache.trim_to(token_offset + keep)
         } else {
             // The verifier produced every linear layer's inputs: rebuild the
-            // gated-delta state of the accepted prefix, then trim the K/V.
+            // gated-delta state of the emitted prefix, then trim the K/V.
             let replayed = self.dflash2_replay_prefix(&state.cache, &mut verify_cache, keep);
             if replayed && !crate::fastpath::mtp_lazy_adopt_state_enabled() {
                 let refs = verify_cache.collect_eval_refs();
@@ -546,17 +565,18 @@ impl MlxRunner {
             verify_cache.clear_linear_prefix_checkpoint();
             state.cache = verify_cache;
         } else {
-            // Rebuild the committed prefix one token at a time on the
-            // untouched cache.
+            // Rebuild the emitted prefix one token at a time on the
+            // untouched cache. Drafts past the budget or EOS stay out.
+            let kept = keep.saturating_sub(1).min(accepted).min(drafts.len());
             let after = recompute_committed_prefix_with_argmax(
                 &self.cfg,
                 &self.weights,
                 &mut state.cache,
                 primary,
-                &drafts[..accepted],
+                &drafts[..kept],
                 token_offset,
             );
-            debug_assert_eq!(after, predicted[accepted]);
+            debug_assert_eq!(after, predicted[kept]);
         }
         let rollback_wall_us = elapsed_us(rollback_started);
 
@@ -596,14 +616,14 @@ impl MlxRunner {
             draft_wall_us,
             mtp_draft_wall_us: draft_wall_us,
             verify_tokens: saturating_u32(verify_len),
-            emitted_tokens: saturating_u32(new_tokens.len()),
+            emitted_tokens: saturating_u32(emitted.len()),
             ..MtpStepTimings::default()
         });
-        // Cuts the round at a terminal token and latches the token the next
-        // step feeds.
+        // The budget and terminal cuts already happened. This latches the
+        // last emitted token for the next step.
         Some(apply_decode_result(
             state,
-            &new_tokens,
+            &emitted,
             options.terminal_token_ids,
         ))
     }
@@ -1003,5 +1023,86 @@ mod tests {
         // A later match does not count after a mismatch.
         let predicted = [1, 9, 3, 4, 5, 6, 7, 8];
         assert_eq!(greedy_walk(&drafts, &predicted), (1, vec![1, 9]));
+    }
+
+    #[test]
+    fn linear_commit_cuts_mid_window_by_budget_and_eos() {
+        let drafts = [10_u32, 20, 30, 40, 50, 60, 70];
+        let predicted = [10, 20, 30, 40, 50, 60, 70, 80];
+        let (accepted, new_tokens) = greedy_walk(&drafts, &predicted);
+        assert_eq!(new_tokens, vec![10, 20, 30, 40, 50, 60, 70, 80]);
+        let token_offset = 16usize;
+        let verify_len = drafts.len() + 1;
+
+        let (budget_tokens, budget_keep) = linear_window_commit(&new_tokens, accepted, 3, &[]);
+        assert_eq!(budget_tokens, tokens_emitted_today(&new_tokens, 3, &[]));
+        assert_eq!(budget_tokens, vec![10, 20, 30]);
+        let (cache_len, captured_rows, hidden_rows) =
+            committed_lengths(token_offset, verify_len, budget_keep);
+        assert_eq!(cache_len, captured_rows);
+        assert_eq!(hidden_rows, cache_len - token_offset);
+        assert_eq!(budget_keep, 1 + budget_tokens.len().min(accepted));
+        assert_eq!(cache_len - token_offset, 1 + budget_tokens.len());
+        assert!(cache_len < token_offset + verify_len);
+
+        let (eos_tokens, eos_keep) = linear_window_commit(&new_tokens, accepted, 8, &[40]);
+        assert_eq!(eos_tokens, tokens_emitted_today(&new_tokens, 8, &[40]));
+        assert_eq!(eos_tokens, vec![10, 20, 30, 40]);
+        let (cache_len, captured_rows, hidden_rows) =
+            committed_lengths(token_offset, verify_len, eos_keep);
+        assert_eq!(cache_len, captured_rows);
+        assert_eq!(hidden_rows, cache_len - token_offset);
+        assert_eq!(eos_keep, 1 + eos_tokens.len().min(accepted));
+        assert_eq!(cache_len - token_offset, 1 + eos_tokens.len());
+        assert!(cache_len < token_offset + verify_len);
+
+        let (full, full_keep) = linear_window_commit(&new_tokens, accepted, 8, &[]);
+        assert_eq!(full, new_tokens);
+        assert_eq!(full_keep, accepted + 1);
+    }
+
+    /// EOS cut, then the output-budget cut, matching `apply_decode_result`
+    /// followed by `truncate_sampled_tokens_for_stop`.
+    fn tokens_emitted_today(tokens: &[u32], max_output: u32, eos: &[u32]) -> Vec<u32> {
+        let mut output = Vec::new();
+        for &token in tokens {
+            output.push(token);
+            if eos.contains(&token) {
+                break;
+            }
+        }
+        super::super::truncate_sampled_tokens_for_stop(output, 0, max_output, eos).0
+    }
+
+    /// Cache length, captured rows, and pending-hidden rows after a verify
+    /// window is trimmed to `keep`.
+    fn committed_lengths(
+        token_offset: usize,
+        verify_len: usize,
+        keep: usize,
+    ) -> (usize, usize, usize) {
+        let mut cache = crate::kv_cache::MlxKVCache::new_contiguous(0);
+        cache.set_seq_len(token_offset);
+        cache.advance(verify_len);
+        assert!(cache.trim_to(token_offset + keep));
+        let captured_rows = token_offset + keep;
+        let width = 2i32;
+        let data = vec![0f32; verify_len * width as usize];
+        let hidden = mlx_sys::MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, verify_len as i32, width],
+            mlx_sys::MlxDtype::Float32,
+        );
+        let pending = mlx_sys::slice(
+            &hidden,
+            &[0, 0, 0],
+            &[1, keep as i32, width],
+            &[1, 1, 1],
+            None,
+        );
+        mlx_sys::eval(&[&pending]);
+        let hidden_rows = pending.shape()[1] as usize;
+        (cache.seq_len(), captured_rows, hidden_rows)
     }
 }

@@ -5636,15 +5636,31 @@ env_flag!(
 /// of the measured sizes, not the default chunk.
 pub(crate) const FLASH_NEXT_QSA_TILED_OUTER_CHUNKS: [usize; 3] = [2048, 4096, 8192];
 
-/// `requested` is honored only while tiled scores are on and the value is one
-/// of [`FLASH_NEXT_QSA_TILED_OUTER_CHUNKS`]. Any other request keeps the
-/// existing chunk. A chunk the monolithic 256 MiB check would reject is a
-/// measurement configuration, not a baseline comparison.
+/// `requested` is honored only while tiled scores are on, the runtime gate
+/// (GPU architecture, MLX version, and the production score contract) passes,
+/// and the value is one of [`FLASH_NEXT_QSA_TILED_OUTER_CHUNKS`]. Any other
+/// request keeps the existing chunk. A gate-failing runtime with the knobs
+/// set behaves as if the knobs were off. A chunk the monolithic 256 MiB check
+/// would reject is a measurement configuration, not a baseline comparison.
 pub(crate) fn flash_next_tiled_outer_chunk_override(
     tiled_scores: bool,
     requested: Option<usize>,
 ) -> Option<usize> {
-    if !tiled_scores {
+    flash_next_tiled_outer_chunk_override_gated(
+        tiled_scores,
+        requested,
+        crate::qwen4_exp_qsa::flash_next_qsa_tiled_score_gate_open(),
+    )
+}
+
+/// Pure form of [`flash_next_tiled_outer_chunk_override`]. `gate_open` is the
+/// arch, MLX version, and production-contract check.
+pub(crate) fn flash_next_tiled_outer_chunk_override_gated(
+    tiled_scores: bool,
+    requested: Option<usize>,
+    gate_open: bool,
+) -> Option<usize> {
+    if !tiled_scores || !gate_open {
         return None;
     }
     requested.filter(|chunk| FLASH_NEXT_QSA_TILED_OUTER_CHUNKS.contains(chunk))

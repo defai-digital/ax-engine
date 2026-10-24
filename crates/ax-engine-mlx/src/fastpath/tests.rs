@@ -3022,26 +3022,45 @@ fn long_prompt_prefill_clamp_skips_qwen3_5() {
         long_prompt_prefill_chunk()
     );
     assert_eq!(
-        flash_next_tiled_outer_chunk_override(false, Some(8192)),
-        None
-    );
-    assert_eq!(flash_next_tiled_outer_chunk_override(true, None), None);
-    assert_eq!(flash_next_tiled_outer_chunk_override(true, Some(512)), None);
-    assert_eq!(
-        flash_next_tiled_outer_chunk_override(true, Some(3072)),
+        flash_next_tiled_outer_chunk_override_gated(false, Some(8192), true),
         None
     );
     assert_eq!(
-        flash_next_tiled_outer_chunk_override(true, Some(2048)),
+        flash_next_tiled_outer_chunk_override_gated(true, None, true),
+        None
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override_gated(true, Some(512), true),
+        None
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override_gated(true, Some(3072), true),
+        None
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override_gated(true, Some(2048), true),
         Some(2048)
     );
     assert_eq!(
-        flash_next_tiled_outer_chunk_override(true, Some(4096)),
+        flash_next_tiled_outer_chunk_override_gated(true, Some(4096), true),
         Some(4096)
     );
     assert_eq!(
-        flash_next_tiled_outer_chunk_override(true, Some(8192)),
+        flash_next_tiled_outer_chunk_override_gated(true, Some(8192), true),
         Some(8192)
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override_gated(true, Some(8192), false),
+        None,
+        "a closed score gate keeps the base chunk"
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override(true, Some(8192)),
+        flash_next_tiled_outer_chunk_override_gated(
+            true,
+            Some(8192),
+            crate::qwen4_exp_qsa::flash_next_qsa_tiled_score_gate_open(),
+        )
     );
     // hy_v3 keeps the session chunk for any remaining length, so a 10k prompt
     // runs as 2048-token forwards instead of 512-token ones.
