@@ -768,7 +768,7 @@ mod tests {
             serde_json::from_str(&calls[0].function.arguments).expect("json arguments");
         assert_eq!(
             arguments,
-            json!({"text": format!("a</\u{FF5C}DSML\u{FF5C}tool_calls>b")}),
+            json!({"text": "a</\u{FF5C}DSML\u{FF5C}tool_calls>b"}),
         );
         assert!(
             content(&events).is_empty(),
@@ -796,7 +796,7 @@ mod tests {
                 serde_json::from_str(&calls[0].function.arguments).expect("json arguments");
             assert_eq!(
                 arguments,
-                json!({"text": format!("a</\u{FF5C}DSML\u{FF5C}tool_calls>b")}),
+                json!({"text": "a</\u{FF5C}DSML\u{FF5C}tool_calls>b"}),
                 "split {split}"
             );
             assert!(
