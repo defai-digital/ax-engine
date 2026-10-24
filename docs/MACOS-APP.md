@@ -108,3 +108,36 @@ Original license and notices ship inside the app and are accessible through
 icons and the About panel use AX Engine branding; upstream acknowledgements
 are collected in that dedicated notices window.
 AX Engine provides inference; MTPLX inference code and model assets are not bundled.
+
+## Dashboard and discovery
+
+Dashboard replaces the static Overview. It keeps one layout and changes its
+primary action for discovery, downloaded files, startup, a ready service, and
+failures. It shows the current model, service ownership, last successful health
+check, startup elapsed time and a small snapshot of existing runtime metrics.
+Unknown metrics show a dash. Startup phases and percentages are not invented;
+CPU/GPU history and generated-token throughput are not reported by this view.
+Server retains lifecycle configuration, advanced counters and output.
+
+Library discovery runs in the bundled `AXEngineModelScanner` helper, which only
+reads metadata. Results arrive incrementally, ordinary local repositories are
+visited before linked repositories, and a scan has a 20-second deadline plus
+bounded process cleanup. Stop scan cancels the helper, not the inference runtime.
+A new scan reaps the old worker before starting another. Existing rows remain
+visible during refresh; unchecked rows are labeled and cannot be selected until
+checked. Partial scans retain results and offer Retry instead of claiming an
+empty library. A complete scan removes entries no longer found. Slow/unavailable
+network storage may require reconnecting the volume before retrying.
+
+Model rows show a compact name, source and download status, with full paths and
+revision details behind a disclosure. Complete files do not establish runtime
+compatibility, and absence from the runtime catalog does not mean unsupported.
+The app performs compatibility validation when the operator explicitly starts a
+model. Models from other tools are not silently deleted or hidden.
+
+Use Command-1 through Command-5 to navigate Dashboard, Models, Server, Chat and
+Settings; Command-F focuses model search and Command-R refreshes models.
+Command-Comma still opens inline Settings. Search, selection and chat drafts
+survive page switches and main-window reopening for the current app session.
+API credentials remain in memory, and starting/connecting never happens merely
+because a page was opened. Attached services retain Disconnect-only ownership.

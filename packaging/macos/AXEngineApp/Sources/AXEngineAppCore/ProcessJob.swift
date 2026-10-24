@@ -79,8 +79,16 @@ public final class ProcessJob: ObservableObject {
             readers.enter()
             DispatchQueue.global(qos: .utility).async {
                 defer { readers.leave() }
-                while let data = try? pipe.fileHandleForReading.read(upToCount: 16_384), !data.isEmpty {
-                    capture.append(data, isError: isError)
+                // FileHandle.read(upToCount:) may wait to fill a buffer on a
+                // pipe. A POSIX read delivers the bytes currently available,
+                // allowing small progress events to reach the UI before exit.
+                let descriptor = pipe.fileHandleForReading.fileDescriptor
+                var bytes = [UInt8](repeating: 0, count: 16_384)
+                while true {
+                    let count = Darwin.read(descriptor, &bytes, 16_384)
+                    if count < 0 && errno == EINTR { continue }
+                    guard count > 0 else { break }
+                    capture.append(Data(bytes.prefix(count)), isError: isError)
                 }
             }
         }

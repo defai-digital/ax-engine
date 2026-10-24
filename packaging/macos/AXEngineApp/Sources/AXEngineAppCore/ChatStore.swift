@@ -27,6 +27,9 @@ public final class ChatStore: ObservableObject {
     @Published public private(set) var firstTokenSeconds: Double?
     @Published public private(set) var elapsedSeconds: Double?
     @Published public var systemPrompt = ""
+    @Published public var draft = ""
+    @Published public var selectedModel = ""
+    @Published public var followOutput = true
     private var task: Task<Void, Never>?
     private var requestID: Int?
     private var activeConnection: EngineConnection?

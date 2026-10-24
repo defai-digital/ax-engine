@@ -56,6 +56,9 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({'object': 'list', 'data': [{'id': 'fixture', 'owned_by': 'ax-engine',
                 'context_length': 2048, 'capabilities': {'temperature': True}}]})
         elif self.path == '/metrics':
+            if Path(__file__).with_suffix('.fail-metrics').exists():
+                self.json_response({'error': 'Metrics temporarily unavailable'}, 503)
+                return
             body = b'ax_engine_generation_active_streams 0\nax_engine_scheduled_tokens_total 24\n'
             self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
         else: self.json_response({'status': 'ok'})

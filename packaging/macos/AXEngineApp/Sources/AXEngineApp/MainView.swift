@@ -3,7 +3,7 @@ import AppKit
 import AXEngineAppCore
 
 enum Page: String, CaseIterable, Identifiable {
-    case overview = "Overview", models = "Models", server = "Server", chat = "Chat", settings = "Settings"
+    case overview = "Dashboard", models = "Models", server = "Server", chat = "Chat", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -21,9 +21,7 @@ struct MainView: View {
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var models: ModelStore
     @ObservedObject var chat: ChatStore
-    @State private var selectedPath = ""
-    @State private var search = ""
-    @State private var modelsSection = "library"
+    @FocusState private var searchFocused: Bool
     @State private var removeTarget: LocalModel?
     @State private var stopConfirmation = false
     @State private var apiKey = ""
@@ -62,17 +60,20 @@ struct MainView: View {
                 Divider()
                 Group {
                     switch model.page ?? .overview {
-                    case .overview: overview
+                    case .overview: DashboardView(model: model, runtime: runtime, models: models)
                     case .models: modelsPage
                     case .server: serverPage
-                    case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings)
+                    case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings, openServer: { model.page = .server })
                     case .settings: SettingsView(model: model)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
-        .task { await models.refresh(settings: model.settings) }
+        .task { if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) } }
+        .onChange(of: model.searchFocusRequest) { _, _ in
+            Task { @MainActor in await Task.yield(); searchFocused = true }
+        }
         .alert("Remove downloaded model?", isPresented: Binding(get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } })) {
             Button("Remove", role: .destructive) {
                 if let target = removeTarget, !runtime.owned, runtime.connection == nil, !runtime.busy {
@@ -90,7 +91,7 @@ struct MainView: View {
 
     private var subtitle: String {
         switch model.page ?? .overview {
-        case .overview: "Your models. Your Mac. Your control."
+        case .overview: "Your model, runtime status and next step."
         case .models: "Browse runtime profiles and manage local model folders."
         case .server: "Start a local model or connect to an existing AX Engine service."
         case .chat: "Private conversations with your running model."
@@ -98,69 +99,24 @@ struct MainView: View {
         }
     }
 
-    private var overview: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(spacing: 25) {
-                    if let logo = Brand.logo { Image(nsImage: logo).resizable().frame(width: 116, height: 116) }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Make room for your next idea.").font(.system(size: 29, weight: .semibold))
-                        Text("Choose a model, start the engine, and keep the conversation on your Mac.")
-                            .foregroundStyle(.secondary)
-                        HStack {
-                            Button("Browse Models", systemImage: "square.stack.3d.up") { model.page = .models }.buttonStyle(.borderedProminent)
-                            Button("Connect a Server") { model.page = .server }
-                        }
-                    }
-                }.padding(.vertical, 12)
-                if let error = model.settingsError { ErrorBanner(text: error) }
-                HStack(alignment: .top, spacing: 16) {
-                    Card("This Mac") {
-                        MetricRow(label: "Unified memory", value: ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory))
-                        MetricRow(label: "Processor cores", value: String(ProcessInfo.processInfo.processorCount))
-                        MetricRow(label: "Thermal state", value: thermalLabel)
-                    }
-                    Card("Your workspace") {
-                        MetricRow(label: "Local models", value: models.scanning || models.refreshing ? "Checking…" : String(models.library.count))
-                        MetricRow(label: "Server", value: runtime.state)
-                        MetricRow(label: "Active downloads", value: String(models.downloads.filter { ["Queued", "Downloading"].contains($0.state) }.count))
-                    }
-                }
-                Card("Get started") {
-                    Label("1. Choose a model from the runtime catalog, or add a local folder.", systemImage: "square.stack.3d.up")
-                    Label("2. Start its server. Model loading can take a few minutes.", systemImage: "power")
-                    Label("3. Chat here, or copy the API endpoint into another client.", systemImage: "bubble.left")
-                }
-                Text("CLI and TUI remain available. Model compatibility, memory admission, MTP and certification are determined by the AX Engine runtime.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(26)
-        }
-    }
-    private var thermalLabel: String {
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal: "Nominal"
-        case .fair: "Fair"
-        case .serious: "Serious"
-        case .critical: "Critical"
-        @unknown default: "Unavailable"
-        }
-    }
-
     private var modelsPage: some View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
-                if let error = models.error { ErrorBanner(text: error) }
-                Picker("Models view", selection: $modelsSection) {
+                if let error = models.error {
+                    ErrorBanner(text: error)
+                    Button("Review runtime settings") { model.page = .settings }
+                }
+                Picker("Models view", selection: $model.modelsSection) {
                     Text("Local Library").tag("library")
                     Text("Catalog").tag("catalog")
                     Text("Transfers").tag("transfers")
                 }.pickerStyle(.segmented).frame(maxWidth: 460)
-                if modelsSection != "transfers" {
+                if model.modelsSection != "transfers" {
                     HStack {
-                        TextField("Search models", text: $search).textFieldStyle(.roundedBorder)
+                        TextField("Search models", text: $model.modelSearch).textFieldStyle(.roundedBorder).focused($searchFocused)
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await models.refresh(settings: model.settings) } }
                             .disabled(models.refreshing || models.scanning)
-                        if modelsSection == "library" {
+                        if model.modelsSection == "library" {
                             Button("Add Local Folder", systemImage: "folder.badge.plus") { importFolder() }
                         }
                     }
@@ -168,53 +124,89 @@ struct MainView: View {
             }.padding(26)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    switch modelsSection {
+                    switch model.modelsSection {
                     case "catalog": runtimeCatalog
                     case "transfers": transfers
-                    default: localLibrary(filter: search)
+                    default: localLibrary(filter: model.modelSearch)
                     }
                 }.padding([.horizontal, .bottom], 26)
             }
         }
-        .task { await models.scan(settings: model.settings) }
+        .task { if !models.scanning && !models.discoveryAttempted { await models.scan(settings: model.settings) } }
     }
     private var runtimeCatalog: some View {
         Card("Runtime catalog", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
             if models.refreshing { ProgressView("Reading runtime catalog…") }
             if models.catalog.isEmpty && !models.refreshing { Text("Select your AX Engine runtime in Settings, then refresh.").foregroundStyle(.secondary) }
-            ForEach(models.catalog.filter { search.isEmpty || $0.alias.localizedCaseInsensitiveContains(search) || $0.repoId.localizedCaseInsensitiveContains(search) }) { item in
+            ForEach(models.catalog.filter { model.modelSearch.isEmpty || $0.alias.localizedCaseInsensitiveContains(model.modelSearch) || $0.repoId.localizedCaseInsensitiveContains(model.modelSearch) }) { item in
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.alias).font(.headline)
                         Text(item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        Text(item.revision.map { "Revision " + $0 } ?? "Unpinned runtime profile").font(.caption2).foregroundStyle(.secondary)
+                        Text(item.revision.map { "Revision " + $0 } ?? "Unpinned runtime profile").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Download", systemImage: "arrow.down") { models.enqueue(item, settings: model.settings); modelsSection = "transfers"; model.page = .models }
+                    Button("Download", systemImage: "arrow.down") { models.enqueue(item, settings: model.settings); model.modelsSection = "transfers"; model.page = .models }
                 }.padding(.vertical, 7)
                 Divider()
             }
         }
     }
     private func localLibrary(filter: String = "") -> some View {
-        Card("Local library", subtitle: models.scanning ? "Checking model folders and cached snapshots…" : "\(models.library.count) local models · \(models.library.filter { $0.ready }.count) with complete weights") {
-            if models.scanning { ProgressView("Scanning local library…") }
-            if models.library.isEmpty && !models.scanning { Text("No local models found. Browse Catalog to download one, or add an existing folder.").foregroundStyle(.secondary) }
-            ForEach(models.library.filter { filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter) }) { item in
+        Card("Local library", subtitle: "\(models.library.count) folders · \(models.library.filter { $0.ready && models.checkedPaths.contains($0.path) }.count) with checked, complete weight files") {
+            if models.scanning {
                 HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.name).font(.headline).lineLimit(1)
-                        Text(item.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.path)
-                        Text(item.ready ? "Downloaded · runtime validates at load" : "Incomplete download or metadata only").font(.caption).foregroundStyle(.secondary)
-                    }
+                    ProgressView("Checking folders · \(models.checkedPaths.count) found")
                     Spacer()
-                    Button("Use") { selectedPath = item.path; model.page = .server }.disabled(!item.ready)
-                    if item.managed {
-                        Button(role: .destructive) { removeTarget = item } label: { Image(systemName: "trash") }
-                            .disabled(runtime.owned || runtime.connection != nil || runtime.busy || models.downloading || models.removing)
-                            .help("Remove app-managed model")
+                    Button("Stop scan") { models.cancelScan() }
+                }
+            }
+            if let issue = models.libraryIssue {
+                ErrorBanner(text: issue)
+                Button("Retry scan") { Task { await models.scan(settings: model.settings) } }.disabled(models.scanning)
+            }
+            if let date = models.lastScanAt {
+                Text("Last complete scan: " + date.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
+            }
+            if models.library.isEmpty && !models.scanning && models.libraryIssue == nil {
+                Text("No local models found. Browse Catalog to download one, or add an existing folder.")
+                Button("Browse Catalog") { model.modelSearch = ""; model.modelsSection = "catalog" }
+            }
+            let matches = models.library.filter { filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter) }.sorted { left, right in
+                let l = left.ready && models.checkedPaths.contains(left.path)
+                let r = right.ready && models.checkedPaths.contains(right.path)
+                return l == r ? left.path < right.path : l && !r
+            }
+            if matches.isEmpty && !filter.isEmpty { Text("No folders match your search.").foregroundStyle(.secondary) }
+            ForEach(matches) { item in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.displayName).font(.headline).lineLimit(2)
+                            Text(item.source).font(.caption).foregroundStyle(.secondary)
+                            Text(models.checkedPaths.contains(item.path)
+                                 ? (item.ready ? "Downloaded · compatibility unverified" : "Weights incomplete or metadata only")
+                                 : "Not checked in this scan · previous result")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Select Model") { model.selectedPath = item.path; model.page = .server }
+                            .disabled(!item.ready || !models.checkedPaths.contains(item.path))
+                            .accessibilityLabel("Select " + item.displayName)
+                        if item.managed {
+                            Button(role: .destructive) { removeTarget = item } label: { Image(systemName: "trash") }
+                                .disabled(runtime.owned || runtime.connection != nil || runtime.busy || models.downloading || models.removing)
+                                .help("Remove app-managed model").accessibilityLabel("Remove " + item.displayName)
+                        }
                     }
-                }.padding(.vertical, 6)
+                    DisclosureGroup("Location and details") {
+                        Text(item.name).font(.callout).textSelection(.enabled)
+                        Text(item.path).font(.caption).textSelection(.enabled)
+                        Button("Copy path", systemImage: "doc.on.doc") { copyText(item.path) }
+                        Text("File completeness does not establish compatibility. AX Engine validates the model when you start it.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(.vertical, 8)
                 Divider()
             }
         }
@@ -223,7 +215,7 @@ struct MainView: View {
         VStack(spacing: 16) {
             if models.downloads.isEmpty {
                 ContentUnavailableView("No transfers in this session", systemImage: "arrow.down.circle", description: Text("Previously downloaded models are available in Local Library."))
-                Button("Browse Catalog") { search = ""; modelsSection = "catalog" }
+                Button("Browse Catalog") { model.modelSearch = ""; model.modelsSection = "catalog" }
             }
             ForEach(models.downloads) { item in
                 Card(item.model.alias, subtitle: item.state) {
@@ -235,7 +227,7 @@ struct MainView: View {
                         Spacer()
                         if ["Queued", "Downloading"].contains(item.state) { Button("Cancel", role: .destructive) { models.cancel(item.id) } }
                         if ["Failed", "Cancelled"].contains(item.state) { Button("Retry") { models.retry(item.id, settings: model.settings) } }
-                        if item.state == "Ready" { Button("Use Model") { selectedPath = item.destination; model.page = .server } }
+                        if item.state == "Ready" { Button("Use Model") { model.selectedPath = item.destination; model.page = .server } }
                     }
                 }
             }
@@ -244,7 +236,13 @@ struct MainView: View {
     private var serverPage: some View {
         ScrollView {
             VStack(spacing: 18) {
-                if let error = runtime.error { ErrorBanner(text: error) }
+                if let error = runtime.error {
+                    ErrorBanner(text: error)
+                    Button("Review settings") { model.page = .settings }
+                }
+                if let checked = runtime.lastSuccessfulCheck {
+                    Text("Last successful check: " + checked.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
+                }
                 Card("Local server", subtitle: "Listening on loopback only. Existing external services are never stopped by this app.") {
                     HStack {
                         PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle", tint: runtime.ready ? Brand.accentChrome : .secondary)
@@ -252,11 +250,11 @@ struct MainView: View {
                         Text("127.0.0.1:\(String(model.settings.port))").font(.system(.callout, design: .monospaced))
                         Button("Copy API URL", systemImage: "doc.on.doc") { copyText("http://127.0.0.1:\(model.settings.port)/v1") }
                     }
-                    TextField("Installed model path or cached model alias", text: $selectedPath).textFieldStyle(.roundedBorder)
+                    TextField("Installed model path or cached model alias", text: $model.selectedPath).textFieldStyle(.roundedBorder)
                         .disabled(runtime.owned || runtime.connection != nil)
                     HStack {
                         Menu("Choose Installed Model") {
-                            ForEach(models.library.filter(\.ready)) { item in Button(item.name) { selectedPath = item.path } }
+                            ForEach(models.library.filter { $0.ready && models.checkedPaths.contains($0.path) }) { item in Button(item.name) { model.selectedPath = item.path } }
                         }.disabled(runtime.owned || runtime.connection != nil)
                         Spacer()
                         if runtime.owned {
@@ -264,8 +262,8 @@ struct MainView: View {
                         } else if runtime.connection != nil {
                             Button("Disconnect") { Task { await chat.stop(); runtime.detach() } }
                         } else {
-                            Button("Start Server", systemImage: "play.fill") { runtime.start(model: selectedPath, settings: model.settings) }
-                                .buttonStyle(.borderedProminent).disabled(selectedPath.isEmpty || runtime.busy || models.removing)
+                            Button("Start Server", systemImage: "play.fill") { runtime.start(model: model.selectedPath, settings: model.settings) }
+                                .buttonStyle(.borderedProminent).disabled(model.selectedPath.isEmpty || runtime.busy || models.removing)
                         }
                     }
                     Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults. No model performance or certification setting is changed.")

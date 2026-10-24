@@ -11,6 +11,10 @@ final class ApplicationModel: ObservableObject {
     @Published var settingsSaved = false
     @Published var settingsError: String?
     @Published var page: Page? = .overview
+    @Published var selectedPath = ""
+    @Published var modelSearch = ""
+    @Published var modelsSection = "library"
+    @Published var searchFocusRequest = 0
     let runtime = RuntimeController()
     let models = ModelStore()
     let chat = ChatStore()
@@ -80,6 +84,7 @@ struct AXEngineApplication: App {
             }
             ThirdPartyNoticeCommands()
             SettingsNavigationCommands(model: model)
+            NavigationCommands(model: model)
         }
         Window("Third-Party Notices", id: "third-party-notices") {
             ThirdPartyNoticesView()
@@ -111,6 +116,29 @@ struct ThirdPartyNoticeCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appInfo) {
             Button("Third-Party Notices") { openWindow(id: "third-party-notices") }
+        }
+    }
+}
+
+struct NavigationCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var model: ApplicationModel
+    var body: some Commands {
+        CommandMenu("Navigate") {
+            ForEach(Array(Page.allCases.enumerated()), id: \.offset) { index, page in
+                Button(page.rawValue) { model.page = page; openWindow(id: "main") }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            }
+            Divider()
+            Button("Search Models") {
+                model.page = .models
+                if model.modelsSection == "transfers" { model.modelsSection = "library" }
+                model.searchFocusRequest += 1
+                openWindow(id: "main")
+            }.keyboardShortcut("f", modifiers: .command)
+            Button("Refresh Models") {
+                Task { await model.models.refresh(settings: model.settings) }
+            }.keyboardShortcut("r", modifiers: .command)
         }
     }
 }

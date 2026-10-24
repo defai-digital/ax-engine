@@ -127,7 +127,7 @@ private func temporary() throws -> URL {
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
     var settings = AppSettings(); settings.executable = executable.path
     settings.modelsDirectory = root.appendingPathComponent("models").path
-    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"))
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: testScannerURL(), scanEnvironment: ["HF_HUB_CACHE": root.appendingPathComponent("empty-cache").path])
     let task = Task { await store.refresh(settings: settings) }
     while !store.refreshing { try await Task.sleep(for: .milliseconds(20)) }
     let started = Date()
@@ -186,7 +186,7 @@ private func temporary() throws -> URL {
     var settings = AppSettings(); settings.executable = fixture.path
     settings.port = try #require(Int(portResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
     settings.modelsDirectory = root.appendingPathComponent("models").path
-    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"))
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: testScannerURL(), scanEnvironment: ["HF_HUB_CACHE": root.appendingPathComponent("empty-cache").path])
     await store.refresh(settings: settings)
     #expect(store.catalog.count == 1)
     store.enqueue(try #require(store.catalog.first), settings: settings)
@@ -203,6 +203,9 @@ private func temporary() throws -> URL {
     let deadline = Date().addingTimeInterval(15)
     while !runtime.ready && Date() < deadline && runtime.owned { try await Task.sleep(for: .milliseconds(50)) }
     #expect(runtime.ready)
+    #expect(runtime.startedAt != nil)
+    #expect(runtime.lastSuccessfulCheck != nil)
+    #expect(runtime.selectedModel == "fixture")
     let client = try #require(runtime.connection)
     let attached = RuntimeController()
     await attached.attach(port: settings.port, apiKey: "wrong")
@@ -328,4 +331,52 @@ private func temporary() throws -> URL {
     #expect(try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) == binary)
     try FileManager.default.removeItem(at: marker)
     #expect(throws: AppFailure.self) { try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) }
+}
+
+func testScannerURL() -> URL {
+    URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent(".build/debug/AXEngineModelScanner")
+}
+
+@Test @MainActor func attachedServiceFailurePreservesOwnershipAndHealthFreshness() async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = root.appendingPathComponent("runtime")
+    try FileManager.default.copyItem(at: #require(Bundle.module.url(forResource: "runtime", withExtension: "py", subdirectory: "Fixtures")), to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path)
+    let portResult = try await ProcessJob().run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+        arguments: ["-c", "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1])"])
+    let port = try #require(Int(portResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+    let service = ProcessJob()
+    defer { service.cancel() }
+    let running = Task { try await service.run(executable: fixture, arguments: ["serve", "fixture", "--port", String(port)],
+                                                environment: ["AX_ENGINE_API_KEY": "fixture-key"]) }
+    let attached = RuntimeController()
+    let startDeadline = Date().addingTimeInterval(8)
+    while !attached.ready && Date() < startDeadline {
+        await attached.attach(port: port, apiKey: "fixture-key")
+        if !attached.ready { try await Task.sleep(for: .milliseconds(100)) }
+    }
+    #expect(attached.ready)
+    #expect(!attached.owned)
+    let marker = fixture.appendingPathExtension("fail-metrics")
+    try Data().write(to: marker)
+    let failureDeadline = Date().addingTimeInterval(6)
+    while attached.state != "Connection degraded" && Date() < failureDeadline { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(attached.state == "Connection degraded")
+    #expect(!attached.ready)
+    #expect(attached.metrics.isEmpty)
+    #expect(attached.lastSuccessfulCheck != nil)
+    let lastCheck = attached.lastSuccessfulCheck
+    #expect(service.running)
+    #expect(!attached.owned)
+    try FileManager.default.removeItem(at: marker)
+    let recoveryDeadline = Date().addingTimeInterval(6)
+    while !attached.ready && Date() < recoveryDeadline { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(attached.ready)
+    #expect(attached.lastSuccessfulCheck != lastCheck)
+    await attached.stop()
+    #expect(attached.lastSuccessfulCheck == nil)
+    #expect(service.running)
+    service.cancel()
+    _ = try? await running.value
 }

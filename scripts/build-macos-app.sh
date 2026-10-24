@@ -23,6 +23,8 @@ APP="$OUTPUT/AX Engine.app"
 [[ ! -e "$APP/Contents/Resources/runtime" ]] || { echo 'Use a fresh output directory when a runtime has already been staged.' >&2; exit 1; }
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/AXEngineApp" "$APP/Contents/MacOS/AXEngineApp"
+cp "$BIN/AXEngineModelScanner" "$APP/Contents/MacOS/AXEngineModelScanner"
+codesign --force --sign - "$APP/Contents/MacOS/AXEngineModelScanner"
 # Always regenerate from the untouched source master; never from a masked icon.
 "${AX_APP_ICON_PYTHON:-python3}" "$PACKAGE/Scripts/generate_icon.py" --output "$APP/Contents/Resources"
 cp "$PACKAGE/Resources/MTPLX-LICENSE.txt" "$PACKAGE/Resources/MTPLX-NOTICE.txt" "$APP/Contents/Resources/"

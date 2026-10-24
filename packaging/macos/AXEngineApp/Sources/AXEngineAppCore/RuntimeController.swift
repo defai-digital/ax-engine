@@ -13,6 +13,9 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var owned = false
     @Published public private(set) var busy = false
     @Published public private(set) var logs = ""
+    @Published public private(set) var startedAt: Date?
+    @Published public private(set) var lastSuccessfulCheck: Date?
+    @Published public private(set) var selectedModel = ""
     public let job = ProcessJob()
     private let logStore = BoundedLogStore(capacity: 250)
     private var generation = UUID()
@@ -33,6 +36,7 @@ public final class RuntimeController: ObservableObject {
             let key = UUID().uuidString + UUID().uuidString
             let candidate = EngineConnection(port: settings.port, apiKey: key)
             busy = true; owned = true; state = "Starting"; error = nil; logs = ""
+            selectedModel = model; startedAt = Date(); lastSuccessfulCheck = nil
             launch = Task { [self] in
                 do {
                     let result = try await job.run(executable: executable,
@@ -58,7 +62,7 @@ public final class RuntimeController: ObservableObject {
                     do {
                         let discovered = try await candidate.models()
                         guard !Task.isCancelled, generation == identity, job.running else { return }
-                        models = discovered; connection = candidate; state = "Running"; busy = false
+                        models = discovered; connection = candidate; state = "Running"; busy = false; lastSuccessfulCheck = Date()
                         await monitor(candidate, identity: identity)
                         return
                     } catch {
@@ -80,11 +84,12 @@ public final class RuntimeController: ObservableObject {
         guard (1024...65535).contains(port) else { error = "Choose a port between 1024 and 65535."; return }
         let identity = UUID(); generation = identity
         busy = true; state = "Connecting"; error = nil
+        startedAt = Date(); lastSuccessfulCheck = nil; selectedModel = ""
         let candidate = EngineConnection(port: port, apiKey: apiKey)
         do {
             let discovered = try await candidate.models()
             guard generation == identity else { return }
-            connection = candidate; models = discovered; state = "Attached"; busy = false
+            connection = candidate; models = discovered; state = "Attached"; busy = false; lastSuccessfulCheck = Date()
             polling = Task { await monitor(candidate, identity: identity) }
         } catch {
             guard generation == identity else { return }
@@ -98,7 +103,7 @@ public final class RuntimeController: ObservableObject {
                 let latest = try await client.metrics()
                 let discovered = try await client.models()
                 guard !Task.isCancelled, generation == identity else { return }
-                metrics = latest; models = discovered; error = nil; state = owned ? "Running" : "Attached"
+                metrics = latest; models = discovered; error = nil; state = owned ? "Running" : "Attached"; lastSuccessfulCheck = Date()
             } catch {
                 guard !Task.isCancelled, generation == identity else { return }
                 // A busy, unauthorized or changed-schema service is not dead.
@@ -122,6 +127,6 @@ public final class RuntimeController: ObservableObject {
     public func detach() {
         guard !owned else { return }
         generation = UUID(); polling?.cancel(); polling = nil
-        connection = nil; models = []; metrics = [:]; busy = false; state = "Stopped"; error = nil
+        connection = nil; models = []; metrics = [:]; busy = false; state = "Stopped"; error = nil; lastSuccessfulCheck = nil; startedAt = nil
     }
 }

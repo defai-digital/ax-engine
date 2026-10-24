@@ -5,26 +5,29 @@ struct ChatView: View {
     @ObservedObject var chat: ChatStore
     @ObservedObject var runtime: RuntimeController
     let settings: AppSettings
-    @State private var prompt = ""
-    @State private var selectedModel = ""
+    var openServer: () -> Void
     @State private var clearConfirmation = false
-    @State private var followOutput = true
-    private var modelID: String { runtime.models.contains(where: { $0.id == selectedModel }) ? selectedModel : runtime.models.first?.id ?? "" }
+    private var modelID: String { runtime.models.contains(where: { $0.id == chat.selectedModel }) ? chat.selectedModel : runtime.models.first?.id ?? "" }
     private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("Model", selection: $selectedModel) {
+                Picker("Model", selection: $chat.selectedModel) {
                     Text(runtime.models.isEmpty ? "No running model" : "Default model").tag("")
                     ForEach(runtime.models) { Text($0.id).tag($0.id) }
                 }.frame(maxWidth: 450).disabled(chat.generating)
                 Spacer()
-                Toggle("Follow output", isOn: $followOutput).toggleStyle(.checkbox)
+                Toggle("Follow output", isOn: $chat.followOutput).toggleStyle(.checkbox)
                 Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || chat.messages.isEmpty)
             }.padding(.horizontal, 26).padding(.vertical, 14)
             if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 26) }
-            if !runtime.ready { ErrorBanner(text: "Start or connect to a server to send messages.").padding(.horizontal, 26) }
+            if !runtime.ready {
+                HStack {
+                    ErrorBanner(text: runtime.error ?? "Start or connect to a server to send messages.")
+                    Button("Review Server") { openServer() }
+                }.padding(.horizontal, 26)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
@@ -41,7 +44,7 @@ struct ChatView: View {
                                     Spacer()
                                     if message.state != "Complete" { Text(message.state).font(.caption).foregroundStyle(.secondary) }
                                     Button { copyText(message.content) } label: { Image(systemName: "doc.on.doc") }
-                                        .buttonStyle(.plain).help("Copy message")
+                                        .buttonStyle(.plain).help("Copy message").accessibilityLabel("Copy message")
                                 }
                                 if !message.reasoning.isEmpty {
                                     DisclosureGroup("Reasoning") { Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -58,11 +61,11 @@ struct ChatView: View {
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(26)
                 }
-                .onChange(of: chat.messages.last?.content) { _, _ in if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: chat.messages.last?.content) { _, _ in if chat.followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
             Divider()
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Message your model…", text: $prompt, axis: .vertical)
+                TextField("Message your model…", text: $chat.draft, axis: .vertical)
                     .lineLimit(2...7).textFieldStyle(.plain).padding(12)
                     .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
                     .disabled(chat.generating)
@@ -76,12 +79,12 @@ struct ChatView: View {
                     if chat.generating { Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } } }
                     else { Button("Send", systemImage: "arrow.up") { send() }.buttonStyle(.borderedProminent)
                             .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !runtime.ready) }
+                            .disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !runtime.ready) }
                 }
             }.padding(20)
         }
         .onChange(of: runtime.models.map(\.id)) { _, ids in
-            if !ids.contains(selectedModel) { selectedModel = "" }
+            if !ids.contains(chat.selectedModel) { chat.selectedModel = "" }
         }
         .alert("Clear this conversation?", isPresented: $clearConfirmation) {
             Button("Clear", role: .destructive) { chat.clear() }
@@ -90,8 +93,8 @@ struct ChatView: View {
     }
     private func send() {
         guard let connection = runtime.connection else { return }
-        chat.send(prompt, model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
-        if chat.generating { prompt = "" }
+        chat.send(chat.draft, model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
+        if chat.generating { chat.draft = "" }
     }
 }
 

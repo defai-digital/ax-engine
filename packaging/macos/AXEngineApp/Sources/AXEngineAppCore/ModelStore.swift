@@ -6,15 +6,17 @@ public struct CatalogModel: Decodable, Identifiable, Sendable, Equatable {
     public let repoId: String
     public let revision: String?
     public let mtpIncluded: Bool?
-    public var id: String { repoId }
+    public var id: String { alias + "|" + target }
     public var target: String { repoId + (revision.map { "@" + $0 } ?? "") }
     public var folderName: String { repoId.replacingOccurrences(of: "/", with: "--") + (revision.map { "--" + $0 } ?? "") }
 }
 
-public struct LocalModel: Identifiable, Sendable, Equatable {
+public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public let path: String
     public let ready: Bool
     public let managed: Bool
+    public var source = "Local folder"
+    public var displayName: String { name.components(separatedBy: " · ").first?.components(separatedBy: "/").last ?? name }
     public var id: String { path }
     public var name: String {
         let url = URL(fileURLWithPath: path)
@@ -70,7 +72,15 @@ public final class ModelStore: ObservableObject {
     @Published public private(set) var error: String?
     @Published public private(set) var refreshing = false
     @Published public private(set) var scanning = false
+    @Published public private(set) var libraryIssue: String?
+    @Published public private(set) var checkedPaths = Set<String>()
+    @Published public private(set) var lastScanAt: Date?
+    @Published public private(set) var discoveryAttempted = false
     private var scanGeneration = 0
+    private var activeScan: ProcessJob?
+    private let scannerURL: URL
+    private let scanTimeout: TimeInterval
+    private let scanEnvironment: [String: String]
     @Published public private(set) var downloading = false
     @Published public private(set) var removing = false
     public let downloadJob = ProcessJob()
@@ -79,15 +89,22 @@ public final class ModelStore: ObservableObject {
     private var queueTask: Task<Void, Never>?
     private var imported: [String] = []
     private let importsURL: URL
-    public init(importsURL: URL = AppPaths.support.appendingPathComponent("imported-models.json")) {
+    public init(importsURL: URL = AppPaths.support.appendingPathComponent("imported-models.json"),
+                scannerURL: URL? = nil, scanTimeout: TimeInterval = 20,
+                scanEnvironment: [String: String] = [:]) {
+        let sibling = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("AXEngineModelScanner")
+        self.scannerURL = scannerURL ?? (FileManager.default.isExecutableFile(atPath: sibling.path) ? sibling
+            : Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("AXEngineModelScanner"))
+        self.scanTimeout = scanTimeout
+        self.scanEnvironment = scanEnvironment
         self.importsURL = importsURL
         if let data = try? Data(contentsOf: importsURL), let paths = try? JSONDecoder().decode([String].self, from: data) { imported = paths }
     }
 
     public func refresh(settings: AppSettings) async {
         guard !refreshing else { return }
-        refreshing = true; error = nil; catalog = []
-        defer { refreshing = false }
+        refreshing = true; error = nil
+        async let libraryScan: Void = scan(settings: settings)
         do {
             let result = try await catalogJob.run(executable: settings.runtime(),
                 arguments: ["download", "--list", "--json"], timeout: 30)
@@ -98,37 +115,128 @@ public final class ModelStore: ObservableObject {
             guard value.schemaVersion == "ax.download_options.v1" else { throw AppFailure.message("Unsupported runtime catalog version.") }
             catalog = value.targets
         } catch { self.error = error.localizedDescription }
-        await scan(settings: settings)
+        refreshing = false
+        await libraryScan
     }
 
     public func scan(settings: AppSettings) async {
         scanGeneration += 1
         let generation = scanGeneration
-        scanning = true
-        let root = settings.modelsDirectory, extra = imported
-        let result = await Task.detached(priority: .utility) { Self.scanLibrary(root: root, imported: extra) }.value
+        let previous = activeScan
+        previous?.cancel()
+        scanning = true; libraryIssue = nil; checkedPaths = []
+        // A superseding scan waits for the previous owned worker to be reaped;
+        // repeated navigation cannot accumulate blocked filesystem workers.
+        while previous?.running == true { await Task.detached { try? await Task.sleep(for: .milliseconds(50)) }.value }
         guard generation == scanGeneration else { return }
-        library = result
-        scanning = false
+        let job = ProcessJob(); activeScan = job
+        var parsedLines = 0
+        var found: [String: LocalModel] = [:]
+        var completed = false
+        var invalid = false
+        var warnings: [String] = []
+        defer {
+            if generation == scanGeneration {
+                scanning = false; discoveryAttempted = true; activeScan = nil
+            }
+        }
+        do {
+            guard FileManager.default.isExecutableFile(atPath: scannerURL.path) else {
+                libraryIssue = "The library scanner is unavailable. Rebuild or reinstall the app, then retry."
+                return
+            }
+            let request = LibraryScanRequest(root: settings.modelsDirectory, imported: imported)
+            let encoded = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+            let result = try await job.run(executable: scannerURL, arguments: [encoded],
+                environment: scanEnvironment, timeout: scanTimeout) { [weak self] output in
+                guard let self, generation == self.scanGeneration, !output.truncated else { return }
+                // Ignore a partial trailing line. ProcessJob batches UI updates.
+                let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: false).dropLast()
+                for line in lines.dropFirst(parsedLines) {
+                    guard let event = try? JSONDecoder().decode(LibraryScanEvent.self, from: Data(line.utf8)) else { invalid = true; continue }
+                    if let item = event.model { found[item.path] = item; self.checkedPaths.insert(item.path) }
+                    if let warning = event.warning, warnings.count < 8 { warnings.append(warning) }
+                    if event.complete { completed = true }
+                }
+                parsedLines = lines.count
+                if !found.isEmpty {
+                    var rows = Dictionary(self.library.map { ($0.path, $0) }, uniquingKeysWith: { _, new in new })
+                    rows.merge(found) { _, new in new }
+                    self.library = rows.values.sorted { $0.path < $1.path }
+                }
+                if !warnings.isEmpty { self.libraryIssue = warnings.joined(separator: "\n") }
+            }
+            guard generation == scanGeneration else { return }
+            guard result.status == 0, !result.truncated, completed, !invalid else {
+                throw AppFailure.message("The library scan did not finish. Retry to check remaining folders.")
+            }
+            if warnings.isEmpty {
+                library = found.values.sorted { $0.path < $1.path }; lastScanAt = Date()
+            }
+        } catch {
+            guard generation == scanGeneration else { return }
+            libraryIssue = error is CancellationError
+                ? "Scan stopped. Results already found are kept; some folders have not been checked."
+                : "Scan incomplete. A folder may be slow or unavailable. Results already found are kept. Retry to check remaining folders."
+        }
     }
 
-    public nonisolated static func scanLibrary(root: String, imported: [String], environment: [String: String] = ProcessInfo.processInfo.environment) -> [LocalModel] {
+    public func cancelScan() {
+        guard scanning else { return }
+        scanGeneration += 1
+        activeScan?.cancel()
+        scanning = false; discoveryAttempted = true
+        libraryIssue = "Scan stopped. Results already found are kept; some folders have not been checked."
+    }
+
+    public nonisolated static func scanLibrary(root: String, imported: [String], environment: [String: String] = ProcessInfo.processInfo.environment,
+                                               emit: ((LocalModel) -> Void)? = nil,
+                                               warning: ((String) -> Void)? = nil) -> [LocalModel] {
         let fm = FileManager.default
-        let rootURL = URL(fileURLWithPath: root)
-        var paths = (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? []
-        if let configured = environment["AX_ENGINE_MODELS_DIR"], configured != root {
-            paths += (try? fm.contentsOfDirectory(at: URL(fileURLWithPath: configured), includingPropertiesForKeys: nil)) ?? []
+        var found: [LocalModel] = [], seen = Set<String>()
+        func entries(_ url: URL, optional: Bool = false) -> [URL] {
+            do { return try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil).sorted { $0.path < $1.path } }
+            catch {
+                let failure = error as NSError
+                if !(optional && failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError) {
+                    warning?("Could not read " + url.lastPathComponent + ". Check its location or storage connection.")
+                }
+                return []
+            }
         }
-        paths += imported.map { URL(fileURLWithPath: $0) }
+        func add(_ path: URL, source: String, ready: Bool? = nil) {
+            let canonical = path.resolvingSymlinksInPath().standardizedFileURL.path
+            guard !seen.contains(canonical), fm.fileExists(atPath: path.appendingPathComponent("config.json").path)
+                || fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path) else { return }
+            seen.insert(canonical)
+            let item = LocalModel(path: canonical, ready: ready ?? modelReady(path),
+                                  managed: canRemove(path: canonical, root: root), source: source)
+            found.append(item); emit?(item)
+        }
+        func linked(_ url: URL) -> Bool { (try? fm.destinationOfSymbolicLink(atPath: url.path)) != nil || url.path.hasPrefix("/Volumes/") }
+        var deferred: [() -> Void] = []
+        func visit(_ url: URL, action: @escaping () -> Void) {
+            if linked(url) { deferred.append(action) } else { action() }
+        }
+        let rootURL = URL(fileURLWithPath: root)
+        visit(rootURL) { for path in entries(rootURL, optional: !root.hasPrefix("/Volumes/")) { add(path, source: "App folder") } }
+        if let configured = environment["AX_ENGINE_MODELS_DIR"], configured != root {
+            let url = URL(fileURLWithPath: configured)
+            visit(url) { for path in entries(url) { add(path, source: "Configured folder") } }
+        }
+        for path in imported.map({ URL(fileURLWithPath: $0) }) {
+            visit(path) {
+                guard fm.fileExists(atPath: path.path) else { warning?("An imported folder is unavailable. Reconnect its storage or import it again."); return }
+                add(path, source: "Imported")
+            }
+        }
         let cache: URL
         if let path = environment["HF_HUB_CACHE"] { cache = URL(fileURLWithPath: path) }
         else if let path = environment["HF_HOME"] { cache = URL(fileURLWithPath: path).appendingPathComponent("hub") }
         else if let path = environment["XDG_CACHE_HOME"] { cache = URL(fileURLWithPath: path).appendingPathComponent("huggingface/hub") }
         else { cache = fm.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub") }
-        for repo in (try? fm.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? [] where repo.lastPathComponent.hasPrefix("models--") {
-            // Match the TUI: one representative snapshot per repository,
-            // preferring complete weights, then the newest snapshot.
-            let snapshots = ((try? fm.contentsOfDirectory(at: repo.appendingPathComponent("snapshots"), includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey])) ?? [])
+        func repository(_ repo: URL) {
+            let snapshots = entries(repo.appendingPathComponent("snapshots"), optional: true)
                 .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
             let ranked = snapshots.map { snapshot in
                 (url: snapshot, ready: modelReady(snapshot),
@@ -137,16 +245,17 @@ public final class ModelStore: ObservableObject {
                 if left.ready != right.ready { return !left.ready && right.ready }
                 return left.modified == right.modified ? left.url.path < right.url.path : left.modified < right.modified
             }
-            if let selected = ranked.last { paths.append(selected.url) }
+            if let selected = ranked.last { add(selected.url, source: "Hugging Face cache", ready: selected.ready) }
         }
-        var seen = Set<String>()
-        return paths.compactMap { path in
-            let canonical = path.resolvingSymlinksInPath().standardizedFileURL.path
-            guard seen.insert(canonical).inserted, fm.fileExists(atPath: path.appendingPathComponent("config.json").path) || fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path) else { return nil }
-            return LocalModel(path: canonical,
-                ready: modelReady(path),
-                managed: canRemove(path: canonical, root: root))
-        }.sorted { $0.path < $1.path }
+        visit(cache) {
+            for repo in entries(cache, optional: !cache.path.hasPrefix("/Volumes/")) where repo.lastPathComponent.hasPrefix("models--") {
+                visit(repo) { repository(repo) }
+            }
+        }
+        // Deferred roots may enqueue linked repositories. Drain in order.
+        var index = 0
+        while index < deferred.count { deferred[index](); index += 1 }
+        return found.sorted { $0.path < $1.path }
     }
 
     // Same readiness boundary as the TUI catalog: metadata plus complete
@@ -234,9 +343,9 @@ public final class ModelStore: ObservableObject {
     }
     public func shutdown() async {
         for index in downloads.indices where downloads[index].state == "Queued" { downloads[index].state = "Cancelled" }
-        catalogJob.cancel(); removalJob.cancel(); downloadJob.cancel()
+        cancelScan(); catalogJob.cancel(); removalJob.cancel(); downloadJob.cancel()
         await queueTask?.value
-        while catalogJob.running || removalJob.running {
+        while catalogJob.running || removalJob.running || activeScan?.running == true {
             await Task.detached { try? await Task.sleep(for: .milliseconds(50)) }.value
         }
     }
