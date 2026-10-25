@@ -39,11 +39,32 @@ tokens, greedy text identical at every length):
 | 8,976 | 13.64 s | 11.56 s | 658 -> 776 |
 | 39,225 | 75.37 s | 57.76 s | 521 -> 679 |
 
+## Shipped opt-in: relaxed indexed sparse prompt attention (default off)
+
+`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL=1` attends the selected tokens through a
+Metal kernel that reads KV by index instead of copying the selected KV per query.
+It is not bit-exact with the gathered SDPA path (MLX's vector 2-pass SDPA splits
+keys across simdgroups; the kernel walks them sequentially): greedy text can
+differ after a near-tie, but the first 80 characters match on both long prompts.
+On top of GPU selection, M5 Max 128 GB, MXFP4, 128 generated tokens:
+
+| Prompt tokens | Default TTFT | Indexed TTFT | Prefill tok/s |
+|---|---:|---:|---:|
+| 2,207 | 2.34 s | 2.27 s | 944 -> 971 |
+| 8,976 | 11.54 s | 8.86 s | 778 -> 1,013 |
+| 39,225 | 59.78 s | 42.39 s | 656 -> 925 |
+
+Decode is unchanged (44.3-47.5 tok/s). The kernel is compiled at load only when
+the switch is on. Off, the only default-path change is that the gathered path
+now caps a sub-batch by its actual padded gather (outputs unchanged).
+
+Versus the pre-wave baseline (39k TTFT 76.2 s, 515 tok/s) the default path is
+now 57.8 s / 679 tok/s and the opt-in relaxed path 42.4 s / 925 tok/s.
+
 ## Tried and not merged
 
 | Increment | Exactness | Measured (M2 Ultra, release) | Decision |
 |---|---|---|---|
-| Indexed sparse prompt attention: Metal kernel reading selected KV by index instead of per-query copies (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) | Tolerance tests pass; greedy text differs at 8,192 tokens. Diagnosed as rounding drift, not a bug: prefill argmax identical in all four chunks, the first greedy flip is an exact tie (margin 0.0) on the shipped path. Bit-exactness is not reachable (MLX SDPA vector 2-pass splits keys across simdgroups; the kernel walks them sequentially) | `qsa_d_attend` 4.401 -> 4.189 s (-4.8%), wall 23.42 -> 22.22 s (-5.1%), peak unchanged | Not merged |
 | MoE inverse permutation by scatter instead of a second argsort (`AX_MLX_FLASH_NEXT_MOE_INVERSE_SCATTER`) | Bit-identical (integer permutation and all outputs) | Microbench 0.38 -> 0.24 ms per inverse; end-to-end `moe_compute` within noise (warm pair 10.81 -> 11.13 s) | Not merged |
 
 Already shipped from the same item: tiled QSA scores (opt-in, ~2.6% TTFT with an
