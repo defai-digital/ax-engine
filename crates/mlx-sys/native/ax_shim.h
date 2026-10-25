@@ -220,6 +220,12 @@ int mlx_less_equal(mlx_array* res, const mlx_array a, const mlx_array b, const m
 int mlx_where(mlx_array* res, const mlx_array condition, const mlx_array x, const mlx_array y, const mlx_stream s);
 int mlx_outer(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
 int mlx_logical_and(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
+int mlx_bitwise_and(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
+int mlx_bitwise_or(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
+int mlx_bitwise_xor(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
+int mlx_left_shift(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
+int mlx_right_shift(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);
+int mlx_bitwise_invert(mlx_array* res, const mlx_array a, const mlx_stream s);
 
 /* Reduction / indexing */
 int mlx_sum_axis(mlx_array* res, const mlx_array a, int axis, bool keepdims, const mlx_stream s);

@@ -541,7 +541,13 @@ binary_op!(minimum, mlx_minimum);
 binary_op!(power, mlx_power);
 binary_op!(equal, mlx_equal);
 binary_op!(not_equal, mlx_not_equal);
+binary_op!(bitwise_and, mlx_bitwise_and);
+binary_op!(bitwise_or, mlx_bitwise_or);
+binary_op!(bitwise_xor, mlx_bitwise_xor);
+binary_op!(left_shift, mlx_left_shift);
+binary_op!(right_shift, mlx_right_shift);
 
+unary_op!(bitwise_invert, mlx_bitwise_invert);
 unary_op!(sigmoid, mlx_sigmoid);
 unary_op!(tanh, mlx_tanh);
 unary_op!(erf, mlx_erf);

@@ -5598,7 +5598,10 @@ env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT` — choose Flash Next QSA blocks for
     /// single-query steps (decode, singleton verification) on the device instead
     /// of reading the scores back to the host, so one token's layers evaluate in
-    /// one graph. Default ON; set `=0` to restore the host selection. Multi-query
+    /// one graph. Default ON; set `=0` to restore the host selection. The
+    /// default device order is a negated-score argsort. Its float compare
+    /// flushes subnormals, so a subnormal can tie with zero. Decode does not
+    /// promise host parity for a subnormal score. Multi-query
     /// chunks follow `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` below.
     flash_next_qsa_device_select_enabled,
     "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT"
@@ -5615,7 +5618,9 @@ env_flag_default_on!(
     /// device for short multi-query verifier windows (the block/batched MTP
     /// verifier), removing the per-layer score read-back stall. Selection order
     /// is score descending, then the lower block id. The default negated-score
-    /// argsort depends on MLX tie and NaN order. `=1` on
+    /// argsort depends on MLX tie and NaN order. Its float compare flushes
+    /// subnormals, so a subnormal can tie with zero. Decode does not promise
+    /// host parity for a subnormal score. `=1` on
     /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY` orders a unique block key
     /// instead, so that result does not depend on argsort stability. Default
     /// ON; set `=0` to restore host selection for multi-query chunks.
@@ -5635,7 +5640,9 @@ env_flag!(
     /// ordered tokens match the host sort for finite scores, and the selection
     /// graph does not read the key back. A missing block-key kernel uses the
     /// argsort too. Enable it when an MLX bump breaks the tie and NaN order
-    /// the default argsort relies on. This does not change prefill
+    /// the default argsort relies on. That argsort compares floats and flushes
+    /// subnormals; decode does not promise host parity for a subnormal score.
+    /// This does not change prefill
     /// (`AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT`) and does not by itself
     /// move a step off the device: single-query selection still follows
     /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`, and short windows still follow
@@ -5647,7 +5654,8 @@ env_flag!(
 env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` — choose QSA blocks for a
     /// prefill chunk on the device. Scores stay on the device: a total order
-    /// key (score descending, lower block id first, signed zero collapsed)
+    /// key (score descending, lower block id first, signed zero collapsed,
+    /// subnormals ordered from their IEEE bits)
     /// is partitioned and sorted there, then the existing attend path gathers
     /// those indices. Default ON; the ordered indices and the logits match
     /// the host sort. Set `=0` to restore that host sort exactly.
