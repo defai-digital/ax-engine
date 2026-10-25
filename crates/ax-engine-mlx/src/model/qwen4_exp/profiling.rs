@@ -3112,3 +3112,374 @@ fn flash_next_qsa_prefill_device_select_matches_host_on_real_pack() {
         );
     }
 }
+
+/// How often two queries in one prefill chunk select the same complete blocks,
+/// in the same score order, with the same visible-tail start, so that one
+/// gather could serve both.
+///
+/// Measurement only: the host selection path is forced and the recorded index
+/// lists are read back. No production path changes. The launch fixes the
+/// shape: `AX_MLX_LONG_PROMPT_PREFILL_CHUNK=2048` for a 2048-token chunk, and
+/// `AX_FLASH_NEXT_QSA_DENSE_SHORT_CONTEXT=0` so the first chunk also records a
+/// selection instead of attending densely on the identity.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; 8192-token prompt at 2048-token chunks"]
+fn flash_next_qsa_prefill_pair_rate_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::{capture_host_selections, with_prefill_device_select};
+    use ax_engine_core::NativeModelArtifacts;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// Outer prefill chunk this measurement is defined at.
+    const CHUNK: usize = 2048;
+    /// Queries per pairing sub-batch: pairs never cross a boundary.
+    const SUB_BATCH: usize = 512;
+
+    #[derive(Default)]
+    struct PairRow {
+        adjacent_matches: usize,
+        adjacent_pairs: usize,
+        block_only_matches: usize,
+        adjacent_set_matches: usize,
+        adjacent_jaccard_ppm: u64,
+        any_matches: usize,
+        any_pairs: usize,
+        largest_group: usize,
+        largest_set_group: usize,
+    }
+
+    /// Overlap of two sorted block sets in parts per million: the intersection
+    /// divided by the union. Two empty selections count as identical, so a
+    /// query with no complete block does not read as a mismatch.
+    fn jaccard_ppm(left: &[i32], right: &[i32]) -> u64 {
+        if left.is_empty() && right.is_empty() {
+            return 1_000_000;
+        }
+        let (mut left_index, mut right_index, mut common) = (0usize, 0usize, 0usize);
+        while left_index < left.len() && right_index < right.len() {
+            match left[left_index].cmp(&right[right_index]) {
+                std::cmp::Ordering::Less => left_index += 1,
+                std::cmp::Ordering::Greater => right_index += 1,
+                std::cmp::Ordering::Equal => {
+                    common += 1;
+                    left_index += 1;
+                    right_index += 1;
+                }
+            }
+        }
+        let union = left.len() + right.len() - common;
+        (common as u64 * 1_000_000) / union as u64
+    }
+
+    /// Split one query's recorded index list into its complete-block ids in
+    /// score order and its visible-tail start, or `None` when the list does
+    /// not fit `abs_pos`.
+    ///
+    /// A query keeps `min(block_topk, complete)` blocks, each expanded to
+    /// `ratio` consecutive tokens, then the visible tail. So the tail length
+    /// and the block count are closed-form in the position.
+    fn parse_query(
+        list: &[i32],
+        abs_pos: usize,
+        ratio: usize,
+        block_topk: usize,
+    ) -> Option<(Vec<i32>, usize)> {
+        let visible = abs_pos + 1;
+        let complete = visible / ratio;
+        let tail_start = complete * ratio;
+        let tail_len = visible - tail_start;
+        if list.len() < tail_len {
+            return None;
+        }
+        let block_len = list.len() - tail_len;
+        if !block_len.is_multiple_of(ratio) || block_len / ratio != block_topk.min(complete) {
+            return None;
+        }
+        for (offset, token) in list[block_len..].iter().enumerate() {
+            if *token as usize != tail_start + offset {
+                return None;
+            }
+        }
+        let mut blocks = Vec::with_capacity(block_len / ratio);
+        for run in list[..block_len].chunks_exact(ratio) {
+            let start = run[0] as usize;
+            if !start.is_multiple_of(ratio) || start / ratio >= complete {
+                return None;
+            }
+            if run
+                .iter()
+                .enumerate()
+                .any(|(index, token)| *token as usize != start + index)
+            {
+                return None;
+            }
+            blocks.push((start / ratio) as i32);
+        }
+        Some((blocks, tail_start))
+    }
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    assert_eq!(
+        tokens.len(),
+        8192,
+        "the pair-rate measurement is an 8192-token prompt"
+    );
+    let indexer = &artifacts.manifest().qwen4_exp;
+    let ratio = indexer
+        .indexer_compress_ratio
+        .expect("indexer_compress_ratio") as usize;
+    let budget = indexer.indexer_budget.expect("indexer_budget") as usize;
+    assert!(
+        ratio > 0 && budget.is_multiple_of(ratio),
+        "indexer geometry: budget {budget}, ratio {ratio}"
+    );
+    let block_topk = budget / ratio;
+    let ranges = chunk_ranges(tokens.len(), CHUNK);
+    assert!(
+        ranges.iter().all(|&(start, end)| end - start == CHUNK),
+        "AX_MLX_LONG_PROMPT_PREFILL_CHUNK must be {CHUNK}: got {ranges:?}"
+    );
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let qsa_layers: Vec<usize> = trunk
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| matches!(&layer.attention, Qwen4ExpAttentionBranch::Qsa(_)))
+        .map(|(index, _)| index)
+        .collect();
+    assert!(!qsa_layers.is_empty(), "no QSA layer in the trunk");
+    let owner = cfg.compile_cache_identity;
+    let (timing, log) = capture_host_selections(|| {
+        with_prefill_device_select(false, || {
+            run_chunked_prefill(trunk, &tokens, owner, CHUNK, false)
+        })
+    });
+    eprintln!(
+        "PAIR_RATE config: layers {}, qsa layers {}, ratio {ratio}, block_topk \
+         {block_topk}, chunk {CHUNK}, sub-batch {SUB_BATCH}, prefill {:.3} s",
+        trunk.layers.len(),
+        qsa_layers.len(),
+        timing.seconds
+    );
+    assert!(!log.is_empty(), "host selections were not recorded");
+
+    let mut rows: BTreeMap<(usize, usize), PairRow> = BTreeMap::new();
+    let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut slot_in_base: BTreeMap<usize, usize> = BTreeMap::new();
+    for (call, entry) in log.iter().enumerate() {
+        assert_eq!(entry.len(), 1, "call {call}: batch must be 1");
+        let queries = &entry[0];
+        let mut parsed = None;
+        let mut base = None;
+        'find: for &(offset, len) in &ranges {
+            if queries.len() > len {
+                continue;
+            }
+            // A call covers its whole chunk. A shorter call would be an
+            // internal split, which is aligned at the pairing sub-batch.
+            let stride = if queries.len() == len { len } else { SUB_BATCH };
+            let mut sub = 0;
+            while sub + queries.len() <= len {
+                let candidate: Option<Vec<(Vec<i32>, usize)>> = (0..queries.len())
+                    .map(|query| {
+                        parse_query(&queries[query], offset + sub + query, ratio, block_topk)
+                    })
+                    .collect();
+                if let Some(candidate) = candidate {
+                    parsed = Some(candidate);
+                    base = Some(offset + sub);
+                    break 'find;
+                }
+                sub += stride;
+            }
+        }
+        let (parsed, base) = match (parsed, base) {
+            (Some(parsed), Some(base)) => (parsed, base),
+            _ => panic!(
+                "call {call}: {} recorded queries do not fit any {CHUNK}-token chunk at ratio \
+                 {ratio}, block_topk {block_topk}",
+                queries.len()
+            ),
+        };
+        let slot = slot_in_base.entry(base).or_insert(0);
+        let layer = *qsa_layers.get(*slot).unwrap_or_else(|| {
+            panic!(
+                "call {call}: chunk {base} has more QSA calls than the {} QSA layers",
+                qsa_layers.len()
+            )
+        });
+        *slot += 1;
+        assert!(
+            seen.insert((layer, base)),
+            "call {call}: layer {layer} chunk {base} recorded two selections"
+        );
+        let row = rows.entry((layer, base)).or_default();
+        for sub in parsed.chunks(SUB_BATCH) {
+            let mut by_key: HashMap<(&[i32], usize), usize> = HashMap::new();
+            let mut by_blocks: HashMap<&[i32], usize> = HashMap::new();
+            let mut by_set: HashMap<&[i32], usize> = HashMap::new();
+            let mut sorted_sets: Vec<Vec<i32>> = Vec::with_capacity(sub.len());
+            for (blocks, tail_start) in sub {
+                *by_key.entry((blocks.as_slice(), *tail_start)).or_default() += 1;
+                *by_blocks.entry(blocks.as_slice()).or_default() += 1;
+                let mut set = blocks.clone();
+                set.sort_unstable();
+                sorted_sets.push(set);
+            }
+            for set in &sorted_sets {
+                *by_set.entry(set.as_slice()).or_default() += 1;
+            }
+            for pair in sub.windows(2) {
+                let (left_blocks, left_tail) = (&pair[0].0, pair[0].1);
+                let (right_blocks, right_tail) = (&pair[1].0, pair[1].1);
+                row.adjacent_pairs += 1;
+                if left_blocks == right_blocks {
+                    row.block_only_matches += 1;
+                    if left_tail == right_tail {
+                        row.adjacent_matches += 1;
+                    }
+                }
+            }
+            for pair in sorted_sets.windows(2) {
+                let (left, right) = (pair[0].as_slice(), pair[1].as_slice());
+                if left == right {
+                    row.adjacent_set_matches += 1;
+                }
+                row.adjacent_jaccard_ppm += jaccard_ppm(left, right);
+            }
+            for count in by_key.values() {
+                row.any_matches += count * (count - 1) / 2;
+            }
+            row.any_pairs += sub.len() * (sub.len() - 1) / 2;
+            for count in by_blocks.values() {
+                row.largest_group = row.largest_group.max(*count);
+            }
+            for count in by_set.values() {
+                row.largest_set_group = row.largest_set_group.max(*count);
+            }
+        }
+    }
+
+    let percent = |hits: usize, total: usize| {
+        if total == 0 {
+            0.0
+        } else {
+            100.0 * hits as f64 / total as f64
+        }
+    };
+    let jaccard = |sum_ppm: u64, pairs: usize| {
+        if pairs == 0 {
+            0.0
+        } else {
+            (sum_ppm as f64 / pairs as f64) / 10_000.0
+        }
+    };
+    eprintln!(
+        "PAIR_RATE table: adjacent = (q, q+1) in a {SUB_BATCH}-query sub-batch with identical \
+         complete blocks in score order and the same visible-tail start; any = same over every \
+         pair in the sub-batch; group = largest set of queries with identical complete blocks; \
+         set = adjacent pairs whose block set matches ignoring order; jac = mean adjacent \
+         block-set Jaccard; setgrp = largest group sharing a block set"
+    );
+    eprintln!(
+        "{:>5} {:>6} {:>8} {:>10} {:>10} {:>6} {:>8} {:>7} {:>7}",
+        "layer", "chunk", "pairs", "adjacent%", "any%", "group", "set%", "jac%", "setgrp"
+    );
+    for ((layer, base), row) in &rows {
+        eprintln!(
+            "{:>5} {:>6} {:>8} {:>9.2}% {:>9.2}% {:>6} {:>7.2}% {:>6.1}% {:>7}",
+            layer,
+            base,
+            row.adjacent_pairs,
+            percent(row.adjacent_matches, row.adjacent_pairs),
+            percent(row.any_matches, row.any_pairs),
+            row.largest_group,
+            percent(row.adjacent_set_matches, row.adjacent_pairs),
+            jaccard(row.adjacent_jaccard_ppm, row.adjacent_pairs),
+            row.largest_set_group
+        );
+    }
+
+    let mut per_layer: BTreeMap<usize, PairRow> = BTreeMap::new();
+    for ((layer, _), row) in &rows {
+        let total = per_layer.entry(*layer).or_default();
+        total.adjacent_matches += row.adjacent_matches;
+        total.adjacent_pairs += row.adjacent_pairs;
+        total.block_only_matches += row.block_only_matches;
+        total.adjacent_set_matches += row.adjacent_set_matches;
+        total.adjacent_jaccard_ppm += row.adjacent_jaccard_ppm;
+        total.any_matches += row.any_matches;
+        total.any_pairs += row.any_pairs;
+        total.largest_group = total.largest_group.max(row.largest_group);
+        total.largest_set_group = total.largest_set_group.max(row.largest_set_group);
+    }
+    eprintln!(
+        "{:>5} {:>9} {:>10} {:>10} {:>6} {:>8} {:>7} {:>7}",
+        "layer", "pairs", "adjacent%", "any%", "group", "set%", "jac%", "setgrp"
+    );
+    for (layer, row) in &per_layer {
+        eprintln!(
+            "{:>5} {:>9} {:>9.2}% {:>9.2}% {:>6} {:>7.2}% {:>6.1}% {:>7}",
+            layer,
+            row.adjacent_pairs,
+            percent(row.adjacent_matches, row.adjacent_pairs),
+            percent(row.any_matches, row.any_pairs),
+            row.largest_group,
+            percent(row.adjacent_set_matches, row.adjacent_pairs),
+            jaccard(row.adjacent_jaccard_ppm, row.adjacent_pairs),
+            row.largest_set_group
+        );
+    }
+
+    let adjacent_pairs: usize = rows.values().map(|row| row.adjacent_pairs).sum();
+    let adjacent_matches: usize = rows.values().map(|row| row.adjacent_matches).sum();
+    let block_only_matches: usize = rows.values().map(|row| row.block_only_matches).sum();
+    let any_pairs: usize = rows.values().map(|row| row.any_pairs).sum();
+    let any_matches: usize = rows.values().map(|row| row.any_matches).sum();
+    let adjacent_set_matches: usize = rows.values().map(|row| row.adjacent_set_matches).sum();
+    let adjacent_jaccard_ppm: u64 = rows.values().map(|row| row.adjacent_jaccard_ppm).sum();
+    let largest_group: usize = rows
+        .values()
+        .map(|row| row.largest_group)
+        .max()
+        .unwrap_or(0);
+    let largest_set_group: usize = rows
+        .values()
+        .map(|row| row.largest_set_group)
+        .max()
+        .unwrap_or(0);
+    assert!(adjacent_pairs > 0, "no adjacent pair was measured");
+    let p = adjacent_matches as f64 / adjacent_pairs as f64;
+    assert!(p.is_finite());
+    eprintln!(
+        "PAIR_RATE overall: chunks {}, layer-chunks {}, adjacent {}/{} = p {p:.4}, \
+         blocks only {:.4}, any pair {}/{} = {:.4}, largest group {largest_group}",
+        slot_in_base.len(),
+        rows.len(),
+        adjacent_matches,
+        adjacent_pairs,
+        block_only_matches as f64 / adjacent_pairs as f64,
+        any_matches,
+        any_pairs,
+        any_matches as f64 / any_pairs as f64
+    );
+    eprintln!(
+        "PAIR_RATE sets: adjacent block-set identical {}/{} = {:.4}, mean Jaccard {:.4}, \
+         largest set group {largest_set_group}",
+        adjacent_set_matches,
+        adjacent_pairs,
+        adjacent_set_matches as f64 / adjacent_pairs as f64,
+        adjacent_jaccard_ppm as f64 / adjacent_pairs as f64 / 1_000_000.0
+    );
+    eprintln!(
+        "PAIR_RATE estimate: at f = 1 the pairwise gather bound is 1.945 * p = {:.3} s of a \
+         14.84 s prefill",
+        1.945 * p
+    );
+}
