@@ -28,20 +28,19 @@ async fn get_v1_memory_reports_footprint_and_sampled_at() {
     );
     let footprint = body.get("phys_footprint_bytes");
     let peak = body.get("lifetime_max_phys_footprint_bytes");
-    let paired = match (footprint, peak) {
-        (Some(serde_json::Value::Null), Some(serde_json::Value::Null)) => true,
+    match (footprint, peak) {
+        (Some(serde_json::Value::Null), Some(serde_json::Value::Null)) => {}
         (Some(serde_json::Value::Number(footprint)), Some(serde_json::Value::Number(peak))) => {
-            matches!(
-                (footprint.as_u64(), peak.as_u64()),
-                (Some(footprint), Some(peak)) if peak >= footprint
-            )
+            let live = footprint.as_u64().expect("phys_footprint_bytes is a u64");
+            let peak = peak
+                .as_u64()
+                .expect("lifetime_max_phys_footprint_bytes is a u64");
+            assert!(peak >= live, "live footprint {live}, lifetime peak {peak}");
         }
-        _ => false,
-    };
-    assert!(
-        paired,
-        "footprint and lifetime peak must both be null or both be u64 with peak >= footprint: {footprint:?} {peak:?}"
-    );
+        _ => panic!(
+            "footprint and lifetime peak must both be null or both be u64 with peak >= live: {footprint:?} {peak:?}"
+        ),
+    }
     #[cfg(feature = "mlx-native-server")]
     {
         assert!(body["mlx"].get("active_bytes").is_some());
