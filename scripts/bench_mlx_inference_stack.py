@@ -2689,6 +2689,7 @@ def start_axengine(
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
     prefix_cache_enabled: bool = False,
+    mlx_numerics: str = "exact",
 ) -> subprocess.Popen[Any]:
     ensure_port_available(port)
     cmd = [
@@ -2709,6 +2710,7 @@ def start_axengine(
         cmd.append("--mlx-mtp-disable-ngram-stacking")
     if prefill_chunk is not None:
         cmd.extend(["--prefill-chunk", str(prefill_chunk)])
+    cmd.extend(["--mlx-numerics", mlx_numerics])
     if max_batch_tokens is not None:
         cmd.extend(["--max-batch-tokens", str(max_batch_tokens)])
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
@@ -5645,6 +5647,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mlx-numerics",
+        choices=["exact", "fast"],
+        default="exact",
+        help=(
+            "Pass --mlx-numerics to AX server rows. exact is the shipped "
+            "default. fast opts Flash Next into relaxed indexed QSA prefill "
+            "unless AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL is set. Greedy text "
+            "can differ at a near-tie."
+        ),
+    )
+    parser.add_argument(
         "--ax-mtp-policy",
         choices=["auto", "disabled", "required"],
         default=None,
@@ -6347,6 +6360,7 @@ def main() -> None:
                     # provision at least the longest configured prompt.
                     max_batch_tokens=max(max(prompt_lengths), args.prefill_step_size),
                     prefix_cache_enabled=args.ax_enable_prefix_cache,
+                    mlx_numerics=args.mlx_numerics,
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -6543,6 +6557,7 @@ def main() -> None:
         "ax_mtp_max_depth": args.ax_mtp_max_depth,
         "ax_mtp_disable_ngram_stacking": bool(args.ax_mtp_disable_ngram_stacking),
         "ax_mtp_policy": args.ax_mtp_policy,
+        "mlx_numerics": args.mlx_numerics,
         "ax_mtp_approximate_optimistic": bool(args.ax_mtp_approximate_optimistic),
         "ax_mtp_fast_tail_topk_sampling": bool(args.ax_mtp_fast_tail_topk_sampling),
         "ax_qwen_linear_mtp_exact": opt_in_env_enabled(

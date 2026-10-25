@@ -340,6 +340,27 @@ what the kill switch restores.
 | `AX_MLX_IDLE_TICK_MAX_S` | `900` | Seconds to keep ticking after the last request. Unset, empty, or non-numeric values keep 900; `0` is a zero window. Only bounds the keep-warm episode. |
 | `MLX_LIB_DIR` / `AX_MLX_EXPERIMENT_COMMIT` | unset | Build-time only, experiment path. `MLX_LIB_DIR` (with `MLX_INCLUDE_DIR`) is the first resolution choice for the MLX include and library directories. A dev-suffixed MLX version header is linked only when `AX_MLX_EXPERIMENT_COMMIT` names the exact full 40-hex commit embedded in that header and in the built `libmlx` provenance bytes; otherwise the build fails. Production stays on the pinned MLX release, and no bit-exactness claim applies to a dev build. |
 
+### `--mlx-numerics exact|fast`
+
+`ax-engine-server --mlx-numerics` selects a process-level numerics preset.
+`exact` (the default) changes no switch. `fast` turns on
+`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` for Flash Next when that variable is
+unset. An explicit environment value wins, including `0`, empty, and junk, so
+`fast` cannot override an operator who pinned the gathered path. There is no
+per-request option. The choice is logged at startup and returned as
+`mlx_numerics` from `GET /v1/memory`.
+
+Indexed QSA prefill is relaxed, not bit-exact: it attends the same selected
+values, but the reduction order and the online softmax differ, so greedy text
+can differ at a near-tie. On an M5 Max with 128 GB, a 39k-token Flash Next
+prefill measured 57.8 s on `exact` and 42.4 s on `fast`. Prefix snapshots are
+keyed by the resolved numerics tier. The shipped default omits that component,
+so an `exact` process with every other numerics switch at its default still
+matches keys written before the tier existed. A snapshot written with `fast`
+(or with any other non-default numerics switch) misses in both the in-memory
+prefix cache and the disk prefix cache when restored by a process running the
+default. The disk key domain stays `ax.mlx.disk_prefix_key.v4`.
+
 Memory rule: the usable ceiling is `RAM - max(8 GiB, 10% RAM)`, so a 128 GiB
 host reserves 12.8 GiB and admits about 115.2 GiB. The Metal
 `recommendedMaxWorkingSetSize` is reported but never bounds the ceiling: a

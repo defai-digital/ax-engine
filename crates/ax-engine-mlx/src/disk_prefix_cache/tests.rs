@@ -1187,6 +1187,42 @@ fn disk_key_changes_with_kv_quant() {
 }
 
 #[test]
+fn numerics_tier_changes_disk_prefix_key() {
+    let tokens = [1u32, 2, 3, 4];
+    let base = DiskPrefixKeyFields {
+        model_id: "m",
+        artifact_fingerprint_sha256: "aa",
+        route_policy: "direct",
+        layer_layout: "layers=4;ordered-prefix-v2;art=abc",
+        kv_payload_version: 4,
+        kv_quantization: "f16",
+        kv_dtype: "bfloat16",
+        execution_signature: "route=direct;prefill_chunk=2048;cold_chunk=2048;semantic_cuts=0;mlx=pin;soc=M5;layers=4",
+        block_size_tokens: 16,
+        token_count: 4,
+        tokens: &tokens,
+    };
+    let reference = canonical_key_bytes(&base);
+    let signature_tier = canonical_key_bytes(&DiskPrefixKeyFields {
+        execution_signature: "route=direct;prefill_chunk=2048;cold_chunk=2048;semantic_cuts=0;mlx=pin;soc=M5;layers=4;numerics=indexed",
+        ..base
+    });
+    let layout_tier = canonical_key_bytes(&DiskPrefixKeyFields {
+        layer_layout: "layers=4;ordered-prefix-v2;art=abc;numerics=indexed",
+        ..base
+    });
+    assert_ne!(reference, signature_tier);
+    assert_ne!(reference, layout_tier);
+    assert_ne!(signature_tier, layout_tier);
+    assert!(
+        reference
+            .windows(b"ax.mlx.disk_prefix_key.v4".len())
+            .any(|window| window == b"ax.mlx.disk_prefix_key.v4"),
+        "default tier stays on schema v4"
+    );
+}
+
+#[test]
 fn v3_entry_roundtrips_producer_metadata() {
     let dir = unique_tempdir("producer-meta");
     let cache = DiskPrefixCache::open(&dir).expect("open");

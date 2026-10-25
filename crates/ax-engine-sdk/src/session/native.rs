@@ -109,6 +109,8 @@ fn build_mlx_core(
         crate::MlxStreamExpertsMode::Auto => ax_engine_mlx::expert_stream::StreamExpertsMode::Auto,
         crate::MlxStreamExpertsMode::On => ax_engine_mlx::expert_stream::StreamExpertsMode::On,
     });
+    // Before `from_artifacts`: indexed QSA prefill caches its first read.
+    crate::install_mlx_numerics_mode(config.mlx_numerics);
 
     let model_dir = config
         .mlx_model_artifacts_dir()

@@ -12,6 +12,12 @@ use serde_json::{Value, json};
 
 use crate::app_state::AppState;
 
+/// Live installed numerics preset (`exact` or `fast`), not the CLI argument
+/// that requested it.
+fn reported_mlx_numerics() -> &'static str {
+    ax_engine_sdk::installed_mlx_numerics_name()
+}
+
 pub(crate) async fn memory_sample(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -27,6 +33,7 @@ pub(crate) fn memory_report() -> Value {
         "phys_footprint_bytes": footprint,
         "lifetime_max_phys_footprint_bytes": lifetime_peak,
         "sampled_at": sampled_at_rfc3339(),
+        "mlx_numerics": reported_mlx_numerics(),
     });
     if let Some(mlx) = mlx_memory() {
         if let Some(object) = report.as_object_mut() {
@@ -266,5 +273,20 @@ mod tests {
         {
             assert!(report.get("mlx").is_none());
         }
+    }
+
+    #[test]
+    fn memory_report_names_the_installed_mlx_numerics_preset() {
+        // The field is the live installed preset. Installing `fast` here would
+        // race other tests that construct a session, so both spellings are
+        // covered by `mlx_numerics_preset_name_follows_the_preset`.
+        assert_eq!(
+            memory_report()["mlx_numerics"],
+            ax_engine_sdk::installed_mlx_numerics_name()
+        );
+        assert!(matches!(
+            memory_report()["mlx_numerics"].as_str(),
+            Some("exact" | "fast")
+        ));
     }
 }

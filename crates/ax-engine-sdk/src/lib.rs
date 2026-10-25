@@ -100,7 +100,8 @@ pub use request::{
 };
 pub use session::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream,
-    GenerateStreamPerformance, GenerateStreamState, MlxMtpPolicy, MlxStreamExpertsMode,
-    PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
-    SpeechTranscription, StatelessGenerateContext,
+    GenerateStreamPerformance, GenerateStreamState, MlxMtpPolicy, MlxNumericsMode,
+    MlxStreamExpertsMode, PreviewSessionConfigError, PreviewSessionConfigRequest,
+    ResolvedSessionConfigRequest, SpeechTranscription, StatelessGenerateContext,
+    install_mlx_numerics_mode, installed_mlx_numerics_name,
 };
