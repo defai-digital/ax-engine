@@ -28,3 +28,26 @@ directional. Row invariance gets worse on main (two MXFP4 `q_proj` 8-row cells
 turn from exact to DIFF), which conflicts with the bit-exact posture. Production
 stays on 0.32.4; a bump needs an end-to-end verify-window benchmark and an
 exactness re-baseline first.
+
+## End-to-end A/B (same AX build, pinned 0.32.4 vs MLX main `56c2bf9236d9`)
+
+M5 Max 128 GB, server per arm, one request per prompt after a page-cache purge,
+greedy. TTFT / decode tok/s; `same` = output text hash equals the pinned build.
+
+| Model, mode, prompt tokens | MLX 0.32.4 | MLX main | Text |
+|---|---:|---:|---|
+| Flash Next MXFP4 direct, 2,207 | 2.35 s / 47.2 | 3.17 s / 47.5 | differs |
+| Flash Next MXFP4 direct, 8,976 | 11.50 s / 45.7 | 12.19 s / 45.9 | differs |
+| Flash Next MXFP4 direct, 39,225 | 59.94 s / 44.3 | 58.34 s / 44.6 | differs |
+| 27B MXFP4 DFlash2, 30 | 0.24 s / 89.2 | 0.16 s / 89.2 | same |
+| 27B MXFP4 DFlash2, 28 | 0.27 s / 67.2 | 0.15 s / 65.3 | differs |
+| 27B MXFP4 DFlash2, 2,207 | 3.01 s / 55.9 | 2.85 s / 61.9 | differs |
+| 27B MXFP4 direct, 30 | 0.26 s / 35.4 | 0.17 s / 35.4 | same |
+| 27B MXFP4 direct, 2,207 | 2.56 s / 34.8 | 2.52 s / 34.8 | differs |
+
+Decision: stay on 0.32.4. MLX main is not a consistent win (Flash Next prefill
+is slower at 2k-9k, faster only at 39k; 27B DFlash2 decode +11% on one prompt
+and -3% on another; direct decode unchanged), and it changes greedy output on
+most prompts, which would require re-baselining every bit-exact contract. The
+short-prompt TTFT gains on 27B (0.24 -> 0.16 s) are the one clear improvement
+worth re-checking on the next MLX release.
