@@ -284,6 +284,7 @@ pub fn set_metal_buffer_caps_env(max_mb: u32, max_ops: u32) -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_process_global;
     use crate::{MlxArray, argmax};
 
     #[test]
@@ -314,12 +315,18 @@ mod tests {
 
     #[test]
     fn clear_cache_runs_without_error() {
+        // The cache is process-global, so serialize the flush with the tests
+        // that read or resize it.
+        let _guard = lock_process_global();
         // Just verify it doesn't crash
         clear_cache();
     }
 
     #[test]
     fn set_wired_limit_returns_previous_value() {
+        // The wired limit is process-global: hold the shared guard so another
+        // test's set/restore cannot interleave with ours.
+        let _guard = lock_process_global();
         // Set to 0 (no-op) and verify it returns without error
         let prev = set_wired_limit(0);
         // prev is the previous limit; on first call it should be 0 or some value
@@ -345,6 +352,9 @@ mod tests {
 
     #[test]
     fn set_memory_limit_returns_previous_value() {
+        // The memory limit is process-global: hold the shared guard so another
+        // test's set/restore cannot interleave with ours.
+        let _guard = lock_process_global();
         // Save current, set to 0, restore
         let prev = set_memory_limit(0);
         // 0 is a valid limit (means no limit in some MLX versions)
@@ -354,6 +364,9 @@ mod tests {
 
     #[test]
     fn set_cache_limit_returns_previous_value() {
+        // The cache limit is process-global: hold the shared guard so another
+        // test's set/restore cannot interleave with ours.
+        let _guard = lock_process_global();
         let prev = set_cache_limit(0);
         let _ = prev;
         set_cache_limit(prev);
@@ -361,36 +374,51 @@ mod tests {
 
     #[test]
     fn get_peak_memory_returns_nonzero_after_eval() {
-        // Force some GPU work
-        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0]);
-        let b = crate::ops::add(&a, &a, None);
-        eval(&[&b]);
-        let peak = get_peak_memory();
-        // Peak memory should be > 0 after any GPU work on Apple Silicon
-        // (MLX always reports nonzero after first eval)
-        assert!(
-            peak > 0,
-            "get_peak_memory should be > 0 after GPU eval, got {peak}"
-        );
+        // The peak counter is process-global: another test's reset would zero
+        // it between our eval and read, so measure in an isolated process.
+        // The guard only orders this test with the other limit/counter tests.
+        let _guard = lock_process_global();
+        crate::test_support::with_isolated_peak_memory(|| {
+            // Force some GPU work
+            let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0]);
+            let b = crate::ops::add(&a, &a, None);
+            eval(&[&b]);
+            let peak = get_peak_memory();
+            // Peak memory should be > 0 after any GPU work on Apple Silicon
+            // (MLX always reports nonzero after first eval)
+            assert!(
+                peak > 0,
+                "get_peak_memory should be > 0 after GPU eval, got {peak}"
+            );
+        });
     }
 
     #[test]
     fn reset_peak_memory_resets_counter() {
-        // Force some work
-        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
-        eval(&[&a]);
-        reset_peak_memory();
-        let after_reset = get_peak_memory();
-        // After reset, peak should be 0 or very small (only the reset call itself)
-        // We allow a small tolerance for any internal bookkeeping
-        assert!(
-            after_reset < 1024 * 1024,
-            "peak memory after reset should be < 1MB, got {after_reset}"
-        );
+        // Isolated so unrelated concurrent GPU work cannot raise the peak
+        // again between reset and read. The guard only orders this test with
+        // the other limit/counter tests.
+        let _guard = lock_process_global();
+        crate::test_support::with_isolated_peak_memory(|| {
+            // Force some work
+            let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+            eval(&[&a]);
+            reset_peak_memory();
+            let after_reset = get_peak_memory();
+            // After reset, peak should be 0 or very small (only the reset call itself)
+            // We allow a small tolerance for any internal bookkeeping
+            assert!(
+                after_reset < 1024 * 1024,
+                "peak memory after reset should be < 1MB, got {after_reset}"
+            );
+        });
     }
 
     #[test]
     fn get_cache_memory_returns_value() {
+        // The cache counter is process-global; keep the read ordered with the
+        // tests that resize or flush the cache.
+        let _guard = lock_process_global();
         // Just verify it returns a value without crashing
         let _cache = get_cache_memory();
     }
