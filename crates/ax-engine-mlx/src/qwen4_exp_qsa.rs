@@ -29,12 +29,16 @@
 //! `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` (default on) chooses prefill
 //! blocks on the device. The single-query switch
 //! `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT` stays on for decode and is a separate
-//! kill switch. Set the prefill switch to `0` to restore the host sort. A
+//! kill switch. Short verifier windows stay on
+//! `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`. Set a switch to `0` to restore
+//! the host sort for that path. Prefill reads one scalar flag per chunk: a
 //! causal non-finite score, or a row with fewer finite causal blocks than the
-//! block budget, selects that whole chunk on the host (same order, same
-//! error). The block-key kernel is compiled at Flash Next load so the first
-//! request does not pay that compile. A failed build is logged once and the
-//! host sort is used for later prefills.
+//! block budget, selects that chunk on the host (same order, same error). The
+//! block-key kernel is compiled at Flash Next load so the first request does
+//! not pay that compile. A failed build is logged once and the host sort is
+//! used for later prefills. Decode and short windows do not read that flag.
+//! They sort only the causal prefix, map a causal NaN to -inf, and break ties
+//! by block id. A non-finite causal score does not raise there.
 
 #[cfg(test)]
 use mlx_sys::eval;
@@ -44,8 +48,9 @@ use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxQuantizationMode, add, arange, argpartition_axis, argsort_axis, astype, broadcast_to,
     concatenate, contiguous, cos, divide, expand_dims_axes, gpu_device_architecture, less, matmul,
-    maximum, minimum, multiply, negative, outer, quantized_matmul_with_mode, reshape, rms_norm,
-    sin, slice, slice_last_dim, subtract, sum_axis, take_along_axis, transpose, where_cond, zeros,
+    maximum, minimum, multiply, negative, not_equal, outer, quantized_matmul_with_mode, reshape,
+    rms_norm, sin, slice, slice_last_dim, subtract, sum_axis, take_along_axis, transpose,
+    where_cond, zeros,
 };
 use thiserror::Error;
 
@@ -861,6 +866,8 @@ impl QsaIndexer {
 
         if select_on_device {
             if seq == 1 {
+                // No score read-back. A causal non-finite score stays on this
+                // path and does not raise.
                 let device_tokens =
                     select_tokens_device(cfg, batch, position_offset, n_complete, scores.as_ref())?;
                 return Ok(QsaSelection {
@@ -884,6 +891,7 @@ impl QsaIndexer {
             if seq <= crate::fastpath::QSA_DEVICE_SELECT_MULTI_MAX_QUERIES
                 && n_complete >= cfg.block_topk() as i32
             {
+                // No score read-back. Future columns are not candidates.
                 let (device_tokens, segments) = select_tokens_device_multi(
                     cfg,
                     batch,
@@ -2166,6 +2174,9 @@ thread_local! {
     static PREFILL_KEY_KERNEL_FORCE_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PREFILL_DEVICE_ORDER_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static PREFILL_HOST_FALLBACK_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static DECODE_DEVICE_ORDER_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static DECODE_HOST_FALLBACK_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static ROW_FLAG_SYNC_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static HOST_SELECTION_CAPTURE: std::cell::RefCell<Option<HostSelectionLog>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -2304,6 +2315,40 @@ fn note_prefill_route(device_order: bool) {
 }
 
 #[cfg(test)]
+fn decode_select_route_hits() -> (u32, u32) {
+    (
+        DECODE_DEVICE_ORDER_HITS.with(std::cell::Cell::get),
+        DECODE_HOST_FALLBACK_HITS.with(std::cell::Cell::get),
+    )
+}
+
+fn note_decode_select_route(device_order: bool) {
+    #[cfg(test)]
+    {
+        if device_order {
+            DECODE_DEVICE_ORDER_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+        } else {
+            DECODE_HOST_FALLBACK_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+        }
+    }
+    #[cfg(not(test))]
+    let _ = device_order;
+}
+
+#[cfg(test)]
+fn row_flag_sync_hits() -> u32 {
+    ROW_FLAG_SYNC_HITS.with(std::cell::Cell::get)
+}
+
+/// Count the prefill row-flag read. Decode does not call it.
+fn note_row_flag_sync() {
+    #[cfg(test)]
+    {
+        ROW_FLAG_SYNC_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+    }
+}
+
+#[cfg(test)]
 fn record_host_selection(tokens: &[Vec<Vec<i32>>]) {
     HOST_SELECTION_CAPTURE.with(|slot| {
         if let Some(captured) = slot.borrow_mut().as_mut() {
@@ -2355,14 +2400,31 @@ pub(crate) fn capture_host_selections<T>(action: impl FnOnce() -> T) -> (T, Host
     (value, captured)
 }
 
+/// Map NaN to -inf. Infinities and finite values, including signed zero, stay.
+/// No device read-back.
+fn map_nan_to_neg_inf(scores: &MlxArray) -> MlxArray {
+    where_cond(
+        &not_equal(scores, scores, None),
+        &MlxArray::from_f32(f32::NEG_INFINITY),
+        scores,
+        None,
+    )
+}
+
 /// Single-query block selection on the device, with no host read-back.
 ///
 /// The query keeps `min(block_topk, complete)` blocks plus the partial tail, so
-/// the number of kept tokens is fixed by its position alone. Only which blocks
-/// survive depends on the scores: a stable ascending sort of the negated scores
-/// gives the host order (score descending, lower block index first on ties,
-/// signed zero equal). Unlike the host path this does not fail on a non-finite
-/// score; it would already have corrupted the logits.
+/// the number of kept tokens is fixed by its position alone. Only the causal
+/// prefix is sorted, so a future column cannot be selected. A causal NaN is
+/// mapped to -inf before the negated-score argsort. That argsort is stable and
+/// the axis is block-id order, so equal keys (signed zero included, and a NaN
+/// tied with -inf) keep the lower block id. The tie-break is unique.
+///
+/// Unlike [`select_tokens_device_prefill`], decode does not raise
+/// [`QsaError::NonFiniteScore`]. A non-finite causal score means the forward
+/// is already broken. This path still returns a causal, deterministic
+/// selection and does not synchronize the device. A query with no complete
+/// block does not touch the scores.
 fn select_tokens_device(
     cfg: QsaConfig,
     batch: i32,
@@ -2373,14 +2435,32 @@ fn select_tokens_device(
     let ratio = cfg.compress_ratio();
     let visible = position_offset + 1;
     let complete = visible / ratio;
-    if complete != n_complete as usize {
+    if n_complete < 0 || complete > n_complete as usize {
         return Err(QsaError::InvalidScalar("complete block count"));
     }
     let keep = cfg.block_topk().min(complete);
     let mut parts: Vec<MlxArray> = Vec::with_capacity(2);
     if keep > 0 {
         let scores = scores.ok_or(QsaError::InvalidScalar("block scores"))?;
-        let order = argsort_axis(&negative(scores, None), -1, None);
+        let complete_i =
+            i32::try_from(complete).map_err(|_| QsaError::InvalidScalar("complete block count"))?;
+        note_decode_select_route(true);
+        // Equal widths are the decode shape: every column is causal. A wider
+        // row has future columns; they are sliced off before the sort, so
+        // they are not candidates. No flag is read either way.
+        let causal_scores = if complete == n_complete as usize {
+            scores.clone()
+        } else {
+            slice(
+                scores,
+                &[0, 0, 0],
+                &[batch, 1, complete_i],
+                &[1, 1, 1],
+                None,
+            )
+        };
+        let causal_scores = map_nan_to_neg_inf(&causal_scores);
+        let order = argsort_axis(&negative(&causal_scores, None), -1, None);
         let order = slice(
             &order,
             &[0, 0, 0],
@@ -2427,12 +2507,18 @@ fn select_tokens_device(
 
 /// Multi-query block selection on the device for short verifier windows.
 ///
-/// Scores never leave the device; per-query keep counts are closed-form in the
-/// position offset, so the host uploads only two small `[seq]` vectors (no
-/// GPU→host read-back, no pipeline stall). The order is the same stable
-/// score-descending, lower-block-index-on-ties order as the host path and the
-/// singleton device path. Returns the packed `[batch, seq, topk*ratio +
-/// ratio-1]` int32 tokens (-1 padded) and per-`(batch, query)` segment lengths
+/// Per-query keep counts are closed-form in the position offset, so the host
+/// uploads only two small `[seq]` vectors and reads nothing back. A causal
+/// NaN is mapped to -inf. Columns at or past that row's causal count are NaN,
+/// which sorts after every numeric key, including the +inf produced by
+/// negating -inf, so a future block cannot be selected. The argsort is stable
+/// and the axis is block-id order, so equal causal keys keep the lower block
+/// id. The tie-break is unique.
+///
+/// Unlike [`select_tokens_device_prefill`], this path does not raise
+/// [`QsaError::NonFiniteScore`]. A non-finite causal score means the forward
+/// is already broken. Returns the packed `[batch, seq, topk*ratio + ratio-1]`
+/// int32 tokens (-1 padded) and per-`(batch, query)` segment lengths
 /// `(block tokens, tail tokens)`.
 fn select_tokens_device_multi(
     cfg: QsaConfig,
@@ -2478,10 +2564,10 @@ fn select_tokens_device_multi(
     };
     let mut parts: Vec<MlxArray> = Vec::with_capacity(2);
     let scores = scores.ok_or(QsaError::InvalidScalar("block scores"))?;
-    // Blocks beyond a row's complete count are invalid: bias them out of the
-    // top-k sort (scores are ReLU-sums, so >= 0; -1e30 sorts last after
-    // negation). Then argsort (stable: lower block index first on ties,
-    // matching the host order) and keep the first `topk` columns.
+    note_decode_select_route(true);
+    // Blocks beyond a row's complete count are not candidates. A NaN column
+    // sorts after every numeric key, so it cannot outrank a causal -inf.
+    // The stable argsort then keeps the lower block id on equal causal keys.
     let complete_dev = host_i32(&complete, &[1, seq, 1]);
     let block_ids = reshape(
         &arange(0.0, n_complete as f64, 1.0, MlxDtype::Int32, None),
@@ -2489,12 +2575,8 @@ fn select_tokens_device_multi(
         None,
     );
     let valid = less(&block_ids, &complete_dev, None);
-    let masked = where_cond(
-        &valid,
-        scores,
-        &broadcast_to(&MlxArray::from_f32(-1e30), &scores.shape(), None),
-        None,
-    );
+    let prepared = map_nan_to_neg_inf(scores);
+    let masked = where_cond(&valid, &prepared, &MlxArray::from_f32(f32::NAN), None);
     let order = argsort_axis(&negative(&masked, None), -1, None);
     let cols = slice(
         &order,
@@ -2835,6 +2917,8 @@ fn ordered_block_ids(keys: &MlxArray, keep_cols: i32, topk: i32) -> Result<MlxAr
 }
 
 /// True when any row asked for the host sort. One scalar is read back.
+/// Prefill calls this once per chunk. Decode and short multi-query selection
+/// do not: they never build or read a flag.
 fn prefill_row_flags_need_host(flags: &MlxArray, batch: i32, seq: i32) -> Result<bool> {
     if flags.shape() != [batch, seq] {
         return Err(QsaError::TensorShape {
@@ -2848,6 +2932,7 @@ fn prefill_row_flags_need_host(flags: &MlxArray, batch: i32, seq: i32) -> Result
         .ok_or(QsaError::InvalidScalar("prefill row flags"))?;
     let flat = reshape(flags, &[rows], None);
     let total = sum_axis(&astype(&flat, MlxDtype::Float32, None), 0, false, None);
+    note_row_flag_sync();
     mlx_sys::try_eval(&[&total]).map_err(|detail| QsaError::Evaluation {
         stage: "qsa prefill row-flag check",
         context: format!("flags={:?}", flags.shape()),
@@ -3779,6 +3864,326 @@ mod tests {
         assert_eq!(&data[..9], &[8, 9, 10, 11, 4, 5, 6, 7, 12]);
         assert_eq!(&data[9..], &[0, 1, 2, 3, 4, 5, 6, 7, 12]);
         assert!(select_tokens_device(cfg, 1, 12, 2, Some(&scores)).is_err());
+    }
+
+    fn decode_i32(array: &MlxArray) -> Vec<i32> {
+        let bits = astype(array, MlxDtype::Uint32, None);
+        eval(&[&bits]);
+        bits.data_u32().iter().map(|&token| token as i32).collect()
+    }
+
+    fn assert_single_query_matches(
+        cfg: QsaConfig,
+        batch: i32,
+        offset: usize,
+        n_complete: i32,
+        scores: &[f32],
+    ) {
+        let array = array_f32(scores, &[batch, 1, n_complete]);
+        let host = select_tokens(cfg, batch, 1, offset, n_complete, Some(&array)).unwrap();
+        let device = select_tokens_device(cfg, batch, offset, n_complete, Some(&array)).unwrap();
+        let data = decode_i32(&device);
+        let width = host[0][0].len();
+        assert_eq!(data.len(), host.len() * width);
+        for (b, queries) in host.iter().enumerate() {
+            assert_eq!(
+                &data[b * width..(b + 1) * width],
+                queries[0].as_slice(),
+                "batch {b} offset {offset}"
+            );
+        }
+    }
+
+    fn nan_as_neg_inf(score: f32) -> f32 {
+        if score.is_nan() {
+            f32::NEG_INFINITY
+        } else {
+            score
+        }
+    }
+
+    /// Score descending, then the lower block id. A NaN compares as -inf.
+    fn causal_block_order(causal: &[f32], keep: usize) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..causal.len()).collect();
+        order.sort_by(|&lhs, &rhs| {
+            let left = nan_as_neg_inf(causal[lhs]);
+            let right = nan_as_neg_inf(causal[rhs]);
+            right
+                .partial_cmp(&left)
+                .expect("mapped causal scores compare")
+                .then(lhs.cmp(&rhs))
+        });
+        order.truncate(keep.min(causal.len()));
+        order
+    }
+
+    fn tokens_from_causal_order(
+        causal: &[f32],
+        keep: usize,
+        ratio: usize,
+        visible: usize,
+    ) -> Vec<i32> {
+        let complete = visible / ratio;
+        assert_eq!(causal.len(), complete);
+        let mut chosen = Vec::new();
+        for block in causal_block_order(causal, keep) {
+            assert!(block < complete, "future block {block} entered the order");
+            let start = block * ratio;
+            for token in 0..ratio {
+                chosen.push((start + token) as i32);
+            }
+        }
+        for token in complete * ratio..visible {
+            chosen.push(token as i32);
+        }
+        chosen
+    }
+
+    fn assert_single_query_rule(
+        cfg: QsaConfig,
+        batch: i32,
+        offset: usize,
+        n_complete: i32,
+        scores: &[f32],
+    ) {
+        let sync = row_flag_sync_hits();
+        let route = decode_select_route_hits();
+        let array = array_f32(scores, &[batch, 1, n_complete]);
+        let first = select_tokens_device(cfg, batch, offset, n_complete, Some(&array)).unwrap();
+        let second = select_tokens_device(cfg, batch, offset, n_complete, Some(&array)).unwrap();
+        let once = decode_i32(&first);
+        let twice = decode_i32(&second);
+        assert_eq!(once, twice, "single-query selection must be deterministic");
+        let ratio = cfg.compress_ratio();
+        let visible = offset + 1;
+        let complete = visible / ratio;
+        let width = n_complete as usize;
+        let row_len = once.len() / batch as usize;
+        for b in 0..batch as usize {
+            let row = &scores[b * width..(b + 1) * width];
+            let expected =
+                tokens_from_causal_order(&row[..complete], cfg.block_topk(), ratio, visible);
+            assert_eq!(
+                &once[b * row_len..(b + 1) * row_len],
+                expected.as_slice(),
+                "batch {b} offset {offset}"
+            );
+        }
+        assert_eq!(
+            row_flag_sync_hits(),
+            sync,
+            "single-query decode added a row-flag sync"
+        );
+        let after = decode_select_route_hits();
+        assert_eq!(
+            after.1, route.1,
+            "single-query decode must not fall back to the host"
+        );
+        if complete > 0 {
+            assert!(after.0 > route.0);
+        }
+    }
+
+    fn assert_multi_query_matches(
+        cfg: QsaConfig,
+        batch: i32,
+        seq: i32,
+        offset: usize,
+        n_complete: i32,
+        scores: &[f32],
+    ) {
+        let array = array_f32(scores, &[batch, seq, n_complete]);
+        let host = select_tokens(cfg, batch, seq, offset, n_complete, Some(&array)).unwrap();
+        let (device, segments) =
+            select_tokens_device_multi(cfg, batch, seq, offset, n_complete, Some(&array)).unwrap();
+        let data = decode_i32(&device);
+        let width = device.shape()[2] as usize;
+        let block_width = cfg.block_topk() * cfg.compress_ratio();
+        for b in 0..batch as usize {
+            for s in 0..seq as usize {
+                let (block_len, tail_len) = segments[b * seq as usize + s];
+                let row = &data[(b * seq as usize + s) * width..][..width];
+                let mut content = row[..block_len as usize].to_vec();
+                content.extend_from_slice(&row[block_width..block_width + tail_len as usize]);
+                assert_eq!(content, host[b][s], "batch {b} query {s} offset {offset}");
+            }
+        }
+    }
+
+    fn assert_multi_query_rule(
+        cfg: QsaConfig,
+        batch: i32,
+        seq: i32,
+        offset: usize,
+        n_complete: i32,
+        scores: &[f32],
+    ) {
+        let sync = row_flag_sync_hits();
+        let route = decode_select_route_hits();
+        let array = array_f32(scores, &[batch, seq, n_complete]);
+        let (first, segments) =
+            select_tokens_device_multi(cfg, batch, seq, offset, n_complete, Some(&array)).unwrap();
+        let (second, _) =
+            select_tokens_device_multi(cfg, batch, seq, offset, n_complete, Some(&array)).unwrap();
+        let once = decode_i32(&first);
+        let twice = decode_i32(&second);
+        assert_eq!(once, twice, "multi-query selection must be deterministic");
+        let width = first.shape()[2] as usize;
+        let ratio = cfg.compress_ratio();
+        let block_width = cfg.block_topk() * ratio;
+        let blocks = n_complete as usize;
+        for b in 0..batch as usize {
+            for s in 0..seq as usize {
+                let visible = offset + s + 1;
+                let complete = visible / ratio;
+                let start = (b * seq as usize + s) * blocks;
+                let expected = tokens_from_causal_order(
+                    &scores[start..start + complete],
+                    cfg.block_topk(),
+                    ratio,
+                    visible,
+                );
+                let (block_len, tail_len) = segments[b * seq as usize + s];
+                let row = &once[(b * seq as usize + s) * width..][..width];
+                let mut content = row[..block_len as usize].to_vec();
+                content.extend_from_slice(&row[block_width..block_width + tail_len as usize]);
+                assert_eq!(content, expected, "batch {b} query {s} offset {offset}");
+                assert!(
+                    row[block_len as usize..block_width]
+                        .iter()
+                        .all(|token| *token == -1),
+                    "block padding must be -1"
+                );
+            }
+        }
+        assert_eq!(
+            row_flag_sync_hits(),
+            sync,
+            "short multi-query selection added a row-flag sync"
+        );
+        let after = decode_select_route_hits();
+        assert_eq!(
+            after.1, route.1,
+            "short multi-query selection must not fall back to the host"
+        );
+        assert!(after.0 > route.0);
+    }
+
+    #[test]
+    fn device_selection_matches_host_on_causal_and_future_nonfinite() {
+        // ratio 4, budget 8 → block_topk 2. Offset 15 sees four causal blocks.
+        let cfg = QsaConfig::new(2, 1, 4, 4, 4, 8, 16, EPS, BASE).unwrap();
+        let before = decode_select_route_hits();
+        let sync = row_flag_sync_hits();
+        // Future NaN / inf / a larger finite score must not win or raise.
+        // Signed zeros in the causal prefix stay on the device argsort.
+        let mut future = vec![-0.0_f32, 0.0, 1.0, 2.0, f32::NAN, 1_000.0];
+        future.extend_from_slice(&[3.0, 0.5, -0.0, 4.0, f32::INFINITY, f32::NEG_INFINITY]);
+        assert_single_query_matches(cfg, 2, 15, 6, &future);
+        // One causal block is below the budget. Future columns are ignored.
+        // The row stays on the device; decode does not fall back or sync.
+        let short = [0.25_f32, f32::NAN, f32::INFINITY, 1_000.0];
+        assert_single_query_matches(cfg, 1, 3, 4, &short);
+        let after = decode_select_route_hits();
+        assert!(
+            after.0 > before.0,
+            "finite causal rows, including a short prefix, stay on the device"
+        );
+        assert_eq!(
+            after.1, before.1,
+            "single-query decode must not fall back to the host"
+        );
+        assert_eq!(
+            row_flag_sync_hits(),
+            sync,
+            "single-query decode added a row-flag sync"
+        );
+    }
+
+    #[test]
+    fn device_selection_orders_nonfinite_causal_scores_without_reading_back() {
+        // Decode does not raise NonFiniteScore. NaN sorts as -inf, +inf sorts
+        // first, and a future column — even a huge finite one — is not kept.
+        let cfg = QsaConfig::new(2, 1, 4, 4, 4, 8, 16, EPS, BASE).unwrap();
+        let causal_nan = [1.0_f32, f32::NAN, 2.0, 0.5];
+        let array = array_f32(&causal_nan, &[1, 1, 4]);
+        assert!(
+            select_tokens(cfg, 1, 1, 15, 4, Some(&array)).is_err(),
+            "the host selector still rejects a causal NaN"
+        );
+        assert_single_query_rule(cfg, 1, 15, 4, &causal_nan);
+        assert_single_query_rule(cfg, 1, 15, 4, &[9.0, 8.0, 7.0, f32::NAN]);
+        assert_single_query_rule(cfg, 1, 15, 4, &[1.0, 2.0, f32::INFINITY, 0.0]);
+        assert_single_query_rule(cfg, 1, 15, 4, &[1.0, 2.0, f32::NEG_INFINITY, 4.0]);
+        // Tied finite scores, then NaN tied with -inf, lower block id first.
+        assert_single_query_rule(cfg, 1, 15, 4, &[2.0, f32::NAN, f32::NEG_INFINITY, 2.0]);
+        let mut batched = vec![1.0_f32, 2.0, 3.0, 4.0];
+        batched.extend_from_slice(&[1.0, 2.0, f32::NEG_INFINITY, 4.0]);
+        assert_single_query_rule(cfg, 2, 15, 4, &batched);
+        // Offset 7 sees two causal blocks. The third column is future.
+        assert_single_query_rule(cfg, 1, 7, 3, &[f32::NAN, f32::NEG_INFINITY, 1_000.0]);
+        assert_single_query_rule(
+            cfg,
+            1,
+            15,
+            6,
+            &[1.0, f32::NAN, 2.0, 0.5, f32::INFINITY, 1_000.0],
+        );
+    }
+
+    #[test]
+    fn multi_query_device_selection_matches_host_on_causal_and_future_nonfinite() {
+        // Both queries see exactly two causal blocks. Later columns are future.
+        let cfg = QsaConfig::new(2, 1, 4, 4, 4, 8, 16, EPS, BASE).unwrap();
+        let before = decode_select_route_hits();
+        let sync = row_flag_sync_hits();
+        let mut future = vec![3.0_f32, 1.0, f32::NAN, 1_000.0];
+        future.extend_from_slice(&[0.5, 2.0, f32::INFINITY, f32::NEG_INFINITY]);
+        assert_multi_query_matches(cfg, 1, 2, 7, 4, &future);
+        // Each query sees one causal block. Huge and non-finite columns are
+        // future and must not be selected. The short rows stay on the device.
+        let mut short = vec![0.4_f32, 1_000.0, f32::NAN];
+        short.extend_from_slice(&[0.2, f32::INFINITY, 50.0]);
+        assert_multi_query_matches(cfg, 1, 2, 4, 3, &short);
+        let after = decode_select_route_hits();
+        assert!(
+            after.0 > before.0,
+            "future non-finite rows, including a short prefix, stay on the device"
+        );
+        assert_eq!(
+            after.1, before.1,
+            "short multi-query selection must not fall back to the host"
+        );
+        assert_eq!(
+            row_flag_sync_hits(),
+            sync,
+            "short multi-query selection added a row-flag sync"
+        );
+    }
+
+    #[test]
+    fn multi_query_selection_orders_nonfinite_causal_scores_without_reading_back() {
+        let cfg = QsaConfig::new(2, 1, 4, 4, 4, 8, 16, EPS, BASE).unwrap();
+        // Query 0 causal NaN, query 1 causal +inf. Later columns are future.
+        let mut causal_nan = vec![1.0_f32, f32::NAN, 0.0, 1_000.0];
+        causal_nan.extend_from_slice(&[0.5, f32::INFINITY, f32::NAN, 9.0]);
+        let array = array_f32(&causal_nan, &[1, 2, 4]);
+        assert!(
+            select_tokens(cfg, 1, 2, 7, 4, Some(&array)).is_err(),
+            "the host selector still rejects a causal non-finite score"
+        );
+        assert_multi_query_rule(cfg, 1, 2, 7, 4, &causal_nan);
+        let mut causal_inf = vec![3.0_f32, 1.0, f32::NAN, 4.0];
+        causal_inf.extend_from_slice(&[f32::NEG_INFINITY, 2.0, 0.0, 0.0]);
+        assert_multi_query_rule(cfg, 1, 2, 7, 4, &causal_inf);
+        // Both queries see two causal blocks. A future 1000 must not replace
+        // a causal NaN or -inf.
+        let mut worst = vec![f32::NAN, f32::NEG_INFINITY, 1_000.0, f32::INFINITY];
+        worst.extend_from_slice(&[f32::NAN, f32::NAN, 1_000.0, f32::NEG_INFINITY]);
+        assert_multi_query_rule(cfg, 1, 2, 7, 4, &worst);
+        let mut batched = vec![1.0_f32, 2.0, 0.0, 0.0, 0.5, 1.5, f32::NAN, 8.0];
+        batched.extend_from_slice(&[1.0, f32::NAN, 0.0, 0.0, 0.25, 0.75, 0.0, 0.0]);
+        assert_multi_query_rule(cfg, 2, 2, 7, 4, &batched);
     }
 
     #[test]
