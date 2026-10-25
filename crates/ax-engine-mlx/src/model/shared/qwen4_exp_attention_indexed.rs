@@ -214,6 +214,8 @@ fn launch_indexed(
     width: i32,
     scale: f32,
 ) -> Result<Option<MlxArray>> {
+    // Every caller derives `width` from `indices`; catch future drift.
+    debug_assert_eq!(indices.shape().last().copied(), Some(width));
     let q_rows = contiguous(&transpose(queries, &[2, 1, 0, 3], None), None);
     let scale = MlxArray::from_raw_data(
         (&scale as *const f32).cast(),
