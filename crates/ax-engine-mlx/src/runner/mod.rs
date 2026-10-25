@@ -3112,6 +3112,39 @@ impl MlxRunner {
                 }
             }
         }
+        // Flash Next indexed QSA prefill kernel. It is opt-in
+        // (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`), so with the switch off
+        // nothing is compiled. The kernel template is the model geometry
+        // (`head_dim`, query/kv heads and their group), so one launch with the
+        // config's own values compiles the pipeline every later prefill chunk
+        // reuses; the per-chunk row counts and selection width travel in a
+        // buffer. Other families never launch it. `AX_MLX_LOAD_KERNEL_WARMUP=0`
+        // skips it with the other load-time compiles. Best-effort: a build
+        // failure is logged once and the request keeps the gathered path.
+        if crate::model::shared::qwen4_exp_attention_indexed::indexed_prefill_warmup_applies(
+            weights.qwen4_exp.is_some(),
+            crate::fastpath::load_kernel_warmup_enabled(),
+            crate::fastpath::flash_next_qsa_indexed_prefill_enabled(),
+        ) {
+            let warm_started = std::time::Instant::now();
+            match crate::model::shared::qwen4_exp_attention_indexed::warm_indexed_prefill_kernel(
+                cfg.n_heads as i32,
+                cfg.n_kv_heads as i32,
+                cfg.head_dim as i32,
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+            ) {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed the Flash Next indexed QSA prefill kernel at model load"
+                ),
+                Err(error) => tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "indexed QSA prefill warm-up failed; the first prefill pays the compile"
+                ),
+            }
+        }
         // Flash Next n-gram aux-plane page-cache warm-up. It must run after the
         // weights are fully read (the generation warm-up above materialises
         // them): the ~70 GB weight read would otherwise evict the ~6 GB of

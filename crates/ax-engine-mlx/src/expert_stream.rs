@@ -840,10 +840,27 @@ fn moe_staging_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64)
         .saturating_mul(ACTIVATION_BYTES)
 }
 
-/// QSA prefill workspace: the indexer score graph plus the gathered K/V of the
-/// selected rows for one sub-batch. Zero for packs without the indexer
-/// geometry.
+/// QSA prefill workspace: the indexer score graph plus the attention
+/// transients of one chunk. Zero for packs without the indexer geometry.
+///
+/// The attention term depends on which arm runs:
+/// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL=1` attends the selected rows in place
+/// and prices only the packed index rows and the query/output tiles; the
+/// gathered arm (default) prices the padded `chunk × selected` K/V tile,
+/// capped at [`crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_BYTES`].
 fn qsa_prefill_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64) -> u64 {
+    qsa_prefill_bytes_with(
+        manifest,
+        chunk,
+        crate::fastpath::flash_next_qsa_indexed_prefill_enabled(),
+    )
+}
+
+fn qsa_prefill_bytes_with(
+    manifest: &ax_engine_core::NativeModelManifest,
+    chunk: u64,
+    indexed: bool,
+) -> u64 {
     let config = &manifest.qwen4_exp;
     let (Some(head_dim), Some(ratio), Some(budget)) = (
         config.indexer_head_dim,
@@ -860,13 +877,49 @@ fn qsa_prefill_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64)
     let kept = u64::from(budget)
         .saturating_add(u64::from(ratio))
         .saturating_sub(1);
-    let gathered = chunk
-        .saturating_mul(kept)
-        .saturating_mul(u64::from(manifest.kv_head_count))
-        .saturating_mul(u64::from(manifest.attention_head_dim))
+    let gathered_for = |queries: u64| {
+        queries
+            .saturating_mul(kept)
+            .saturating_mul(u64::from(manifest.kv_head_count))
+            .saturating_mul(u64::from(manifest.attention_head_dim))
+            .saturating_mul(ACTIVATION_BYTES)
+            .min(crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_BYTES as u64)
+    };
+    let attention = if indexed {
+        // Chunks shorter than the batched-attention floor, and unsupported
+        // geometries, keep the gathered arm even with the switch on, so the
+        // plan still reserves room for one short gathered sub-batch.
+        let short_chunk = gathered_for(
+            u64::try_from(crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_MIN_QUERIES)
+                .unwrap_or(0),
+        );
+        indexed_attention_bytes(manifest, chunk, kept).max(short_chunk)
+    } else {
+        gathered_for(chunk)
+    };
+    QSA_SCORE_WORKSPACE_BYTES.saturating_add(attention)
+}
+
+/// Indexed-attention transients for one chunk: the packed per-query index rows
+/// (int32), the per-query selected counts, one token-major query copy and the
+/// output tile. No `chunk × selected` K/V tile exists on this arm, and the
+/// kernel holds one K/V row plus one float accumulator per query head, so this
+/// stays orders of magnitude below the gathered bound.
+fn indexed_attention_bytes(
+    manifest: &ax_engine_core::NativeModelManifest,
+    chunk: u64,
+    kept: u64,
+) -> u64 {
+    let query_width = u64::from(manifest.attention_head_count)
+        .saturating_mul(u64::from(manifest.attention_head_dim));
+    let indices = chunk.saturating_mul(kept).saturating_mul(4);
+    let lengths = chunk.saturating_mul(4);
+    // Query copy plus output tile, both at activation width.
+    let tiles = chunk
+        .saturating_mul(query_width)
         .saturating_mul(ACTIVATION_BYTES)
-        .min(crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_BYTES as u64);
-    QSA_SCORE_WORKSPACE_BYTES.saturating_add(gathered)
+        .saturating_mul(2);
+    indices.saturating_add(lengths).saturating_add(tiles)
 }
 
 /// Hyper-connection read/write buffers for one chunk.
@@ -4113,6 +4166,34 @@ mod tests {
             estimate_prefill_scratch_bytes(&manifest, 4096),
             (base + gdn + moe + hc) * 2 + qsa
         );
+    }
+
+    #[test]
+    fn indexed_attention_prices_no_selected_kv_tile() {
+        let manifest = flash_next_6bit_scratch_manifest();
+        let gathered = qsa_prefill_bytes_with(&manifest, 2048, false);
+        let indexed = qsa_prefill_bytes_with(&manifest, 2048, true);
+        // The gathered arm carries one 1 GiB sub-batch on top of the score
+        // workspace; the indexed arm must not, and stays at index rows plus
+        // query/output tiles.
+        assert_eq!(gathered, 256 * 1024 * 1024 + (1u64 << 30));
+        assert!(
+            indexed < gathered,
+            "indexed pricing {indexed} must undercut the gathered bound {gathered}"
+        );
+        assert!(
+            indexed - QSA_SCORE_WORKSPACE_BYTES < (1u64 << 30) / 4,
+            "indexed attention must not price a selected K/V tile"
+        );
+        // It still covers the packed index rows at the full selected width.
+        let kept = 2048u64 + 4 - 1;
+        let indices = 2048 * kept * 4;
+        let tiles = 2048
+            * u64::from(manifest.attention_head_count)
+            * u64::from(manifest.attention_head_dim)
+            * ACTIVATION_BYTES
+            * 2;
+        assert!(indexed - QSA_SCORE_WORKSPACE_BYTES >= indices + tiles);
     }
 
     #[test]

@@ -657,7 +657,27 @@ impl Qwen4ExpAttention {
 
         let attn = match &selection {
             Some(selection) => {
-                attend_selected(&queries, &staged_keys, &staged_values, selection, cfg)?
+                // Indexed attention reads the selected rows in place; it
+                // declines decode/verifier rows, multi-batch calls and
+                // geometries it was not compiled for, and the gathered path
+                // below then runs unchanged.
+                let indexed = super::qwen4_exp_attention_indexed::attend_selected_indexed(
+                    &queries,
+                    &staged_keys,
+                    &staged_values,
+                    selection,
+                    cfg.query_heads,
+                    cfg.kv_heads,
+                    cfg.head_dim,
+                    self.indexer.config().compress_ratio() as i32,
+                    cfg.scale,
+                )?;
+                match indexed {
+                    Some(attn) => attn,
+                    None => {
+                        attend_selected(&queries, &staged_keys, &staged_values, selection, cfg)?
+                    }
+                }
             }
             // Short verifier windows replay each query row through the
             // singleton dense kernel so the batched window matches the
@@ -676,6 +696,10 @@ impl Qwen4ExpAttention {
         };
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_d_attend", &[&attn]);
+        // Optional per-layer attention capture for the indexed-prefill drift
+        // test; a no-op unless that test armed the recorder.
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::capture_attention(&attn);
         let attn = reshape(
             &transpose(&attn, &[0, 2, 1, 3], None),
             &[batch, seq, cfg.query_width],
@@ -1076,7 +1100,7 @@ fn attend_selected(
 /// Chunks of at least this many queries attend in padded sub-batches instead of
 /// one gather and attention call per query. Shorter windows (verifier, tails)
 /// keep the per-query path and its exact-length arithmetic.
-const BATCHED_ATTENTION_MIN_QUERIES: i32 = 16;
+pub(crate) const BATCHED_ATTENTION_MIN_QUERIES: i32 = 16;
 fn batched_attention_enabled() -> bool {
     #[cfg(test)]
     if let Some(value) = BATCHED_OVERRIDE.with(std::cell::Cell::get) {
@@ -1109,6 +1133,22 @@ pub(crate) fn with_batched_attention<T>(enabled: bool, action: impl FnOnce() -> 
 /// (`expert_stream::qsa_prefill_bytes`), so a reader can compare the priced
 /// scratch against the kernel's own limit.
 pub(crate) const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
+
+/// Width of the largest sub-batch whose *actual* padded gather fits `cap`.
+///
+/// Each query's rows are padded to the longest list in the sub-batch, so the
+/// gather costs `width × max(lengths[..width]) × per_token` bytes. `initial` is
+/// the width the probe suggested and `window_max` the longest selected list
+/// anywhere in that window, which bounds every prefix of it. The result never
+/// exceeds `initial` and keeps at least one query: a single query's own
+/// selection always fits, because it is bounded by the QSA token budget.
+fn sub_batch_cap_width(cap: usize, per_token: usize, initial: usize, window_max: usize) -> usize {
+    if initial == 0 {
+        return 0;
+    }
+    let bytes_per_row = per_token.max(1).saturating_mul(window_max.max(1));
+    (cap / bytes_per_row).clamp(1, initial)
+}
 
 /// Attend a chunk of selected queries as padded sub-batches.
 ///
@@ -1144,6 +1184,8 @@ fn attend_selected_batched(
     };
     let mut outputs = Vec::new();
     let mut start = 0usize;
+    // Bytes one gathered row of one query costs: K plus V at kv-head width.
+    let per_token = kv_heads as usize * dim as usize * element_bytes * 2;
     while start < seq {
         let longest = (start..seq)
             .take(BATCHED_ATTENTION_PROBE_QUERIES)
@@ -1156,7 +1198,16 @@ fn attend_selected_batched(
             ));
         }
         let per_query = longest * kv_heads as usize * dim as usize * element_bytes * 2;
-        let width = (BATCHED_ATTENTION_BYTES / per_query.max(1)).clamp(1, seq - start);
+        let initial = (BATCHED_ATTENTION_BYTES / per_query.max(1)).clamp(1, seq - start);
+        // The probe above sizes the window from at most
+        // `BATCHED_ATTENTION_PROBE_QUERIES` queries. Past that width a later
+        // query can select more rows than the probe saw, so the *actual*
+        // padded length decides: shrink the window until the real gather fits.
+        let window_max = (start..start + initial)
+            .map(|s| selection.selected_len(batch_index, s))
+            .max()
+            .unwrap_or(0);
+        let width = sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, initial, window_max);
         let end = start + width;
         let padded = (start..end)
             .map(|s| selection.selected_len(batch_index, s))
@@ -1699,6 +1750,48 @@ mod tests {
         }
         close(&concat_owned(&steps, 1), whole.delta(), "token-step output");
         close_state(&cache, whole.next_state(), "token-step");
+    }
+
+    #[test]
+    fn sub_batch_width_bounds_the_actual_padded_gather() {
+        // A padded sub-batch costs width * max(lengths) * per_token bytes.
+        // 2051 selected rows at the shipped row cost (2 kv heads x 256 dims x
+        // 2 bytes x K+V) is 4 200 448 bytes per query, so 1 GiB holds 255.
+        let per_token = 2 * 256 * 2 * 2;
+        assert_eq!(
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 2048, 2051),
+            BATCHED_ATTENTION_BYTES / (2051 * per_token)
+        );
+        // The probe-based width sees only the first queries; a later query that
+        // selects twice as many rows would double the real gather, so the
+        // window shrinks instead of overflowing the cap.
+        let width = sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 600, 2051);
+        assert!(
+            width < 600,
+            "the rising tail must shrink the window: {width}"
+        );
+        assert!(
+            width * 2051 * per_token <= BATCHED_ATTENTION_BYTES,
+            "actual padded gather {width} x 2051 exceeds the cap"
+        );
+        assert!(
+            600 * 2051 * per_token > BATCHED_ATTENTION_BYTES,
+            "the whole window would have overflowed the cap"
+        );
+        // A window the probe already proved keeps its width.
+        assert_eq!(
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 64, 1021),
+            64
+        );
+        // A single query always fits: its own selection is budget-bounded.
+        assert_eq!(
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 1, 2051),
+            1
+        );
+        assert_eq!(
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 0, 0),
+            0
+        );
     }
 
     fn f32_value_bits(array: &MlxArray) -> Vec<u32> {
