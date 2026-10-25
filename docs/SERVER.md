@@ -615,6 +615,24 @@ throughput); on Qwen they lower the gate to the measured per-workload optima.
 profile, and the resolved posture is reported in route metadata as
 `ax_mlx_speculation_profile`.
 
+`--mlx-numerics {exact,fast}` is a process-level Flash Next numerics preset.
+`exact` is the default and changes nothing. `fast` turns on relaxed indexed
+QSA prefill (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) unless that variable is
+set in the environment, in which case the environment wins, including an
+explicit `0`. There is no per-request override. One process has one preset:
+the indexed-prefill decision is cached on first read, so a second session in
+the same process cannot switch tiers after the model has loaded. The preset
+is logged at startup and reported as `mlx_numerics` on `GET /v1/memory`.
+
+`fast` is not bit-exact with `exact`. The indexed kernel attends the same
+selected values, but the reduction order and online softmax rescaling differ,
+so greedy text can differ at a near-tie. On an M5 Max with 128 GB, a
+39k-token Flash Next prefill measured 57.8 s on `exact` and 42.4 s on `fast`.
+A snapshot written under one tier misses in both the in-memory prefix cache
+and the disk prefix cache when restored under the other. The shipped `exact`
+tier omits the numerics component from the execution signature, so existing
+default-tier disk keys still match.
+
 The experimental MLX compressed-KV runtime path and its
 `--experimental-mlx-kv-compression` server flags were retired in favor of the
 durable tiered prefix cache (ADR-002). Native uncompressed KV is the only

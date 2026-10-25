@@ -84,6 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", render_presets());
         return Ok(());
     }
+    memory::set_reported_mlx_numerics(args.mlx_numerics);
+    ax_engine_sdk::install_mlx_numerics_mode(args.mlx_numerics);
+    info!(
+        mlx_numerics = args.mlx_numerics.as_name(),
+        "resolved MLX numerics preset"
+    );
     if cfg!(panic = "abort") {
         eprintln!("{}", fatal::ABORT_BUILD_NOTICE);
     }

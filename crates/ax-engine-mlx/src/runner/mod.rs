@@ -3193,10 +3193,13 @@ impl MlxRunner {
         let native_prefix_cache_policy = prefix_cache.lock().policy;
         // One line per model load: the two opt-in prefix features are read
         // once, so this is the only place a mis-set environment is visible.
+        let numerics_tier = crate::fastpath::numerics_tier_suffix_for_family(&cfg.model_family);
         tracing::info!(
             target: "ax_engine_mlx::runner",
             prefix_semantic_cuts = crate::fastpath::prefix_semantic_cuts_enabled(),
             prefix_restore_value = crate::fastpath::prefix_restore_value_enabled(),
+            mlx_numerics = crate::fastpath::mlx_numerics_preset_name(),
+            numerics_tier = numerics_tier.as_str(),
             "resolved MLX prefix-cache value features"
         );
 
@@ -8377,7 +8380,7 @@ impl MlxRunner {
         // path-free so the same weights at a new path still share L1/L2.
         // Without a fingerprint, fold in `model_artifacts_root` so a
         // hot-swap that reuses `model_id` cannot hit wrong-checkpoint KV.
-        if let Some(fingerprint) = self.artifact_fingerprint.as_deref() {
+        let base = if let Some(fingerprint) = self.artifact_fingerprint.as_deref() {
             // Path-free, but checkpoint-bound: the in-memory L1 tier is shared
             // across sessions, so a hot swap that keeps `model_id` and the
             // layer count must not hit KV captured under different weights.
@@ -8390,7 +8393,13 @@ impl MlxRunner {
                 "layers={};ordered-prefix-v2;root={}",
                 self.cfg.layer_count, self.model_artifacts_root
             )
-        }
+        };
+        // Empty at shipped defaults, so the L1 key bytes stay unchanged.
+        // A non-empty tier misses both this layout and the disk signature.
+        crate::fastpath::append_numerics_tier(
+            &base,
+            &crate::fastpath::numerics_tier_suffix_for_family(&self.cfg.model_family),
+        )
     }
 
     /// Resolved per-layer KV quantization identity for the durable key.
@@ -8428,7 +8437,7 @@ impl MlxRunner {
         const MLX_PIN: &str =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../mlx.version"));
         let hardware = crate::hardware::current();
-        format!(
+        let base = format!(
             "route={};prefill_chunk={};cold_chunk={};semantic_cuts={};mlx={};soc={:?};layers={}",
             self.prefix_cache_route_policy(),
             self.prefill_chunk,
@@ -8437,6 +8446,12 @@ impl MlxRunner {
             MLX_PIN.trim(),
             hardware.silicon_generation,
             self.cfg.layer_count,
+        );
+        // Omitted at shipped defaults, so today's signature bytes (and the
+        // v4 disk key that embeds them) stay the same. A deviation misses.
+        crate::fastpath::append_numerics_tier(
+            &base,
+            &crate::fastpath::numerics_tier_suffix_for_family(&self.cfg.model_family),
         )
     }
 

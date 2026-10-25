@@ -28,8 +28,9 @@ mod stream;
 
 use artifacts::resolve_native_model_report;
 pub use config::{
-    EngineSessionConfig, MlxMtpPolicy, MlxStreamExpertsMode, PreviewSessionConfigError,
-    PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
+    EngineSessionConfig, MlxMtpPolicy, MlxNumericsMode, MlxStreamExpertsMode,
+    PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
+    install_mlx_numerics_mode,
 };
 use delegated::{
     run_delegated_generate_prevalidated, run_delegated_generate_with_config,

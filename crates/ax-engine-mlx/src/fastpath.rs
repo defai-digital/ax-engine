@@ -21,6 +21,7 @@
 
 use std::cell::Cell;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Maximum number of committed prompt transitions retained in the Qwen MTP
 /// head cache. `0` means unlimited. Keeping this reader beside the other
@@ -71,6 +72,48 @@ pub(crate) fn mtp_depth3_miss_backoff_enabled() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
     *ENV.get_or_init(|| env_flag("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
         || qwen_linear_throughput_mtp_enabled()
+}
+
+/// Process-level Flash Next numerics preset.
+///
+/// `Exact` is the shipped default and changes no switch. `Fast` opts into
+/// the relaxed indexed QSA prefill path when
+/// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` is unset. One process has one
+/// preset: the indexed-prefill decision is cached on first read, so a later
+/// install does not retier a process that has already resolved it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum MlxNumericsPreset {
+    /// Shipped switches. Indexed QSA prefill stays off unless the env opts in.
+    #[default]
+    Exact = 0,
+    /// Opt into relaxed indexed QSA prefill unless the env sets that switch.
+    Fast = 1,
+}
+
+static MLX_NUMERICS_PRESET: AtomicU8 = AtomicU8::new(MlxNumericsPreset::Exact as u8);
+
+/// Install the process numerics preset. Safe to call again with the same
+/// value. A different value after the indexed-prefill flag has been read
+/// does not change that cached decision.
+pub fn install_mlx_numerics_preset(preset: MlxNumericsPreset) {
+    MLX_NUMERICS_PRESET.store(preset as u8, Ordering::Relaxed);
+}
+
+/// Preset installed for this process. `Exact` until [`install_mlx_numerics_preset`].
+pub fn mlx_numerics_preset() -> MlxNumericsPreset {
+    match MLX_NUMERICS_PRESET.load(Ordering::Relaxed) {
+        1 => MlxNumericsPreset::Fast,
+        _ => MlxNumericsPreset::Exact,
+    }
+}
+
+/// `exact` or `fast`, for logs and `/v1/memory`.
+pub fn mlx_numerics_preset_name() -> &'static str {
+    match mlx_numerics_preset() {
+        MlxNumericsPreset::Exact => "exact",
+        MlxNumericsPreset::Fast => "fast",
+    }
 }
 
 /// Truthy flag spellings: `1`, `true`, `yes`, `on` (ASCII case-insensitive,
@@ -5687,22 +5730,45 @@ env_flag_default_on!(
     "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
 );
 
-env_flag!(
-    /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
-    /// chunks by reading each query's selected K/V rows straight out of the
-    /// sealed/tail history in a custom Metal kernel, instead of gathering a
-    /// padded `[queries, selected, kv_heads, head_dim]` tile and running masked
-    /// `scaled_dot_product_attention` over it.
-    ///
-    /// **Default OFF**. Selection order, causal membership, scale, the GQA
-    /// mapping and the dtype transition are preserved, so this attends to the
-    /// same values as the gathered path, but the reduction order and online
-    /// softmax rescaling differ: it is not bit-identical to MLX's fused SDPA.
-    /// Decode, verifier windows, multi-batch calls and unsupported geometries
-    /// keep the gathered path. Set `=1` to opt in; `=0` restores today's path.
-    flash_next_qsa_indexed_prefill_enabled,
-    "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL"
-);
+/// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
+/// chunks by reading each query's selected K/V rows straight out of the
+/// sealed/tail history in a custom Metal kernel, instead of gathering a
+/// padded `[queries, selected, kv_heads, head_dim]` tile and running masked
+/// `scaled_dot_product_attention` over it.
+///
+/// **Default OFF**. Selection order, causal membership, scale, the GQA
+/// mapping and the dtype transition are preserved, so this attends to the
+/// same values as the gathered path, but the reduction order and online
+/// softmax rescaling differ: it is not bit-identical to MLX's fused SDPA.
+/// Decode, verifier windows, multi-batch calls and unsupported geometries
+/// keep the gathered path. Set `=1` to opt in; `=0` restores today's path.
+///
+/// An explicit environment value wins, including `0`, empty, and junk.
+/// When the variable is unset, the process numerics preset `fast` opts in
+/// and `exact` (the shipped default) stays off. The result is cached for
+/// the process, so the preset must be installed before the first read.
+pub(crate) fn flash_next_qsa_indexed_prefill_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        indexed_prefill_enabled_for(
+            std::env::var("AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL")
+                .ok()
+                .as_deref(),
+            mlx_numerics_preset(),
+        )
+    })
+}
+
+/// Pure form of [`flash_next_qsa_indexed_prefill_enabled`].
+pub(crate) fn indexed_prefill_enabled_for(
+    env_raw: Option<&str>,
+    preset: MlxNumericsPreset,
+) -> bool {
+    if let Some(raw) = env_raw {
+        return parse_bool_value(raw);
+    }
+    preset == MlxNumericsPreset::Fast
+}
 
 env_flag!(
     /// `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` — score Flash Next QSA blocks in
@@ -7113,6 +7179,344 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
             std::env::var(ax_engine_core::memory_budget::MEMORY_PLAN_CEILING_OVERRIDE_ENV).ok()
         })
         .clone()
+}
+
+/// Resolved numerics and prefill-partition switches that the prefix identity
+/// must commit to.
+///
+/// The suffix is empty when every field is at its shipped default, so the
+/// execution signature and the L1 layer layout stay byte-identical to the
+/// pre-tier key and the disk schema stays `ax.mlx.disk_prefix_key.v4`.
+/// A non-empty suffix is `;numerics=` plus the deviation tokens below, in
+/// this order, comma-separated:
+///
+/// - `indexed` — indexed QSA prefill on (default off; not bit-identical)
+/// - `chunk=N` — tiled outer prefill chunk resolved to N (default unset)
+/// - `decode_key` — unique QSA decode block key on (default off)
+/// - `qsa_decode_select=0` — single-query device select off (subnormal ties)
+/// - `qsa_multi_select=0` — short-window device select off (tie / NaN order)
+/// - `qsa_dense=0` — dense short-context attend off (different sum order)
+/// - `fused_prefill` — fused causal prefill attention on (not bit-identical)
+/// - `qwen_fused_prefill` — Qwen entry to that fused residual on
+/// - `gemma4_fused_p128=0` — Gemma 4 p128 fused prefill off
+/// - `moe_router` — fused MoE router on (greedy stream diverges)
+/// - `moe_expert` — fused expert block on (GeGLU is not bit-exact)
+/// - `long_chunk=N` — long-prompt clamp not 512
+/// - `batched_proj=row` — batched shared projection off (restores row-exact)
+/// - `mt_f32=0` — multi-token f32 attention off (near-ties)
+/// - `gemma4_prefill_f32=0` / `qwen_prefill_f32=0` / `hy_prefill_f32=0` —
+///   prefill skip of the f32 SDPA upcast is off
+/// - `gemma_sensitive_f32=0` — sensitive f32 band off (near-ties)
+/// - `gemma_seq_oracle=0` — sequential assistant-MTP oracle off
+/// - `gemma_cycle_guard=0` — cycle guard off
+/// - `gemma_early_direct` — early pure-direct verify on
+/// - `gemma_mt_perpos` — per-position multi-token FFN on
+/// - `invariant_mxfp4` — MXFP4 qmv-fast verify on (diverges)
+/// - `dense_gemv=0` — exact dense weight-T GEMV off (greedy may shift)
+/// - `relaxed_mtp=0` — relaxed Qwen MTP target verify off
+/// - `throughput_mtp=0` — Qwen throughput MTP profile off
+/// - `mtp_depth=N` — throughput draft width not 3, only while that profile is on
+/// - `qwen_exact=0` — explicit `AX_MLX_QWEN_LINEAR_MTP_EXACT` kill
+/// - `act=f16` or `act=bf16` — activation dtype differs from the auto policy
+///
+/// Switches whose docs prove bit-identical results, or that never change
+/// text (`AX_MLX_PREFIX_RESTORE_VALUE`), are fields on this struct so a test
+/// can flip them, and they contribute no token. Semantic cuts stay in the
+/// existing `semantic_cuts=` field of the execution signature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NumericsTierSwitches {
+    pub(crate) indexed_prefill: bool,
+    pub(crate) tiled_prefill_chunk: Option<usize>,
+    pub(crate) decode_block_key: bool,
+    pub(crate) qsa_device_select: bool,
+    pub(crate) qsa_device_select_multi: bool,
+    pub(crate) qsa_dense_short: bool,
+    pub(crate) fused_prefill: bool,
+    pub(crate) qwen_fused_prefill: bool,
+    pub(crate) gemma4_fused_p128: bool,
+    pub(crate) moe_router_fused: bool,
+    pub(crate) moe_fused_expert_block: bool,
+    pub(crate) long_prompt_chunk: usize,
+    pub(crate) batched_shared_proj: bool,
+    pub(crate) multi_token_f32_attention: bool,
+    pub(crate) gemma4_prefill_skip_f32: bool,
+    pub(crate) qwen_prefill_skip_f32: bool,
+    pub(crate) hy_v3_prefill_skip_f32: bool,
+    pub(crate) gemma_sensitive_f32: bool,
+    pub(crate) gemma_sequential_oracle: bool,
+    pub(crate) gemma_cycle_guard: bool,
+    pub(crate) gemma_early_direct: bool,
+    pub(crate) gemma_mt_perpos_ffn: bool,
+    pub(crate) invariant_mxfp4: bool,
+    pub(crate) dense_weight_t_gemv: bool,
+    pub(crate) relaxed_mtp: bool,
+    pub(crate) throughput_mtp: bool,
+    pub(crate) throughput_mtp_depth: usize,
+    pub(crate) qwen_exact_killed: bool,
+    pub(crate) activation_deviation: Option<&'static str>,
+    pub(crate) tiled_scores: bool,
+    pub(crate) prefill_device_select: bool,
+    pub(crate) gdn_metal: bool,
+    pub(crate) narrow_softmax: bool,
+    pub(crate) auto_buffer_caps: bool,
+    pub(crate) prefix_restore_value: bool,
+    pub(crate) exact_lm_head_window: bool,
+    pub(crate) dual_qmm_swiglu_metal: bool,
+    pub(crate) qsa_batched_attention: bool,
+    pub(crate) invariant_qmv_bf16_q4: bool,
+}
+
+impl Default for NumericsTierSwitches {
+    fn default() -> Self {
+        Self {
+            indexed_prefill: false,
+            tiled_prefill_chunk: None,
+            decode_block_key: false,
+            qsa_device_select: true,
+            qsa_device_select_multi: true,
+            qsa_dense_short: true,
+            fused_prefill: false,
+            qwen_fused_prefill: false,
+            gemma4_fused_p128: true,
+            moe_router_fused: false,
+            moe_fused_expert_block: false,
+            long_prompt_chunk: LONG_PROMPT_PREFILL_CHUNK,
+            batched_shared_proj: true,
+            multi_token_f32_attention: true,
+            gemma4_prefill_skip_f32: true,
+            qwen_prefill_skip_f32: true,
+            hy_v3_prefill_skip_f32: true,
+            gemma_sensitive_f32: true,
+            gemma_sequential_oracle: true,
+            gemma_cycle_guard: true,
+            gemma_early_direct: false,
+            gemma_mt_perpos_ffn: false,
+            invariant_mxfp4: false,
+            dense_weight_t_gemv: true,
+            relaxed_mtp: true,
+            throughput_mtp: true,
+            throughput_mtp_depth: QWEN_LINEAR_THROUGHPUT_MTP_DEPTH,
+            qwen_exact_killed: false,
+            activation_deviation: None,
+            tiled_scores: false,
+            prefill_device_select: true,
+            gdn_metal: true,
+            narrow_softmax: true,
+            auto_buffer_caps: true,
+            prefix_restore_value: false,
+            exact_lm_head_window: true,
+            dual_qmm_swiglu_metal: false,
+            qsa_batched_attention: true,
+            invariant_qmv_bf16_q4: true,
+        }
+    }
+}
+
+impl NumericsTierSwitches {
+    /// Live process switches for `model_family`.
+    ///
+    /// Activation-dtype deviation is family-scoped: families outside the
+    /// dtype policy keep bf16 regardless of `AX_MLX_ACTIVATION_DTYPE`.
+    pub(crate) fn resolved(model_family: &str) -> Self {
+        Self {
+            indexed_prefill: flash_next_qsa_indexed_prefill_enabled(),
+            tiled_prefill_chunk: flash_next_qsa_tiled_outer_prefill_chunk(),
+            decode_block_key: flash_next_qsa_decode_block_key_enabled(),
+            qsa_device_select: flash_next_qsa_device_select_enabled(),
+            qsa_device_select_multi: flash_next_qsa_device_select_multi_enabled(),
+            qsa_dense_short: flash_next_qsa_dense_short_context_enabled(),
+            fused_prefill: fused_prefill_attention_enabled(),
+            qwen_fused_prefill: qwen_fused_prefill_attention_enabled(),
+            gemma4_fused_p128: gemma4_fused_prefill_attention_p128_enabled(),
+            moe_router_fused: moe_router_fused_metal_enabled(),
+            moe_fused_expert_block: moe_fused_expert_block_enabled(),
+            long_prompt_chunk: long_prompt_prefill_chunk(),
+            batched_shared_proj: batched_shared_projections_enabled(),
+            multi_token_f32_attention: multi_token_f32_attention_enabled(),
+            gemma4_prefill_skip_f32: gemma4_prefill_skip_unused_f32_sdpa_enabled(),
+            qwen_prefill_skip_f32: qwen_prefill_skip_unused_f32_sdpa_enabled(),
+            hy_v3_prefill_skip_f32: hy_v3_prefill_skip_f32_sdpa_enabled(),
+            gemma_sensitive_f32: gemma4_assistant_mtp_sensitive_f32_enabled(),
+            gemma_sequential_oracle: gemma4_assistant_mtp_sequential_oracle_enabled(),
+            gemma_cycle_guard: gemma4_assistant_mtp_cycle_guard_enabled(),
+            gemma_early_direct: gemma4_assistant_mtp_early_gen_pure_direct_enabled(),
+            gemma_mt_perpos_ffn: gemma_mt_perpos_ffn_enabled(),
+            invariant_mxfp4: invariant_mxfp4_qmv_fast_enabled(),
+            dense_weight_t_gemv: exact_dense_weight_t_gemv_enabled(),
+            relaxed_mtp: mtp_relaxed_target_verify_enabled(),
+            throughput_mtp: qwen_linear_throughput_mtp_enabled(),
+            throughput_mtp_depth: qwen_linear_throughput_mtp_depth(),
+            qwen_exact_killed: qwen_linear_mtp_exact_env_override() == Some(false),
+            activation_deviation: activation_dtype_deviation(model_family),
+            tiled_scores: flash_next_qsa_tiled_scores_enabled(),
+            prefill_device_select: flash_next_qsa_prefill_device_select_enabled(),
+            gdn_metal: flash_next_gdn_metal_enabled(),
+            narrow_softmax: qwen3_moe_narrow_softmax_enabled(),
+            auto_buffer_caps: auto_buffer_caps_enabled(),
+            prefix_restore_value: prefix_restore_value_enabled(),
+            exact_lm_head_window: exact_lm_head_window_invariant_enabled(),
+            dual_qmm_swiglu_metal: qwen_prefill_dual_qmm_swiglu_metal_enabled(),
+            qsa_batched_attention: flash_next_qsa_batched_attention_enabled(),
+            invariant_qmv_bf16_q4: invariant_qmv_bf16_q4_enabled(),
+        }
+    }
+}
+
+fn activation_dtype_deviation(model_family: &str) -> Option<&'static str> {
+    if !activation_dtype_policy_applies(model_family) {
+        return None;
+    }
+    let requested = std::env::var("AX_MLX_ACTIVATION_DTYPE").ok();
+    let normalized = requested
+        .as_deref()
+        .map(|raw| raw.trim().to_ascii_lowercase());
+    if matches!(normalized.as_deref(), None | Some("") | Some("auto")) {
+        return None;
+    }
+    let auto = activation_dtype_for(None, || mlx_sys::gpu_device_architecture().ok());
+    let resolved = activation_dtype_for(requested.as_deref(), || {
+        mlx_sys::gpu_device_architecture().ok()
+    });
+    if resolved == auto {
+        None
+    } else if resolved == mlx_sys::MlxDtype::Float16 {
+        Some("act=f16")
+    } else {
+        Some("act=bf16")
+    }
+}
+
+/// Read the bit-exact fields so they stay part of the resolved snapshot
+/// without contributing a token. The suffix test flips them and expects
+/// the empty string.
+fn acknowledge_bit_exact_switches(switches: &NumericsTierSwitches) {
+    let _ = (
+        switches.tiled_scores,
+        switches.prefill_device_select,
+        switches.gdn_metal,
+        switches.narrow_softmax,
+        switches.auto_buffer_caps,
+        switches.prefix_restore_value,
+        switches.exact_lm_head_window,
+        switches.dual_qmm_swiglu_metal,
+        switches.qsa_batched_attention,
+        switches.invariant_qmv_bf16_q4,
+    );
+}
+
+/// Compact numerics-tier component. Empty at shipped defaults.
+pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
+    acknowledge_bit_exact_switches(switches);
+    let mut tokens = Vec::new();
+    if switches.indexed_prefill {
+        tokens.push("indexed".to_string());
+    }
+    if let Some(chunk) = switches.tiled_prefill_chunk {
+        tokens.push(format!("chunk={chunk}"));
+    }
+    if switches.decode_block_key {
+        tokens.push("decode_key".to_string());
+    }
+    if !switches.qsa_device_select {
+        tokens.push("qsa_decode_select=0".to_string());
+    }
+    if !switches.qsa_device_select_multi {
+        tokens.push("qsa_multi_select=0".to_string());
+    }
+    if !switches.qsa_dense_short {
+        tokens.push("qsa_dense=0".to_string());
+    }
+    if switches.fused_prefill {
+        tokens.push("fused_prefill".to_string());
+    }
+    if switches.qwen_fused_prefill {
+        tokens.push("qwen_fused_prefill".to_string());
+    }
+    if !switches.gemma4_fused_p128 {
+        tokens.push("gemma4_fused_p128=0".to_string());
+    }
+    if switches.moe_router_fused {
+        tokens.push("moe_router".to_string());
+    }
+    if switches.moe_fused_expert_block {
+        tokens.push("moe_expert".to_string());
+    }
+    if switches.long_prompt_chunk != LONG_PROMPT_PREFILL_CHUNK {
+        tokens.push(format!("long_chunk={}", switches.long_prompt_chunk));
+    }
+    if !switches.batched_shared_proj {
+        tokens.push("batched_proj=row".to_string());
+    }
+    if !switches.multi_token_f32_attention {
+        tokens.push("mt_f32=0".to_string());
+    }
+    if !switches.gemma4_prefill_skip_f32 {
+        tokens.push("gemma4_prefill_f32=0".to_string());
+    }
+    if !switches.qwen_prefill_skip_f32 {
+        tokens.push("qwen_prefill_f32=0".to_string());
+    }
+    if !switches.hy_v3_prefill_skip_f32 {
+        tokens.push("hy_prefill_f32=0".to_string());
+    }
+    if !switches.gemma_sensitive_f32 {
+        tokens.push("gemma_sensitive_f32=0".to_string());
+    }
+    if !switches.gemma_sequential_oracle {
+        tokens.push("gemma_seq_oracle=0".to_string());
+    }
+    if !switches.gemma_cycle_guard {
+        tokens.push("gemma_cycle_guard=0".to_string());
+    }
+    if switches.gemma_early_direct {
+        tokens.push("gemma_early_direct".to_string());
+    }
+    if switches.gemma_mt_perpos_ffn {
+        tokens.push("gemma_mt_perpos".to_string());
+    }
+    if switches.invariant_mxfp4 {
+        tokens.push("invariant_mxfp4".to_string());
+    }
+    if !switches.dense_weight_t_gemv {
+        tokens.push("dense_gemv=0".to_string());
+    }
+    if !switches.relaxed_mtp {
+        tokens.push("relaxed_mtp=0".to_string());
+    }
+    if !switches.throughput_mtp {
+        tokens.push("throughput_mtp=0".to_string());
+    }
+    if switches.throughput_mtp && switches.throughput_mtp_depth != QWEN_LINEAR_THROUGHPUT_MTP_DEPTH
+    {
+        tokens.push(format!("mtp_depth={}", switches.throughput_mtp_depth));
+    }
+    if switches.qwen_exact_killed {
+        tokens.push("qwen_exact=0".to_string());
+    }
+    if let Some(activation) = switches.activation_deviation {
+        tokens.push(activation.to_string());
+    }
+    if tokens.is_empty() {
+        String::new()
+    } else {
+        format!(";numerics={}", tokens.join(","))
+    }
+}
+
+/// Live numerics-tier component for one model family.
+pub(crate) fn numerics_tier_suffix_for_family(model_family: &str) -> String {
+    numerics_tier_suffix(&NumericsTierSwitches::resolved(model_family))
+}
+
+/// Append a numerics-tier suffix. An empty suffix returns `base` unchanged,
+/// which is what keeps the default execution signature and L1 layout bytes
+/// identical to the pre-tier identity.
+pub(crate) fn append_numerics_tier(base: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}{suffix}")
+    }
 }
 
 #[cfg(test)]

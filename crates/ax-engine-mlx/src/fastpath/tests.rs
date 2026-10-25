@@ -3528,3 +3528,184 @@ fn activation_dtype_policy_is_scoped_to_qwen_hybrid_families() {
     }
     assert_eq!(activation_dtype_for_family("qwen3_5"), activation_dtype());
 }
+
+#[test]
+fn indexed_prefill_env_overrides_fast_preset() {
+    assert!(!indexed_prefill_enabled_for(None, MlxNumericsPreset::Exact));
+    assert!(indexed_prefill_enabled_for(None, MlxNumericsPreset::Fast));
+    for raw in ["0", "false", "no", "off", "", "   ", "banana"] {
+        assert!(
+            !indexed_prefill_enabled_for(Some(raw), MlxNumericsPreset::Fast),
+            "{raw:?} must stay off under fast"
+        );
+    }
+    for raw in ["1", "true", "YES", " on "] {
+        assert!(
+            indexed_prefill_enabled_for(Some(raw), MlxNumericsPreset::Exact),
+            "{raw:?} must opt in under exact"
+        );
+    }
+}
+
+#[test]
+fn numerics_tier_suffix_is_empty_at_shipped_defaults() {
+    let suffix = numerics_tier_suffix(&NumericsTierSwitches::default());
+    assert!(suffix.is_empty());
+    let base =
+        "route=direct;prefill_chunk=2048;cold_chunk=2048;semantic_cuts=0;mlx=pin;soc=M5;layers=4";
+    assert_eq!(append_numerics_tier(base, &suffix), base);
+}
+
+#[test]
+fn numerics_tier_suffix_differs_per_non_exact_switch() {
+    let base = NumericsTierSwitches::default();
+    let mut cases: Vec<(&'static str, NumericsTierSwitches)> = Vec::new();
+    let mut push =
+        |token: &'static str, switches: NumericsTierSwitches| cases.push((token, switches));
+
+    let mut indexed = base;
+    indexed.indexed_prefill = true;
+    push("indexed", indexed);
+
+    let mut chunk = base;
+    chunk.tiled_prefill_chunk = Some(8192);
+    push("chunk=8192", chunk);
+
+    let mut decode_key = base;
+    decode_key.decode_block_key = true;
+    push("decode_key", decode_key);
+
+    let mut qsa_decode = base;
+    qsa_decode.qsa_device_select = false;
+    push("qsa_decode_select=0", qsa_decode);
+
+    let mut qsa_multi = base;
+    qsa_multi.qsa_device_select_multi = false;
+    push("qsa_multi_select=0", qsa_multi);
+
+    let mut dense = base;
+    dense.qsa_dense_short = false;
+    push("qsa_dense=0", dense);
+
+    let mut fused = base;
+    fused.fused_prefill = true;
+    push("fused_prefill", fused);
+
+    let mut qwen_fused = base;
+    qwen_fused.qwen_fused_prefill = true;
+    push("qwen_fused_prefill", qwen_fused);
+
+    let mut gemma_fused = base;
+    gemma_fused.gemma4_fused_p128 = false;
+    push("gemma4_fused_p128=0", gemma_fused);
+
+    let mut router = base;
+    router.moe_router_fused = true;
+    push("moe_router", router);
+
+    let mut expert = base;
+    expert.moe_fused_expert_block = true;
+    push("moe_expert", expert);
+
+    let mut long_chunk = base;
+    long_chunk.long_prompt_chunk = 768;
+    push("long_chunk=768", long_chunk);
+
+    let mut batched = base;
+    batched.batched_shared_proj = false;
+    push("batched_proj=row", batched);
+
+    let mut mt_f32 = base;
+    mt_f32.multi_token_f32_attention = false;
+    push("mt_f32=0", mt_f32);
+
+    let mut gemma_prefill = base;
+    gemma_prefill.gemma4_prefill_skip_f32 = false;
+    push("gemma4_prefill_f32=0", gemma_prefill);
+
+    let mut qwen_prefill = base;
+    qwen_prefill.qwen_prefill_skip_f32 = false;
+    push("qwen_prefill_f32=0", qwen_prefill);
+
+    let mut hy_prefill = base;
+    hy_prefill.hy_v3_prefill_skip_f32 = false;
+    push("hy_prefill_f32=0", hy_prefill);
+
+    let mut sensitive = base;
+    sensitive.gemma_sensitive_f32 = false;
+    push("gemma_sensitive_f32=0", sensitive);
+
+    let mut oracle = base;
+    oracle.gemma_sequential_oracle = false;
+    push("gemma_seq_oracle=0", oracle);
+
+    let mut cycle = base;
+    cycle.gemma_cycle_guard = false;
+    push("gemma_cycle_guard=0", cycle);
+
+    let mut early = base;
+    early.gemma_early_direct = true;
+    push("gemma_early_direct", early);
+
+    let mut perpos = base;
+    perpos.gemma_mt_perpos_ffn = true;
+    push("gemma_mt_perpos", perpos);
+
+    let mut mxfp4 = base;
+    mxfp4.invariant_mxfp4 = true;
+    push("invariant_mxfp4", mxfp4);
+
+    let mut gemv = base;
+    gemv.dense_weight_t_gemv = false;
+    push("dense_gemv=0", gemv);
+
+    let mut relaxed = base;
+    relaxed.relaxed_mtp = false;
+    push("relaxed_mtp=0", relaxed);
+
+    let mut throughput = base;
+    throughput.throughput_mtp = false;
+    push("throughput_mtp=0", throughput);
+
+    let mut depth = base;
+    depth.throughput_mtp_depth = 4;
+    push("mtp_depth=4", depth);
+
+    let mut exact_kill = base;
+    exact_kill.qwen_exact_killed = true;
+    push("qwen_exact=0", exact_kill);
+
+    let mut activation = base;
+    activation.activation_deviation = Some("act=f16");
+    push("act=f16", activation);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for (token, switches) in &cases {
+        let suffix = numerics_tier_suffix(switches);
+        assert_eq!(suffix, format!(";numerics={token}"), "{token}");
+        assert!(seen.insert(suffix), "duplicate suffix for {token}");
+    }
+    assert!(cases.len() > 1);
+}
+
+#[test]
+fn numerics_tier_suffix_ignores_bit_exact_switches() {
+    let switches = NumericsTierSwitches {
+        tiled_scores: true,
+        prefill_device_select: false,
+        gdn_metal: false,
+        narrow_softmax: false,
+        auto_buffer_caps: false,
+        prefix_restore_value: true,
+        exact_lm_head_window: false,
+        dual_qmm_swiglu_metal: true,
+        qsa_batched_attention: false,
+        invariant_qmv_bf16_q4: false,
+        ..NumericsTierSwitches::default()
+    };
+    assert_eq!(numerics_tier_suffix(&switches), "");
+    assert_eq!(
+        append_numerics_tier("layers=4;ordered-prefix-v2", ""),
+        "layers=4;ordered-prefix-v2"
+    );
+}

@@ -310,9 +310,28 @@ never adopted across a switch change. The exactness contract is therefore:
 Both features ride the same durable identity. The disk key is canonical
 schema **v4** (`ax.mlx.disk_prefix_key.v4`), which additionally commits to the
 resolved KV quantization, the KV storage dtype, and the execution signature
-(arithmetic route, prefill split strategy, MLX/GPU identity). A v3 key can
+(arithmetic route, prefill split strategy, MLX/GPU identity, and, when any
+tracked switch leaves its shipped default, a numerics tier). A v3 key can
 never alias a v4 key, so upgrading is a natural miss rather than a restore of
 state produced under a different execution contract.
+
+The numerics tier is a suffix, `;numerics=<tokens>`, appended to the execution
+signature and to the in-memory L1 layer layout. Tokens name only deviations
+from the shipped defaults (indexed QSA prefill, a tiled outer prefill chunk,
+the decode block key, device-select kills whose float order can change a
+subnormal or tie, fused prefill paths that are not bit-identical, the MoE
+router and GeGLU expert block, a non-512 long-prompt chunk, batched-projection
+row-exact mode, f32-attention kills, Gemma assistant-MTP exactness kills,
+relaxed Qwen MTP, an explicit Qwen exact-profile kill, and an activation dtype
+that differs from the auto policy). Switches documented as bit-identical, and
+`AX_MLX_PREFIX_RESTORE_VALUE` (it never changes text), add no token. When
+every tracked switch is at its shipped default the suffix is omitted, so the
+signature bytes and the v4 key bytes stay the same as before the tier existed.
+A process running `exact` therefore still hits a snapshot it wrote under the
+default switches, and a snapshot written with any of those switches changed
+misses in both L1 and on disk. `--mlx-numerics fast` turns indexed QSA prefill
+on unless the environment sets that switch, which is itself a non-default
+tier.
 
 Telemetry: `ax_mlx_prefix_cache_semantic_cut_snapshots` counts stored
 semantic cuts, and the value path reports each decision separately as
@@ -866,7 +885,7 @@ Committed fields (order fixed in code):
 5. `layer_layout`
 6. `kv_quantization` (resolved per-layer quantization identity, never the raw request option)
 7. `kv_dtype` (resolved KV storage dtype)
-8. `execution_signature` (arithmetic route, prefill split strategy, and the MLX/GPU identity that selects kernels)
+8. `execution_signature` (arithmetic route, prefill split strategy, the MLX/GPU identity that selects kernels, and a `;numerics=` suffix when a numerics or partition switch differs from its shipped default; the suffix is omitted at the defaults, so this is not a key-schema version bump)
 9. `kv_payload_version` (`MlxKVCache::serialize_version()`, currently **4**)
 10. `block_size_tokens`
 11. `token_count`

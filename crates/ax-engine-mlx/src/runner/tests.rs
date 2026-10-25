@@ -9410,3 +9410,106 @@ fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
     assert!(runner.states.lock().contains_key(&RequestId(42)));
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
 }
+
+#[test]
+fn cross_tier_prefix_probe_misses() {
+    use crate::disk_prefix_cache::{
+        DiskPrefixCache, DiskPrefixCacheEntry, DiskPrefixKeyFields, canonical_key_bytes,
+    };
+    use crate::fastpath::{NumericsTierSwitches, append_numerics_tier, numerics_tier_suffix};
+
+    let exact = NumericsTierSwitches::default();
+    let mut fast = exact;
+    fast.indexed_prefill = true;
+    let exact_suffix = numerics_tier_suffix(&exact);
+    let fast_suffix = numerics_tier_suffix(&fast);
+    assert!(exact_suffix.is_empty());
+    assert_eq!(fast_suffix, ";numerics=indexed");
+
+    let base_layout = "layers=4;ordered-prefix-v2;art=abc";
+    let base_signature =
+        "route=direct;prefill_chunk=2048;cold_chunk=2048;semantic_cuts=0;mlx=pin;soc=M5;layers=4";
+    let exact_layout = append_numerics_tier(base_layout, &exact_suffix);
+    let fast_layout = append_numerics_tier(base_layout, &fast_suffix);
+    let exact_signature = append_numerics_tier(base_signature, &exact_suffix);
+    let fast_signature = append_numerics_tier(base_signature, &fast_suffix);
+    assert_eq!(exact_layout, base_layout);
+    assert_eq!(exact_signature, base_signature);
+
+    let tokens = [7u32, 8, 9, 10];
+    let fast_l1 = MlxPrefixCacheKey {
+        model_id: "flash-next".to_string(),
+        route_policy: "direct".to_string(),
+        layer_layout: fast_layout.clone(),
+        block_size_tokens: 4,
+        token_count: 4,
+        token_hash: hash_prefix_tokens(&tokens),
+        media_key: String::new(),
+    };
+    let exact_l1 = MlxPrefixCacheKey {
+        layer_layout: exact_layout.clone(),
+        ..fast_l1.clone()
+    };
+    let snapshot = MlxPrefixSnapshot::from_shared_payload(
+        std::sync::Arc::<[u8]>::from(&b"kv"[..]),
+        tokens.to_vec(),
+        tokens.len(),
+        None,
+        None,
+    );
+    let mut l1 = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1 << 20,
+        max_entries: 8,
+    });
+    l1.insert(fast_l1.clone(), snapshot);
+    assert!(
+        l1.contains_exact_tokens(&fast_l1, &tokens),
+        "same-tier L1 probe hits"
+    );
+    assert!(
+        !l1.contains_exact_tokens(&exact_l1, &tokens),
+        "cross-tier L1 probe misses"
+    );
+
+    let key_bytes = |layout: &str, signature: &str| {
+        canonical_key_bytes(&DiskPrefixKeyFields {
+            model_id: "flash-next",
+            artifact_fingerprint_sha256: "aa",
+            route_policy: "direct",
+            layer_layout: layout,
+            kv_payload_version: 4,
+            kv_quantization: "f16",
+            kv_dtype: "bfloat16",
+            execution_signature: signature,
+            block_size_tokens: 4,
+            token_count: 4,
+            tokens: &tokens,
+        })
+    };
+    let fast_disk = key_bytes(&fast_layout, &fast_signature);
+    let exact_disk = key_bytes(&exact_layout, &exact_signature);
+    assert_ne!(fast_disk, exact_disk);
+    let dir = std::env::temp_dir().join(format!(
+        "ax-tier-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    let disk = DiskPrefixCache::open(&dir).expect("open disk prefix cache");
+    disk.insert(
+        &fast_disk,
+        &DiskPrefixCacheEntry {
+            payload: b"kv".to_vec(),
+            prefill_output_token: None,
+            producer_cold_prefill_us: 0,
+            producer_serialize_us: 0,
+        },
+    )
+    .expect("insert fast-tier snapshot");
+    assert!(disk.contains(&fast_disk), "same-tier disk probe hits");
+    assert!(!disk.contains(&exact_disk), "cross-tier disk probe misses");
+    assert!(disk.get(&exact_disk).expect("disk get").is_none());
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -51,6 +51,60 @@ impl MlxStreamExpertsMode {
     }
 }
 
+/// Process-level MLX numerics preset. Not a per-request option.
+///
+/// `Exact` leaves every numerics switch at its shipped value. `Fast` opts
+/// Flash Next into relaxed indexed QSA prefill unless
+/// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` is set in the environment.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MlxNumericsMode {
+    /// Shipped numerics. Indexed QSA prefill stays off unless the env opts in.
+    #[default]
+    Exact,
+    /// Relaxed indexed QSA prefill, unless the env sets that switch.
+    Fast,
+}
+
+impl MlxNumericsMode {
+    /// `exact` or `fast`.
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Fast => "fast",
+        }
+    }
+
+    /// Parse a CLI value. Unknown spellings are an error.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "exact" => Ok(Self::Exact),
+            "fast" => Ok(Self::Fast),
+            other => Err(format!(
+                "invalid --mlx-numerics {other:?} (expected exact or fast)"
+            )),
+        }
+    }
+}
+
+/// Install the process numerics preset before the runner reads it.
+///
+/// No-ops when the native MLX runtime is not linked. The indexed-prefill
+/// decision is cached on first read, so call this before the model loads.
+pub fn install_mlx_numerics_mode(mode: MlxNumericsMode) {
+    #[cfg(feature = "mlx-native")]
+    {
+        let preset = match mode {
+            MlxNumericsMode::Exact => ax_engine_mlx::MlxNumericsPreset::Exact,
+            MlxNumericsMode::Fast => ax_engine_mlx::MlxNumericsPreset::Fast,
+        };
+        ax_engine_mlx::install_mlx_numerics_preset(preset);
+    }
+    #[cfg(not(feature = "mlx-native"))]
+    {
+        let _ = mode;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MlxMtpPolicy {
     /// Use MTP when the loaded artifacts contain a validated drafter, otherwise
@@ -105,6 +159,10 @@ pub struct EngineSessionConfig {
     /// packs that cannot fit in unified memory are paged; smaller Flash-class
     /// packs stay resident.
     pub mlx_stream_experts: MlxStreamExpertsMode,
+    /// Process-level Flash Next numerics preset. `Exact` changes nothing.
+    /// `Fast` opts into relaxed indexed QSA prefill unless the env sets that
+    /// switch. Not a per-request option.
+    pub mlx_numerics: MlxNumericsMode,
     /// Fair multi-prefill progress (design Track B / PR3). Default **OFF**.
     /// When true, text prefills are interleave-capped under residual budget.
     /// Does **not** enable GPU continuous batching or claim `partial_overlap`.
@@ -160,6 +218,8 @@ pub struct PreviewSessionConfigRequest {
     /// Admit SSD expert streaming (--stream-experts). See
     /// `EngineSessionConfig::mlx_stream_experts`.
     pub mlx_stream_experts: MlxStreamExpertsMode,
+    /// See [`EngineSessionConfig::mlx_numerics`].
+    pub mlx_numerics: MlxNumericsMode,
     /// Fair multi-prefill progress (default OFF). See `EngineSessionConfig`.
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
@@ -191,6 +251,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
             mlx_stream_experts: MlxStreamExpertsMode::Auto,
+            mlx_numerics: MlxNumericsMode::Exact,
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
@@ -222,6 +283,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_speculation_profile: Option<String>,
     pub mlx_prefill_chunk: Option<usize>,
     pub mlx_stream_experts: MlxStreamExpertsMode,
+    pub mlx_numerics: MlxNumericsMode,
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
     pub max_inflight_prefill_requests: u32,
@@ -258,6 +320,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_speculation_profile: default.mlx_speculation_profile.clone(),
             mlx_prefill_chunk: default.mlx_prefill_chunk,
             mlx_stream_experts: default.mlx_stream_experts,
+            mlx_numerics: default.mlx_numerics,
             multi_prefill_fair: default.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: default
                 .max_prefill_tokens_per_request_per_step,
@@ -303,6 +366,7 @@ impl Default for EngineSessionConfig {
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
             mlx_stream_experts: MlxStreamExpertsMode::Auto,
+            mlx_numerics: MlxNumericsMode::Exact,
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
@@ -409,6 +473,7 @@ impl EngineSessionConfig {
             mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
             mlx_stream_experts: request.mlx_stream_experts,
+            mlx_numerics: request.mlx_numerics,
             multi_prefill_fair: request.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,
@@ -449,6 +514,7 @@ impl EngineSessionConfig {
             mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
             mlx_stream_experts: request.mlx_stream_experts,
+            mlx_numerics: request.mlx_numerics,
             multi_prefill_fair: request.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,

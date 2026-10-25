@@ -469,6 +469,11 @@ impl std::error::Error for DiskPrefixCacheError {}
 /// route, prefill split strategy, MLX/GPU identity). A v3 key can never
 /// alias a v4 key, so upgrading is a natural miss rather than a restore of
 /// state produced under a different execution contract.
+///
+/// Numerics-tier deviations are a suffix of `execution_signature` and of
+/// `layer_layout` (`";numerics=..."`). Shipped defaults omit that suffix, so
+/// the v4 domain string is unchanged and a default-tier key still matches a
+/// key written before the suffix existed. A non-default tier misses.
 pub struct DiskPrefixKeyFields<'a> {
     pub model_id: &'a str,
     pub artifact_fingerprint_sha256: &'a str,

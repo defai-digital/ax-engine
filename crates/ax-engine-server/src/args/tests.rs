@@ -72,6 +72,7 @@ fn base_args() -> ServerArgs {
         disable_ngram_acceleration: false,
         mlx_mtp_enable_ngram_stacking: false,
         mlx_mtp_policy: ax_engine_sdk::MlxMtpPolicy::Auto,
+        mlx_numerics: ax_engine_sdk::MlxNumericsMode::Exact,
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
@@ -203,6 +204,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
         mlx_stream_experts: ax_engine_sdk::MlxStreamExpertsMode::Auto,
+        mlx_numerics: ax_engine_sdk::MlxNumericsMode::Exact,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -253,6 +255,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
         mlx_stream_experts: ax_engine_sdk::MlxStreamExpertsMode::Auto,
+        mlx_numerics: ax_engine_sdk::MlxNumericsMode::Exact,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -378,6 +381,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
         mlx_stream_experts: ax_engine_sdk::MlxStreamExpertsMode::Auto,
+        mlx_numerics: ax_engine_sdk::MlxNumericsMode::Exact,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -1714,4 +1718,26 @@ fn mlx_mtp_policy_parses_and_preserves_explicit_session_intent() {
         ServerArgs::try_parse_from(["ax-engine-server", "--mlx-mtp-policy", "optimistic",])
             .is_err()
     );
+}
+
+#[test]
+fn mlx_numerics_parses_exact_and_fast() {
+    use ax_engine_sdk::MlxNumericsMode;
+    let default = ServerArgs::try_parse_from(["ax-engine-server"]).expect("defaults parse");
+    assert_eq!(default.mlx_numerics, MlxNumericsMode::Exact);
+    assert_eq!(
+        default.session_config().expect("session").mlx_numerics,
+        MlxNumericsMode::Exact
+    );
+    let fast = ServerArgs::try_parse_from(["ax-engine-server", "--mlx-numerics", "fast"])
+        .expect("fast parses");
+    assert_eq!(fast.mlx_numerics, MlxNumericsMode::Fast);
+    assert_eq!(
+        fast.session_config().expect("session").mlx_numerics,
+        MlxNumericsMode::Fast
+    );
+    let exact = ServerArgs::try_parse_from(["ax-engine-server", "--mlx-numerics", "EXACT"])
+        .expect("exact parses");
+    assert_eq!(exact.mlx_numerics, MlxNumericsMode::Exact);
+    assert!(ServerArgs::try_parse_from(["ax-engine-server", "--mlx-numerics", "loose"]).is_err());
 }
