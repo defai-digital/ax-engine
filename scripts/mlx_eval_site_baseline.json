@@ -118,7 +118,7 @@
   },
   "crates/ax-engine-mlx/src/qwen4_exp_qsa.rs": {
     "eval": 1,
-    "try_eval": 4
+    "try_eval": 6
   },
   "crates/ax-engine-mlx/src/runner/dflash2_decode.rs": {
     "try_eval": 6

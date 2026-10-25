@@ -512,9 +512,13 @@ fn batched_prefill_attention_matches_the_per_query_path() {
         MlxDtype::Bfloat16,
         None,
     );
-    let selection = indexer
-        .select(&hidden, &QsaIndexKeyCache::empty(), 0)
-        .unwrap();
+    // This comparison is the host token lists. Prefill device selection is
+    // on by default; force it off so the lists stay on the host.
+    let selection = crate::qwen4_exp_qsa::with_prefill_device_select(false, || {
+        indexer
+            .select(&hidden, &QsaIndexKeyCache::empty(), 0)
+            .unwrap()
+    });
     assert!(selection.device_tokens().is_none());
     let lengths: std::collections::BTreeSet<usize> = (0..queries_n as usize)
         .map(|q| selection.tokens_for_query(0, q).len())
