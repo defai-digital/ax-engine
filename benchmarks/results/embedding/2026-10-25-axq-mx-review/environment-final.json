@@ -1,0 +1,68 @@
+{
+  "hardware": "MacBook Pro M5 Max 128 GB",
+  "os": "27.0.1",
+  "architecture": "arm64",
+  "python": "3.12.13",
+  "base_commit": "fcf6e0fc8",
+  "source_state": "modified; see source-files.json",
+  "build_profile": "release-pyext",
+  "model_storage": "external volume; warm cache",
+  "performance_scope": "AX versus AX; CPU-materialized float32 matrices; no qualification or competitive claim",
+  "packages": {
+    "mlx": "0.32.4",
+    "mlx-metal": "0.32.4",
+    "mlx-lm": "0.32.2",
+    "mlx-vlm": "0.7.10",
+    "mlx-embeddings": "0.1.0",
+    "transformers": "5.20.2",
+    "huggingface-hub": "2.3.0",
+    "numpy": "2.5.4",
+    "maturin": "1.15.0"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27) (Homebrew)",
+  "toolchain_source": "Homebrew; rustup unavailable",
+  "binary_sha256": {
+    "_ax_engine.abi3.so": "9b61b3772c87088637d4eee9611c56092f60f6ea27924886fd02e64c493d314a",
+    "ax-engine-server": "c68c79a9218ff7313d67c867169dbaf10eb674b80d5e4d44c1fa783520383894",
+    "generate-manifest": "85786f6a2a8f015c369acb62b3d358e247c85b1b7d4143939405ea01f09f7491"
+  },
+  "model_manifests": {
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP4": {
+      "revision": "095c752be6f91e1572439276301f2318e09b1404",
+      "sha256": "d218913203e6c8d9be54b54717439e943cd1a868592941271ac92f505345eaa0"
+    },
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP8": {
+      "revision": "a3a669490a7976a27563a2bfdd2c30be850c2e8c",
+      "sha256": "ef0838b96ca6ffe2a60d7ac8d29ce2a4f8899e2789bd918cf674f5dc5ce8ded6"
+    },
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP4": {
+      "revision": "49401b4d25d44d3ddec593e318f55cacea2e285b",
+      "sha256": "fcf4f2357537895cdab20f00bde10a879b007e108cd179ee5e3dccd0211bb2cf"
+    },
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP8": {
+      "revision": "90e6b7d1d9419a31567da1b929d1bdc98cafe8b2",
+      "sha256": "0759e8a133f09e508045af95b142c94cf86665f451ee3b734b60859648b32d8f"
+    },
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP4": {
+      "revision": "4148e5f298d014744236678ec7443559d25f7cc1",
+      "sha256": "53bf8ac68e10456b3694bb239ffbecc6fd85326dd63f4ec401f8adf5bbeac9c6"
+    },
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP8": {
+      "revision": "f8b5dd8937b07eded126b9d193dcac35830b903f",
+      "sha256": "478330008953bb98183fbf6b39f216a3caf49b59187eaf1947777b1738792ce5"
+    },
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP4": {
+      "revision": "979d3b5b4e13b3874e663361a6dac2620bd15ab8",
+      "sha256": "b82a1bec2897b3b91b02e538a17033711a06712d27f10a214ec4366a8fb5ab27"
+    },
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8": {
+      "revision": "605d4d4e9f55ce959323520f918f11f6dd7504e9",
+      "sha256": "f53ae87c104a4a5066d80644c03d95f61e1528ef188b996c3b09909f3223d0dc"
+    },
+    "mlx-community/embeddinggemma-300m-8bit": {
+      "revision": "c8316c9e35cf8830541b04d315398c67faa6e497",
+      "sha256": "37c0d6939003b2853a473f7f484270d7b4c72bb074d4f01168ed113dcf31a887"
+    }
+  }
+}

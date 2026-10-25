@@ -360,6 +360,16 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         },
     },
     ArchitectureRegistration {
+        family_label: "embedding_gemma2",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
+        default_generation: GenerationKind::EncoderEmbed,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "text-only bidirectional encoder; media inputs are not admitted",
+        support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract::not_applicable(),
+    },
+    ArchitectureRegistration {
         family_label: "embeddinggemma",
         mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::EncoderEmbed,

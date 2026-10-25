@@ -222,7 +222,7 @@ allowlist, not “any downloaded model”:
 | Qwen 3.5 9B, Qwen 3.6 27B / 35B | Manifest family + architecture signature must match the requested `model_id` |
 | Qwen3-Coder-Next | Same manifest-authoritative check (`qwen3_next` 512-expert signature) |
 | Gemma 4 12B / 26B / 31B | Same manifest-authoritative check |
-| EmbeddingGemma 300M, Qwen3-Embedding 0.6B / 4B / 8B | Embedding co-residency: serve `/v1/chat/completions` and `/v1/embeddings` from one process, routed by `model` |
+| EmbeddingGemma 300M / 2, Qwen3-Embedding 0.6B / 4B / 8B | Embedding co-residency: serve `/v1/chat/completions` and `/v1/embeddings` from one process, routed by `model` |
 
 The [AutomatosX org packages](https://huggingface.co/AutomatosX) publish these
 targets under `AX-`-branded names (for example
@@ -246,8 +246,10 @@ Two recommended sources:
   `ax_gemma4_assistant_mtp.json` contract) and ship a pre-generated
   `model-manifest.json`, so one download produces a serve-ready MTP directory
   with no separate `download-mtp` step. OptiQ variants carry mixed 4/8-bit
-  per-tensor quantization; embedding packs cover EmbeddingGemma 300M and
-  Qwen3-Embedding 0.6B/4B/8B, and Qwen3-VL 30B-A3B Instruct AXQ packs. The
+  per-tensor quantization; current MX embedding packs cover EmbeddingGemma 2 and
+  Qwen3-Embedding 0.6B/4B/8B. EmbeddingGemma 300M has a pinned upstream fallback
+  because its legacy AutomatosX repository was unavailable during review.
+  Other packs include Qwen3-VL 30B-A3B Instruct AXQ. The
   managed catalog contains all 29 public repositories in the organization;
   every currently published Qwen 3.5, Qwen 3.6, Gemma 4, and Qwen3-VL 30B
   AXQ variant is represented. The AXQ Qwen 3.6 27B and Qwen3-VL 30B
@@ -366,7 +368,10 @@ serve them through the idempotent resolution flow:
 | `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
 | `ax-qwen3-coder-next`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-Coder-Next-MLX-{OptiQ-4bit,4bit,6bit}` (OptiQ flagship; AXQ is `:axq`) |
 | `ax-diffusiongemma-26b` | `AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit` |
-| `ax-embeddinggemma-300m` | `AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit` |
+| `ax-embeddinggemma-300m` | `AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit` (legacy identity; unavailable in the 2026-10-25 inventory) |
+| `embeddinggemma-300m:8bit` | `mlx-community/embeddinggemma-300m-8bit` (revision-pinned fallback) |
+| `embeddinggemma-2:axq-mxfp4`, `embeddinggemma-2:axq-mxfp8` | `AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-{MXFP4,MXFP8}` (experimental text encoder) |
+| `qwen3-embedding-{0.6b,4b,8b}:axq-{mxfp4,mxfp8}` | `AutomatosX/AX-Qwen3-Embedding-{0.6B,4B,8B}-MLX-AXQ-{MXFP4,MXFP8}` |
 | `ax-qwen3-embedding-0.6b` | `AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit` |
 | `ax-qwen3-embedding-4b` | `AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ` |
 | `ax-qwen3-embedding-8b` | `AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ` |
@@ -586,6 +591,7 @@ Current direct-support LLM families:
 | Qwen3-VL | Dense and MoE `qwen3_vl*` MLX checkpoints | Repo-owned image/video chat runtime | Conv3D patch embed, full vision stack and merger, DeepStack, multimodal RoPE |
 | MiniCPM-V 4.6 | `minicpmv4_6` MLX checkpoints | Repo-owned image/multi-image chat runtime | SigLIP + mid-tower/final mergers; OCR/document use |
 | Nemotron 3 Nano Omni | `nemotron_h` manifests containing `vision_model.*` / `sound_encoder.*` | Repo-owned image/audio/mixed chat runtime | RADIO vision + Parakeet audio on the Nemotron-H hybrid backbone |
+| EmbeddingGemma 300M / 2 | `embeddinggemma`, `embedding_gemma2` | Native encoder embedding APIs; 768-dimensional text vectors | Separate architectures and spaces. Gemma 2 AXQ MXFP4/MXFP8 is experimental and text-only. [Pack coverage and limits](EMBEDDINGS.md#axq-mx-packs-and-gemma-encoders). |
 | Nemotron 3 Embed | `nemotron_embed` (e.g. `nvidia/Nemotron-3-Embed-1B-BF16`) | Compatible encoder-embed path: convert + mean-pool `/v1/embeddings` | Bidirectional Ministral-3 encoder; **not** chat `mistral3` and **not** Omni `nemotron_h`. Default RAG embedder remains Qwen3-Embedding; switching spaces requires a full reindex. Client applies query/document prefixes. No managed pack / multi-model allowlist yet. |
 | Qwen3-Nemotron GenRM | Qwen3 checkpoints such as `Qwen3-Nemotron-32B-GenRM-Principle` | **Workload** on the `qwen3` direct graph (not a new family) | Generative reward / principle judge. Chat role `principle` is accepted. Numeric Yes/No logprob reward is Phase B — see [GenRM](GENRM.md). Ultra 550B LatentMoE GenRM is out of scope on Apple Silicon. |
 | Unlimited-OCR | `unlimited_ocr` | Preview repo-owned processed-image runtime | Dual vision, DeepSeek MoE, protected-prefix decode ring |

@@ -2992,7 +2992,7 @@ impl MlxRunner {
         // first-request TTFT matches the warmed path under the fresh-process
         // contract.
         let is_encoder_embed_family =
-            cfg.model_family == "embeddinggemma" || cfg.model_family == "nemotron_embed";
+            cfg.generation_kind == ax_engine_core::GenerationKind::EncoderEmbed;
         // A streamed model must not run the resident-model JIT warmup suite.
         // Every forward below walks all MoE layers, so even a tiny dummy
         // request performs a complete SSD expert sweep. The server also skips
@@ -3435,8 +3435,25 @@ fn begin_multimodal_prefill(
     full_prompt_tokens
 }
 
+fn validate_embedding_ids(cfg: &ModelConfig, ids: &[u32]) -> Result<(), &'static str> {
+    if ids.iter().any(|&id| id as usize >= cfg.vocab_size) {
+        return Err("embedding token id exceeds model vocabulary");
+    }
+    if cfg.model_family == "embedding_gemma2"
+        && ids.iter().any(|id| matches!(*id, 258880 | 258881 | 258884))
+    {
+        return Err(
+            "EmbeddingGemma 2 supports text embeddings only; media token inputs require a multimodal encoder",
+        );
+    }
+    Ok(())
+}
+
 fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) -> EmbeddingPooling {
-    if model_family == "embeddinggemma" || model_family == "nemotron_embed" {
+    if matches!(
+        model_family,
+        "embeddinggemma" | "embedding_gemma2" | "nemotron_embed"
+    ) {
         EmbeddingPooling::Mean
     } else {
         pooling
@@ -5746,6 +5763,17 @@ impl ExecutionRunner for MlxRunner {
         if token_ids.is_empty() {
             return Err("token_ids must not be empty");
         }
+        validate_embedding_ids(&self.cfg, token_ids)?;
+        // Pool with the real length when the compiled encoder rounds up a
+        // length bucket. Single-item and batch-of-one must share this path.
+        if matches!(
+            self.cfg.model_family.as_str(),
+            "embeddinggemma" | "embedding_gemma2"
+        ) {
+            return self
+                .embed_batch_flat_contiguous(&[token_ids.to_vec()], pooling, normalize)
+                .map(|matrix| matrix.data);
+        }
         let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
         // For Last/Cls: tell the forward pass which position to extract before
         // the final norm, so we norm [1, 1, H] instead of [1, seq, H].
@@ -5822,12 +5850,31 @@ impl ExecutionRunner for MlxRunner {
             if ids.is_empty() {
                 return Err("token_ids must not be empty");
             }
+            validate_embedding_ids(&self.cfg, ids)?;
         }
         // Length-affinity split (default ON): process similar-length rows together
         // so right-pad waste stays bounded, then reassemble original order.
-        if crate::model::embed_length_split_enabled() && batch.len() > 1 {
+        let mx_short_rows = crate::model::qwen_mx_embedding(&self.cfg, &self.weights);
+        if (crate::model::embed_length_split_enabled() || mx_short_rows) && batch.len() > 1 {
             let lens: Vec<usize> = batch.iter().map(Vec::len).collect();
-            let groups = crate::model::embed_length_affinity_groups(&lens, 1.5, 32);
+            let mut groups = crate::model::embed_length_affinity_groups(&lens, 1.5, 32);
+            if mx_short_rows {
+                groups = groups
+                    .into_iter()
+                    .flat_map(|group| {
+                        let mut exact = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+                        for index in group {
+                            let key = if lens[index] < 256 {
+                                lens[index]
+                            } else {
+                                usize::MAX
+                            };
+                            exact.entry(key).or_default().push(index);
+                        }
+                        exact.into_values()
+                    })
+                    .collect();
+            }
             if groups.len() > 1 {
                 let mut row_data: Vec<Option<Vec<f32>>> = (0..batch.len()).map(|_| None).collect();
                 let mut hidden_size = 0usize;
@@ -5864,6 +5911,19 @@ impl MlxRunner {
         pooling: EmbeddingPooling,
         normalize: bool,
     ) -> Result<ax_engine_core::EmbeddingMatrix, &'static str> {
+        if self.cfg.model_family == "embedding_gemma2" {
+            let pooled = self
+                .embedding_gemma_batch_pooled_compiled_forward(batch)
+                .unwrap_or_else(|| {
+                    crate::model::embedding_gemma2::forward(&self.cfg, &self.weights, batch)
+                });
+            let (data, hidden_size) = post_pool_to_flat(&pooled, normalize);
+            return Ok(ax_engine_core::EmbeddingMatrix {
+                data,
+                batch_size: batch.len(),
+                hidden_size,
+            });
+        }
         let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
         let target_positions: Option<Vec<usize>> = match pooling {
             EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
@@ -6550,21 +6610,31 @@ impl MlxRunner {
         let mut cache = self.embed_gemma_batch_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
-            let bidir_mask = crate::model::build_bidirectional_padding_mask(
-                batch,
-                max_len,
-                &actual_lens,
-                hidden.dtype(),
-            );
-            let (pool_mask, pool_scale) =
-                crate::model::build_embedding_mean_pool_inputs(batch, max_len, &actual_lens);
-            match crate::model::build_embedding_gemma3_pooled_batch_forward_closure(
-                Arc::clone(&self.cfg_arc),
-                Arc::clone(&self.weights),
-                bidir_mask,
-                pool_mask,
-                pool_scale,
-            ) {
+            let closure = if self.cfg.model_family == "embedding_gemma2" {
+                crate::model::embedding_gemma2::compile(
+                    Arc::clone(&self.cfg_arc),
+                    Arc::clone(&self.weights),
+                    &hidden,
+                    &actual_lens,
+                )
+            } else {
+                let bidir_mask = crate::model::build_bidirectional_padding_mask(
+                    batch,
+                    max_len,
+                    &actual_lens,
+                    hidden.dtype(),
+                );
+                let (pool_mask, pool_scale) =
+                    crate::model::build_embedding_mean_pool_inputs(batch, max_len, &actual_lens);
+                crate::model::build_embedding_gemma3_pooled_batch_forward_closure(
+                    Arc::clone(&self.cfg_arc),
+                    Arc::clone(&self.weights),
+                    bidir_mask,
+                    pool_mask,
+                    pool_scale,
+                )
+            };
+            match closure {
                 Ok(cls) => {
                     embed_compile_cache_evict_if_full(&mut cache);
                     cache.insert(key.clone(), cls);

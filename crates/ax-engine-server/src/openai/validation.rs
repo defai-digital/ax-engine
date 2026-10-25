@@ -45,7 +45,22 @@ pub(crate) fn select_openai_model(
 pub(crate) fn validate_openai_text_backend(
     live: &LiveState,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if crate::metadata::model_family_from_artifacts(live).as_deref() == Some("whisper") {
+    let family = crate::metadata::model_family_from_artifacts(live);
+    if family
+        .as_deref()
+        .and_then(ax_engine_core::lookup_architecture)
+        .is_some_and(|entry| {
+            entry.default_generation == ax_engine_core::GenerationKind::EncoderEmbed
+        })
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "This model is an embedding encoder; use /v1/embeddings or /v1/embedding_records"
+                .into(),
+        ));
+    }
+    if family.as_deref() == Some("whisper") {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",

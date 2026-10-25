@@ -121,6 +121,8 @@ pub enum EngineSessionError {
     MetalRuntime(#[from] MetalRuntimeError),
     #[error("embedding is not supported by the active backend")]
     EmbeddingNotSupported,
+    #[error("embedding encoders support embedding requests, not text generation")]
+    EncoderTextGenerationUnsupported,
     #[error("embedding failed: {message}")]
     EmbeddingFailed { message: &'static str },
     #[error("speech transcription requires a loaded native Whisper model")]

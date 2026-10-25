@@ -14,9 +14,10 @@ Examples:
         --model-kind embeddinggemma \
         --model-dir /path/to/embeddinggemma-300m-8bit/snapshots/<sha>
 
-Qwen uses mlx-lm last-token pooling as the oracle. EmbeddingGemma uses
+Qwen uses mlx-lm last-token pooling as the oracle. EmbeddingGemma 300M uses
 mlx-embeddings one row at a time as the oracle because its reference batch path
-is not invariant for mixed-length batches.
+is not invariant for mixed-length batches. EmbeddingGemma 2 uses mlx-vlm's
+text encoder with token-wise projection and mean pooling.
 """
 from __future__ import annotations
 
@@ -139,8 +140,8 @@ def infer_model_kind(model_dir: Path, requested: str) -> str:
         return requested
     manifest = read_manifest(model_dir)
     family = str(manifest.get("model_family", ""))
-    if family == "embeddinggemma":
-        return "embeddinggemma"
+    if family in {"embeddinggemma", "embedding_gemma2"}:
+        return family
     return "qwen3"
 
 
@@ -177,11 +178,11 @@ def build_contract(
         if batch_consistency_threshold is not None
         else DEFAULT_BATCH_CONSISTENCY_THRESHOLD
     )
-    if model_kind == "embeddinggemma":
+    if model_kind in {"embeddinggemma", "embedding_gemma2"}:
         return EmbeddingContract(
             model_kind=model_kind,
-            model_id="embeddinggemma",
-            reference="mlx-embeddings",
+            model_id=model_kind,
+            reference="mlx-vlm" if model_kind == "embedding_gemma2" else "mlx-embeddings",
             pooling="mean",
             cosine_threshold=threshold,
             batch_consistency_threshold=batch_threshold,
@@ -204,7 +205,7 @@ def tokenize_sentences(model_dir: Path, contract: EmbeddingContract) -> list[lis
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
     rows: list[list[int]] = []
     for sentence in SENTENCES:
-        if contract.model_kind == "embeddinggemma":
+        if contract.model_kind in {"embeddinggemma", "embedding_gemma2"}:
             token_ids = tokenizer.encode(sentence, add_special_tokens=True)
         else:
             token_ids = tokenizer.encode(sentence, add_special_tokens=False)
@@ -275,6 +276,16 @@ def compute_reference_single(
     contract: EmbeddingContract,
     token_ids: list[list[int]],
 ) -> Any:
+    if contract.model_kind == "embedding_gemma2":
+        import mlx.core as mx
+        import numpy as np
+        from mlx_vlm.embedding_loader import load_embedding_model
+
+        model = load_embedding_model(model_dir)
+        return np.vstack([
+            np.array(model(mx.array([ids])).text_embeds[0], dtype=np.float32, copy=True)
+            for ids in token_ids
+        ])
     if contract.model_kind == "embeddinggemma":
         return compute_embeddinggemma_reference_single(model_dir, token_ids)
     return compute_qwen_reference_single(model_dir, token_ids)
@@ -309,7 +320,11 @@ def verify_direct(model_dir: Path, contract: EmbeddingContract) -> VerificationR
     reference = compute_reference_single(model_dir, contract, token_ids)
     session = load_ax_session(model_dir, contract)
     try:
-        ax_single_rows = [ax_batch_matrix(session, [ids], contract)[0] for ids in token_ids]
+        # Exercise the actual single-item API. A batch of one would miss
+        # single-path pooling bugs when the encoder rounds up a length bucket.
+        ax_single_rows = [
+            session.embed(ids, pooling=contract.pooling, normalize=True) for ids in token_ids
+        ]
         import numpy as np
 
         ax_single = np.vstack(ax_single_rows)
@@ -468,7 +483,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model-kind",
-        choices=["auto", "qwen3", "embeddinggemma"],
+        choices=["auto", "qwen3", "embeddinggemma", "embedding_gemma2"],
         default="auto",
         help="Embedding family contract. Default: infer from model-manifest.json.",
     )

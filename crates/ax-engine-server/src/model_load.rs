@@ -68,6 +68,7 @@ enum MultiModelTarget {
     Gemma4_26b,
     Gemma4_31b,
     EmbeddingGemma300m,
+    EmbeddingGemma2,
     Qwen3Embedding0_6b,
     Qwen3Embedding4b,
     Qwen3Embedding8b,
@@ -75,7 +76,7 @@ enum MultiModelTarget {
 
 /// One-line product scope used by every multi-model rejection message.
 const MULTI_MODEL_SCOPE: &str = "Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen3-Coder-Next, \
-     Gemma 4 12B/26B/31B, EmbeddingGemma 300M, and Qwen3-Embedding 0.6B/4B/8B";
+     Gemma 4 12B/26B/31B, EmbeddingGemma 300M/2, and Qwen3-Embedding 0.6B/4B/8B";
 const MULTI_MODEL_PREFILL_ISOLATION_ENV: &str = "AX_SERVER_MULTI_MODEL_PREFILL_ISOLATION";
 // Keep the no-contention prefill geometry large enough for throughput. The
 // generation service dynamically contracts this to a single token while a
@@ -110,6 +111,7 @@ impl MultiModelTarget {
             Self::Gemma4_26b => "gemma-4-26b",
             Self::Gemma4_31b => "gemma-4-31b",
             Self::EmbeddingGemma300m => "embeddinggemma-300m",
+            Self::EmbeddingGemma2 => "embeddinggemma-2",
             Self::Qwen3Embedding0_6b => "qwen3-embedding-0.6b",
             Self::Qwen3Embedding4b => "qwen3-embedding-4b",
             Self::Qwen3Embedding8b => "qwen3-embedding-8b",
@@ -1318,6 +1320,8 @@ fn multi_model_target_for_label(label: &str) -> Option<MultiModelTarget> {
         Some(MultiModelTarget::Gemma4_26b)
     } else if target_label_matches(label, &["gemma-4-31b", "gemma4-31b"]) {
         Some(MultiModelTarget::Gemma4_31b)
+    } else if target_label_matches(label, &["embeddinggemma-2", "embedding-gemma-2"]) {
+        Some(MultiModelTarget::EmbeddingGemma2)
     } else if target_label_matches(label, &["embeddinggemma", "embedding-gemma"]) {
         Some(MultiModelTarget::EmbeddingGemma300m)
     } else if target_label_matches(label, &["qwen3-embedding-0-6b", "qwen3-embedding-06b"]) {
@@ -1429,6 +1433,9 @@ fn multi_model_target_from_manifest(
         // the encoder+mean-pooling family.
         ("embeddinggemma", 24, 768, 1152, 3, 256, 1, 262144, None, None, None) => {
             Some(MultiModelTarget::EmbeddingGemma300m)
+        }
+        ("embedding_gemma2", 24, 512, 2048, 4, 256, 2, 262144, None, None, None) => {
+            Some(MultiModelTarget::EmbeddingGemma2)
         }
         ("qwen3", 28, 1024, 3072, 16, 128, 8, 151669, None, None, None) => {
             Some(MultiModelTarget::Qwen3Embedding0_6b)
@@ -1639,6 +1646,9 @@ mod tests {
             "qwen3-next-80b-a3b",
             "embeddinggemma-300m",
             "embeddinggemma",
+            "embeddinggemma-2",
+            "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP4",
+            "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8",
             "qwen3-embedding-0.6b",
             "qwen3-embedding-4b",
             "qwen3-embedding-8b",
@@ -1812,6 +1822,14 @@ mod tests {
                     "attention_head_dim": 256, "kv_head_count": 1, "vocab_size": 262144
                 }),
                 MultiModelTarget::EmbeddingGemma300m,
+            ),
+            (
+                serde_json::json!({
+                    "model_family": "embedding_gemma2", "layer_count": 24, "hidden_size": 512,
+                    "intermediate_size": 2048, "attention_head_count": 4,
+                    "attention_head_dim": 256, "kv_head_count": 2, "vocab_size": 262144
+                }),
+                MultiModelTarget::EmbeddingGemma2,
             ),
             (
                 serde_json::json!({

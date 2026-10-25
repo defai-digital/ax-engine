@@ -117,7 +117,7 @@ pub(crate) struct ArchitectureParams {
 pub(crate) fn uses_text_config(model_type: &str) -> bool {
     matches!(
         model_type,
-        "gemma4"
+        "embedding_gemma2" | "embedding_gemma2_text" | "gemma4"
             | "gemma4_unified"
             | "gemma4_unified_text"
             | "gemma4_vl"
@@ -872,10 +872,11 @@ pub(crate) fn parse_rope_params(
     config: &serde_json::Value,
     model_type: &str,
 ) -> (Option<u32>, Option<u32>, Option<f32>) {
-    if is_gemma4_text_model_type(model_type) {
+    if is_gemma4_text_model_type(model_type) || model_type.starts_with("embedding_gemma2") {
         let rp = config
             .get("text_config")
-            .and_then(|tc| tc.get("rope_parameters"));
+            .and_then(|tc| tc.get("rope_parameters"))
+            .or_else(|| config.get("rope_parameters"));
         let full_theta = rp
             .and_then(|rp| rp.get("full_attention"))
             .and_then(|fa| fa.get("rope_theta"))
@@ -1042,6 +1043,7 @@ pub(crate) fn parse_layer_types(
     let is_gpt_oss = model_type == "gpt_oss";
     let is_nemotron = is_nemotron_h(model_type);
     if !is_gemma4_text_model_type(model_type)
+        && !model_type.starts_with("embedding_gemma2")
         && !is_embeddinggemma_model_type(model_type)
         && !is_muse_glimmer_model_type(model_type)
         && !is_gpt_oss

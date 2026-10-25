@@ -142,6 +142,7 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
         // EmbeddingGemma ships HF model_type `gemma3_text`; the only product
         // artifact on this family is the 300M embedding model.
         "gemma3_text" | "embeddinggemma" => Some("embeddinggemma-300m".to_string()),
+        "embedding_gemma2" | "embedding_gemma2_text" => Some("embeddinggemma-2".to_string()),
         "muse_glimmer" | "muse_glimmer_text" => Some("muse-glimmer-30b".to_string()),
         "nemotron_h" | "nemotron_h_nano_omni" => Some("nemotron-3-nano".to_string()),
         "unlimited-ocr" | "unlimited_ocr" | "deepseekocr" => Some("unlimited-ocr".to_string()),

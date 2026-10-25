@@ -36,7 +36,7 @@ fn with_gpu_numeric_lock<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-fn cfg(attn_output_gate: bool) -> ModelConfig {
+pub(super) fn cfg(attn_output_gate: bool) -> ModelConfig {
     ModelConfig {
         compile_cache_identity: 1,
         model_family: "qwen3".to_string(),
@@ -4325,6 +4325,89 @@ fn dense_full_attention_layer(cfg: &ModelConfig, seed: u32) -> LayerWeights {
     layer.up_proj = Some(weight(inter, hidden, 6));
     layer.down_proj = Some(weight(hidden, inter, 7));
     layer
+}
+
+#[test]
+fn short_mx_embedding_layers_preserve_single_sequence_reductions() {
+    use mlx_sys::{MlxQuantizationMode, quantize};
+
+    with_gpu_numeric_lock(|| {
+        let mut config = cfg(false);
+        config.hidden_size = 64;
+        config.intermediate_size = 128;
+        config.head_dim = 32;
+        config.rope_dims = 32;
+        config.query_scale = 1.0 / 32_f32.sqrt();
+        for (mode, bits, name) in [
+            (MlxQuantizationMode::Mxfp4, 4, "mxfp4"),
+            (MlxQuantizationMode::Mxfp8, 8, "mxfp8"),
+        ] {
+            let mut layer = dense_full_attention_layer(&config, 117);
+            for weight in [
+                &mut layer.q_proj,
+                &mut layer.k_proj,
+                &mut layer.v_proj,
+                &mut layer.o_proj,
+                &mut layer.gate_proj,
+                &mut layer.up_proj,
+                &mut layer.down_proj,
+            ] {
+                let dense = astype(&weight.as_ref().unwrap().weight, MlxDtype::Bfloat16, None);
+                let parts = quantize(&dense, Some(32), Some(bits), mode, None, None);
+                let mut quantized =
+                    QuantizedWeight::new(parts[0].clone(), Some(parts[1].clone()), None);
+                quantized.mode = name.into();
+                quantized.bits = bits;
+                quantized.group_size = 32;
+                *weight = Some(quantized);
+            }
+            for seq in [31, 129] {
+                let input = astype(
+                    &array_f32(&patterned_signal(3 * seq * 64, 89), &[3, seq as i32, 64]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let positions = vec![seq - 1; 3];
+                let (hidden, ffn) = layer_forward_dense_embed(
+                    &config,
+                    &layer,
+                    &input,
+                    0,
+                    None,
+                    Some(&positions),
+                    &None,
+                );
+                let batched = astype(&add(&hidden, &ffn, None), MlxDtype::Float32, None);
+                eval(&[&batched]);
+                for row in 0..3 {
+                    let single = slice(
+                        &input,
+                        &[row, 0, 0],
+                        &[row + 1, seq as i32, 64],
+                        &[1; 3],
+                        None,
+                    );
+                    let (hidden, ffn) = layer_forward_dense_embed(
+                        &config,
+                        &layer,
+                        &single,
+                        0,
+                        None,
+                        Some(&[seq - 1]),
+                        &None,
+                    );
+                    let single = astype(&add(&hidden, &ffn, None), MlxDtype::Float32, None);
+                    eval(&[&single]);
+                    let offset = row as usize * 64;
+                    assert_close(
+                        &batched.data_f32()[offset..offset + 64],
+                        single.data_f32(),
+                        1e-5,
+                    );
+                }
+            }
+        }
+    });
 }
 
 fn dense_prefill_test_model() -> (ModelConfig, ModelWeights) {

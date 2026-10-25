@@ -44,6 +44,12 @@ class ModelProfile:
 
 MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ModelProfile(
+        label="embeddinggemma-300m-8bit",
+        preset=None,
+        repo_id="mlx-community/embeddinggemma-300m-8bit",
+        aliases=("embeddinggemma-300m-8bit", "embeddinggemma-300m:8bit"),
+    ),
+    ModelProfile(
         label="gemma4-12b",
         preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-4bit",
@@ -344,7 +350,7 @@ def _automatosx_profile(
 # AXQ-only families (Holo3, Ornith, Qwen 3.8, Qwen3-VL, Muse-Glimmer,
 # Nemotron Nano, Mistral Small AXQ, GPT-OSS AXQ when selected via :axq)
 # may use ax-<family> as the AXQ pack when there is no OptiQ sibling.
-AUTOMATOSX_MODEL_PROFILES = (
+AUTOMATOSX_MODEL_PROFILES: tuple[ModelProfile, ...] = (
     _automatosx_profile(
         "ax-diffusiongemma-26b",
         "AX-DiffusionGemma-26B-A4B-IT-MLX-OptiQ-4bit",
@@ -984,12 +990,66 @@ AUTOMATOSX_MODEL_PROFILES = (
     ),
 )
 
+# Explicit MX embedding candidates; legacy family selectors retain their identity.
+AUTOMATOSX_MODEL_PROFILES += (
+    _automatosx_profile(
+        "ax-qwen3-embedding-0.6b-axq-mxfp4",
+        "AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP4",
+        ("qwen3-embedding-0.6b:axq-mxfp4",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-0.6b-axq-mxfp8",
+        "AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP8",
+        ("qwen3-embedding-0.6b:axq-mxfp8",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-4b-axq-mxfp4",
+        "AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP4",
+        ("qwen3-embedding-4b:axq-mxfp4",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-4b-axq-mxfp8",
+        "AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP8",
+        ("qwen3-embedding-4b:axq-mxfp8",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-8b-axq-mxfp4",
+        "AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP4",
+        ("qwen3-embedding-8b:axq-mxfp4",),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-embedding-8b-axq-mxfp8",
+        "AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP8",
+        ("qwen3-embedding-8b:axq-mxfp8",),
+    ),
+    _automatosx_profile(
+        "ax-embeddinggemma-2-axq-mxfp4",
+        "AX-EmbeddingGemma-2-MLX-AXQ-MXFP4",
+        ("embeddinggemma-2:axq-mxfp4",),
+    ),
+    _automatosx_profile(
+        "ax-embeddinggemma-2-axq-mxfp8",
+        "AX-EmbeddingGemma-2-MLX-AXQ-MXFP8",
+        ("embeddinggemma-2:axq-mxfp8",),
+    ),
+)
+
 MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
 
 # AXQ is admitted to the catalog as an explicit, revision-pinned candidate.
 # Bare family aliases must not silently promote these rows until
 # checkpoint-level quality, runtime, and memory gates are published and pass.
 _PINNED_PROFILE_REVISIONS = {
+    "mlx-community/embeddinggemma-300m-8bit": "c8316c9e35cf8830541b04d315398c67faa6e497",
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP4": "095c752be6f91e1572439276301f2318e09b1404",
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP8": "a3a669490a7976a27563a2bfdd2c30be850c2e8c",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP4": "49401b4d25d44d3ddec593e318f55cacea2e285b",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP8": "90e6b7d1d9419a31567da1b929d1bdc98cafe8b2",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP4": "4148e5f298d014744236678ec7443559d25f7cc1",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP8": "f8b5dd8937b07eded126b9d193dcac35830b903f",
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP4": "979d3b5b4e13b3874e663361a6dac2620bd15ab8",
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8": "605d4d4e9f55ce959323520f918f11f6dd7504e9",
+
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP": (
         "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
     ),
@@ -1075,6 +1135,15 @@ _PINNED_PROFILE_REVISIONS = {
 # (Holo3, Ornith, Qwen3-VL 30B, Coder-Next AXQ, GPT-OSS AXQ, Qwen 3.8
 # MXFP4). Development AXQ stays in this set.
 _CANDIDATE_PROFILE_REPOS = {
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP8",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP8",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP8",
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8",
+
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",

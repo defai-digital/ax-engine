@@ -207,6 +207,7 @@ mod tests {
             not_applicable,
             vec![
                 "gemma4_assistant",
+                "embedding_gemma2",
                 "embeddinggemma",
                 "nemotron_embed",
                 "mistral3",

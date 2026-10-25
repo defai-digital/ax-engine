@@ -760,6 +760,7 @@ pub(super) fn validate_gemma4_interleaved_attention(
             | "gemma4_unified"
             | "diffusion_gemma"
             | "embeddinggemma"
+            | "embedding_gemma2"
             | "gpt_oss"
             | "muse_glimmer"
     ) {

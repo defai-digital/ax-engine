@@ -2066,6 +2066,9 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
             return "missing required tensor role embedding_dense0"
         if "embedding_dense1" not in global_roles:
             return "missing required tensor role embedding_dense1"
+    elif model_family == "embedding_gemma2":
+        if "embedding_dense0" not in global_roles:
+            return "missing required tensor role embedding_dense0"
     elif model_family == "nemotron_embed":
         # Encoder-only mean-pool: no lm_head / Dense head required.
         pass

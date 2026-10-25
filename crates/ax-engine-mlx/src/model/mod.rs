@@ -116,6 +116,7 @@ use profile::{
 };
 
 mod config;
+pub(crate) mod embedding_gemma2;
 use config::layer_params;
 pub use config::{
     DeepseekV4Config, DiffusionConfig, DiffusionSampler, DiffusionTemperatureSchedule,
@@ -3220,6 +3221,21 @@ pub(crate) fn gemma4_assistant_forward_one_compiled(
     ))
 }
 
+fn qwen_mx_embedding_layer(cfg: &ModelConfig, weights: &LayerWeights) -> bool {
+    cfg.model_family == "qwen3"
+        && weights
+            .q_proj
+            .as_ref()
+            .is_some_and(|weight| matches!(weight.mode.as_str(), "mxfp4" | "mxfp8"))
+}
+
+pub(crate) fn qwen_mx_embedding(cfg: &ModelConfig, weights: &ModelWeights) -> bool {
+    weights
+        .layers
+        .iter()
+        .any(|layer| qwen_mx_embedding_layer(cfg, layer))
+}
+
 /// Cache-free single transformer layer for dense embedding models.
 ///
 /// Equivalent to the standard dense-attention path in `layer_forward`, but
@@ -3254,6 +3270,43 @@ fn layer_forward_dense_embed(
     ) = layer_params(cfg, layer_idx);
     let batch = hidden.shape()[0] as usize;
     let seq = hidden.shape()[1] as usize;
+    if batch > 1 && seq < 256 && qwen_mx_embedding_layer(cfg, w) {
+        // Short MX matmuls change reductions when B*S is flattened. Keep
+        // each sequence's projection geometry, including the final FFN.
+        // Long ingest shapes retain the shared batch graph.
+        let mut outputs = Vec::with_capacity(batch);
+        let mut ffns = Vec::with_capacity(batch);
+        for row in 0..batch {
+            let row_slice = |x: &MlxArray| {
+                let shape = x.shape();
+                slice(
+                    x,
+                    &[row as i32, 0, 0],
+                    &[row as i32 + 1, shape[1], shape[2]],
+                    &[1; 3],
+                    None,
+                )
+            };
+            let input = row_slice(hidden);
+            let pending = pending_ffn.map(row_slice);
+            let positions = target_positions_for_ffn.map(|positions| &positions[row..row + 1]);
+            let (out, ffn) = layer_forward_dense_embed(
+                cfg,
+                w,
+                &input,
+                layer_idx,
+                pending.as_ref(),
+                positions,
+                attention_mask,
+            );
+            outputs.push(out);
+            ffns.push(ffn);
+        }
+        return (
+            concatenate(&outputs.iter().collect::<Vec<_>>(), 0, None),
+            concatenate(&ffns.iter().collect::<Vec<_>>(), 0, None),
+        );
+    }
     let flat_attention_shape = seq > 1;
     // AX_MLX_EMBED_PROFILE per-stage timers. Each `embed_profile_eval_elapsed`
     // forces an `eval()` barrier, so the breakdown is for ratio analysis only
@@ -3314,6 +3367,18 @@ fn layer_forward_dense_embed(
                 .map(|v_w| qw(&normed, v_w))
                 .unwrap_or_else(|| k.clone());
             (q, k, v, 1_usize, target_pos)
+        } else if cfg.model_family == "qwen3"
+            && !cfg.attn_output_gate
+            && let (Some(q), Some(k), Some(v)) = (&w.q_proj, &w.k_proj, &w.v_proj)
+            && [q, k, v]
+                .iter()
+                .any(|weight| matches!(weight.mode.as_str(), "mxfp4" | "mxfp8"))
+        {
+            // Packed MX QKV changes the matmul reduction geometry. On M5 Max
+            // the 8B MXFP4 129-token regression falls to 0.9601 cosine against
+            // the split-projection reference; separate Q/K/V restores >0.99999.
+            // Keep the reference geometry for MX embedding inference.
+            (qw(&normed, q), qw(&normed, k), qw(&normed, v), seq, 0_usize)
         } else {
             let (q, k, v, _gate) = qkv_project_embed(cfg, w, &normed, head_dim);
             (q, k, v, seq, 0_usize)
@@ -3463,6 +3528,11 @@ fn layer_forward_dense_embed(
     // Qwen3-Embedding: mask None → causal (last-token pool oracle).
     // Nemotron Embed: pass bidirectional padding mask so tokens attend fully.
     let sdpa_started = profile.then(Instant::now);
+    // Embeddings have no decode-state parity contract. Keep Qwen's native
+    // activation dtype, matching mlx-lm's embedding oracle and avoiding three
+    // full-sequence FP32 copies. The switch retains the previous diagnostic path.
+    let native_embed_sdpa = cfg.model_family == "qwen3" && *EMBED_NATIVE_SDPA;
+    let _sdpa_dtype_guard = shared::utils::QwenPrefillSkipF32SdpaGuard::arm(native_embed_sdpa);
     let attn_sdpa = full_precision_attention(
         q_rope_ref,
         &k_rope,
@@ -3741,6 +3811,9 @@ fn embed_tokens_batched(
 /// `clippy::type_complexity`.
 type PaddingMaskKey = (MlxDtype, usize, Vec<usize>);
 
+static EMBED_NATIVE_SDPA: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| crate::fastpath::env_flag_default_on("AX_MLX_EMBED_NATIVE_SDPA"));
+
 thread_local! {
     static PADDING_MASK_CACHE: RefCell<HashMap<PaddingMaskKey, MlxArray>> =
         RefCell::new(HashMap::new());
@@ -3753,7 +3826,7 @@ const PADDING_MASK_CACHE_MAX_ENTRIES: usize = 64;
 
 /// Build a bidirectional key-padding mask for the EmbeddingGemma encoder.
 ///
-/// Shape `[batch, 1, max_len, max_len]`, additive: `0.0` where key `j` is a real
+/// Shape `[batch, 1, 1, max_len]`, additive: `0.0` where key `j` is a real
 /// token (`j < len[b]`) and `-inf` where it is right-padding. Query rows are
 /// uniform (bidirectional: every position attends every real token); padded
 /// query rows produce junk hidden states that mean-pooling discards. Mirrors
@@ -3778,7 +3851,7 @@ pub(crate) fn build_bidirectional_padding_mask(
             return Some(mask.clone());
         }
 
-        let n = batch * max_len * max_len;
+        let n = batch * max_len;
 
         // Build the mask directly in the target dtype to skip the f32→dtype astype
         // dispatch and its eval() barrier. For bf16 (the common embedding dtype),
@@ -3787,17 +3860,15 @@ pub(crate) fn build_bidirectional_padding_mask(
             let neg_inf_bf16: u16 = (f32::NEG_INFINITY.to_bits() >> 16) as u16;
             let mut data = vec![0u16; n];
             for (b, &len) in actual_lens.iter().enumerate() {
-                for i in 0..max_len {
-                    let row = (b * max_len + i) * max_len;
-                    for cell in data[row + len..row + max_len].iter_mut() {
-                        *cell = neg_inf_bf16;
-                    }
+                let row = b * max_len;
+                for cell in data[row + len..row + max_len].iter_mut() {
+                    *cell = neg_inf_bf16;
                 }
             }
             let arr = MlxArray::from_raw_data(
                 data.as_ptr() as *const u8,
                 data.len() * std::mem::size_of::<u16>(),
-                &[batch as i32, 1, max_len as i32, max_len as i32],
+                &[batch as i32, 1, 1, max_len as i32],
                 MlxDtype::Bfloat16,
             );
             mlx_sys::eval(&[&arr]);
@@ -3806,17 +3877,15 @@ pub(crate) fn build_bidirectional_padding_mask(
             let neg_inf = f32::NEG_INFINITY;
             let mut data = vec![0.0f32; n];
             for (b, &len) in actual_lens.iter().enumerate() {
-                for i in 0..max_len {
-                    let row = (b * max_len + i) * max_len;
-                    for cell in data[row + len..row + max_len].iter_mut() {
-                        *cell = neg_inf;
-                    }
+                let row = b * max_len;
+                for cell in data[row + len..row + max_len].iter_mut() {
+                    *cell = neg_inf;
                 }
             }
             let arr = MlxArray::from_raw_data(
                 data.as_ptr() as *const u8,
                 data.len() * std::mem::size_of::<f32>(),
-                &[batch as i32, 1, max_len as i32, max_len as i32],
+                &[batch as i32, 1, 1, max_len as i32],
                 MlxDtype::Float32,
             );
             let arr = if dtype == MlxDtype::Float32 {
@@ -4584,7 +4653,13 @@ pub(crate) fn build_embedding_batch_hidden_pub(
     let raw_max = actual_lens.iter().copied().max().unwrap_or(0);
     // Optional compile-key / pad snap (**default ON**). Disable with
     // AX_EMBED_MAX_LEN_BUCKETS=off. See mtp-embed-perf-sprint design.
-    let max_len = embed_length_bucket(raw_max);
+    // Small MX Qwen kernels depend on the exact sequence length. Padding a
+    // 31-token row to 32 can alter its vector even with identical causal masks.
+    let max_len = if raw_max < 256 && qwen_mx_embedding(cfg, weights) {
+        raw_max
+    } else {
+        embed_length_bucket(raw_max)
+    };
     let batch = batch_token_ids.len();
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
     (hidden, batch, max_len, actual_lens)

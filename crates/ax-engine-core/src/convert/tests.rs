@@ -47,6 +47,152 @@ fn experimental_flash_next_auto_convert_preserves_quantization_failure() {
     }
 }
 
+#[test]
+fn embedding_gemma2_mx_contract_preserves_projection_only_ple_and_per_layer_geometry() {
+    for (mode, bits) in [("mxfp4", 4), ("mxfp8", 8)] {
+        let dir = unique_test_dir(mode);
+        let config = serde_json::json!({
+            "model_type": "embedding_gemma2",
+            "text_config": {
+                "num_hidden_layers": 2, "hidden_size": 32, "intermediate_size": 64,
+                "num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 32,
+                "vocab_size": 64, "hidden_size_per_layer_input": 32,
+                "embedding_dim": 48, "sliding_window": 16, "rms_norm_eps": 1e-6,
+                "layer_types": ["sliding_attention", "full_attention"],
+                "per_layer_config": {"01": {"head_dim": 64, "num_key_value_heads": 1}},
+                "rope_parameters": {
+                    "sliding_attention": {"rope_theta": 10000, "rope_type": "default"},
+                    "full_attention": {"rope_theta": 1000000, "rope_type": "default"}
+                }
+            },
+            "quantization": {"bits": bits, "group_size": 32, "mode": mode}
+        });
+        write_config(&dir, config.clone());
+        let mut tensors: Vec<(String, &str, Vec<u64>)> = vec![
+            (
+                "language_model.embed_tokens.weight".into(),
+                "U32",
+                vec![64, bits],
+            ),
+            (
+                "language_model.embed_tokens.scales".into(),
+                "U8",
+                vec![64, 1],
+            ),
+            ("language_model.norm.weight".into(), "BF16", vec![32]),
+            (
+                "language_model.embedding_projection.weight".into(),
+                "BF16",
+                vec![48, 32],
+            ),
+            (
+                "language_model.ple.per_layer_model_projection.weight".into(),
+                "BF16",
+                vec![64, 32],
+            ),
+            (
+                "language_model.ple.per_layer_projection_norm.weight".into(),
+                "BF16",
+                vec![32],
+            ),
+        ];
+        for (index, dim) in [(0, 32), (1, 64)] {
+            let prefix = format!("language_model.layers.{index}");
+            for (suffix, width) in [
+                ("input_layernorm.weight", 32),
+                ("post_attention_layernorm.weight", 32),
+                ("pre_feedforward_layernorm.weight", 32),
+                ("post_feedforward_layernorm.weight", 32),
+                ("self_attn.q_norm.weight", dim),
+                ("self_attn.k_norm.weight", dim),
+                ("ple_block.post_per_layer_input_norm.weight", 32),
+                ("layer_scalar", 1),
+            ] {
+                tensors.push((format!("{prefix}.{suffix}"), "BF16", vec![width]));
+            }
+            for (suffix, rows, cols) in [
+                ("self_attn.q_proj", 2 * dim, 32),
+                ("self_attn.k_proj", dim, 32),
+                ("self_attn.v_proj", dim, 32),
+                ("self_attn.o_proj", 32, 2 * dim),
+                ("mlp.gate_proj", 64, 32),
+                ("mlp.up_proj", 64, 32),
+                ("mlp.down_proj", 32, 64),
+                ("ple_block.per_layer_input_gate", 32, 32),
+                ("ple_block.per_layer_projection", 32, 32),
+            ] {
+                tensors.push((
+                    format!("{prefix}.{suffix}.weight"),
+                    "U32",
+                    vec![rows, cols * bits / 32],
+                ));
+                tensors.push((
+                    format!("{prefix}.{suffix}.scales"),
+                    "U8",
+                    vec![rows, cols / 32],
+                ));
+            }
+        }
+        let specs: Vec<_> = tensors
+            .iter()
+            .map(|(name, dtype, shape)| (name.as_str(), *dtype, shape.as_slice()))
+            .collect();
+        write_fake_safetensors(&dir, "model.safetensors", &specs);
+        let manifest = convert_hf_model_dir(&dir).unwrap();
+        assert_eq!(manifest.model_family, "embedding_gemma2");
+        assert_eq!(
+            manifest.generation_kind(),
+            crate::GenerationKind::EncoderEmbed
+        );
+        assert_eq!(manifest.global_head_dim, Some(64));
+        assert_eq!(manifest.global_kv_head_count, Some(1));
+        assert_eq!(manifest.rope_theta, Some(1_000_000));
+        assert_eq!(manifest.rope_theta_swa, Some(10_000));
+        assert_eq!(manifest.weight_sanitize, WeightSanitize::None);
+        assert!(
+            !manifest
+                .tensors
+                .iter()
+                .any(|s| s.role == NativeTensorRole::PerLayerEmbedding)
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .filter_map(|s| s.quantization.as_ref())
+                .all(|q| q.mode == mode && q.bits == bits as u32)
+        );
+        write_manifest(&dir, &manifest).unwrap();
+        crate::NativeModelArtifacts::from_dir(&dir).unwrap();
+
+        let mut malformed = manifest.clone();
+        malformed.layer_types[1] = "sliding_attention".into();
+        write_manifest(&dir, &malformed).unwrap();
+        assert!(crate::NativeModelArtifacts::from_dir(&dir).is_err());
+        malformed = manifest.clone();
+        malformed
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::LayerScalar)
+            .unwrap()
+            .shape = vec![32];
+        write_manifest(&dir, &malformed).unwrap();
+        assert!(crate::NativeModelArtifacts::from_dir(&dir).is_err());
+        write_manifest(&dir, &manifest).unwrap();
+
+        let mut invalid = config;
+        invalid["text_config"]["per_layer_config"]["01"]["num_attention_heads"] = 3.into();
+        write_config(&dir, invalid);
+        assert!(
+            convert_hf_model_dir(&dir)
+                .unwrap_err()
+                .to_string()
+                .contains("query head overrides")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[u64])]) {
     let mut header = BTreeMap::new();
     let mut offset = 0u64;

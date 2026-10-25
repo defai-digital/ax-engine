@@ -41,6 +41,7 @@ pub type EncodedTokenByteOffsets = (Vec<u32>, Vec<(usize, usize)>);
 pub struct EngineTokenizer {
     inner: Tokenizer,
     eos_token_id: Option<u32>,
+    embedding_special_tokens: bool,
 }
 
 impl std::fmt::Debug for EngineTokenizer {
@@ -153,10 +154,21 @@ impl EngineTokenizer {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         let inner = load_tokenizer(&tok_path, config.as_ref())?;
         let eos_token_id = config.as_ref().and_then(parse_eos_token_id);
+        let embedding_special_tokens = config
+            .as_ref()
+            .and_then(|config| config.get("model_type"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    "gemma3_text" | "embeddinggemma" | "embedding_gemma2" | "embedding_gemma2_text"
+                )
+            });
 
         Ok(Self {
             inner,
             eos_token_id,
+            embedding_special_tokens,
         })
     }
 
@@ -238,6 +250,69 @@ impl EngineTokenizer {
     /// token before pooling on the last position.
     pub fn eos_token_id(&self) -> Option<u32> {
         self.eos_token_id
+    }
+
+    /// Encode for the model's embedding contract: Gemma uses its tokenizer
+    /// postprocessor (including BOS); Qwen uses plain text followed by EOS.
+    pub fn encode_embedding(&self, text: &str) -> Result<Vec<u32>, EngineTokenizerError> {
+        if self.embedding_special_tokens {
+            self.encode_with_special_tokens(text, true)
+        } else {
+            self.encode(text, true)
+        }
+    }
+
+    /// Batched equivalent of [`Self::encode_embedding`].
+    pub fn encode_embedding_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<u32>>, EngineTokenizerError> {
+        if !self.embedding_special_tokens {
+            return self.encode_batch(texts, true);
+        }
+        self.inner
+            .encode_batch(texts.to_vec(), true)
+            .map(|encodings| {
+                encodings
+                    .into_iter()
+                    .map(|encoding| encoding.get_ids().to_vec())
+                    .collect()
+            })
+            .map_err(|error| EngineTokenizerError::Encode(error.to_string()))
+    }
+
+    /// Apply embedding special tokens after a document has been chunked.
+    /// `add_eos=None` selects the model default; an explicit value overrides it.
+    pub fn prepare_embedding_chunk(
+        &self,
+        mut ids: Vec<u32>,
+        add_eos: Option<bool>,
+    ) -> Result<Vec<u32>, EngineTokenizerError> {
+        if self.embedding_special_tokens {
+            let encoding = tokenizers::Encoding::from_tokens(
+                ids.into_iter()
+                    .map(|id| tokenizers::Token::new(id, String::new(), (0, 0)))
+                    .collect(),
+                0,
+            );
+            ids = self
+                .inner
+                .post_process(encoding, None, true)
+                .map_err(|error| EngineTokenizerError::Encode(error.to_string()))?
+                .get_ids()
+                .to_vec();
+        }
+        if let Some(eos) = self.eos_token_id {
+            match add_eos {
+                Some(false) if self.embedding_special_tokens && ids.last() == Some(&eos) => {
+                    ids.pop();
+                }
+                Some(true) if ids.last() != Some(&eos) => ids.push(eos),
+                None if !self.embedding_special_tokens => ids.push(eos),
+                _ => {}
+            }
+        }
+        Ok(ids)
     }
 
     /// Encode a single string. When `add_eos` is true and the model has
@@ -357,6 +432,114 @@ impl EngineTokenizer {
 #[allow(clippy::expect_used)]
 mod tests {
     #[test]
+    fn embedding_tokenization_preserves_gemma_bos_and_qwen_eos_for_each_chunk() {
+        use tokenizers::processors::template::TemplateProcessing;
+
+        let mut inner =
+            Tokenizer::from_bytes(tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT).as_bytes())
+                .expect("valid embedding tokenizer fixture");
+        inner.with_post_processor(Some(
+            TemplateProcessing::builder()
+                .try_single("<bos> $A")
+                .expect("valid embedding tokenizer fixture")
+                .special_tokens(vec![("<bos>", 1)])
+                .build()
+                .expect("valid embedding tokenizer fixture"),
+        ));
+        let mut tokenizer = EngineTokenizer {
+            inner,
+            eos_token_id: Some(2),
+            embedding_special_tokens: true,
+        };
+        assert_eq!(
+            tokenizer
+                .encode_embedding("hello")
+                .expect("valid embedding tokenizer fixture"),
+            vec![1, 0]
+        );
+        assert_eq!(
+            tokenizer
+                .encode_embedding_batch(&["hello", "world"])
+                .expect("valid embedding tokenizer fixture"),
+            vec![vec![1, 0], vec![1, 0]]
+        );
+        for chunk in [vec![3, 4], vec![5]] {
+            let mut expected = vec![1];
+            expected.extend(&chunk);
+            assert_eq!(
+                tokenizer
+                    .prepare_embedding_chunk(chunk.clone(), None)
+                    .expect("valid embedding tokenizer fixture"),
+                expected
+            );
+            expected.push(2);
+            assert_eq!(
+                tokenizer
+                    .prepare_embedding_chunk(chunk, Some(true))
+                    .expect("valid embedding tokenizer fixture"),
+                expected
+            );
+        }
+        assert_eq!(
+            tokenizer
+                .encode("hello", true)
+                .expect("valid embedding tokenizer fixture"),
+            vec![0, 2]
+        );
+        tokenizer.inner.with_post_processor(Some(
+            TemplateProcessing::builder()
+                .try_single("<bos> $A <eos>")
+                .expect("Gemma template")
+                .special_tokens(vec![("<bos>", 1), ("<eos>", 2)])
+                .build()
+                .expect("Gemma postprocessor"),
+        ));
+        assert_eq!(
+            tokenizer.encode_embedding("hello").expect("Gemma text"),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            tokenizer
+                .encode_embedding_batch(&["hello"])
+                .expect("Gemma batch"),
+            vec![vec![1, 0, 2]]
+        );
+        for add_eos in [None, Some(true)] {
+            assert_eq!(
+                tokenizer
+                    .prepare_embedding_chunk(vec![3], add_eos)
+                    .expect("Gemma chunk"),
+                vec![1, 3, 2]
+            );
+        }
+        assert_eq!(
+            tokenizer
+                .prepare_embedding_chunk(vec![3], Some(false))
+                .expect("Gemma EOS override"),
+            vec![1, 3]
+        );
+        tokenizer.embedding_special_tokens = false;
+        assert_eq!(
+            tokenizer
+                .encode_embedding("hello")
+                .expect("valid embedding tokenizer fixture"),
+            vec![0, 2]
+        );
+        assert_eq!(
+            tokenizer
+                .prepare_embedding_chunk(vec![3], None)
+                .expect("valid embedding tokenizer fixture"),
+            vec![3, 2]
+        );
+        assert_eq!(
+            tokenizer
+                .prepare_embedding_chunk(vec![3], Some(false))
+                .expect("valid embedding tokenizer fixture"),
+            vec![3]
+        );
+    }
+
+    #[test]
     fn eos_token_id_accepts_scalar_array_and_text_config_forms() {
         use super::parse_eos_token_id;
         let scalar = serde_json::json!({"eos_token_id": 151645});
@@ -463,6 +646,7 @@ mod tests {
         let tokenizer = EngineTokenizer {
             inner: raw.clone(),
             eos_token_id: None,
+            embedding_special_tokens: false,
         };
         let text = "用户：请用三句话解释哈希表。🙂\n<|im_start|>assistant\n好的。<|im_end|>\n<|im_start|>user\n再来一个例子。<|im_start|>assistant\n";
         assert!(

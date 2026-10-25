@@ -1,0 +1,368 @@
+[
+  {
+    "repo_id": "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP4",
+    "revision": "095c752be6f91e1572439276301f2318e09b1404",
+    "model_type": "qwen3",
+    "no_eos_override_cosine": 1.0000023112836773,
+    "record_cosines": [
+      1.0000000400040094,
+      1.0000000554653006,
+      1.0000000000569917
+    ],
+    "chunk_cosines": [
+      0.9999999999999998,
+      1.0000000000000002
+    ],
+    "concurrent_requests": 8,
+    "chat_status": null,
+    "shape": [
+      3,
+      1024
+    ],
+    "direct_cosines": [
+      1.0000000400040094,
+      1.0000000554653006,
+      1.0000000000569917
+    ],
+    "text_token_cosines": [
+      1.0000000400040094,
+      1.0000000554653006,
+      1.0000000000569917
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP8",
+    "revision": "a3a669490a7976a27563a2bfdd2c30be850c2e8c",
+    "model_type": "qwen3",
+    "no_eos_override_cosine": 1.0000019033310572,
+    "record_cosines": [
+      0.9999999675079704,
+      1.0000000571448588,
+      1.0000000824933213
+    ],
+    "chunk_cosines": [
+      0.9999999999999998,
+      1.0
+    ],
+    "concurrent_requests": 8,
+    "chat_status": null,
+    "shape": [
+      3,
+      1024
+    ],
+    "direct_cosines": [
+      0.9999999675079704,
+      1.0000000571448588,
+      1.0000000824933213
+    ],
+    "text_token_cosines": [
+      0.9999999675079704,
+      1.0000000571448588,
+      1.0000000824933213
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP4",
+    "revision": "49401b4d25d44d3ddec593e318f55cacea2e285b",
+    "model_type": "qwen3",
+    "no_eos_override_cosine": 1.000003504767769,
+    "record_cosines": [
+      1.0000000484588232,
+      1.0000000308923285,
+      0.9999999657044725
+    ],
+    "chunk_cosines": [
+      1.0,
+      1.0
+    ],
+    "concurrent_requests": 8,
+    "chat_status": null,
+    "shape": [
+      3,
+      2560
+    ],
+    "direct_cosines": [
+      1.0000000484588232,
+      1.0000000308923285,
+      0.9999999657044725
+    ],
+    "text_token_cosines": [
+      1.0000000484588232,
+      1.0000000308923285,
+      0.9999999657044725
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP8",
+    "revision": "90e6b7d1d9419a31567da1b929d1bdc98cafe8b2",
+    "model_type": "qwen3",
+    "no_eos_override_cosine": 1.0000038784731546,
+    "record_cosines": [
+      0.9999999949410657,
+      1.0000000562317057,
+      1.0000000623159078
+    ],
+    "chunk_cosines": [
+      1.0000000000000002,
+      0.9999999999999998
+    ],
+    "concurrent_requests": 8,
+    "chat_status": null,
+    "shape": [
+      3,
+      2560
+    ],
+    "direct_cosines": [
+      0.9999999949410657,
+      1.0000000562317057,
+      1.0000000623159078
+    ],
+    "text_token_cosines": [
+      0.9999999949410657,
+      1.0000000562317057,
+      1.0000000623159078
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP4",
+    "revision": "4148e5f298d014744236678ec7443559d25f7cc1",
+    "model_type": "qwen3",
+    "no_eos_override_cosine": 1.0000040706542683,
+    "record_cosines": [
+      0.9999999973554345,
+      1.0000000061336913,
+      1.000000061968
+    ],
+    "chunk_cosines": [
+      1.0,
+      0.9999999999999998
+    ],
+    "concurrent_requests": 8,
+    "chat_status": null,
+    "shape": [
+      3,
+      4096
+    ],
+    "direct_cosines": [
+      0.9999999973554345,
+      1.0000000061336913,
+      1.000000061968
+    ],
+    "text_token_cosines": [
+      0.9999999973554345,
+      1.0000000061336913,
+      1.000000061968
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP8",
+    "revision": "f8b5dd8937b07eded126b9d193dcac35830b903f",
+    "model_type": "qwen3",
+    "no_eos_override_cosine": 1.0000042091837575,
+    "record_cosines": [
+      1.0000000568849325,
+      1.0000000639081188,
+      1.0000000821601827
+    ],
+    "chunk_cosines": [
+      0.9999999999999998,
+      1.0
+    ],
+    "concurrent_requests": 8,
+    "chat_status": null,
+    "shape": [
+      3,
+      4096
+    ],
+    "direct_cosines": [
+      1.0000000568849325,
+      1.0000000639081188,
+      1.0000000821601827
+    ],
+    "text_token_cosines": [
+      1.0000000568849325,
+      1.0000000639081188,
+      1.0000000821601827
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP4",
+    "revision": "979d3b5b4e13b3874e663361a6dac2620bd15ab8",
+    "model_type": "embedding_gemma2",
+    "no_eos_override_cosine": 0.9999996225338144,
+    "record_cosines": [
+      1.0000000979937038,
+      0.999999992102759,
+      1.0000000144653298
+    ],
+    "chunk_cosines": [
+      1.0,
+      1.0000000000000002
+    ],
+    "concurrent_requests": 8,
+    "chat_status": 400,
+    "shape": [
+      3,
+      768
+    ],
+    "direct_cosines": [
+      1.0000000979937038,
+      0.999999992102759,
+      1.0000000144653298
+    ],
+    "text_token_cosines": [
+      1.0000000979937038,
+      0.999999992102759,
+      1.0000000144653298
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8",
+    "revision": "605d4d4e9f55ce959323520f918f11f6dd7504e9",
+    "model_type": "embedding_gemma2",
+    "no_eos_override_cosine": 0.9999998232693054,
+    "record_cosines": [
+      1.0000000100428523,
+      1.0000000063786547,
+      1.0000000009273666
+    ],
+    "chunk_cosines": [
+      1.0,
+      1.0
+    ],
+    "concurrent_requests": 8,
+    "chat_status": 400,
+    "shape": [
+      3,
+      768
+    ],
+    "direct_cosines": [
+      1.0000000100428523,
+      1.0000000063786547,
+      1.0000000009273666
+    ],
+    "text_token_cosines": [
+      1.0000000100428523,
+      1.0000000063786547,
+      1.0000000009273666
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  },
+  {
+    "repo_id": "mlx-community/embeddinggemma-300m-8bit",
+    "revision": "c8316c9e35cf8830541b04d315398c67faa6e497",
+    "model_type": "gemma3_text",
+    "no_eos_override_cosine": 0.9999997230294476,
+    "record_cosines": [
+      1.0000000412624086,
+      0.9999999879900974,
+      1.0000000445741526
+    ],
+    "chunk_cosines": [
+      1.0,
+      1.0000000000000002
+    ],
+    "concurrent_requests": 8,
+    "chat_status": 400,
+    "shape": [
+      3,
+      768
+    ],
+    "direct_cosines": [
+      1.0000000412624086,
+      0.9999999879900974,
+      1.0000000445741526
+    ],
+    "text_token_cosines": [
+      1.0000000412624086,
+      0.9999999879900974,
+      1.0000000445741526
+    ],
+    "invalid_statuses": [
+      400,
+      400,
+      400,
+      400,
+      400
+    ],
+    "recovery_status": 200,
+    "pass": true
+  }
+]

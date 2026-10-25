@@ -8157,6 +8157,10 @@ fn embed_batch_mean_mask_excludes_padding_positions() {
 #[test]
 fn embeddinggemma_forces_mean_pooling_across_embedding_apis() {
     assert_eq!(
+        effective_embedding_pooling("embedding_gemma2", EmbeddingPooling::Cls),
+        EmbeddingPooling::Mean
+    );
+    assert_eq!(
         effective_embedding_pooling("embeddinggemma", EmbeddingPooling::Last),
         EmbeddingPooling::Mean
     );
@@ -8168,6 +8172,21 @@ fn embeddinggemma_forces_mean_pooling_across_embedding_apis() {
         effective_embedding_pooling("qwen3", EmbeddingPooling::Last),
         EmbeddingPooling::Last
     );
+}
+
+#[test]
+fn embedding_ids_reject_oob_and_unimplemented_media_without_clamping() {
+    let mut manifest = dense_manifest();
+    manifest.vocab_size = 262144;
+    let mut cfg = ModelConfig::from_manifest(&manifest);
+    assert!(validate_embedding_ids(&cfg, &[0, 262143]).is_ok());
+    assert!(validate_embedding_ids(&cfg, &[262144]).is_err());
+    assert!(validate_embedding_ids(&cfg, &[u32::MAX]).is_err());
+    cfg.model_family = "embedding_gemma2".into();
+    for id in [258880, 258881, 258884] {
+        assert!(validate_embedding_ids(&cfg, &[2, id, 1]).is_err());
+    }
+    assert!(validate_embedding_ids(&cfg, &[2, 100, 1]).is_ok());
 }
 
 /// DI-W2-002: single-item EmbeddingGemma must share the batch-of-one Gemma3

@@ -92,6 +92,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::WhisperTextGenerationUnsupported
+        | EngineSessionError::EncoderTextGenerationUnsupported
         | EngineSessionError::WhisperInvalidLanguage { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::MissingRequestSnapshot { .. } => error_response(
@@ -151,6 +152,15 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
             error.to_string(),
         ),
         EngineSessionError::EmbeddingNotSupported => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            error.to_string(),
+        ),
+        EngineSessionError::EmbeddingFailed {
+            message:
+                "embedding token id exceeds model vocabulary"
+                | "EmbeddingGemma 2 supports text embeddings only; media token inputs require a multimodal encoder",
+        } => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             error.to_string(),
@@ -252,6 +262,22 @@ mod tests {
                 .message
                 .contains("invalid Gemma4 unified runtime input")
         );
+    }
+
+    #[test]
+    fn invalid_embedding_tokens_are_client_errors_and_runtime_failures_stay_server_errors() {
+        for message in [
+            "embedding token id exceeds model vocabulary",
+            "EmbeddingGemma 2 supports text embeddings only; media token inputs require a multimodal encoder",
+        ] {
+            let (status, body) = map_session_error(EngineSessionError::EmbeddingFailed { message });
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body.0.error.code.as_deref(), Some("invalid_request"));
+        }
+        let (status, _) = map_session_error(EngineSessionError::EmbeddingFailed {
+            message: "encoder evaluation failed",
+        });
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]

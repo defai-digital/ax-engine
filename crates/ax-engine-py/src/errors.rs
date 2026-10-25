@@ -52,6 +52,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::MissingRequestSnapshot { .. }
         | EngineSessionError::WhisperTextGenerationUnsupported
+        | EngineSessionError::EncoderTextGenerationUnsupported
         | EngineSessionError::WhisperInvalidLanguage { .. } => {
             PyValueError::new_err(error.to_string())
         }

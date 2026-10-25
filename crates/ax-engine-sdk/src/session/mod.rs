@@ -727,6 +727,9 @@ impl EngineSession {
         &mut self,
         submission: RequestSubmission,
     ) -> Result<RequestId, EngineSessionError> {
+        if self.core.generation_kind() == ax_engine_core::GenerationKind::EncoderEmbed {
+            return Err(EngineSessionError::EncoderTextGenerationUnsupported);
+        }
         // `step` always spends `max_batch_tokens`, and a multimodal prompt must
         // fit in one execution item. A low-level submitter bypasses the
         // GenerateRequest gate, so reject it here instead of deferring it
@@ -1042,6 +1045,9 @@ impl EngineSession {
         request_id: u64,
         request: GenerateRequest,
     ) -> Result<u64, EngineSessionError> {
+        if self.core.generation_kind() == ax_engine_core::GenerationKind::EncoderEmbed {
+            return Err(EngineSessionError::EncoderTextGenerationUnsupported);
+        }
         #[cfg(feature = "mlx-native")]
         if self.whisper.is_some() {
             return Err(EngineSessionError::WhisperTextGenerationUnsupported);

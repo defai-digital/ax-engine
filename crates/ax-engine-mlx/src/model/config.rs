@@ -664,6 +664,7 @@ impl ModelConfig {
                 | "diffusion_gemma"
                 | "gemma3"
                 | "embeddinggemma"
+                | "embedding_gemma2"
         );
         let query_scale = if is_gemma4 {
             1.0

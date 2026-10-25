@@ -228,7 +228,7 @@ pub(crate) fn embedding_input_tokens(
             }
             let tokenizer = tokenizer_for_live_op(live, "text embedding input")?;
             tokenizer
-                .encode(&text, true)
+                .encode_embedding(&text)
                 .map(|tokens| vec![tokens])
                 .map_err(|error| {
                     error_response(
@@ -244,13 +244,15 @@ pub(crate) fn embedding_input_tokens(
             }
             let tokenizer = tokenizer_for_live_op(live, "text embedding input")?;
             let text_refs = texts.iter().map(String::as_str).collect::<Vec<_>>();
-            let mut batch = tokenizer.encode_batch(&text_refs, true).map_err(|error| {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    format!("failed to tokenize embedding input: {error}"),
-                )
-            })?;
+            let mut batch = tokenizer
+                .encode_embedding_batch(&text_refs)
+                .map_err(|error| {
+                    error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        format!("failed to tokenize embedding input: {error}"),
+                    )
+                })?;
             for (text, tokens) in texts.iter().zip(&mut batch) {
                 if text.is_empty() {
                     tokens.clear();

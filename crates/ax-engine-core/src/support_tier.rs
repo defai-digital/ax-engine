@@ -103,7 +103,7 @@ mod tests {
                 ModelSupportTier::Certified
             }
             "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" | "qwen4_exp"
-            | "hy_v3" => ModelSupportTier::Experimental,
+            | "hy_v3" | "embedding_gemma2" => ModelSupportTier::Experimental,
             _ => ModelSupportTier::Compatible,
         }
     }

@@ -1906,6 +1906,39 @@ pub(crate) fn validate_native_model_manifest(
             NativeTensorRole::EmbeddingDense1,
             "embedding_dense1",
         )?;
+    } else if manifest.model_family == "embedding_gemma2" {
+        if manifest.layer_types.len() != manifest.layer_count as usize
+            || manifest.layer_types.last().map(String::as_str) != Some("full_attention")
+            || manifest
+                .layer_types
+                .iter()
+                .any(|kind| !matches!(kind.as_str(), "sliding_attention" | "full_attention"))
+            || !manifest.kv_shared_source_layers.is_empty()
+            || !manifest.attention_value_from_key_layers.is_empty()
+            || manifest.attn_output_gate
+            || manifest.weight_sanitize != WeightSanitize::None
+            || manifest.hidden_size_per_layer_input == 0
+            || !manifest.attention_head_dim.is_multiple_of(2)
+            || manifest
+                .global_head_dim
+                .is_some_and(|dim| !dim.is_multiple_of(2))
+            || manifest
+                .partial_rotary_factor
+                .is_some_and(|factor| factor != 1.0)
+            || manifest
+                .rope_scaling_type
+                .as_deref()
+                .is_some_and(|kind| kind != "default")
+        {
+            return Err(NativeModelError::InvalidManifest {
+                message: "EmbeddingGemma 2 requires explicit encoder layer types, separate K/V, multiplicative norms and a final full-attention layer".into(),
+            });
+        }
+        require_global_role(
+            &global_roles,
+            NativeTensorRole::EmbeddingDense0,
+            "embedding_projection",
+        )?;
     } else if manifest.model_family == "nemotron_embed" {
         // Encoder-only: TokenEmbedding + FinalNorm are enough at the global
         // level; skip lm_head / Dense head requirements.
@@ -1987,6 +2020,24 @@ pub(crate) fn validate_native_model_manifest(
                 (NativeTensorRole::FfnGate, "ffn_gate"),
                 (NativeTensorRole::FfnUp, "ffn_up"),
                 (NativeTensorRole::FfnDown, "ffn_down"),
+            ] {
+                require_layer_role(roles, role, layer_index, label)?;
+            }
+        }
+
+        if manifest.model_family == "embedding_gemma2" {
+            for (role, label) in [
+                (NativeTensorRole::AttentionQ, "attention_q"),
+                (NativeTensorRole::AttentionK, "attention_k"),
+                (NativeTensorRole::AttentionV, "attention_v"),
+                (NativeTensorRole::AttentionQNorm, "attention_q_norm"),
+                (NativeTensorRole::AttentionKNorm, "attention_k_norm"),
+                (NativeTensorRole::AttentionPostNorm, "attention_post_norm"),
+                (NativeTensorRole::FfnNorm, "ffn_norm"),
+                (NativeTensorRole::FfnPostNorm, "ffn_post_norm"),
+                (NativeTensorRole::FfnGate, "ffn_gate"),
+                (NativeTensorRole::FfnUp, "ffn_up"),
+                (NativeTensorRole::LayerScalar, "layer_scalar"),
             ] {
                 require_layer_role(roles, role, layer_index, label)?;
             }
@@ -2932,6 +2983,31 @@ fn validate_native_model_tensor_shapes(
             "embedding_dense1",
         )?;
         expect_matrix_shape(dense1, hidden_size, hidden_size * 4, "embedding_dense1")?;
+    } else if manifest.model_family == "embedding_gemma2" {
+        let projection = required_global_tensor_spec(
+            manifest,
+            NativeTensorRole::EmbeddingDense0,
+            "embedding_projection",
+        )?;
+        let (rows, _) =
+            matrix_shape(projection).ok_or_else(|| NativeModelError::InvalidManifest {
+                message: "embedding_projection must be a matrix".into(),
+            })?;
+        if rows == 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: "embedding_projection output width must be positive".into(),
+            });
+        }
+        expect_matrix_shape(projection, rows, hidden_size, "embedding_projection")?;
+        for layer_index in 0..manifest.layer_count {
+            let scale = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LayerScalar,
+                "layer_scalar",
+            )?;
+            expect_vector_shape(scale, 1, "layer_scalar")?;
+        }
     } else if manifest.model_family == "nemotron_embed" {
         // no lm_head / Dense head shapes
     } else if !manifest.tie_word_embeddings {
@@ -4059,17 +4135,19 @@ fn validate_per_layer_input_tensor_shapes(
         None => vocab_size,
     };
 
-    let per_layer_embed = required_global_tensor_spec(
-        manifest,
-        NativeTensorRole::PerLayerEmbedding,
-        "per_layer_embed",
-    )?;
-    expect_matrix_shape(
-        per_layer_embed,
-        per_layer_vocab_size,
-        stacked_dim,
-        "per_layer_embed",
-    )?;
+    if manifest.model_family != "embedding_gemma2" {
+        let per_layer_embed = required_global_tensor_spec(
+            manifest,
+            NativeTensorRole::PerLayerEmbedding,
+            "per_layer_embed",
+        )?;
+        expect_matrix_shape(
+            per_layer_embed,
+            per_layer_vocab_size,
+            stacked_dim,
+            "per_layer_embed",
+        )?;
+    }
     let per_layer_model_proj = required_global_tensor_spec(
         manifest,
         NativeTensorRole::PerLayerModelProjection,

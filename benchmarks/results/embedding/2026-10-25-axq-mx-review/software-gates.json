@@ -1,0 +1,83 @@
+{
+  "hardware": "M2 Ultra 192 GB",
+  "scope": "Local software gates only; real-weight evaluation ran on MacBook Pro M5 Max 128 GB",
+  "gates": [
+    {
+      "command": "rustup run 1.99.1 cargo fmt --check",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "rustup run 1.99.1 cargo test --quiet --no-fail-fast",
+      "exit_code": 0,
+      "log_sha256": "ea844b55a90229158220a33fa013f7fd043cd5879ec5516b998a3e26c3f8e245",
+      "passed": 4368,
+      "failed": 0,
+      "ignored": 88
+    },
+    {
+      "command": "PATH=\"$(rustup run 1.99.1 rustc --print sysroot)/bin:$PATH\" cargo clippy --all-targets --all-features -- -D warnings",
+      "exit_code": 0,
+      "log_sha256": "7d4445bd909b55c7a6ecaf2fb778fadb6a8bf13a0e111e11a0cfbeada7851691"
+    },
+    {
+      "command": ".venv/bin/maturin develop",
+      "exit_code": 0,
+      "log_sha256": "38bae0dd0c1b946a9eaacade41f5b87924ca58ad5edc9ba6daf609cdc9339b6c"
+    },
+    {
+      "command": ".venv/bin/pytest python/tests scripts/test_verify_embedding_models.py",
+      "exit_code": 0,
+      "log_sha256": "9d8d066fe3956be307e77a1e56299fbd3081466dc7d1c7258de7cefddd606c76",
+      "passed": 329,
+      "skipped": 7
+    },
+    {
+      "command": ".venv/bin/mypy python/ax_engine",
+      "exit_code": 0,
+      "log_sha256": "157a09cfcdfdfb5977479c5a1c08345149263a3e990a2ec976ef28aaeec9cae6"
+    },
+    {
+      "command": "PYTHON_BIN=\"$PWD/.venv/bin/python\" bash scripts/check-scripts.sh",
+      "exit_code": 0,
+      "log_sha256": "4cc1c253115099fa9244ca207859738fe994506833baab3c063e52235311c97f"
+    },
+    {
+      "command": "scripts/qualify_qwen38_27b.py --dry-run",
+      "exit_code": 0,
+      "log_sha256": "8d3aad0d4313438de362ee397be32d65835a2018e1c702e29d40e4e21c4bf53e"
+    },
+    {
+      "command": "scripts/qualify_qwen38_flash_next.py --dry-run",
+      "exit_code": 0,
+      "log_sha256": "72363d80109cee8e7088fc8e43442103fd218ce48fe2ff7a06d7b87a6e15ac81"
+    },
+    {
+      "command": "scripts/check_qwen38_primary_claims.py",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": ".venv/bin/ruff check python/ax_engine",
+      "exit_code": 0
+    }
+  ],
+  "m5_embedding_unit_tests": {
+    "command": "cargo test -q -p ax-engine-mlx --lib embedding_ -- --test-threads=1",
+    "exit_code": 0,
+    "passed": 13,
+    "failed": 0
+  },
+  "m5_real_weight_gates": {
+    "stability-final.json": {
+      "packs": 9,
+      "all_pass": true,
+      "lengths_per_pack": 19
+    },
+    "http-final.json": {
+      "packs": 9,
+      "all_pass": true
+    }
+  },
+  "limits": "Hardware-gated ignored tests and Python skips were not converted into passes. Qwen qualification scripts ran in dry-run mode only."
+}

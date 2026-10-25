@@ -25,6 +25,56 @@ telemetry.
 - **Or send concurrently** and let `EmbeddingMicroBatcher` coalesce
   callers that can't see the batch boundary up front.
 
+## AXQ MX packs and Gemma encoders
+
+Qwen3-Embedding 0.6B, 4B and 8B accept the AutomatosX AXQ MXFP4 and MXFP8
+packs through the native MLX embedding path. Per-tensor quantization metadata
+is authoritative: protected affine weights can coexist with MX weights.
+Use explicit format aliases, for example:
+
+```bash
+ax-engine download qwen3-embedding-0.6b:axq-mxfp4
+ax-engine download qwen3-embedding-8b:axq-mxfp8
+ax-engine download embeddinggemma-2:axq-mxfp4
+ax-engine download embeddinggemma-2:axq-mxfp8
+ax-engine download embeddinggemma-300m:8bit
+```
+
+The HTTP text path follows each tokenizer’s embedding contract: Gemma retains
+its BOS postprocessor and Qwen appends EOS. The records endpoint applies the
+same rule separately to each chunk; its optional `add_eos` field explicitly
+overrides EOS appending. Query/document prefixes remain caller-owned.
+
+Both EmbeddingGemma generations return 768-dimensional normalized text vectors,
+but use distinct architectures and embedding spaces. Reindex when changing
+models, formats, or task prefixes. The client supplies query/document prefixes;
+AX does not silently add them.
+
+| Encoder | Runtime contract | Pack coverage |
+| --- | --- | --- |
+| EmbeddingGemma 300M | Bidirectional Gemma 3 encoder, masked mean pooling, two Dense projections; single and batch APIs share the same pooling path | Pinned `mlx-community/embeddinggemma-300m-8bit` regression pack. The legacy AutomatosX 300M repository returned 404 during the 2026-10-25 inventory; its alias retains its original identity. No live 300M MX pack was available for qualification. |
+| EmbeddingGemma 2 | Dedicated `embedding_gemma2` encoder, projection-only per-layer inputs, local/full bidirectional attention, token-wise output projection then masked mean pooling | Explicit, revision-pinned AutomatosX MXFP4 and MXFP8 aliases; experimental text-only support. Image, audio and video inputs are unsupported; media sentinel token IDs are rejected. No chat generation. |
+
+The 2026-10-25 review exercised all six Qwen MX packs, both Gemma 2 MX packs,
+and the upstream 300M pack on MacBook Pro M5 Max 128 GB. Coverage includes
+1–2048-token inputs, mixed-length batches, repeatability, input ordering,
+normalization, and recovery after invalid IDs. This is bounded functional and
+optimization evidence, not full-context or model-quality certification.
+
+Qwen MX embeddings preserve separate Q/K/V projections. Below 256 tokens,
+exact-length groups and per-sequence layer reductions avoid the observed
+shape-dependent vector drift, including drift in the upstream batched oracle.
+This can reduce short-batch throughput; use the recorded final measurements
+when choosing an ingest batch size. Long inputs retain shared batch execution.
+
+The runtime uses broadcast padding masks and caches concrete-shape compiled
+encoder graphs. Gemma 2 local attention evaluates bounded query/key windows;
+full-attention layers still scale quadratically with sequence length. Diagnostic
+fallbacks are `AX_EMBED_NO_COMPILE=1`, `AX_MLX_EMBED_NATIVE_SDPA=0` for Qwen,
+and `AX_MLX_EMBED_GEMMA2_PACKED=0` for Gemma 2. Set these before starting the
+process. [Review artifacts](../benchmarks/results/embedding/2026-10-25-axq-mx-review/README.md)
+record model pins, raw AX-vs-AX timings and correctness results.
+
 ## Apples-to-apples methodology
 
 Published in-process embedding numbers should use

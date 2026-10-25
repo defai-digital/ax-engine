@@ -206,7 +206,7 @@ impl GenerationStrategyDescriptor {
 pub(crate) fn is_encoder_embed_manifest(manifest: &NativeModelManifest) -> bool {
     matches!(
         manifest.model_family.as_str(),
-        "embeddinggemma" | "gemma3_text" | "nemotron_embed"
+        "embeddinggemma" | "gemma3_text" | "embedding_gemma2" | "nemotron_embed"
     )
 }
 

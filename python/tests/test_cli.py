@@ -28,6 +28,15 @@ from ax_engine import _cli  # noqa: E402, I001
 
 
 EXPECTED_AUTOMATOSX_REPOS = {
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-AXQ-MXFP8",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3-Embedding-4B-MLX-AXQ-MXFP8",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3-Embedding-8B-MLX-AXQ-MXFP8",
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8",
+
     "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
     "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
     "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -136,7 +145,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 84)
+        self.assertEqual(len(targets), 92)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -159,6 +168,20 @@ class AxEngineCliTests(unittest.TestCase):
             self.assertEqual(target["preset"], "ornith-35b")
             self.assertEqual(target["certification"], "candidate")
             self.assertTrue(target["mtp_included"])
+
+    def test_mx_embedding_candidates_are_pinned_without_changing_legacy_aliases(self) -> None:
+        for family in ("qwen3-embedding-0.6b", "qwen3-embedding-4b", "qwen3-embedding-8b", "embeddinggemma-2"):
+            for mode in ("mxfp4", "mxfp8"):
+                profile = _cli._profile_for_model(f"{family}:axq-{mode}")
+                self.assertIsNotNone(profile)
+                self.assertTrue(profile.repo_id.endswith(mode.upper()))
+                self.assertEqual(len(_cli._profile_revision(profile)), 40)
+                self.assertEqual(_cli._profile_certification(profile), "candidate")
+        legacy = _cli._profile_for_model("ax-embeddinggemma-300m")
+        self.assertEqual(legacy.repo_id, "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit")
+        upstream = _cli._profile_for_model("embeddinggemma-300m:8bit")
+        self.assertEqual(upstream.repo_id, "mlx-community/embeddinggemma-300m-8bit")
+        self.assertEqual(len(_cli._profile_revision(upstream)), 40)
 
     def test_secondary_profile_aliases_resolve_repos(self) -> None:
         cases = {

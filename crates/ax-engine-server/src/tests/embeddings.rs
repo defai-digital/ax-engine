@@ -23,6 +23,24 @@ fn sample_openai_embedding_request(input: &[u32], pooling: Option<&str>) -> Valu
     Value::Object(request)
 }
 
+#[tokio::test]
+async fn encoder_manifests_reject_text_generation_even_under_a_chat_model_label() {
+    for family in ["embeddinggemma", "embedding_gemma2", "nemotron_embed"] {
+        let dir = minimal_tokenizer_artifact(family);
+        std::fs::write(
+            dir.join("model-manifest.json"),
+            json!({"model_family":family}).to_string(),
+        )
+        .expect("write encoder manifest");
+        let state = native_mlx_openai_builder_state("qwen3", &dir);
+        let error = crate::openai::validation::validate_openai_text_backend(&state.snapshot())
+            .expect_err("encoder cannot generate text");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.0.error.message.contains("embedding encoder"));
+        std::fs::remove_dir_all(dir).expect("remove encoder fixture");
+    }
+}
+
 #[test]
 fn openai_embedding_request_accepts_text_and_text_batch_shapes() {
     let single: OpenAiEmbeddingRequest = serde_json::from_value(json!({"input": "hello"}))

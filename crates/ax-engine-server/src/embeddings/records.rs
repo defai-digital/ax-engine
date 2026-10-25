@@ -39,8 +39,8 @@ pub(crate) struct EmbeddingRecordsRequest {
     pooling: Option<String>,
     #[serde(default)]
     normalize: Option<bool>,
-    #[serde(default = "default_add_eos")]
-    add_eos: bool,
+    #[serde(default)]
+    add_eos: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,10 +103,6 @@ struct PreparedEmbeddingChunk {
     token_count: usize,
     metadata: Option<Value>,
     token_ids: Vec<u32>,
-}
-
-fn default_add_eos() -> bool {
-    true
 }
 
 fn default_chunk_max_tokens() -> usize {
@@ -250,11 +246,6 @@ fn prepare_embedding_record_chunks(
         )));
     }
     let chunking = normalize_chunking(request.chunking)?;
-    let eos_token_id = if request.add_eos {
-        tokenizer.eos_token_id()
-    } else {
-        None
-    };
     let mut chunks = Vec::new();
     for (record_index, record) in request.records.iter().enumerate() {
         if record.id.trim().is_empty() {
@@ -276,10 +267,12 @@ fn prepare_embedding_record_chunks(
             .into_iter()
             .enumerate()
         {
-            let mut chunk_ids = token_ids[token_start..token_end].to_vec();
-            if let Some(eos) = eos_token_id {
-                chunk_ids.push(eos);
-            }
+            let chunk_ids = tokenizer
+                .prepare_embedding_chunk(
+                    token_ids[token_start..token_end].to_vec(),
+                    request.add_eos,
+                )
+                .map_err(tokenization_error)?;
             chunks.push(PreparedEmbeddingChunk {
                 id: record.id.clone(),
                 record_index,

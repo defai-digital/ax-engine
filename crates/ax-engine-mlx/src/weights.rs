@@ -1516,6 +1516,7 @@ pub(crate) fn load_weights_with_session_budget(
     // non-optional.
     let lm_head = if artifacts.manifest().tie_word_embeddings
         || artifacts.manifest().model_family == "embeddinggemma"
+        || artifacts.manifest().model_family == "embedding_gemma2"
         || artifacts.manifest().model_family == "nemotron_embed"
     {
         let mut tied = QuantizedWeight::new(
@@ -5004,6 +5005,10 @@ fn auto_detect_weight_sanitize(
     specs: &[NativeTensorSpec],
     name_map: &HashMap<String, MlxArray>,
 ) -> WeightSanitize {
+    // EmbeddingGemma 2 stores multiplicative gains, not Gemma gamma deltas.
+    if model_family == "embedding_gemma2" {
+        return WeightSanitize::None;
+    }
     let has_linear_attention = specs
         .iter()
         .any(|s| matches!(s.role, NativeTensorRole::LinearAttentionConv1d));

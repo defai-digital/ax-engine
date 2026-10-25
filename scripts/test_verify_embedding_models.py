@@ -86,6 +86,31 @@ class VerifyEmbeddingModelsTests(unittest.TestCase):
         self.assertEqual(contract.pooling, "last")
         self.assertTrue(contract.reference_single_oracle)
 
+    def test_gemma2_contract_uses_its_own_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_manifest(root, "embedding_gemma2")
+            self.assertEqual(verify.infer_model_kind(root, "auto"), "embedding_gemma2")
+            contract = verify.build_contract(root, "embedding_gemma2", None, None)
+            self.assertEqual(contract.reference, "mlx-vlm")
+            self.assertEqual(contract.pooling, "mean")
+
+    def test_direct_verifier_exercises_single_api_instead_of_batch_of_one(self) -> None:
+        from unittest.mock import Mock
+        import numpy as np
+
+        contract = verify.build_contract(Path("/models/gemma"), "embeddinggemma", None, None)
+        session = Mock()
+        session.embed.return_value = [1.0, 0.0]
+        with patch.object(verify, "tokenize_sentences", return_value=[[1, 2, 3]]), \
+             patch.object(verify, "compute_reference_single", return_value=np.array([[1.0, 0.0]])), \
+             patch.object(verify, "load_ax_session", return_value=session), \
+             patch.object(verify, "ax_batch_matrix", return_value=np.array([[1.0, 0.0]])) as batch:
+            verify.verify_direct(Path("/models/gemma"), contract)
+        session.embed.assert_called_once_with([1, 2, 3], pooling="mean", normalize=True)
+        self.assertEqual(batch.call_count, 1)
+        session.close.assert_called_once()
+
     def test_print_results_fails_low_batch_consistency(self) -> None:
         import numpy as np
 

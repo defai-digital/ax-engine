@@ -145,7 +145,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl, hy_v3"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, embedding_gemma2, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl, hy_v3"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -178,8 +178,11 @@ set {strict_env}=0 to allow, or map the tensors (sample: {sample})"
 /// files. The returned manifest references the safetensors files by relative path,
 /// so it can be written to the same directory as `model-manifest.json`.
 pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, ConvertError> {
-    let config = load_hf_config(model_dir)?;
+    let mut config = load_hf_config(model_dir)?;
     let model_type = resolve_model_type(&config)?;
+    if model_type.starts_with("embedding_gemma2") {
+        embedding_gemma2::prepare_config(&mut config, &model_type)?;
+    }
     let family = model_family_for_type(&model_type, &config)?;
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
@@ -409,7 +412,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         partial_rotary_factor,
         rms_norm_eps,
         attention_value_from_key_layers,
-        attention_v_norm_no_scale_layers: if is_gemma4_target_model_type(&model_type) {
+        attention_v_norm_no_scale_layers: if is_gemma4_target_model_type(&model_type)
+            || model_type.starts_with("embedding_gemma2")
+        {
             (0..arch.layer_count)
                 .filter(|&i| !kv_shared_source_layers.contains_key(&i))
                 .collect()
@@ -427,6 +432,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         post_norm_eps,
         hidden_states_scale: if is_gemma4_target_model_type(&model_type)
             || is_embeddinggemma_model_type(&model_type)
+            || model_type.starts_with("embedding_gemma2")
         {
             Some((arch.hidden_size as f32).sqrt())
         } else {
@@ -820,6 +826,7 @@ fn generated_manifest_validation_error(
     }
 }
 
+mod embedding_gemma2;
 mod hf_config;
 mod model_family;
 pub mod qwen4_exp_layout;
@@ -1161,6 +1168,9 @@ fn parse_quantization_value(
 
 /// Try to match a tensor name against the family's mapping table.
 fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, Option<u32>)> {
+    if family.family_name == "embedding_gemma2" {
+        return embedding_gemma2::match_tensor(name);
+    }
     // Whisper is an encoder-decoder model with a dedicated runtime rather than
     // the decoder-only role schema used by `ModelWeights`. Preserve every
     // inference tensor by its exact checkpoint name and let that runtime

@@ -658,6 +658,58 @@ fn low_level_submit_rejects_multimodal_prompt_over_max_batch_tokens() {
 }
 
 #[test]
+fn embedding_encoder_rejects_generation_before_admission() {
+    let mut session = shared_stream_test_session(8);
+    session
+        .core
+        .set_generation_kind(ax_engine_core::GenerationKind::EncoderEmbed);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "embedding_gemma2".into(),
+        input_tokens: vec![7],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    assert!(matches!(
+        session.submit_generate_with_request_id(1, request),
+        Err(EngineSessionError::EncoderTextGenerationUnsupported)
+    ));
+    let submission = RequestSubmission {
+        prefill_hints: Default::default(),
+        request_id: RequestId(2),
+        model_id: ModelId("embedding_gemma2".into()),
+        input_tokens: vec![7],
+        multimodal_inputs: Default::default(),
+        sampling_params: SamplingParams::default(),
+        max_output_tokens: 1,
+        arrival_sequence: SequenceNo(1),
+        metadata: None,
+    };
+    assert!(matches!(
+        session.submit(submission),
+        Err(EngineSessionError::EncoderTextGenerationUnsupported)
+    ));
+    assert!(
+        session
+            .core()
+            .request_manager()
+            .snapshot(RequestId(1))
+            .is_none()
+    );
+    assert!(
+        session
+            .core()
+            .request_manager()
+            .snapshot(RequestId(2))
+            .is_none()
+    );
+}
+
+#[test]
 fn caller_chosen_request_ids_do_not_define_arrival_order() {
     // A recycled or deliberately small id must not look older than an
     // already-running request, and a large id must not preempt older ones.

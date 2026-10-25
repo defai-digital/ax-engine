@@ -343,6 +343,10 @@ impl EngineCore {
         self.generation_kind = generation_kind;
     }
 
+    pub fn generation_kind(&self) -> GenerationKind {
+        self.generation_kind
+    }
+
     /// Live decode sequences this core admits at once.
     ///
     /// Resolved at construction from
