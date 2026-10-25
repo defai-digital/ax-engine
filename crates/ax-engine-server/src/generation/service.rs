@@ -1172,6 +1172,8 @@ impl From<EngineSessionError> for GenerationServiceStartError {
 struct IdleTickSettings {
     tick_interval: Duration,
     max_window: Duration,
+    #[cfg(test)]
+    pressure_override: Option<bool>,
 }
 
 impl IdleTickSettings {
@@ -1179,6 +1181,8 @@ impl IdleTickSettings {
         Self {
             tick_interval: Duration::ZERO,
             max_window: Duration::from_secs(900),
+            #[cfg(test)]
+            pressure_override: None,
         }
     }
 
@@ -1193,6 +1197,8 @@ impl IdleTickSettings {
             Self {
                 tick_interval: config.idle_tick_interval,
                 max_window: config.idle_tick_max_window,
+                #[cfg(test)]
+                pressure_override: None,
             }
         }
         #[cfg(not(feature = "mlx-native-server"))]
@@ -1229,6 +1235,14 @@ struct WorkerIdle {
 }
 
 impl WorkerIdle {
+    fn under_memory_pressure(&self, session: &EngineSession) -> bool {
+        #[cfg(test)]
+        if let Some(pressure) = self.settings.pressure_override {
+            return pressure;
+        }
+        session.idle_residency_under_memory_pressure()
+    }
+
     fn new(settings: IdleTickSettings) -> Self {
         Self {
             #[cfg(feature = "mlx-native-server")]
@@ -1381,7 +1395,7 @@ fn wait_for_command_or_idle_tick(
     let pressure = if busy || !idle.enabled() {
         false
     } else {
-        session.idle_residency_under_memory_pressure()
+        idle.under_memory_pressure(session)
     };
     match idle.wake(busy, pressure, false) {
         WorkerIdleWake::Block => match receiver.recv() {
@@ -1394,7 +1408,7 @@ fn wait_for_command_or_idle_tick(
                 let pressure = if busy {
                     false
                 } else {
-                    session.idle_residency_under_memory_pressure()
+                    idle.under_memory_pressure(session)
                 };
                 match idle.wake(busy, pressure, false) {
                     WorkerIdleWake::Tick { started } => {
@@ -3472,6 +3486,7 @@ mod tests {
                         input_tokens: vec![1, 2, 3],
                         input_text: None,
                         multimodal_inputs: Default::default(),
+                        prefill_hints: Default::default(),
                         max_output_tokens: output_limit,
                         sampling: Default::default(),
                         stop_sequences: Vec::new(),
@@ -3927,6 +3942,9 @@ mod tests {
             IdleTickSettings {
                 tick_interval: Duration::from_millis(30),
                 max_window: Duration::from_secs(30),
+                // This checks worker shutdown with a deterministic runner,
+                // not physical GPU initialization or host pressure probes.
+                pressure_override: Some(false),
             },
         )
         .expect("service should start");
