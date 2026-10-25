@@ -1445,7 +1445,7 @@ def _prefer_classic_hf_transfer() -> None:
 
     Recent `huggingface_hub` + `hf_xet` stacks on macOS can fail mid-download
     when concurrent processes both try to create the same xet log file. Classic
-    Hub transfer is slightly slower but reliable for CLI/TUI downloads. Users
+    Hub transfer is slightly slower but reliable for Python CLI downloads. Users
     who want xet can set ``HF_HUB_DISABLE_XET=0`` before launching.
     """
     if "HF_HUB_DISABLE_XET" not in os.environ:

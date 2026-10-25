@@ -44,7 +44,7 @@ use routes::{
     apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
     native_step_needs_route_capture, native_step_read_deltas, route_has_decode_path_work,
 };
-pub use stream::{GenerateStream, GenerateStreamState};
+pub use stream::{GenerateStream, GenerateStreamPerformance, GenerateStreamState};
 use stream::{
     GenerateStreamPhase, LlamaCppGenerateStreamState, NativeGenerateStreamState,
     build_mlx_lm_stream_state, is_terminal_request_state, next_llama_cpp_stream_event,

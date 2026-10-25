@@ -8,7 +8,8 @@ use super::schema::{
     OpenAiChatCompletionChoice, OpenAiChatCompletionResponse, OpenAiChatLogprobs,
     OpenAiChatMessageResponse, OpenAiChatTokenLogprob, OpenAiCompletionChoice,
     OpenAiCompletionLogprobs, OpenAiCompletionResponse, OpenAiCompletionTokensDetails,
-    OpenAiFunctionCall, OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiToolCall, OpenAiUsage,
+    OpenAiFunctionCall, OpenAiInferencePerformance, OpenAiPromptTokensDetails, OpenAiStreamKind,
+    OpenAiToolCall, OpenAiUsage,
 };
 use super::tool_names;
 use super::validation::unix_timestamp_secs;
@@ -957,7 +958,35 @@ pub(crate) fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
         prompt_tokens_details: (cached_tokens > 0)
             .then_some(OpenAiPromptTokensDetails { cached_tokens }),
+        ax_engine: inference_performance(response, prompt_tokens),
         completion_tokens_details: None,
+    })
+}
+
+fn inference_performance(
+    response: &GenerateResponse,
+    prompt_tokens: u32,
+) -> Option<OpenAiInferencePerformance> {
+    let timing = &response.performance;
+    // Only version 2 has native evaluation denominators. Block diffusion has
+    // no separate autoregressive prefill/decode phases, so do not relabel it.
+    if timing.metrics_version != 2 || response.route.decision("ax_mlx_generation_kind") == Some(1) {
+        return None;
+    }
+    let prefill_time_us = timing.prompt_eval_time_us.filter(|time| *time > 0);
+    let decode_time_us = timing.model_eval_time_us.filter(|time| *time > 0);
+    if prefill_time_us.is_none() && decode_time_us.is_none() {
+        return None;
+    }
+    Some(OpenAiInferencePerformance {
+        metrics_version: 1,
+        prefill_tokens: response
+            .route
+            .decision("ax_mlx_prefix_cache_reused_tokens")
+            .and_then(|cached| prompt_tokens.checked_sub(cached)),
+        prefill_time_us,
+        decode_tokens: timing.model_eval_token_count,
+        decode_time_us,
     })
 }
 

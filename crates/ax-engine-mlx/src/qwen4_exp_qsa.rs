@@ -7756,6 +7756,12 @@ mod tests {
 
     #[test]
     fn qsa_tiled_preserves_signed_zero_order() {
+        // The positive execution contract is limited to admitted GPU/MLX
+        // combinations, just like qsa_tiled_score_bits_match_monolithic.
+        if !tiled_score_runtime_matches() {
+            eprintln!("skipping tiled signed-zero check: GPU/MLX runtime is not admitted");
+            return;
+        }
         let (batch, seq, heads, dim, n_blocks) = (1, 2, 2, 4, 2);
         let queries = cast_tensor(
             &vec![0.0f32; (batch * seq * heads * dim) as usize],
@@ -8076,6 +8082,10 @@ mod tests {
 
     #[test]
     fn qsa_tiled_peak_workspace_is_bounded() {
+        if !tiled_score_runtime_matches() {
+            eprintln!("skipping tiled peak measurement: GPU/MLX runtime is not admitted");
+            return;
+        }
         with_isolated_peak_memory(|| {
             let seq = 2048i32;
             let heads = 4i32;

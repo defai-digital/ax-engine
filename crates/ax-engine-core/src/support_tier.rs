@@ -43,7 +43,7 @@ pub enum ModelSupportTier {
 }
 
 impl ModelSupportTier {
-    /// Stable lowercase label for JSON artifacts and CLI/TUI display.
+    /// Stable lowercase label for JSON artifacts and CLI/GUI display.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Certified => "certified",

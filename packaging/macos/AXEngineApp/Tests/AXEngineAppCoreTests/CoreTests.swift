@@ -194,7 +194,7 @@ private func temporary() throws -> URL {
     #expect(store.downloads.first?.state == "Ready")
     #expect(store.library.contains(where: { $0.managed && $0.ready }))
     for name in ["Failure", "Missing"] {
-        store.enqueue(CatalogModel(alias: name, repoId: "Tests/" + name, revision: "abc123", mtpIncluded: false), settings: settings)
+        store.enqueue(CatalogModel(alias: name, repoId: "AutomatosX/" + name, revision: "abc123", mtpIncluded: false), settings: settings)
     }
     while store.downloading { try await Task.sleep(for: .milliseconds(50)) }
     #expect(store.downloads.suffix(2).allSatisfy { $0.state == "Failed" })
@@ -393,4 +393,18 @@ func testScannerURL() -> URL {
     #expect(service.running)
     service.cancel()
     _ = try? await running.value
+}
+
+@Test func runtimeDiscoveryPrefersBundleAndFindsCurlInstallWithoutShellPath() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let curl = root.appendingPathComponent(".local/ax-engine/ax-engine")
+    let bundle = root.appendingPathComponent("AX Engine.app/Contents/Helpers/AXEngineRuntime.bundle/Contents/MacOS/ax-engine")
+    for binary in [curl, bundle] {
+        try FileManager.default.createDirectory(at: binary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: binary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+    }
+    #expect(try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) == curl)
+    #expect(try RuntimeLocator.find(bundled: bundle.path, environment: ["PATH": curl.deletingLastPathComponent().path], home: root, systemDirectories: []) == bundle)
+    #expect(try RuntimeLocator.find(explicit: curl.path, bundled: bundle.path, environment: [:], home: root, systemDirectories: []) == curl)
 }

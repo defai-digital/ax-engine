@@ -3,7 +3,7 @@
 AX Engine currently exposes four command surfaces:
 
 - `ax-engine` — recommended entrypoint for local serving, downloads, and MTP
-  package prep (`serve`, `download`, `download-mtp`, `tui`, `doctor`)
+  package prep (`serve`, `download`, `download-mtp`, `doctor`)
 - `ax-engine-server` — low-level HTTP/gRPC server when you need explicit runtime
   flags
 - `ax-engine-bench` — workload contracts, readiness, Metal
@@ -105,9 +105,8 @@ ax-engine download nemotron-3-nano:axq
 ax-engine download ax-qwen3-coder-next
 ax-engine download ax-embeddinggemma-300m
 ax-engine download ax-qwen3-embedding-4b
-ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
-ax-engine download owner/repo@revision
+ax-engine download AutomatosX/model@revision
 ax-engine download ax-qwen3.6-35b --dest /path/to/explicit-copy
 ax-engine download qwen3.6-27b:axq --local-only
 ```
@@ -116,146 +115,38 @@ Downloads verify free disk space against the repo size before fetching, copy
 `--dest` atomically (an interrupted copy never masquerades as complete), and
 resume partial snapshots through the Hugging Face Hub cache.
 
-For an interactive flow, run `ax-engine tui`. The TUI has five screens
-(switch with `1`-`5`, or `Ctrl+1`-`5` while typing in Chat/fields): Home
-shows a **This Mac** host monitor at the bottom of Home (MEM/CPU/GPU gauges,
-large utilization chart aligned to live values from `vm_stat`/`ps`/`ioreg`,
-process strip, installed-model
-headroom vs RAM, top memory processes — only metrics macOS can provide without
-privileged GPU tooling), plus Quick start actions and installed models;
-Models is a three-step wizard — family → size (estimate and RAM-fit badge per
-variant) → a confirm summary before anything downloads. The family list is
-loaded from the AutomatosX organization on Hugging Face when the TUI starts;
-click Refresh (or press `R`) to fetch it again. Errors remain visible and a
-failed refresh retains the previous list. Downloads use explicit repository
-IDs, retaining revision pins for known packs.
-AutomatosX snapshots
-bundle their MTP/assistant extras, so there is no separate speed-up step.
-Pressing `d` on Models opens a download-by-link prompt that accepts a
-Hugging Face URL or `owner/repo` (optionally with `@revision` or `/tree/<rev>`)
-and queues it like a catalog pick. The
-destination defaults to the shared Hugging Face Hub cache and can be changed
-on the confirm step with `--dest`.
-**Downloads** opens the local Hugging Face snapshot library, including all
-publishers and models no longer in the AutomatosX catalog. Its cache root
-honors `HF_HUB_CACHE`, `HF_HOME`, and `XDG_CACHE_HOME`. Select a row, then click
-**Serve**, **Delete**, or **Files**. Serve uses the displayed snapshot path;
-incomplete snapshots cannot be served. Delete requires confirmation and removes
-all cached revisions of that repository, including its weights. Other
-repositories are left intact. **Transfers** switches to the download queue;
-**Local models** switches back. **Back** and modal **Cancel** buttons provide
-mouse navigation without requiring Escape. Clicking model rows selects them;
-action buttons or Enter advance the wizard. The bottom-right footer shows the
-compiled engine version, and narrow terminals use a single-pane model wizard.
-Transfers show a progress bar, speed, ETA, and phase labels (driven by
-`--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
-copyable curl example; Chat streams replies from the running server over
-`/v1/chat/completions` with markdown rendering (headings, lists, code blocks),
-dimmed thinking blocks for reasoning models, and live `~tok/s` stats in the
-title plus a per-reply TTFT/tokens line (client-side estimates — the SSE
-stream carries no usage). Enter sends, Ctrl+J / Shift+Enter inserts a newline,
-↑/↓ recall prompt history (PgUp/PgDn scrolls the transcript), bracketed paste
-works in the composer, `Ctrl+Y` copies the last reply, `Ctrl+R` regenerates
-it, `Ctrl+L` clears the transcript (with confirmation), and `/clear` `/copy`
-`/retry` `/help` work
-as slash commands. If the server exits mid-session the transcript stays on
-screen read-only — scroll and copy keep working, a banner explains sends are
-blocked, and nothing fails until you try to send.
-Quick start enables an auto-chain (download → serve → chat). Otherwise, when a
-download finishes the TUI jumps to Downloads with the ready item selected;
-clicking the green banner or pressing `b` serves it. When the server binds,
-guided flows open Chat automatically. Downloads support retry (`r`), reveal in
-Finder (`o`), remove finished (`⌫`), and clear finished (`d`). `Esc` steps back
-one level (never quits); `q` quits (asks first while jobs are running).
-Installed sizes can be deleted from the wizard with `x` (typed confirmation).
-The TUI adapts to the terminal: `AX_TUI_THEME=light` selects a light-background
-palette, `NO_COLOR` (or `AX_TUI_THEME=mono`) disables color output, and status
-glyphs fall back to ASCII outside UTF-8 locales. Below 60×15 it asks for a
-resize instead of drawing a broken layout.
+For graphical model management, resource charts, server controls and chat, use
+[AX Engine for macOS](MACOS-APP.md). The TUI and its terminal rendering dependencies
+have been removed, including the legacy Python download wizard. The old
+`ax-engine tui` and `ax-engine ui-downloader` commands only print a migration message
+and exit; CLI commands remain supported.
 
-The older `ax-engine ui-downloader` and `ax-engine download --interactive`
-prompts remain available for compatibility. TTY-gated non-interactive behavior
-and machine-readable `download --json` output are unchanged. Power users can get
-a standalone progress bar on the helper directly with
-`scripts/download_model.py <repo> --progress-bar`, or newline-delimited progress
-events from the CLI with `ax-engine download <alias> --progress-json`.
+The native Rust `download` command uses anonymous HTTPS for public, unrestricted
+AutomatosX packs. No Python, Hugging Face account or token is required. It resolves
+a revision to an immutable commit, verifies each file's SHA-256 (LFS) or Git blob
+SHA-1, resumes partial transfers, and validates the native manifest before
+replacing the destination. Invalid or interrupted replacements preserve the old
+model. HTTP 429 follows the server's retry interval. Private and gated models are
+outside the built-in download scope; tokens and custom `HF_ENDPOINT` settings are
+not read by the native downloader.
+
+The JSON output remains `ax.download_model.v1`; `--progress-json` emits progress
+records followed by one terminal summary. `download --list --json` advertises
+`download_backend: native-rust-public-v1`. The GUI requires this capability before
+enabling downloads. Older published runtimes and the Python SDK's separate
+preparation tools may still need their documented Python dependencies.
+
+Download other publishers' models independently, then use a local directory:
 
 ```text
-ax-engine tui
-ax-engine ui-downloader            # compatibility prompt
-ax-engine download --interactive   # compatibility prompt
+ax-engine serve /path/to/local/mlx-model --offline
+ax-engine download /path/to/local/mlx-model --json
 ```
 
-### Capturing the TUI for README (GIF / PNG)
-
-Use [VHS](https://github.com/charmbracelet/vhs) to record a short Home → Models →
-Home clip with the live host chart:
-
-```bash
-brew install vhs          # once; pulls ttyd + ffmpeg on typical Homebrew installs
-bash scripts/capture-tui.sh
-```
-
-Defaults:
-
-- Tape: [`docs/assets/tui-demo.tape`](assets/tui-demo.tape)
-- Outputs: `docs/assets/tui-demo.gif` and `docs/assets/tui-demo.png`
-
-Options: `--skip-build`, `--release`, `--tape <path>`. The tape waits ~12s on
-Home so the 2s host-metric samples can draw a utilization trail.
-
-Still PNG only (manual macOS window grab):
-
-```bash
-cargo run -p ax-engine-bench --bin ax-engine -- tui
-# then: ⇧⌘4 → space → click the terminal, or:
-# screencapture -i docs/assets/tui-home.png
-```
-
-Embed in Markdown:
-
-```markdown
-![AX Engine TUI](assets/tui-demo.gif)
-```
-
-`download` wraps the same workflow as `scripts/download_model.py`: download
-through Hugging Face Hub, validate `config.json` and safetensors, and run
-`ax-engine-bench generate-manifest` when available. The JSON output is the
-`ax.download_model.v1` summary. Built-in download aliases cover the primary
-productivity stack (Gemma 4, Qwen 3.5/3.6, GLM 4.7 Flash) plus secondary
-preview-direct targets for research and regional use: Llama 3.1/3.3/4 Scout,
-Mistral Small / Ministral / Devstral, and GPT-OSS 20B/120B MXFP4-Q4. Other
-models should use an explicit repo id or a local directory path. If the model
-argument is missing or an alias is unknown, `download` prints the same target
-list. The JSON form of `download --list` emits an `ax.download_options.v1`
-document for automation.
-
-#### Download sources
-
-`download` accepts two sources:
-
-- **Hugging Face Hub** (default). Public repositories need **no Hugging Face
-  account and no `hf` CLI**. Only gated or private repositories need an account,
-  accepted model terms, and a token. Hub access uses the optional
-  `huggingface_hub` Python package, installed into the interpreter the CLI runs
-  (`AX_ENGINE_PYTHON`, otherwise `python3`). Install it there with
-  `pip install 'ax-engine[download]'`, or into a dedicated venv for a Homebrew
-  install — see [Getting started](GETTING-STARTED.md).
-- **A local model directory.** Point `download` at a directory that already
-  holds `config.json` and safetensors, and it validates the weights and generates
-  `model-manifest.json` **entirely offline**: no Hub client, no network access,
-  and no account. The directory is used in place, so `--dest` and `--revision`
-  do not apply.
-
-```text
-ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
-ax-engine download /path/to/local/mlx-model
-```
-
-A failed Hub download reports the specific cause — a missing `huggingface_hub`,
-an expired or rejected token, a gated repository, a nonexistent repository, or a
-network or proxy failure — together with the command that resolves it. Behind a
-mirror, set `HF_ENDPOINT`; `huggingface_hub` reads it directly.
+The native local-directory download command generates and validates the manifest
+without accessing the Hub. `--local-only` can reuse a matching completed explicit
+destination or an existing pinned Hub snapshot. `HF_HUB_OFFLINE=1` also forbids
+network access through the native CLI. Neither mode silently fetches missing files.
 
 For the initial Tiel pack revisions, see the [hash-bound MTP norm correction](mtp/tiel-norm-compatibility.md).
 

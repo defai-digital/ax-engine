@@ -1445,3 +1445,106 @@ fn sample_generate_response(
         performance: Default::default(),
     }
 }
+
+#[test]
+fn usage_performance_keeps_native_phase_counts_and_cache_reuse() {
+    let mut response = sample_generate_response("hello", vec![10, 11, 12], vec![]);
+    response.prompt_token_count = Some(1000);
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefix_cache_reused_tokens".into(), 800);
+    response.performance.prompt_eval_time_us = Some(400_000);
+    response.performance.model_eval_time_us = Some(50_000);
+    response.performance.model_eval_token_count = Some(2);
+    // Client/stream latency must not become the native evaluation denominator.
+    response.performance.generation_time_us = Some(9_000_000);
+    response.performance.total_time_us = 20_000_000;
+    let usage = crate::openai::responses::openai_usage(&response).expect("usage");
+    let chunk = crate::openai::chunks::stream_usage_chunk(
+        7,
+        "fixture".into(),
+        crate::openai::schema::OpenAiStreamKind::ChatCompletion,
+        usage,
+    );
+    let json = serde_json::to_value(chunk).expect("JSON");
+    assert_eq!(json["choices"], json!([]));
+    assert_eq!(
+        json["usage"]["ax_engine"],
+        json!({
+            "metrics_version": 1, "prefill_tokens": 200, "prefill_time_us": 400_000,
+            "decode_tokens": 2, "decode_time_us": 50_000
+        })
+    );
+}
+
+#[test]
+fn usage_performance_does_not_invent_phases_or_uncached_counts() {
+    let mut response = sample_generate_response("hello", vec![10], vec![]);
+    assert!(
+        crate::openai::responses::openai_usage(&response)
+            .expect("usage")
+            .ax_engine
+            .is_none()
+    );
+    response.performance.prompt_eval_time_us = Some(100);
+    response.performance.model_eval_time_us = Some(0);
+    response.performance.model_eval_token_count = Some(0);
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefill_steps".into(), 1);
+    response
+        .route
+        .crossover_decisions
+        .insert("prefix_reused_tokens".into(), 1);
+    let usage = crate::openai::responses::openai_usage(&response).expect("usage");
+    let timing = usage.ax_engine.expect("timing");
+    assert_eq!(
+        timing.prefill_tokens, None,
+        "scheduler affinity is not physical cache reuse"
+    );
+    assert_eq!(timing.decode_time_us, None);
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefix_cache_reused_tokens".into(), 2);
+    assert_eq!(
+        crate::openai::responses::openai_usage(&response)
+            .expect("usage")
+            .ax_engine
+            .expect("timing")
+            .prefill_tokens,
+        Some(0)
+    );
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefix_cache_reused_tokens".into(), 3);
+    assert_eq!(
+        crate::openai::responses::openai_usage(&response)
+            .expect("usage")
+            .ax_engine
+            .expect("timing")
+            .prefill_tokens,
+        None
+    );
+    response.performance.metrics_version = 3;
+    assert!(
+        crate::openai::responses::openai_usage(&response)
+            .expect("usage")
+            .ax_engine
+            .is_none()
+    );
+    response.performance.metrics_version = 2;
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_generation_kind".into(), 1);
+    assert!(
+        crate::openai::responses::openai_usage(&response)
+            .expect("usage")
+            .ax_engine
+            .is_none()
+    );
+}

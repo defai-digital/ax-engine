@@ -1,5 +1,5 @@
 //! Hugging Face repo reference parsing shared by every download front end
-//! (Rust CLI, TUI, Python CLI/SDK via mirrored rules).
+//! (Rust CLI, GUI, Python CLI/SDK via mirrored rules).
 //!
 //! Accepted forms:
 //! - bare repo id: `owner/repo`

@@ -517,6 +517,21 @@ pub(crate) struct OpenAiFunctionCallDelta {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct OpenAiInferencePerformance {
+    pub(crate) metrics_version: u32,
+    /// Actual uncached prompt tokens, absent when physical cache reuse is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prefill_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prefill_time_us: Option<u64>,
+    /// Native output evaluation excludes the first autoregressive output batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) decode_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) decode_time_us: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OpenAiUsage {
     pub(crate) prompt_tokens: u32,
     pub(crate) completion_tokens: u32,
@@ -525,6 +540,9 @@ pub(crate) struct OpenAiUsage {
     /// `prompt_tokens_details.cached_tokens` to see prefix-cache reuse.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+    /// Per-request native evaluation timings; never global metrics or client estimates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ax_engine: Option<OpenAiInferencePerformance>,
     /// Reasoning tokens are a subset of `completion_tokens`, counted from
     /// the output token ids. Omitted when the count is unknown. They are
     /// not added again into `completion_tokens` or `total_tokens`.

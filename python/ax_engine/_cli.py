@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import difflib
-import errno
 import importlib.metadata
 import json
 import os
@@ -1164,42 +1163,6 @@ def _bench_bin() -> pathlib.Path | str:
     return shutil.which("ax-engine-bench") or "ax-engine-bench"
 
 
-def _native_bin() -> str | None:
-    """Locate the native Rust ``ax-engine`` binary (it hosts the ``tui`` subcommand).
-
-    Resolution order: ``AX_ENGINE_NATIVE_BIN`` override, the binary bundled in the
-    installed wheel, then a source-checkout ``target/{release,debug}`` build.  It
-    deliberately never falls back to a bare ``ax-engine`` on ``PATH`` — that name
-    resolves to this very Python console script, which would recurse.
-    """
-    override = os.environ.get("AX_ENGINE_NATIVE_BIN")
-    if override:
-        if not pathlib.Path(override).is_file():
-            raise SystemExit(
-                f"AX_ENGINE_NATIVE_BIN is set but is not a file: {override}"
-            )
-        return override
-    bundled = _bundled_binary("ax-engine")
-    if bundled is not None:
-        return str(bundled)
-    roots: list[pathlib.Path] = []
-    repo_env = os.environ.get("AX_ENGINE_REPO_ROOT")
-    if repo_env:
-        roots.append(pathlib.Path(repo_env))
-    roots.append(pathlib.Path(__file__).resolve().parents[2])
-    candidates = [
-        candidate
-        for root in roots
-        for profile in ("release", "debug")
-        if (candidate := root / "target" / profile / "ax-engine").is_file()
-    ]
-    if candidates:
-        # Newest build wins, so a fresh `cargo build` is preferred over a stale
-        # release (or vice versa) without guessing a fixed profile order.
-        return str(max(candidates, key=lambda p: p.stat().st_mtime))
-    return None
-
-
 def server() -> None:
     bin_path = _server_bin()
     os.execvp(str(bin_path), [str(bin_path)] + sys.argv[1:])
@@ -1263,80 +1226,6 @@ def _is_managed_download_profile(profile: ModelProfile) -> bool:
 
 def _downloadable_profiles() -> list[ModelProfile]:
     return [profile for profile in MODEL_PROFILES if _is_managed_download_profile(profile)]
-
-
-# ---------------------------------------------------------------------------
-# Grouped catalog view (model family -> precision variants)
-#
-# MODEL_PROFILES is a flat list where each precision is its own row.  The
-# interactive picker presents a model-first wizard, so we derive a grouped view
-# from the flat list rather than duplicating the catalog.  These helpers are
-# pure functions of MODEL_PROFILES and do not change the download/JSON contract.
-# ---------------------------------------------------------------------------
-
-# Affine `*4bit*` / `*8bit*` plus MXFP4 product names (`MXFP4-Q4`, bare `MXFP4`).
-_QUANT_RE = re.compile(
-    r"(?P<bit>\d+)bit|(?P<q>q)(?P<qbits>\d+)|(?P<mxfp4>mxfp4)",
-    re.IGNORECASE,
-)
-_FAMILY_SUFFIX_RE = re.compile(r"-\d+bit$", re.IGNORECASE)
-
-
-def _profile_quant_bits(profile: ModelProfile) -> int | None:
-    """Quantization bit-width parsed from a profile's repo_id (e.g. 4, 8).
-
-    Recognizes MLX affine names (`4bit`) and GPT-OSS MXFP4 product tags
-    (`MXFP4-Q4`, `MXFP4` → 4).
-    """
-    match = _QUANT_RE.search(profile.repo_id)
-    if match is None:
-        return None
-    if match.group("bit") is not None:
-        return int(match.group("bit"))
-    if match.group("qbits") is not None:
-        return int(match.group("qbits"))
-    if match.group("mxfp4") is not None:
-        return 4
-    return None
-
-
-def _profile_family_key(profile: ModelProfile) -> str:
-    """Family identifier: the label with any trailing ``-Nbit`` suffix removed."""
-    return _FAMILY_SUFFIX_RE.sub("", profile.label)
-
-
-@dataclass(frozen=True)
-class ModelFamily:
-    """A model and the set of precision variants it is published in."""
-
-    key: str
-    variants: tuple[ModelProfile, ...]  # ascending by bit-width
-
-    @property
-    def label(self) -> str:
-        return self.key
-
-    @property
-    def quant_summary(self) -> str:
-        bits = [b for b in (_profile_quant_bits(v) for v in self.variants) if b is not None]
-        return ", ".join(f"{b}-bit" for b in bits) if bits else "--"
-
-
-def _model_families() -> list[ModelFamily]:
-    """Group downloadable profiles by family, variants sorted by bit-width."""
-    groups: dict[str, list[ModelProfile]] = {}
-    order: list[str] = []
-    for profile in _downloadable_profiles():
-        key = _profile_family_key(profile)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(profile)
-    families: list[ModelFamily] = []
-    for key in order:
-        variants = sorted(groups[key], key=lambda p: _profile_quant_bits(p) or 99)
-        families.append(ModelFamily(key=key, variants=tuple(variants)))
-    return families
 
 
 def _download_options_payload() -> dict:
@@ -1644,163 +1533,14 @@ def _print_download_progress_terminal(summary: dict[str, object]) -> None:
     print(json.dumps(summary, separators=(",", ":")))
 
 
-def _supports_interactive() -> bool:
-    """Interactive prompts are only safe when both stdin and stdout are a TTY."""
-    try:
-        return sys.stdin.isatty() and sys.stdout.isatty()
-    except (ValueError, OSError):
-        return False
-
-
 def _default_download_root() -> pathlib.Path:
-    """Mirror download_model.default_mlx_lm_cache_root for display in the wizard."""
+    """Resolve the shared Hugging Face cache root for model discovery."""
     if hub := os.environ.get("HF_HUB_CACHE"):
         return pathlib.Path(hub).expanduser()
     if home := os.environ.get("HF_HOME"):
         return pathlib.Path(home).expanduser() / "hub"
     base = os.environ.get("XDG_CACHE_HOME") or (pathlib.Path.home() / ".cache")
     return pathlib.Path(base).expanduser() / "huggingface" / "hub"
-
-
-def _wizard_input(prompt: str) -> str:
-    try:
-        return input(prompt)
-    except (ValueError, OSError) as error:
-        # A closed stdin surfaces as ValueError ("I/O operation on closed
-        # file") or EBADF from input(); treat it like an exhausted one so the
-        # wizard's EOF guidance applies. Anything else (a broken stdout, bad
-        # UTF-8 on the pipe) is a real error and keeps propagating.
-        stdin_closed = getattr(sys.stdin, "closed", True)
-        bad_fd = isinstance(error, OSError) and error.errno == errno.EBADF
-        if stdin_closed or bad_fd:
-            raise EOFError(str(error)) from error
-        raise
-
-
-def _parse_menu_selection(raw: str, item_count: int) -> int | None:
-    """Parse a 1-based menu selection from raw wizard input; None if invalid.
-
-    ``str.isdecimal`` (not ``isdigit``) keeps the check in line with what
-    ``int()`` accepts: superscript digits (U+00B2) pass ``isdigit`` but make
-    ``int()`` raise, which previously escaped the wizard as a traceback. The
-    ``ValueError`` guard covers any remaining gap so bad input re-prompts.
-    """
-    if not raw.isdecimal():
-        return None
-    try:
-        choice = int(raw)
-    except ValueError:
-        return None
-    if 1 <= choice <= item_count:
-        return choice
-    return None
-
-
-def _select_profile_interactive() -> ModelProfile | None:
-    profiles = _downloadable_profiles()
-    print("AX Engine — download a model\n")
-    print(f"  {'#':>2}  {'Model':<28} {'MTP':<9} Repo")
-    for index, profile in enumerate(profiles, start=1):
-        mtp = "included" if "-mtp" in profile.repo_id.lower() else "—"
-        print(f"  {index:>2}  {profile.label:<28} {mtp:<9} {profile.repo_id}")
-    print()
-    while True:
-        raw = _wizard_input(f"Select a model [1-{len(profiles)}] (q to cancel): ").strip().lower()
-        if raw in {"", "q", "quit", "exit"}:
-            return None
-        choice = _parse_menu_selection(raw, len(profiles))
-        if choice is not None:
-            return profiles[choice - 1]
-        print("  invalid selection; enter a number from the list or q to cancel")
-
-
-def _select_dest_interactive() -> str | None:
-    default_root = _default_download_root()
-    print(f"\nDefault download location: {default_root}")
-    print("  (shared Hugging Face Hub cache; reused by mlx-lm and huggingface_hub)")
-    raw = _wizard_input("Download path (Enter to accept default): ").strip()
-    if not raw:
-        return None
-    return str(pathlib.Path(raw).expanduser())
-
-
-def _validate_dest_writable(dest: str) -> None:
-    probe = pathlib.Path(dest)
-    while not probe.exists():
-        parent = probe.parent
-        if parent == probe:
-            break
-        probe = parent
-    if not os.access(probe, os.W_OK):
-        raise SystemExit(f"destination is not writable: {dest}")
-
-
-def _confirm_interactive(prompt: str) -> bool:
-    raw = _wizard_input(f"{prompt} [Y/n]: ").strip().lower()
-    return raw in {"", "y", "yes"}
-
-
-def _run_interactive_direct_download(
-    profile: ModelProfile,
-    force: bool,
-    *,
-    local_only: bool = False,
-    dest: str | None = None,
-) -> int:
-    # An explicit --dest skips the destination prompt; --local-only must
-    # reach the helper, otherwise the wizard silently downloads.
-    if dest is None:
-        dest = _select_dest_interactive()
-    if dest is not None:
-        _validate_dest_writable(dest)
-
-    target = dest if dest is not None else f"{_default_download_root()} (shared cache)"
-    if not _confirm_interactive(f"\nDownload {profile.label} ({profile.repo_id}) to {target}?"):
-        print("Cancelled.")
-        return 130
-
-    print()
-    code, summary, stderr = _download_summary(
-        profile.label, dest=dest, force=force, progress=True, local_only=local_only
-    )
-    if stderr:
-        sys.stderr.write(stderr)
-    if summary is None:
-        raise SystemExit("download helper did not emit an ax.download_model.v1 summary")
-    _print_download_summary(summary)
-    return code
-
-
-def _run_interactive_download(
-    force: bool, *, local_only: bool = False, dest: str | None = None
-) -> int:
-    profile = _select_profile_interactive()
-    if profile is None:
-        print("Cancelled.")
-        return 130
-
-    return _run_interactive_direct_download(profile, force, local_only=local_only, dest=dest)
-
-
-def _cmd_ui_downloader(args: argparse.Namespace) -> int:
-    if not _supports_interactive():
-        raise SystemExit(
-            "ax-engine ui-downloader needs an interactive terminal. Use: ax-engine download <model>"
-        )
-    return _run_interactive_download(args.force)
-
-
-def _cmd_tui(args: argparse.Namespace) -> int:
-    native = _native_bin()
-    if native is None:
-        raise SystemExit(
-            "ax-engine tui requires the native ax-engine binary, which was not found.\n"
-            "Reinstall ax-engine, or build it from a source checkout:\n"
-            "  cargo build --release -p ax-engine-bench --bin ax-engine"
-        )
-    argv = [native, "tui", *args.tui_args]
-    os.execvp(argv[0], argv)
-    return 0
 
 
 def _looks_like_repo_reference(value: str) -> bool:
@@ -2139,6 +1879,11 @@ def _cmd_download(args: argparse.Namespace) -> int:
         raise SystemExit("download --progress-json cannot be combined with --interactive")
     if args.json and args.interactive:
         raise SystemExit("download --json cannot be combined with --interactive")
+    if args.interactive:
+        raise SystemExit(
+            "download --interactive has been retired. Open AX Engine for macOS "
+            "or use ax-engine download <model>."
+        )
     if args.force and args.local_only:
         raise SystemExit("download --force cannot be combined with --local-only")
 
@@ -2151,20 +1896,6 @@ def _cmd_download(args: argparse.Namespace) -> int:
 
     if args.progress_json and not args.model:
         raise SystemExit("--progress-json requires a model alias or repo id")
-
-    interactive = args.interactive or (
-        not args.model and not args.no_interactive and not args.json and _supports_interactive()
-    )
-    if interactive:
-        try:
-            return _run_interactive_download(args.force, local_only=args.local_only, dest=args.dest)
-        except EOFError as error:
-            # Piped answers work; an exhausted or closed stdin gets guidance,
-            # not a traceback.
-            raise SystemExit(
-                "ax-engine download --interactive needs answers on stdin or an interactive "
-                "terminal. Use: ax-engine download <model>"
-            ) from error
 
     if not args.model:
         if args.json:
@@ -3007,12 +2738,12 @@ def build_parser() -> argparse.ArgumentParser:
     download_parser.add_argument(
         "--interactive",
         action="store_true",
-        help="Pick a model and destination interactively with a live progress bar",
+        help=argparse.SUPPRESS,
     )
     download_parser.add_argument(
         "--no-interactive",
         action="store_true",
-        help="Never prompt; require a model argument",
+        help=argparse.SUPPRESS,
     )
     download_parser.add_argument("--json", action="store_true")
     download_parser.add_argument(
@@ -3021,24 +2752,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit newline-delimited progress events and a final download summary",
     )
     download_parser.set_defaults(func=_cmd_download)
-
-    tui_parser = subparsers.add_parser(
-        "tui",
-        help="Launch the terminal UI for model download and serving",
-    )
-    tui_parser.add_argument(
-        "tui_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments forwarded to the native ax-engine tui (e.g. --help)",
-    )
-    tui_parser.set_defaults(func=_cmd_tui)
-
-    ui_downloader_parser = subparsers.add_parser(
-        "ui-downloader",
-        help="Deprecated: use 'ax-engine tui' instead",
-    )
-    ui_downloader_parser.add_argument("--force", action="store_true")
-    ui_downloader_parser.set_defaults(func=_cmd_ui_downloader)
 
     download_mtp_parser = subparsers.add_parser(
         "download-mtp",
@@ -3109,12 +2822,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         separator = argv.index("--")
         extra_server_args = argv[separator + 1 :]
         argv = argv[:separator]
-    # Forward tui arguments verbatim: argparse would otherwise intercept
-    # dash-led tokens (e.g. --help) meant for the native ax-engine tui.
-    tui_args: list[str] | None = None
-    if argv and argv[0] == "tui":
-        tui_args = _strip_remainder_separator(argv[1:])
-        argv = argv[:1]
+    if argv and argv[0] in {"tui", "ui-downloader"}:
+        print(
+            "The terminal UI has been retired. Open AX Engine for macOS, or use "
+            "ax-engine download / serve from the CLI. See docs/MACOS-APP.md.",
+            file=sys.stderr,
+        )
+        return 2
 
     parser = build_parser()
     try:
@@ -3129,8 +2843,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         error.parser.exit(2, f"{message}\n")
     if args.command == "serve":
         args.extra_server_args = extra_server_args
-    if args.command == "tui" and tui_args is not None:
-        args.tui_args = tui_args
     try:
         return int(args.func(args))
     except SystemExit as error:

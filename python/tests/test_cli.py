@@ -482,12 +482,6 @@ class AxEngineCliTests(unittest.TestCase):
                 _cli._download_repo_id(model)
         self.assertIsNotNone(_cli._profile_for_model("qwen3.6-27b:axq-6bit"))
 
-    def test_mxfp4_repo_quant_bits(self) -> None:
-        profile = _cli._profile_for_model("gpt-oss-20b")
-        self.assertIsNotNone(profile)
-        assert profile is not None
-        self.assertEqual(_cli._profile_quant_bits(profile), 4)
-
     def test_download_list_text_shows_cache_policy(self) -> None:
         code, stdout = self.capture_main(["download", "--list"])
 
@@ -556,13 +550,10 @@ class AxEngineCliTests(unittest.TestCase):
 
     def test_download_json_rejects_interactive(self) -> None:
         with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_run_interactive_download") as wizard,
             self.assertRaises(SystemExit) as raised,
         ):
             self.capture_main(["download", "--interactive", "--json"])
 
-        wizard.assert_not_called()
         self.assertNotEqual(raised.exception.code, 0)
         self.assertIn(
             "download --json cannot be combined with --interactive",
@@ -2094,35 +2085,18 @@ class AxEngineCliTests(unittest.TestCase):
         depth_index = payload["prepare_command"].index("--mtp-depth-max") + 1
         self.assertEqual(payload["prepare_command"][depth_index], "3")
 
-    def test_tui_forwards_dash_led_args_to_native_binary(self) -> None:
-        with (
-            unittest.mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
-            unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
-            self.assertRaisesRegex(RuntimeError, "stop"),
-        ):
-            self.capture_main(["tui", "--help"])
-
-        self.assertEqual(execvp.call_args.args[0], "/opt/bin/ax-engine")
-        self.assertEqual(
-            execvp.call_args.args[1],
-            ["/opt/bin/ax-engine", "tui", "--help"],
-        )
-
-    def test_tui_strips_leading_separator_before_forwarding(self) -> None:
-        with (
-            unittest.mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
-            unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
-            self.assertRaisesRegex(RuntimeError, "stop"),
-        ):
-            self.capture_main(["tui", "--", "--foo"])
-
-        self.assertEqual(
-            execvp.call_args.args[1],
-            ["/opt/bin/ax-engine", "tui", "--foo"],
-        )
+    def test_retired_tui_reports_gui_migration_without_launching_native(self) -> None:
+        for arguments in (["tui"], ["tui", "--help"], ["tui", "--", "--foo"], ["ui-downloader"]):
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error), unittest.mock.patch.object(os, "execvp") as execvp:
+                code, _ = self.capture_main(arguments)
+            self.assertEqual(code, 2)
+            self.assertIn("terminal UI has been retired", error.getvalue())
+            self.assertIn("AX Engine for macOS", error.getvalue())
+            execvp.assert_not_called()
 
 
-class AxEngineInteractiveDownloadTests(unittest.TestCase):
+class AxEngineDownloadCatalogTests(unittest.TestCase):
     def capture_main(self, argv: list[str]) -> tuple[int, str]:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -2139,158 +2113,19 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
         self.assertEqual(sum(target["mtp_included"] for target in targets), 34)
 
-    def test_no_model_non_tty_is_not_interactive(self) -> None:
-        # stdout is redirected (not a TTY), so the wizard must not engage.
-        with unittest.mock.patch.object(_cli, "_run_interactive_download") as wizard:
-            code, stdout = self.capture_main(["download"])
+    def test_download_without_model_never_prompts(self) -> None:
+        for arguments in (["download"], ["download", "--no-interactive"]):
+            with unittest.mock.patch("builtins.input") as prompt:
+                code, stdout = self.capture_main(arguments)
+            prompt.assert_not_called()
+            self.assertEqual(code, 2)
+            self.assertIn("missing model alias or repo id", stdout)
 
-        wizard.assert_not_called()
-        self.assertEqual(code, 2)
-        self.assertIn("missing model alias or repo id", stdout)
-
-    def test_no_interactive_flag_blocks_wizard_even_on_tty(self) -> None:
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_run_interactive_download") as wizard,
-        ):
-            code, _ = self.capture_main(["download", "--no-interactive"])
-
-        wizard.assert_not_called()
-        self.assertEqual(code, 2)
-
-    def test_bare_download_on_tty_runs_wizard(self) -> None:
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_run_interactive_download", return_value=0) as wizard,
-        ):
-            code, _ = self.capture_main(["download"])
-
-        wizard.assert_called_once()
-        self.assertEqual(code, 0)
-
-    def test_ui_downloader_requires_tty(self) -> None:
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=False),
-            self.assertRaises(SystemExit) as raised,
-        ):
-            self.capture_main(["ui-downloader"])
-
-        self.assertIn("interactive terminal", str(raised.exception))
-
-    def test_wizard_flow_invokes_download_with_progress(self) -> None:
-        summary = {
-            "schema_version": "ax.download_model.v1",
-            "status": "ready",
-            "repo_id": "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
-            "dest": "/tmp/model",
-        }
-        inputs = iter(["1", "", "y"])  # select first model, default path, confirm
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            unittest.mock.patch.object(
-                _cli, "_download_summary", return_value=(0, summary, "")
-            ) as download,
-        ):
-            code, stdout = self.capture_main(["ui-downloader"])
-
-        self.assertEqual(code, 0)
-        download.assert_called_once()
-        _, kwargs = download.call_args
-        self.assertTrue(kwargs["progress"])
-        self.assertIsNone(kwargs["dest"])
-        self.assertIn("Status: ready", stdout)
-
-    def _index_of(self, label: str) -> int:
-        for index, profile in enumerate(_cli._downloadable_profiles(), start=1):
-            if profile.label == label:
-                return index
-        raise AssertionError(f"profile not found: {label}")
-
-    def test_wizard_mtp_snapshot_uses_standard_download(self) -> None:
-        summary = {
-            "schema_version": "ax.download_model.v1",
-            "status": "ready",
-            "repo_id": ("AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"),
-            "dest": "/tmp/model",
-        }
-        idx = self._index_of("ax-gemma4-12b")
-        # There is no Direct-vs-MTP prompt: select, accept cache, confirm.
-        inputs = iter([str(idx), "", "y"])
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            unittest.mock.patch.object(
-                _cli, "_download_summary", return_value=(0, summary, "")
-            ) as download,
-        ):
-            code, stdout = self.capture_main(["ui-downloader"])
-
-        self.assertEqual(code, 0)
-        download.assert_called_once_with(
-            "ax-gemma4-12b", dest=None, force=False, progress=True, local_only=False
-        )
-        self.assertIn("Status: ready", stdout)
-
-    def test_wizard_non_mtp_snapshot_uses_standard_download(self) -> None:
-        summary = {
-            "schema_version": "ax.download_model.v1",
-            "status": "ready",
-            "repo_id": "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
-            "dest": "/tmp/model",
-        }
-        idx = self._index_of("ax-qwen3-coder-next")
-        inputs = iter([str(idx), "", "y"])
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            unittest.mock.patch.object(
-                _cli, "_download_summary", return_value=(0, summary, "")
-            ) as download,
-        ):
-            code, stdout = self.capture_main(["ui-downloader"])
-
-        self.assertEqual(code, 0)
-        download.assert_called_once_with(
-            "ax-qwen3-coder-next", dest=None, force=False, progress=True, local_only=False
-        )
-        self.assertIn("Status: ready", stdout)
-
-    def test_parse_menu_selection_rejects_nondecimal_digits(self) -> None:
-        self.assertEqual(_cli._parse_menu_selection("1", 92), 1)
-        self.assertEqual(_cli._parse_menu_selection("92", 92), 92)
-        self.assertIsNone(_cli._parse_menu_selection("0", 92))
-        self.assertIsNone(_cli._parse_menu_selection("93", 92))
-        self.assertIsNone(_cli._parse_menu_selection("", 92))
-        self.assertIsNone(_cli._parse_menu_selection("q", 92))
-        # Superscript two passes str.isdigit() but int() raises ValueError for
-        # it; the wizard used to crash on such input instead of re-prompting.
-        self.assertTrue("\u00b2".isdigit())
-        self.assertIsNone(_cli._parse_menu_selection("\u00b2", 92))
-
-    def test_wizard_reprompts_on_nondecimal_selection(self) -> None:
-        inputs = iter(["\u00b2", "q"])
-        out = io.StringIO()
-        with (
-            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            contextlib.redirect_stdout(out),
-        ):
-            profile = _cli._select_profile_interactive()
-
-        self.assertIsNone(profile)
-        self.assertIn("invalid selection", out.getvalue())
-
-    def test_wizard_cancel_returns_130(self) -> None:
-        with (
-            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            unittest.mock.patch.object(_cli, "_wizard_input", return_value="q"),
-            unittest.mock.patch.object(_cli, "_download_summary") as download,
-        ):
-            code, stdout = self.capture_main(["ui-downloader"])
-
-        download.assert_not_called()
-        self.assertEqual(code, 130)
-        self.assertIn("Cancelled.", stdout)
+    def test_interactive_flag_reports_migration_without_prompt(self) -> None:
+        with unittest.mock.patch("builtins.input") as prompt, self.assertRaises(SystemExit) as raised:
+            self.capture_main(["download", "--interactive"])
+        prompt.assert_not_called()
+        self.assertIn("AX Engine for macOS", str(raised.exception))
 
 
 class ManifestSymlinkRestoreTests(unittest.TestCase):

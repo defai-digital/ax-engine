@@ -193,9 +193,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Always emit a stable operator/TUI ready line. When RUST_LOG /
+    // Always emit a stable operator/automation ready line. When RUST_LOG /
     // AX_ENGINE_SERVER_LOG enables tracing, the structured `info!` form does
-    // not contain "listening on http://", which the TUI (and scripts) match on.
+    // not contain "listening on http://", which external scripts may match on.
     eprintln!(
         "ax-engine-server preview listening on http://{} model_id={} support_tier={:?}",
         bind_address, model_id, support_tier

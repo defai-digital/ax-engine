@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateRequest,
-    GenerateResponse, GenerateStreamEvent, GenerateStreamState, GenerateStreamStepEvent,
-    RuntimeReport, SessionRequestReport, SessionRequestState,
+    GenerateResponse, GenerateStreamEvent, GenerateStreamPerformance, GenerateStreamState,
+    GenerateStreamStepEvent, RuntimeReport, SessionRequestReport, SessionRequestState,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -1172,6 +1172,8 @@ impl From<EngineSessionError> for GenerationServiceStartError {
 struct IdleTickSettings {
     tick_interval: Duration,
     max_window: Duration,
+    #[cfg(test)]
+    pressure_override: Option<bool>,
 }
 
 impl IdleTickSettings {
@@ -1179,6 +1181,8 @@ impl IdleTickSettings {
         Self {
             tick_interval: Duration::ZERO,
             max_window: Duration::from_secs(900),
+            #[cfg(test)]
+            pressure_override: None,
         }
     }
 
@@ -1193,6 +1197,8 @@ impl IdleTickSettings {
             Self {
                 tick_interval: config.idle_tick_interval,
                 max_window: config.idle_tick_max_window,
+                #[cfg(test)]
+                pressure_override: None,
             }
         }
         #[cfg(not(feature = "mlx-native-server"))]
@@ -1229,6 +1235,14 @@ struct WorkerIdle {
 }
 
 impl WorkerIdle {
+    fn under_memory_pressure(&self, session: &EngineSession) -> bool {
+        #[cfg(test)]
+        if let Some(pressure) = self.settings.pressure_override {
+            return pressure;
+        }
+        session.idle_residency_under_memory_pressure()
+    }
+
     fn new(settings: IdleTickSettings) -> Self {
         Self {
             #[cfg(feature = "mlx-native-server")]
@@ -1381,7 +1395,7 @@ fn wait_for_command_or_idle_tick(
     let pressure = if busy || !idle.enabled() {
         false
     } else {
-        session.idle_residency_under_memory_pressure()
+        idle.under_memory_pressure(session)
     };
     match idle.wake(busy, pressure, false) {
         WorkerIdleWake::Block => match receiver.recv() {
@@ -1394,7 +1408,7 @@ fn wait_for_command_or_idle_tick(
                 let pressure = if busy {
                     false
                 } else {
-                    session.idle_residency_under_memory_pressure()
+                    idle.under_memory_pressure(session)
                 };
                 match idle.wake(busy, pressure, false) {
                     WorkerIdleWake::Tick { started } => {
@@ -1670,6 +1684,7 @@ fn queue_worker_command(
 
 struct ActiveStream {
     state: GenerateStreamState,
+    performance: GenerateStreamPerformance,
     events: mpsc::Sender<NativeEvent>,
     terminal_events: Arc<parking_lot::Mutex<VecDeque<NativeEvent>>>,
     consumer_disconnected: Arc<AtomicBool>,
@@ -1789,6 +1804,7 @@ fn handle_command(
                     request_id,
                     ActiveStream {
                         state: stream_state,
+                        performance: GenerateStreamPerformance::default(),
                         events,
                         terminal_events,
                         consumer_disconnected,
@@ -2287,7 +2303,7 @@ fn apply_step_to_streams(
         if stream.request_event_pending {
             continue;
         }
-        let event =
+        let mut event =
             match session.next_native_stream_event_after_step(&mut stream.state, report.clone()) {
                 Ok(event) => event,
                 Err(error) => {
@@ -2296,6 +2312,9 @@ fn apply_step_to_streams(
                     continue;
                 }
             };
+        // The worker bypasses GenerateStream's iterator. Account for every raw
+        // step here, before coalescing can discard intermediate step timings.
+        stream.performance.observe(&mut event);
         // Coalesce token steps: first token flushes for TTFT; later tokens wait
         // for STREAM_TOKEN_EMIT_BATCH (or a terminal state) before enqueue so
         // the SSE path is not paced by one frame per token.
@@ -2478,10 +2497,13 @@ fn enqueue_stream_event(
 
 fn detach_terminal_events(
     stream: &mut ActiveStream,
-    terminal_event: NativeEvent,
+    mut terminal_event: NativeEvent,
     preserve_pending: bool,
     state: &ServiceState,
 ) {
+    if let Ok(event) = terminal_event.as_mut() {
+        stream.performance.observe(event);
+    }
     let pending_count = stream.pending_events.len();
     let mut terminal_events = stream.terminal_events.lock();
     if preserve_pending {
@@ -3446,6 +3468,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_stream_populates_native_phase_usage_without_sdk_iterator() {
+        // Exercise the real worker and terminal queue. Pre-filled performance
+        // fixtures cannot detect bypassing GenerateStream's SDK iterator.
+        let (service, _) = NativeGenerationService::spawn_with_factory(
+            || Ok(EngineSession::new_deterministic_native_for_tests()),
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .unwrap();
+        let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
+        for (request_id, output_limit) in [(7101, 8), (7102, 4)] {
+            let mut events = service
+                .start_stream(
+                    request_id,
+                    GenerateRequest {
+                        model_id: "qwen3".into(),
+                        input_tokens: vec![1, 2, 3],
+                        input_text: None,
+                        multimodal_inputs: Default::default(),
+                        prefill_hints: Default::default(),
+                        max_output_tokens: output_limit,
+                        sampling: Default::default(),
+                        stop_sequences: Vec::new(),
+                        metadata: None,
+                    },
+                    admission.try_admit().unwrap(),
+                )
+                .await
+                .unwrap();
+            // Let the worker finish before consuming, so receiver pacing
+            // cannot supply or inflate either native phase denominator.
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let (mut prompt_us, mut decode_us, mut decode_tokens) = (0, 0, 0);
+            let mut first_output = false;
+            let mut response = None;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(event) = events.recv().await {
+                    match event.unwrap() {
+                        GenerateStreamEvent::Step(step) => {
+                            if step.step.scheduled_tokens != 0 || step.step.runner_time_us != 0 {
+                                if first_output {
+                                    decode_us += step.step.cpu_time_us;
+                                } else {
+                                    prompt_us += step.step.cpu_time_us;
+                                }
+                            }
+                            if first_output {
+                                decode_tokens += step.delta_tokens.len() as u32;
+                            }
+                            first_output |= !step.delta_tokens.is_empty();
+                        }
+                        GenerateStreamEvent::Response(event) => response = Some(event.response),
+                        GenerateStreamEvent::Request(_) => {}
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            let response = response.expect("worker must return a terminal response");
+            assert!(prompt_us > 0 && decode_us > 0 && decode_tokens > 0);
+            assert_eq!(response.performance.prompt_eval_time_us, Some(prompt_us));
+            assert_eq!(response.performance.model_eval_time_us, Some(decode_us));
+            assert_eq!(
+                response.performance.model_eval_token_count,
+                Some(decode_tokens)
+            );
+            let usage = crate::openai::responses::openai_usage(&response).unwrap();
+            let chunk = crate::openai::chunks::stream_usage_chunk(
+                request_id,
+                "qwen3".into(),
+                crate::openai::schema::OpenAiStreamKind::ChatCompletion,
+                usage,
+            );
+            let json = serde_json::to_value(chunk).unwrap();
+            assert_eq!(json["usage"]["ax_engine"]["prefill_time_us"], prompt_us);
+            assert_eq!(json["usage"]["ax_engine"]["decode_time_us"], decode_us);
+            assert_eq!(json["usage"]["ax_engine"]["decode_tokens"], decode_tokens);
+        }
+        service.shutdown().await.unwrap();
+        assert_eq!(admission.active_jobs(), 0);
+    }
+
+    #[tokio::test]
     async fn blocking_stream_completion_terminates_without_a_synthetic_error() {
         // End-to-end companion to the synthetic-error tests: the worker always
         // parks a completed stream's terminal Response in the detached
@@ -3838,6 +3942,9 @@ mod tests {
             IdleTickSettings {
                 tick_interval: Duration::from_millis(30),
                 max_window: Duration::from_secs(30),
+                // This checks worker shutdown with a deterministic runner,
+                // not physical GPU initialization or host pressure probes.
+                pressure_override: Some(false),
             },
         )
         .expect("service should start");

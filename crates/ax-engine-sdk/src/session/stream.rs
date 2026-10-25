@@ -20,14 +20,7 @@ use super::{
 pub struct GenerateStream<'a> {
     pub(super) session: &'a mut EngineSession,
     pub(super) state: GenerateStreamState,
-    started_at: Instant,
-    first_output_at: Option<Instant>,
-    first_output_token_count: u32,
-    model_prompt_eval_time_us: u64,
-    model_prompt_runner_time_us: u64,
-    model_eval_time_us: u64,
-    model_runner_time_us: u64,
-    model_eval_token_count: u32,
+    performance: GenerateStreamPerformance,
 }
 
 #[derive(Debug)]
@@ -147,6 +140,65 @@ impl<'a> GenerateStream<'a> {
         Self {
             session,
             state,
+            performance: GenerateStreamPerformance::default(),
+        }
+    }
+
+    pub(crate) fn next_event(&mut self) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
+        let mut event = self.session.next_stream_event(&mut self.state)?;
+        if let Some(event) = event.as_mut() {
+            self.performance.observe(event);
+        }
+        Ok(event)
+    }
+
+    pub(crate) fn into_response(mut self) -> Result<GenerateResponse, EngineSessionError> {
+        let mut observed_event_count = 0_u64;
+        while let Some(event) = self.next_event()? {
+            observed_event_count = observed_event_count.saturating_add(1);
+            if let GenerateStreamEvent::Response(event) = event {
+                return Ok(event.response);
+            }
+        }
+
+        Err(EngineSessionError::StreamEndedWithoutResponse {
+            request_id: self.state.request_id(),
+            observed_event_count,
+        })
+    }
+
+    /// Cancel an in-flight native request when the stream is abandoned before
+    /// a terminal Response (or after a hard error). Matches the Python binding
+    /// Drop discipline so a dropped stream cannot keep co-decoding and holding
+    /// KV alongside later generate/stream calls on the same session.
+    fn cancel_native_if_active(&mut self) {
+        if !self.state.needs_native_cancel() {
+            return;
+        }
+        let request_id = self.state.request_id();
+        let _ = self.session.cancel_request(request_id);
+        self.state.finish();
+    }
+}
+
+/// Per-request native phase accounting shared by SDK iterators and serving workers.
+/// Observe every raw step exactly once, before token coalescing or transport,
+/// then observe the terminal response to attach its evaluation report.
+#[derive(Debug)]
+pub struct GenerateStreamPerformance {
+    started_at: Instant,
+    first_output_at: Option<Instant>,
+    first_output_token_count: u32,
+    model_prompt_eval_time_us: u64,
+    model_prompt_runner_time_us: u64,
+    model_eval_time_us: u64,
+    model_runner_time_us: u64,
+    model_eval_token_count: u32,
+}
+
+impl Default for GenerateStreamPerformance {
+    fn default() -> Self {
+        Self {
             started_at: Instant::now(),
             first_output_at: None,
             first_output_token_count: 0,
@@ -157,16 +209,11 @@ impl<'a> GenerateStream<'a> {
             model_eval_token_count: 0,
         }
     }
+}
 
-    pub(crate) fn next_event(&mut self) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
-        let mut event = self.session.next_stream_event(&mut self.state)?;
-        if let Some(event) = event.as_mut() {
-            self.observe_performance(event);
-        }
-        Ok(event)
-    }
-
-    fn observe_performance(&mut self, event: &mut GenerateStreamEvent) {
+impl GenerateStreamPerformance {
+    /// Account for a raw engine event; native durations never use consumer pacing.
+    pub fn observe(&mut self, event: &mut GenerateStreamEvent) {
         let now = Instant::now();
         match event {
             GenerateStreamEvent::Step(step) => {
@@ -284,34 +331,6 @@ impl<'a> GenerateStream<'a> {
             }
             GenerateStreamEvent::Request(_) => {}
         }
-    }
-
-    pub(crate) fn into_response(mut self) -> Result<GenerateResponse, EngineSessionError> {
-        let mut observed_event_count = 0_u64;
-        while let Some(event) = self.next_event()? {
-            observed_event_count = observed_event_count.saturating_add(1);
-            if let GenerateStreamEvent::Response(event) = event {
-                return Ok(event.response);
-            }
-        }
-
-        Err(EngineSessionError::StreamEndedWithoutResponse {
-            request_id: self.state.request_id(),
-            observed_event_count,
-        })
-    }
-
-    /// Cancel an in-flight native request when the stream is abandoned before
-    /// a terminal Response (or after a hard error). Matches the Python binding
-    /// Drop discipline so a dropped stream cannot keep co-decoding and holding
-    /// KV alongside later generate/stream calls on the same session.
-    fn cancel_native_if_active(&mut self) {
-        if !self.state.needs_native_cancel() {
-            return;
-        }
-        let request_id = self.state.request_id();
-        let _ = self.session.cancel_request(request_id);
-        self.state.finish();
     }
 }
 

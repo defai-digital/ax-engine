@@ -1,8 +1,8 @@
 # AX Engine for macOS
 
 The native SwiftUI app provides local model browsing, downloads, server controls,
-streaming chat and runtime metrics. The CLI and `ax-engine tui` remain available.
-The app targets Apple Silicon and macOS 26 or later. Inference stays in the
+streaming chat and runtime metrics. The CLI remains available; the TUI is retired.
+The app targets Apple Silicon and macOS 26.2 or later. Inference stays in the
 AX Engine runtime; the GUI does not change model support or certification.
 
 ## Build and open
@@ -18,7 +18,9 @@ open "build/macos/AX Engine.app"
 
 Use `--release` for an optimized app build. The build is locally ad-hoc signed;
 it is not a published or notarized distribution. Developer ID signing,
-notarization and signed updates remain release work. The icon is generated from
+notarization and public cutover use the separate [distribution tooling](MACOS-DISTRIBUTION.md).
+A local source build does not activate that channel. Automatic signed updates
+remain future work. The icon is generated from
 the supplied original artwork, with the same composition-preserving safe-zone,
 rounded-plate and multi-resolution checks used by AX Code Desktop.
 
@@ -26,8 +28,9 @@ rounded-plate and multi-resolution checks used by AX Code Desktop.
 
 Install AX Engine using the main README's installation instructions. The app
 honors an explicit executable in Settings or `AX_ENGINE_BIN`, then searches
-PATH and standard install directories, the complete AX Code managed installation
-record, an app-bundled runtime, and a source-build runtime hint. It also discovers
+an app-bundled runtime, PATH and standard install directories (including the curl
+installer at `~/.local/ax-engine/ax-engine`), the complete AX Code managed
+installation record, and a source-build runtime hint. It also discovers
 user Python and virtual-environment installs. AX Code's install marker is read
 from `$XDG_STATE_HOME/ax-code/ax-engine/install.json` (default
 `~/.local/state/ax-code/ax-engine/install.json`); unfinished installations are
@@ -38,18 +41,22 @@ console entry point) as a fallback; that development hint is not a bundled runti
 
 An optional `--runtime-dir <directory>` bundles an already prepared standalone
 runtime payload. Its executable/dylib layout must match
-`scripts/prepare-standalone-release.sh`. Model download also requires the AX Engine
-Python download helper and its dependencies; copying native binaries alone does
-not create a self-contained downloader. Installed Homebrew runtimes provide the
-complete supported command environment.
+`scripts/prepare-standalone-release.sh`. Source builds now download public model
+packs through the native Rust runtime, without Python or a Hugging Face account.
+Use a runtime built from the same source revision as the GUI. Older published
+runtimes may still require their Python download helper. `--distribution` requires
+a staged runtime and omits checkout-specific development paths from the app.
+Python and Pillow are build-time icon tools, not end-user download dependencies.
 
 ## Workflow
 
-1. **Models:** Local Library shows existing managed, imported and cached models
-   by default. As in the TUI, one snapshot per cached repository is shown,
-   preferring complete weights before the newest revision. Metadata-only caches
-   and missing indexed shards are marked incomplete. Add an existing folder
-   without moving it, or use Catalog to browse the installed runtime's profiles.
+1. **Models:** Local Library shows app-managed and cached AutomatosX models.
+   One snapshot per cached repository is shown, preferring complete
+   weights before the newest revision. Metadata-only caches and missing indexed
+   shards are marked incomplete. Catalog explicitly explains that downloads are
+   public AutomatosX packs only and need no Hugging Face account or token.
+   Download third-party models independently and use CLI local model paths.
+   Arbitrary local folder imports and editable server paths are not GUI features.
    Revisions are retained in download requests. Catalog inclusion is not a
    memory-fit or qualification claim.
 2. **Models → Transfers:** choosing Download in Catalog switches to Transfers,
@@ -58,7 +65,7 @@ complete supported command environment.
    sequentially through `ax-engine download --progress-json`. Ready requires
    complete weight files, a successful terminal record and a successful process
    exit, not just a 100% progress bar. There is no separate Downloads sidebar page.
-3. **Server:** choose an installed folder or cached alias. Start uses offline
+3. **Server:** choose an installed AutomatosX model. Start uses offline
    resolution and loopback only. Runtime MTP and expert-streaming defaults remain
    unchanged. An app-owned server uses a per-launch in-memory API key.
 4. **Chat:** select a running model, send text, inspect reasoning when supplied,

@@ -262,6 +262,16 @@ jobs:
         uses: actions/checkout@v5
       - name: Test native app contracts
         run: swift test --package-path packaging/macos/AXEngineApp
+      - name: Set up distribution test tooling
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Test signed distribution and installation recovery
+        run: |
+          brew install minisign
+          node --test packaging/macos/distribution/distribution.test.mjs
+          python3 -m unittest scripts/test_release_macos_app.py scripts/test_macos_gui_install.py
+          bash -n packaging/macos/distribution/install
       - name: Set up icon tooling
         run: |
           python3 -m venv .icon-venv

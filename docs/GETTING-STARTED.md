@@ -74,7 +74,7 @@ Homebrew or Python package path.
 
 | Goal | Recommended channel |
 | --- | --- |
-| Run the TUI, CLI, server, or benchmark tools, and you use Homebrew | Homebrew |
+| Run the CLI, server, or benchmark tools, and you use Homebrew | Homebrew |
 | Run the CLI and server without Homebrew or the Python SDK | Standalone download |
 | Use `import ax_engine`, LangChain helpers, or Python extras — or you have neither Homebrew nor Python | pip in a virtual environment (Python from python.org) |
 | Develop AX Engine or test unreleased changes | Source build |
@@ -496,10 +496,12 @@ work via raw `org/repo` ids; raw Hugging Face checkpoints need
 `mlx_lm.convert` first. Full alias lists live in
 [Supported Models](SUPPORTED-MODELS.md).
 
-### Path A — CLI / TUI (recommended)
+### Path A — GUI or CLI
+
+Use [AX Engine for macOS](MACOS-APP.md) for graphical operation. The TUI has
+been retired. The CLI remains available for scripts and local model paths.
 
 ```text
-ax-engine tui                          # interactive: pick, download, serve, chat
 ax-engine download --list              # list managed aliases
 ax-engine serve qwen3.8-27b:axq --port 31418
 # Require the pinned Qwen 3.8 27B AXQ MXFP4 MTP cache

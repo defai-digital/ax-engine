@@ -15,9 +15,19 @@ struct ThirdPartyNoticesView: View {
             }
             Text("AX Engine uses selected open-source components. These acknowledgements identify their authors and licenses.")
             Divider()
-            Text("Native UI components").font(.headline)
+            ThirdPartyCreditsView()
+        }
+        .textSelection(.enabled)
+        .padding(28)
+        .frame(width: 560)
+    }
+}
+
+struct ThirdPartyCreditsView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Adapted interface components").font(.headline)
             Text("Selected interface and support components are adapted from MTPLX by Youssof Altoukhi, Copyright 2026, under Apache-2.0. AX Engine provides the inference runtime.")
-            Text("Powered by MTPLX")
             Link("MTPLX source repository", destination: URL(string: "https://github.com/youssofal/mtplx")!)
             HStack {
                 Button("Read License") { openResource("MTPLX-LICENSE") }
@@ -25,8 +35,6 @@ struct ThirdPartyNoticesView: View {
             }
         }
         .textSelection(.enabled)
-        .padding(28)
-        .frame(width: 560)
     }
 
     private func openResource(_ name: String) {

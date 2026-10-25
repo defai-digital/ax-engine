@@ -2514,6 +2514,7 @@ mod tests {
                 completion_tokens: 2,
                 total_tokens: 5,
                 prompt_tokens_details: None,
+                ax_engine: None,
                 completion_tokens_details: None,
             }),
         };

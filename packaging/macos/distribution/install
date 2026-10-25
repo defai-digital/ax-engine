@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# AX Engine macOS bootstrap. Model files and user settings are never modified.
+# Based on the AX Code Desktop signature/hash/Apple identity verification flow.
+set -euo pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+BASE='https://download.automatosx.com/ax-engine-desktop'
+KEY='RWSlDu++afxCz01OqhYWhfo8+L8pVbSYXJBEb2zoWBuK0WACIzbGVZRO'
+fail() { echo "AX Engine: $*" >&2; exit 1; }
+verify_only=false
+applications=/Applications
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --verify-only) verify_only=true; shift ;;
+    --applications-dir) [[ $# -ge 2 ]] || fail 'Missing applications directory'; applications="$2"; shift 2 ;;
+    *) fail 'Usage: install [--verify-only] [--applications-dir /absolute/directory]' ;;
+  esac
+done
+[[ "$(uname -s):$(uname -m)" == Darwin:arm64 ]] || fail 'macOS Apple Silicon is required'
+sw_vers -productVersion | awk -F. '{exit !($1 > 26 || ($1 == 26 && $2 >= 2))}' || fail 'macOS 26.2 or newer is required'
+[[ "$applications" == /* && -d "$applications" && ! -L "$applications" ]] || fail 'Choose an existing, non-linked applications directory'
+applications="$(cd "$applications" && pwd -P)"
+target="$applications/AX Engine.app"
+backup="$applications/.AX-Engine.previous.app"
+lock="$applications/.AX-Engine.install.lock"
+recovery="$applications/.AX-Engine.recovery.lock"
+stage="$applications/.AX-Engine.stage-$$.app"
+temporary="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-install.XXXXXX")"
+mount="$temporary/mount"
+mounted=false
+locked=false
+recovery_owned=false
+stage_owned=false
+previous_moved=false
+use_sudo=false
+priv() { if [[ "$use_sudo" == true ]]; then sudo "$@" < /dev/tty; else "$@"; fi; }
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [[ "$previous_moved" == true && ! -e "$target" && -d "$backup" ]]; then
+    priv mv "$backup" "$target" || echo "Previous app preserved at $backup" >&2
+  fi
+  if [[ "$stage_owned" == true && -d "$stage" && ! -L "$stage" ]]; then priv rm -rf -- "$stage" || true; fi
+  if [[ "$locked" == true ]]; then priv rm -f "$lock/pid" || true; priv rmdir "$lock" || true; fi
+  if [[ "$recovery_owned" == true ]]; then priv rmdir "$recovery" || true; fi
+  if [[ "$mounted" == true ]]; then hdiutil detach "$mount" >/dev/null 2>&1 || true; fi
+  rm -rf -- "$temporary"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+download() { curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 --connect-timeout 20 --max-time 600 "$1" -o "$2"; }
+hash() { shasum -a 256 "$1" | awk '{print $1}'; }
+plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist"; }
+valid_version() { [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
+check_app() {
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  codesign --verify --deep --strict "$1" || return 1
+  codesign -dv --verbose=4 "$1" 2>&1 | grep -Fx 'TeamIdentifier=N5ZUZDUJS6' >/dev/null || return 1
+  [[ "$(plist "$1" CFBundleIdentifier)" == com.automatosx.ax-engine ]] || return 1
+  [[ "$(plist "$1" CFBundleShortVersionString)" == "$version" ]] || return 1
+  [[ "$(plist "$1" AXEngineSourceCommit)" == "$commit" ]] || return 1
+  spctl --assess --type execute "$1" || return 1
+}
+# The verifier is pinned independently of the release service.
+download 'https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-macos.zip' "$temporary/verifier.zip"
+[[ "$(hash "$temporary/verifier.zip")" == 89000b19535765f9cffc65a65d64a820f433ef6db8020667f7570e06bf6aac63 ]] || fail 'Verifier SHA-256 mismatch'
+ditto -x -k "$temporary/verifier.zip" "$temporary/verifier"
+verifier="$temporary/verifier/minisign"
+chmod 700 "$verifier"
+verify() { "$verifier" -Vm "$1" -x "$1.minisig" -P "$KEY" >/dev/null || fail 'Invalid release signature'; }
+signed_download() { download "$1" "$2"; download "$1.minisig" "$2.minisig"; verify "$2"; }
+# Fetch content and signature in one atomic envelope, preventing pointer/signature races.
+download "$BASE/latest.json" "$temporary/latest.json"
+[[ "$(wc -c < "$temporary/latest.json")" -lt 16384 ]] || fail 'Oversized latest pointer'
+plutil -extract payload raw -o - "$temporary/latest.json" | base64 -D > "$temporary/latest"
+plutil -extract signature raw -o - "$temporary/latest.json" | base64 -D > "$temporary/latest.minisig"
+verify "$temporary/latest"
+[[ "$(wc -l < "$temporary/latest" | tr -d '[:space:]')" == 4 ]] || fail 'Invalid latest payload'
+tag="$(sed -n '1p' "$temporary/latest")"
+commit="$(sed -n '2p' "$temporary/latest")"
+manifest_hash="$(sed -n '3p' "$temporary/latest")"
+inventory_hash="$(sed -n '4p' "$temporary/latest")"
+[[ "$tag" == v* ]] || fail 'Invalid release tag'
+version="${tag#v}"
+valid_version "$version" || fail 'Invalid stable version'
+[[ "$commit" =~ ^[a-f0-9]{40}$ && "$manifest_hash" =~ ^[a-f0-9]{64}$ && "$inventory_hash" =~ ^[a-f0-9]{64}$ ]] || fail 'Invalid release identity'
+release="$BASE/releases/download/$tag"
+signed_download "$release/release-ready.txt" "$temporary/release-ready.txt"
+cmp -s "$temporary/latest" "$temporary/release-ready.txt" || fail 'Release readiness does not match latest'
+signed_download "$release/inventory.json" "$temporary/inventory.json"
+[[ "$(hash "$temporary/inventory.json")" == "$inventory_hash" ]] || fail 'Inventory SHA-256 mismatch'
+signed_download "$release/release.tsv" "$temporary/release.tsv"
+[[ "$(hash "$temporary/release.tsv")" == "$manifest_hash" ]] || fail 'Manifest SHA-256 mismatch'
+IFS=$'\t' read -r label manifest_tag manifest_commit extra < "$temporary/release.tsv"
+[[ "$label" == release && "$manifest_tag" == "$tag" && "$manifest_commit" == "$commit" && -z "$extra" ]] || fail 'Invalid release header'
+awk -F '\t' -v version="$version" '
+  NR == 1 { if (NF != 3) exit 1; next }
+  NR == 2 { if (NF != 4 || $1 != "darwin-arm64" || $2 != "AX-Engine-"version"-mac-arm64.dmg" || $3 !~ /^[1-9][0-9]*$/ || length($4) != 64 || $4 ~ /[^a-f0-9]/) exit 1; next }
+  { exit 1 }
+  END { if (NR != 2) exit 1 }
+' "$temporary/release.tsv" || fail 'Invalid installer manifest'
+IFS=$'\t' read -r platform filename size digest < <(sed -n '2p' "$temporary/release.tsv")
+signed_download "$release/$filename" "$temporary/$filename"
+[[ "$(wc -c < "$temporary/$filename" | tr -d '[:space:]')" == "$size" && "$(hash "$temporary/$filename")" == "$digest" ]] || fail 'Installer size or SHA-256 mismatch'
+codesign --verify --strict "$temporary/$filename"
+codesign -dv --verbose=4 "$temporary/$filename" 2>&1 | grep -Fx 'TeamIdentifier=N5ZUZDUJS6' >/dev/null || fail 'Unexpected DMG signing team'
+spctl --assess --type open --context context:primary-signature "$temporary/$filename"
+mkdir "$mount"
+hdiutil attach "$temporary/$filename" -readonly -nobrowse -mountpoint "$mount" >/dev/null
+mounted=true
+app="$mount/AX Engine.app"
+check_app "$app" || fail 'Downloaded app identity or signature verification failed'
+# Gatekeeper is required. Staple validation is additional when developer tools exist.
+if [[ -n "$(xcode-select -p 2>/dev/null || true)" ]]; then
+  stapler="$(xcrun --find stapler 2>/dev/null || true)"
+  if [[ -n "$stapler" ]]; then "$stapler" validate "$temporary/$filename"; "$stapler" validate "$app"; fi
+fi
+if [[ "$verify_only" == true ]]; then echo "Verified AX Engine $version; no application was installed."; exit 0; fi
+pgrep -x AXEngineApp >/dev/null && fail 'Quit AX Engine before installing' || true
+if [[ ! -w "$applications" ]]; then [[ -r /dev/tty ]] || fail 'An interactive terminal is required for /Applications installation'; use_sudo=true; fi
+[[ ! -L "$lock" && ! -L "$recovery" && ! -L "$backup" && ! -L "$target" && ! -e "$stage" ]] || fail 'Unsafe installation or staging path'
+# Serialize lock acquisition and stale-lock recovery. Without this guard, two
+# recovering installers could remove the new lock created by the other one.
+priv mkdir "$recovery" 2>/dev/null || fail 'Installation recovery is busy or needs inspection'
+recovery_owned=true
+if ! priv mkdir "$lock" 2>/dev/null; then
+  owner="$(cat "$lock/pid" 2>/dev/null || true)"
+  [[ "$owner" =~ ^[1-9][0-9]*$ ]] || fail 'Installation lock needs inspection'
+  if ps -p "$owner" -o pid= >/dev/null 2>&1; then fail 'Another installation is running'; fi
+  priv rm -f "$lock/pid"; priv rmdir "$lock"; priv mkdir "$lock"
+fi
+locked=true
+printf '%s\n' "$$" > "$temporary/pid"
+priv cp "$temporary/pid" "$lock/pid"
+priv rmdir "$recovery"
+recovery_owned=false
+# Restore an interrupted swap before validating an upgrade. Preserve both apps
+# if a completed-but-unacknowledged replacement differs from this candidate.
+if [[ -e "$backup" ]]; then
+  [[ -d "$backup" && "$(plist "$backup" CFBundleIdentifier)" == com.automatosx.ax-engine ]] || fail 'Unrecognized previous app; preserved for inspection'
+  if [[ ! -e "$target" ]]; then priv mv "$backup" "$target";
+  else check_app "$target" || fail 'Interrupted replacement needs inspection; both applications preserved'; priv rm -rf -- "$backup"; fi
+fi
+if [[ -e "$target" ]]; then
+  [[ -d "$target" && "$(plist "$target" CFBundleIdentifier)" == com.automatosx.ax-engine ]] || fail 'Destination contains another application'
+  installed="$(plist "$target" CFBundleShortVersionString)"
+  valid_version "$installed" || fail 'Cannot compare installed app version'
+  awk -v old="$installed" -v new="$version" 'BEGIN {split(old,a,"."); split(new,b,"."); for(i=1;i<=3;i++){if(b[i]>a[i])exit 0;if(b[i]<a[i])exit 1}}' || fail 'Refusing to downgrade the installed app'
+fi
+priv mkdir -m 755 "$stage"
+stage_owned=true
+priv ditto "$app" "$stage"
+check_app "$stage" || fail 'Staged app verification failed'
+if [[ -e "$target" ]]; then priv mv "$target" "$backup"; previous_moved=true; fi
+if ! priv mv "$stage" "$target"; then fail 'Application swap failed; restoring the previous application'; fi
+stage_owned=false
+# Retain the backup until the installed app has passed its own verification.
+if ! check_app "$target"; then
+  priv mv "$target" "$stage"; stage_owned=true
+  fail 'Installed app verification failed; restoring the previous application'
+fi
+previous_moved=false
+if [[ -e "$backup" ]]; then priv rm -rf -- "$backup"; fi
+echo "Installed AX Engine $version. Models, settings and conversations were preserved."

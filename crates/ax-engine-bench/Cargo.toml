@@ -6,19 +6,15 @@ publish = false
 version.workspace = true
 
 [dependencies]
+ax-engine-download = { path = "../ax-engine-download" }
 ax-engine-core = { path = "../ax-engine-core" }
 ax-engine-mlx = { path = "../ax-engine-mlx" }
 ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native", "tokenizer"] }
 mlx-sys = { path = "../mlx-sys" }
-pulldown-cmark.workspace = true
-ratatui.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["arbitrary_precision", "float_roundtrip"] }
 thiserror.workspace = true
 tracing-subscriber.workspace = true
-tui-scrollview.workspace = true
-ureq = { version = "2", features = ["json"] }
-unicode-width.workspace = true
 
 [lints]
 workspace = true

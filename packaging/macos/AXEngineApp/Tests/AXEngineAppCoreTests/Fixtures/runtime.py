@@ -13,8 +13,8 @@ def emit(value):
 
 
 if sys.argv[1:3] == ['download', '--list']:
-    emit({'schema_version': 'ax.download_options.v1', 'targets': [
-        {'alias': 'Fixture model', 'repo_id': 'Tests/Fixture', 'revision': 'abc123', 'mtp_included': False}]})
+    emit({'schema_version': 'ax.download_options.v1', 'download_backend': 'native-rust-public-v1', 'targets': [
+        {'alias': 'Fixture model', 'repo_id': 'AutomatosX/Fixture', 'revision': 'abc123', 'mtp_included': False}]})
     sys.exit(0)
 if sys.argv[1:2] == ['download']:
     dest = Path(sys.argv[sys.argv.index('--dest') + 1])

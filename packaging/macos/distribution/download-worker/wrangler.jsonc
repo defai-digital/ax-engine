@@ -1,0 +1,10 @@
+{
+  "name": "ax-engine-desktop-downloads",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-24",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{"pattern": "download.automatosx.com/ax-engine-desktop/*", "zone_name": "automatosx.com"}],
+  "vars": {"PUBLIC_RELEASE_ENABLED": "false"},
+  "r2_buckets": [{"binding": "ENGINE_GUI_RELEASES", "bucket_name": "ax-engine-desktop-releases"}]
+}
