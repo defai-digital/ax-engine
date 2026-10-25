@@ -5614,11 +5614,34 @@ env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` — choose QSA blocks on the
     /// device for short multi-query verifier windows (the block/batched MTP
     /// verifier), removing the per-layer score read-back stall. Selection order
-    /// is the same stable score-descending, lower-block-index-on-ties order as
-    /// the host path and the singleton device path. Default ON; set `=0` to
-    /// restore host selection for multi-query chunks.
+    /// is score descending, then the lower block id. The default negated-score
+    /// argsort depends on MLX tie and NaN order. `=1` on
+    /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY` orders a unique block key
+    /// instead, so that result does not depend on argsort stability. Default
+    /// ON; set `=0` to restore host selection for multi-query chunks.
     flash_next_qsa_device_select_multi_enabled,
     "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI"
+);
+
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY` — opt single-query decode and
+    /// short verifier windows into a unique device block key instead of the
+    /// negated-score argsort. The key is the prefill finite-score encoding
+    /// (score descending, lower block id, signed zero collapsed), with a causal
+    /// NaN rewritten to the -inf class and a future block keyed above every
+    /// causal key. Keys in one row are unique, so the partition and argsort do
+    /// not depend on sort stability. **Default: OFF**. Unset does not launch
+    /// or compile this kernel on the decode path. Set `=1` to opt in. The
+    /// ordered tokens match the host sort for finite scores, and the selection
+    /// graph does not read the key back. A missing block-key kernel uses the
+    /// argsort too. Enable it when an MLX bump breaks the tie and NaN order
+    /// the default argsort relies on. This does not change prefill
+    /// (`AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT`) and does not by itself
+    /// move a step off the device: single-query selection still follows
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`, and short windows still follow
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`.
+    flash_next_qsa_decode_block_key_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY"
 );
 
 env_flag_default_on!(
