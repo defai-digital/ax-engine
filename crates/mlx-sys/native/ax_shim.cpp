@@ -554,6 +554,10 @@ BINARY(mlx_greater_equal, greater_equal) BINARY(mlx_less, less) BINARY(mlx_less_
 extern "C" int mlx_where(mlx_array* r, const mlx_array cond, const mlx_array x, const mlx_array y, const mlx_stream s) {
   AX_TRY { aset(r, mx::where(aref(cond), aref(x), aref(y), sd(s))); return 0; } AX_CATCH }
 BINARY(mlx_outer, outer) BINARY(mlx_logical_and, logical_and)
+BINARY(mlx_bitwise_and, bitwise_and) BINARY(mlx_bitwise_or, bitwise_or)
+BINARY(mlx_bitwise_xor, bitwise_xor)
+BINARY(mlx_left_shift, left_shift) BINARY(mlx_right_shift, right_shift)
+UNARY(mlx_bitwise_invert, bitwise_invert)
 
 /* Reduction / indexing */
 extern "C" int mlx_sum_axis(mlx_array* r, const mlx_array a, int ax, bool kd, const mlx_stream s) {

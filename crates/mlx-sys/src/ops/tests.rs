@@ -2498,6 +2498,172 @@ fn comparison_ops_return_bool() {
 }
 
 #[test]
+fn bitwise_ops_and_arithmetic_right_shift() {
+    let bits: Vec<u32> = vec![0x0000_00f0, 0x8000_0000, 0xffff_ffff];
+    let values = MlxArray::from_raw_data(
+        bits.as_ptr().cast(),
+        std::mem::size_of_val(bits.as_slice()),
+        &[3],
+        MlxDtype::Uint32,
+    );
+    let mask_bits = 0x8000_0000u32;
+    let mask = MlxArray::from_raw_data(
+        (&mask_bits as *const u32).cast(),
+        std::mem::size_of::<u32>(),
+        &[1],
+        MlxDtype::Uint32,
+    );
+    let inverted = bitwise_invert(&values, None);
+    let masked = bitwise_and(&values, &mask, None);
+    let flipped = bitwise_xor(&values, &mask, None);
+    let either = bitwise_or(&masked, &mask, None);
+    eval(&[&inverted, &masked, &flipped, &either]);
+    assert_eq!(
+        inverted.data_u32(),
+        &[!0x0000_00f0, !0x8000_0000, !0xffff_ffff]
+    );
+    assert_eq!(masked.data_u32(), &[0, 0x8000_0000, 0x8000_0000]);
+    assert_eq!(
+        flipped.data_u32(),
+        &[
+            0x0000_00f0 ^ 0x8000_0000,
+            0x8000_0000 ^ 0x8000_0000,
+            0xffff_ffff ^ 0x8000_0000
+        ]
+    );
+    assert_eq!(either.data_u32(), &[0x8000_0000, 0x8000_0000, 0x8000_0000]);
+
+    let negative = -8i32;
+    let one = 1i32;
+    let shift_count = 31i32;
+    let minus_one = -1i32;
+    let negative_a = MlxArray::from_raw_data(
+        (&negative as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    );
+    let one_a = MlxArray::from_raw_data(
+        (&one as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    );
+    let shift_a = MlxArray::from_raw_data(
+        (&shift_count as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    );
+    let minus_one_a = MlxArray::from_raw_data(
+        (&minus_one as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    );
+    let by_one = astype(
+        &right_shift(&negative_a, &one_a, None),
+        MlxDtype::Float32,
+        None,
+    );
+    let by_31 = astype(
+        &right_shift(&minus_one_a, &shift_a, None),
+        MlxDtype::Float32,
+        None,
+    );
+    eval(&[&by_one, &by_31]);
+    assert_eq!(
+        by_one.data_f32(),
+        &[-4.0],
+        "int32 right shift must be arithmetic"
+    );
+    assert_eq!(
+        by_31.data_f32(),
+        &[-1.0],
+        "sign fill must survive a 31-bit shift"
+    );
+
+    let low = 2u64;
+    let high = 1u64;
+    let distance = 32u64;
+    let low_a = MlxArray::from_raw_data(
+        (&low as *const u64).cast(),
+        std::mem::size_of::<u64>(),
+        &[1],
+        MlxDtype::Uint64,
+    );
+    let high_a = MlxArray::from_raw_data(
+        (&high as *const u64).cast(),
+        std::mem::size_of::<u64>(),
+        &[1],
+        MlxDtype::Uint64,
+    );
+    let distance_a = MlxArray::from_raw_data(
+        (&distance as *const u64).cast(),
+        std::mem::size_of::<u64>(),
+        &[1],
+        MlxDtype::Uint64,
+    );
+    let packed = bitwise_or(&left_shift(&high_a, &distance_a, None), &low_a, None);
+    let words = view(&packed, MlxDtype::Uint32, None);
+    eval(&[&words]);
+    assert_eq!(
+        words.data_u32(),
+        &[2, 1],
+        "uint64 view is little-endian words"
+    );
+
+    let stream = crate::MlxStream::default_gpu();
+    let order = astype(
+        &argsort_axis(&packed, 0, Some(&stream)),
+        MlxDtype::Uint32,
+        Some(&stream),
+    );
+    eval(&[&order]);
+    assert_eq!(order.data_u32(), &[0]);
+}
+
+#[test]
+fn gpu_argsort_orders_uint64_past_the_sign_bit() {
+    // 0x007fffff << 32, then 0xff800000 << 32 | 1, then 0xffffffff << 32 | 2.
+    // The high bit is set on the last two keys. MLX 0.32.4 sorts uint64 on the GPU.
+    let highs: Vec<u32> = vec![0x007f_ffff, 0xff80_0000, 0xffff_ffff];
+    let lows: Vec<u32> = vec![0, 1, 2];
+    let high = MlxArray::from_raw_data(
+        highs.as_ptr().cast(),
+        std::mem::size_of_val(highs.as_slice()),
+        &[3],
+        MlxDtype::Uint32,
+    );
+    let low = MlxArray::from_raw_data(
+        lows.as_ptr().cast(),
+        std::mem::size_of_val(lows.as_slice()),
+        &[3],
+        MlxDtype::Uint32,
+    );
+    let distance = 32u64;
+    let distance_a = MlxArray::from_raw_data(
+        (&distance as *const u64).cast(),
+        std::mem::size_of::<u64>(),
+        &[1],
+        MlxDtype::Uint64,
+    );
+    let keys = bitwise_or(
+        &left_shift(&astype(&high, MlxDtype::Uint64, None), &distance_a, None),
+        &astype(&low, MlxDtype::Uint64, None),
+        None,
+    );
+    let stream = crate::MlxStream::default_gpu();
+    let order = astype(
+        &argsort_axis(&keys, 0, Some(&stream)),
+        MlxDtype::Uint32,
+        Some(&stream),
+    );
+    eval(&[&order]);
+    assert_eq!(order.data_u32(), &[0, 1, 2]);
+}
+
+#[test]
 fn logical_and_on_bool_arrays() {
     let t: Vec<u8> = vec![1, 1, 0, 0];
     let f: Vec<u8> = vec![1, 0, 1, 0];

@@ -39,19 +39,25 @@
 //! used for later prefills. Decode and short windows do not read that flag
 //! and do not synchronize. By default they argsort negated scores and do not
 //! launch or compile the block-key kernel. A causal NaN is mapped to -inf
-//! first. On a short window a future column is NaN, and that NaN has to sort
-//! after +inf. Equal scores, signed zero included, keep the lower block id
-//! only while the argsort returns ascending indices inside a tie. That tie
-//! order and the NaN order are MLX implementation details, not a documented
-//! API. `mlx_argsort_pins_decode_qsa_tie_and_nan_order` fails when a bump
-//! breaks them. `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY=1` orders a unique
-//! block key instead (the prefill finite-score encoding, a causal NaN in the
-//! -inf class, future blocks after every causal key) and does not depend on
-//! argsort stability. A missing block-key kernel stays on the argsort. A
-//! non-finite causal score does not raise on those paths.
+//! first. That argsort compares floats. Metal flushes subnormals in the
+//! compare, so a subnormal can tie with zero. Decode does not promise host
+//! parity for a subnormal score. On a short window a future column is NaN,
+//! and that NaN has to sort after +inf. Equal scores, signed zero included,
+//! keep the lower block id only while the argsort returns ascending indices
+//! inside a tie. That tie order and the NaN order are MLX implementation
+//! details, not a documented API. `mlx_argsort_pins_decode_qsa_tie_and_nan_order`
+//! fails when a bump breaks them. `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY=1`
+//! orders a unique block key instead (the prefill finite-score encoding, a
+//! causal NaN in the -inf class, future blocks after every causal key) and
+//! does not depend on argsort stability. The key is built from the IEEE bits,
+//! so a subnormal keeps the host order. A missing block-key kernel stays on
+//! the argsort. A non-finite causal score does not raise on those paths.
 
 #[cfg(test)]
-use mlx_sys::eval;
+use mlx_sys::{
+    bitwise_and, bitwise_invert, bitwise_or, bitwise_xor, equal, eval, left_shift, right_shift,
+    view,
+};
 use std::sync::OnceLock;
 
 use mlx_sys::{
@@ -2518,6 +2524,102 @@ fn map_nan_to_neg_inf(scores: &MlxArray) -> MlxArray {
     )
 }
 
+#[cfg(test)]
+fn scalar_u32(value: u32) -> MlxArray {
+    MlxArray::from_raw_data(
+        (&value as *const u32).cast(),
+        std::mem::size_of::<u32>(),
+        &[1],
+        MlxDtype::Uint32,
+    )
+}
+
+#[cfg(test)]
+fn scalar_i32(value: i32) -> MlxArray {
+    MlxArray::from_raw_data(
+        (&value as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    )
+}
+
+#[cfg(test)]
+fn scalar_u64(value: u64) -> MlxArray {
+    MlxArray::from_raw_data(
+        (&value as *const u64).cast(),
+        std::mem::size_of::<u64>(),
+        &[1],
+        MlxDtype::Uint64,
+    )
+}
+
+#[cfg(test)]
+fn host_u32(data: &[u32], shape: &[i32]) -> MlxArray {
+    MlxArray::from_raw_data(
+        data.as_ptr().cast(),
+        std::mem::size_of_val(data),
+        shape,
+        MlxDtype::Uint32,
+    )
+}
+
+/// Unique ascending uint64 key, one per score. Test-only.
+///
+/// High 32 bits are the inverted order-preserving map of the f32 bits. Low 32
+/// bits are the block id. Signed zero collapses to `+0` by its bit pattern, so
+/// a subnormal is not flushed into that class. A NaN (exponent all ones and a
+/// non-zero mantissa) is rewritten to the -inf bits before the map, so it
+/// shares the -inf class. That class is `0xff800000`. A future block uses
+/// `0xffffffff`, which sorts after every causal key. MLX 0.32.4 argsorts
+/// uint64 on the GPU. The two fields make every key in a row unique.
+///
+/// `decode_block_key_elementwise_microbench` times this builder plus an
+/// argsort against the negated-score argsort. It was slower on every measured
+/// decode shape, so [`decode_unique_block_ids`] does not call it. The opt-in
+/// flag stays on the prefill block-key kernel.
+#[cfg(test)]
+fn elementwise_decode_block_keys(
+    scores: &MlxArray,
+    completes: &[i32],
+    seq: i32,
+    n_complete: i32,
+) -> MlxArray {
+    let scores = contiguous(scores, None);
+    let mut bits = view(&scores, MlxDtype::Uint32, None);
+    let neg_zero = scalar_u32(0x8000_0000);
+    bits = where_cond(&equal(&bits, &neg_zero, None), &scalar_u32(0), &bits, None);
+    let abs_bits = bitwise_and(&bits, &scalar_u32(0x7fff_ffff), None);
+    let nan = less(&scalar_u32(0x7f80_0000), &abs_bits, None);
+    bits = where_cond(&nan, &scalar_u32(0xff80_0000), &bits, None);
+    // Arithmetic shift: the sign bit fills the mask, so a negative value
+    // inverts every bit and a positive value only flips the sign bit.
+    let mask = view(
+        &right_shift(&view(&bits, MlxDtype::Int32, None), &scalar_i32(31), None),
+        MlxDtype::Uint32,
+        None,
+    );
+    let order = bitwise_xor(&bits, &bitwise_or(&mask, &neg_zero, None), None);
+    let descending = bitwise_invert(&order, None);
+    let block_ids = reshape(
+        &arange(0.0, f64::from(n_complete), 1.0, MlxDtype::Uint32, None),
+        &[1, 1, n_complete],
+        None,
+    );
+    let complete_u: Vec<u32> = completes.iter().map(|&value| value as u32).collect();
+    let causal = less(&block_ids, &host_u32(&complete_u, &[1, seq, 1]), None);
+    let key32 = where_cond(&causal, &descending, &scalar_u32(0xffff_ffff), None);
+    bitwise_or(
+        &left_shift(
+            &astype(&key32, MlxDtype::Uint64, None),
+            &scalar_u64(32),
+            None,
+        ),
+        &astype(&block_ids, MlxDtype::Uint64, None),
+        None,
+    )
+}
+
 /// Block ids `[batch, seq, keep_cols]`, smallest unique key first.
 ///
 /// `None` means the caller keeps the negated-score argsort. That is the
@@ -2574,6 +2676,9 @@ fn decode_unique_block_ids(
 /// `std::stable_sort`): it is not a documented API. Both properties are pinned
 /// by `mlx_argsort_pins_decode_qsa_tie_and_nan_order` on the float32 shapes
 /// this function and [`select_tokens_device_multi`] sort, on the GPU stream.
+/// The negated-score argsort compares floats. Metal flushes subnormals in
+/// that compare, so a subnormal can tie with zero. Decode does not promise
+/// host parity for a subnormal score.
 /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY=1` replaces that argsort with the
 /// prefill order key: signed zero collapses to `+0`, a causal NaN is rewritten
 /// to the -inf class, the block id occupies the low 30 bits, and a future
@@ -2692,7 +2797,10 @@ fn select_tokens_device(
 /// block cannot be selected. Equal causal keys keep the lower block id only
 /// while that argsort returns ascending indices within a tie, signed zero
 /// included. `mlx_argsort_pins_decode_qsa_tie_and_nan_order` pins both
-/// properties for this float32 shape on the GPU stream.
+/// properties for this float32 shape on the GPU stream. The negated-score
+/// argsort compares floats. Metal flushes subnormals in that compare, so a
+/// subnormal can tie with zero. Decode does not promise host parity for a
+/// subnormal score.
 /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY=1` uses the same unique key as
 /// [`select_tokens_device`]: score descending, lower block id, signed zero
 /// collapsed, a causal NaN in the -inf class, and a future block after every
@@ -2855,6 +2963,18 @@ const PREFILL_KEY_THREADS: i32 = 64;
 const PREFILL_KEY_HEADER: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
+
+// Inverted order of one finite f32, matching `f32::partial_cmp` with signed
+// zero collapsed to +0. `bits` is the IEEE pattern. Integer ops only: a float
+// compare on this GPU flushes a subnormal into the zero class.
+inline uint ax_qsa_inverted_finite_order(uint bits) {
+    if ((bits & 0x7fffffffu) == 0u) {
+        bits = 0u;
+    }
+    const uint mask = (uint)(((int)bits) >> 31);
+    const uint order = bits ^ (mask | 0x80000000u);
+    return ~order;
+}
 "#;
 
 /// MLX puts an input shorter than this in the constant address space and a
@@ -2863,10 +2983,17 @@ using namespace metal;
 /// prefill length shares one pipeline.
 const PREFILL_KEY_MIN_BUFFER: i32 = 8;
 
-/// One key per `(query, block)`. High 32 bits are the inverted order-preserving
-/// score (signed zero collapsed to `+0`, matching `f32::partial_cmp`). Low 30
-/// bits are the block id, so an ascending sort is score descending, then lower
-/// block id.
+/// One key per `(query, block)`. High bits are the inverted order-preserving
+/// score (signed zero collapsed to `+0`, matching `f32::partial_cmp`,
+/// subnormals included). Low 30 bits are the block id, so an ascending sort
+/// is score descending, then lower block id.
+///
+/// The score is read with `as_type<uint>`. `+0` and `-0` are the patterns
+/// whose magnitude bits are clear. NaN and inf are the all-ones exponent.
+/// The order key is built from those bits. No float compare: Metal flushes a
+/// subnormal in `score == 0`, which would tie it with zero and break the
+/// host order. `metal::isfinite` is the same class of float test, so the
+/// prefill flag uses the exponent bits instead.
 ///
 /// Finite causal keys stay in `0..=0x3fffffffffffffff`. A non-finite causal
 /// score uses `0x4000000000000000 | block` when `limits[4]` is 0 (prefill).
@@ -2878,7 +3005,9 @@ const PREFILL_KEY_MIN_BUFFER: i32 = 8;
 /// keys unique, so the argsort order is determined.
 ///
 /// `flags[row]` is 1 when any causal score is non-finite or the number of
-/// finite causal blocks is below `limits[3]` (`block_topk`). The host sort
+/// finite causal blocks is below `limits[3]` (`block_topk`). Non-finite is
+/// the all-ones exponent, so a subnormal (exponent zero) stays in the finite
+/// count. The budget check is the integer `finite < keep_q`. The host sort
 /// handles every flagged prefill chunk. Decode writes 0 and does not read the
 /// flag. `limits` is `[count, blocks, seq, keep, decode]` plus padding. Those
 /// values used to be template arguments, which compiled a new pipeline for
@@ -2896,28 +3025,21 @@ const size_t blocks = (size_t)blocks_n;
 const size_t block = i % blocks;
 const size_t query = (i / blocks) % (size_t)seq_n;
 const int limit = completes[query];
-float score = scores[i];
+const uint raw = as_type<uint>(scores[i]);
+const uint magnitude = raw & 0x7fffffffu;
+const uint exponent = magnitude >> 23;
 const int causal = ((int)block < limit) ? 1 : 0;
 long key = 0x6000000000000000L | (long)block;
 if (causal != 0) {
     if (decode_keys != 0) {
-        if (score != score) {
-            score = -INFINITY;
-        }
-        const float canon = (score == 0.0f) ? 0.0f : score;
-        const uint bits = as_type<uint>(canon);
-        const uint mask = (uint)(((int)bits) >> 31);
-        const uint order = bits ^ (mask | 0x80000000u);
-        const uint inverted = ~order;
+        // NaN: exponent all ones and a non-zero mantissa. +inf stays.
+        const uint bits = (magnitude > 0x7f800000u) ? 0xff800000u : raw;
+        const uint inverted = ax_qsa_inverted_finite_order(bits);
         key = ((long)inverted << 30) | (long)block;
-    } else if (!metal::isfinite(score)) {
+    } else if (exponent == 0xffu) {
         key = 0x4000000000000000L | (long)block;
     } else {
-        const float canon = (score == 0.0f) ? 0.0f : score;
-        const uint bits = as_type<uint>(canon);
-        const uint mask = (uint)(((int)bits) >> 31);
-        const uint order = bits ^ (mask | 0x80000000u);
-        const uint inverted = ~order;
+        const uint inverted = ax_qsa_inverted_finite_order(raw);
         key = ((long)inverted << 30) | (long)block;
     }
 }
@@ -2930,8 +3052,8 @@ if (block == 0) {
         int finite = 0;
         int bad = 0;
         for (int b = 0; b < limit; ++b) {
-            const float causal_score = scores[row * blocks + (size_t)b];
-            if (!metal::isfinite(causal_score)) {
+            const uint causal_bits = as_type<uint>(scores[row * blocks + (size_t)b]);
+            if (((causal_bits >> 23) & 0xffu) == 0xffu) {
                 bad = 1;
             } else {
                 finite += 1;
@@ -3321,7 +3443,8 @@ fn pack_host_rows_as_device(
 ///
 /// Same ordered token lists as [`select_tokens`]: up to `block_topk` causally
 /// complete blocks, score descending and lower block id first (signed zero
-/// equal), then the visible partial tail. Future blocks use a key that sorts
+/// equal, subnormals ordered from their IEEE bits), then the visible partial
+/// tail. Future blocks use a key that sorts
 /// after every causal block, and each row keeps at most its causal count.
 /// A row with a non-finite causal score, or fewer finite causal blocks than
 /// `block_topk`, selects the whole chunk on the host, including the host
@@ -4689,6 +4812,253 @@ mod tests {
         );
     }
 
+    /// Elementwise decode key. Same total order as [`decode_rank_key`] for a
+    /// block id below 2^30, packed as `(key32 << 32) | block_id`.
+    fn elementwise_rank_key(score: f32, block: u32, causal: bool) -> u64 {
+        if !causal {
+            return (0xffff_ffffu64 << 32) | u64::from(block);
+        }
+        let mut bits = score.to_bits();
+        if bits == 0x8000_0000 {
+            bits = 0;
+        }
+        if (bits & 0x7fff_ffff) > 0x7f80_0000 {
+            bits = f32::NEG_INFINITY.to_bits();
+        }
+        let signed = i32::from_ne_bytes(bits.to_ne_bytes());
+        let mask = if signed < 0 { u32::MAX } else { 0 };
+        let order = bits ^ (mask | 0x8000_0000);
+        (u64::from(!order) << 32) | u64::from(block)
+    }
+
+    #[test]
+    fn decode_elementwise_keys_match_host_bits_and_ignore_argsort_stability() {
+        let batch = 2i32;
+        let seq = 2i32;
+        let n = 6i32;
+        let completes = [4i32, 3];
+        let rows = [
+            [-0.0_f32, 0.0, 1.0, 1.0, 9.0, 9.0],
+            [
+                f32::NAN,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::from_bits(0x8000_0001),
+                1_000.0,
+                f32::NAN,
+            ],
+        ];
+        let mut flat = Vec::new();
+        for _batch in 0..batch {
+            for row in &rows {
+                flat.extend_from_slice(row);
+            }
+        }
+        let array = array_f32(&flat, &[batch, seq, n]);
+        let keys = elementwise_decode_block_keys(&array, &completes, seq, n);
+        let words = view(
+            &reshape(&keys, &[batch * seq * n], None),
+            MlxDtype::Uint32,
+            None,
+        );
+        eval(&[&words]);
+        let words = words.data_u32();
+        assert_eq!(words.len(), flat.len() * 2);
+        for batch_index in 0..batch as usize {
+            for (query, &limit) in completes.iter().enumerate() {
+                let row_at = (batch_index * seq as usize + query) * n as usize;
+                let mut seen = Vec::with_capacity(n as usize);
+                for block in 0..n as usize {
+                    let low = words[(row_at + block) * 2];
+                    let high = words[(row_at + block) * 2 + 1];
+                    let packed = (u64::from(high) << 32) | u64::from(low);
+                    let expected = elementwise_rank_key(
+                        flat[row_at + block],
+                        block as u32,
+                        block < limit as usize,
+                    );
+                    assert_eq!(
+                        packed, expected,
+                        "batch {batch_index} query {query} block {block}"
+                    );
+                    seen.push(packed);
+                }
+                let mut sorted = seen.clone();
+                sorted.sort_unstable();
+                for pair in sorted.windows(2) {
+                    assert_ne!(pair[0], pair[1], "block keys must be unique");
+                }
+            }
+        }
+
+        let perm: Vec<i32> = (0..n).rev().collect();
+        let perm_index = broadcast_to(&host_i32(&perm, &[1, 1, n]), &[batch, seq, n], None);
+        let keys_perm = take_along_axis(&keys, &perm_index, -1, None);
+        let order = astype(&argsort_axis(&keys, -1, None), MlxDtype::Uint32, None);
+        let order_perm = astype(&argsort_axis(&keys_perm, -1, None), MlxDtype::Uint32, None);
+        eval(&[&order, &order_perm]);
+        let order = order.data_u32();
+        let order_perm = order_perm.data_u32();
+        let width = n as usize;
+        for row in 0..(batch * seq) as usize {
+            for column in 0..width {
+                let slot = order_perm[row * width + column] as usize;
+                let mapped = perm[slot];
+                assert_eq!(
+                    mapped as u32,
+                    order[row * width + column],
+                    "row {row} column {column}: permuting unique keys changed the argsort"
+                );
+            }
+        }
+
+        // A negative subnormal stays distinct from zero. This sorts the
+        // elementwise key, which is built from the IEEE bits. The prefill
+        // device-selection test covers the block-key kernel against the host
+        // order for the same class of scores.
+        let cfg = QsaConfig::new(2, 1, 4, 4, 2, 4, 16, EPS, BASE).unwrap();
+        let sub = f32::from_bits(0x8000_0001);
+        let scores = [sub, -0.0, 0.0, f32::from_bits(0x0000_0001)];
+        let array = array_f32(&scores, &[1, 1, 4]);
+        let keys = elementwise_decode_block_keys(&array, &[4], 1, 4);
+        let order = contiguous(
+            &astype(
+                &slice(
+                    &argsort_axis(&keys, -1, None),
+                    &[0, 0, 0],
+                    &[1, 1, cfg.block_topk() as i32],
+                    &[1, 1, 1],
+                    None,
+                ),
+                MlxDtype::Uint32,
+                None,
+            ),
+            None,
+        );
+        eval(&[&order]);
+        let ids: Vec<usize> = order.data_u32().iter().map(|&id| id as usize).collect();
+        let host = select_tokens(cfg, 1, 1, 7, 4, Some(&array)).unwrap();
+        assert_eq!(
+            ids,
+            blocks_from_tokens(&host[0][0], cfg.compress_ratio(), cfg.block_topk())
+        );
+    }
+
+    #[test]
+    fn decode_block_key_elementwise_microbench() {
+        let sync = row_flag_sync_hits();
+        let widths = [32i32, 256, 1024, 4096, 10_000];
+        for &(batch, seq) in &[(1i32, 1i32), (1, 4)] {
+            for &n in &widths {
+                let keep_cols = 64.min(n);
+                let mut scores = Vec::with_capacity((batch * seq * n) as usize);
+                for row in 0..(batch * seq) {
+                    for block in 0..n {
+                        let value = ((block + row) % 17) as f32;
+                        scores.push(if value == 0.0 { -0.0 } else { value });
+                    }
+                }
+                let array = array_f32(&scores, &[batch, seq, n]);
+                let completes: Vec<i32> = if seq == 1 {
+                    vec![n]
+                } else {
+                    (1..=seq).map(|query| n / 4 * query).collect()
+                };
+                let time_median = |build: &mut dyn FnMut() -> MlxArray| -> (f64, u64) {
+                    for _ in 0..2 {
+                        let value = build();
+                        eval(&[&value]);
+                    }
+                    let mut samples = Vec::with_capacity(8);
+                    let mut ops = 0u64;
+                    for index in 0..8 {
+                        let start_ops = mlx_sys::op_count_snapshot();
+                        let started = std::time::Instant::now();
+                        let value = build();
+                        let built = mlx_sys::op_count_take(start_ops);
+                        eval(&[&value]);
+                        samples.push(started.elapsed().as_secs_f64() * 1.0e6);
+                        if index == 0 {
+                            ops = built;
+                        }
+                    }
+                    samples.sort_by(|left, right| left.partial_cmp(right).unwrap());
+                    (samples[samples.len() / 2], ops)
+                };
+                let mut default_order = || {
+                    let prepared = map_nan_to_neg_inf(&array);
+                    let block_ids = reshape(
+                        &arange(0.0, f64::from(n), 1.0, MlxDtype::Int32, None),
+                        &[1, 1, n],
+                        None,
+                    );
+                    let valid = less(&block_ids, &host_i32(&completes, &[1, seq, 1]), None);
+                    let masked = where_cond(&valid, &prepared, &MlxArray::from_f32(f32::NAN), None);
+                    let order = argsort_axis(&negative(&masked, None), -1, None);
+                    slice(
+                        &order,
+                        &[0, 0, 0],
+                        &[batch, seq, keep_cols],
+                        &[1, 1, 1],
+                        None,
+                    )
+                };
+                let mut elementwise_order = || {
+                    let keys = elementwise_decode_block_keys(&array, &completes, seq, n);
+                    let order = argsort_axis(&keys, -1, None);
+                    slice(
+                        &order,
+                        &[0, 0, 0],
+                        &[batch, seq, keep_cols],
+                        &[1, 1, 1],
+                        None,
+                    )
+                };
+                let mut elementwise_partition = || {
+                    let keys = elementwise_decode_block_keys(&array, &completes, seq, n);
+                    ordered_block_ids(&keys, keep_cols, keep_cols).unwrap()
+                };
+                let mut kernel_order = || {
+                    let (keys, _flags) = launch_prefill_block_keys(
+                        &array,
+                        &host_i32(&completes, &[seq]),
+                        batch,
+                        seq,
+                        n,
+                        keep_cols,
+                        true,
+                    )
+                    .unwrap();
+                    ordered_block_ids(&keys, keep_cols, keep_cols).unwrap()
+                };
+                let read_u32 = |array: &MlxArray| -> Vec<u32> {
+                    let array = contiguous(&astype(array, MlxDtype::Uint32, None), None);
+                    eval(&[&array]);
+                    array.data_u32().to_vec()
+                };
+                let default_ids = read_u32(&default_order());
+                let elementwise_ids = read_u32(&elementwise_order());
+                let kernel_ids = read_u32(&kernel_order());
+                assert_eq!(
+                    elementwise_ids, default_ids,
+                    "batch {batch} seq {seq} n {n}: elementwise order diverged from the argsort"
+                );
+                assert_eq!(
+                    elementwise_ids, kernel_ids,
+                    "batch {batch} seq {seq} n {n}: elementwise order diverged from the kernel key"
+                );
+                let (default_us, default_ops) = time_median(&mut default_order);
+                let (elementwise_us, elementwise_ops) = time_median(&mut elementwise_order);
+                let (partition_us, partition_ops) = time_median(&mut elementwise_partition);
+                let (kernel_us, kernel_ops) = time_median(&mut kernel_order);
+                eprintln!(
+                    "QSA_DECODE_KEY_BENCH batch={batch} seq={seq} n={n} keep={keep_cols} default_us={default_us:.1} default_ops={default_ops} elementwise_us={elementwise_us:.1} elementwise_ops={elementwise_ops} partition_us={partition_us:.1} partition_ops={partition_ops} kernel_us={kernel_us:.1} kernel_ops={kernel_ops}"
+                );
+            }
+        }
+        assert_eq!(row_flag_sync_hits(), sync, "microbench read a row flag");
+    }
+
     /// Shown on every failure of [`mlx_argsort_pins_decode_qsa_tie_and_nan_order`].
     const DECODE_QSA_ARGSORT_BROKEN: &str = "an MLX bump broke the decode QSA ordering assumption; AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY=1 is the stability-independent path";
 
@@ -4870,7 +5240,9 @@ mod tests {
     /// `[batch, seq, blocks]` with `seq` at most
     /// [`crate::fastpath::QSA_DEVICE_SELECT_MULTI_MAX_QUERIES`]. Both use the
     /// GPU stream. The order is stable on exact ties, `+0` and `-0` included,
-    /// and NaN sorts after `+inf`.
+    /// and NaN sorts after `+inf`. The float compare flushes subnormals, so
+    /// this pin does not cover them. Decode does not promise host parity for
+    /// a subnormal score.
     #[test]
     fn mlx_argsort_pins_decode_qsa_tie_and_nan_order() {
         let row = decode_qsa_argsort_fixture();
@@ -5000,6 +5372,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn prefill_device_selection_matches_host_on_subnormal_scores_zeros_ties_and_normals() {
+        let cfg = prefill_cfg(4, 16);
+        let before = prefill_route_hits();
+        let pos_tiny = f32::from_bits(0x0000_0001);
+        let pos_next = f32::from_bits(0x0000_0002);
+        let pos_wide = f32::from_bits(0x0070_1234);
+        let neg_tiny = f32::from_bits(0x8000_0001);
+        let neg_next = f32::from_bits(0x8000_0002);
+        // Offset 31, ratio 4, eight blocks: both queries see every block, and
+        // every score is finite, so block_topk keeps the device order.
+        // Flushing a subnormal into zero would pick the lower block id ahead
+        // of a larger positive subnormal.
+        let mut scores = vec![pos_tiny, pos_next, 0.0, -0.0, neg_tiny, neg_next, 1.0, 1.0];
+        scores.extend_from_slice(&[
+            pos_tiny, pos_wide, pos_wide, 0.0, -0.0, neg_tiny, -1.0, -2.0,
+        ]);
+        assert_prefill_matches_host(cfg, 1, 2, 31, 8, Some(&scores));
+        let array = array_f32(&scores, &[1, 2, 8]);
+        let (keys, _flags) =
+            launch_prefill_block_keys(&array, &host_i32(&[8, 8], &[2]), 1, 2, 8, 4, false).unwrap();
+        eval(&[&keys]);
+        let got = keys.data_i64();
+        for (index, score) in scores.iter().copied().enumerate() {
+            let expected = decode_rank_key(score, (index % 8) as u32, true);
+            assert_eq!(
+                got[index],
+                i64::try_from(expected).unwrap(),
+                "block {} score bits {:08x}",
+                index % 8,
+                score.to_bits()
+            );
+        }
+        let on_device = prefill_route_hits();
+        assert!(
+            on_device.0 > before.0,
+            "finite subnormal rows stay on the device order"
+        );
+        assert_eq!(
+            on_device.1, before.1,
+            "a subnormal must stay finite and inside the causal budget"
+        );
+
+        // Two causal subnormals are finite but short of block_topk, so the
+        // chunk falls back to the host. A future non-finite score stays future.
+        let short = [pos_tiny, neg_tiny, 1_000.0, f32::NAN];
+        assert_prefill_matches_host(cfg, 1, 1, 7, 4, Some(&short));
+        let after_short = prefill_route_hits();
+        assert!(
+            after_short.1 > on_device.1,
+            "fewer finite causal blocks than block_topk falls back to the host"
+        );
+
+        assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[pos_tiny, f32::NAN, 1.0, neg_next]);
+        assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[neg_tiny, 0.0, f32::INFINITY, pos_wide]);
+        assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[f32::NEG_INFINITY, pos_tiny, -0.0, 1.0]);
     }
 
     #[test]
