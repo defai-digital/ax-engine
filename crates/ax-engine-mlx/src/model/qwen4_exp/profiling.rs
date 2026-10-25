@@ -128,6 +128,10 @@ const LAYER_SPLIT_STAGES: &[&str] = &[
     "ple_rows",
     "qsa_indexer",
     "qsa",
+    "qsa_d_attend",
+    "qsa_da_gather",
+    "qsa_da_layout",
+    "qsa_da_sdpa",
     "gdn_chunked",
     "gdn",
     "moe_routing",
@@ -3111,6 +3115,118 @@ fn flash_next_qsa_prefill_device_select_matches_host_on_real_pack() {
             "prefill device selection changed logit bits at {index}"
         );
     }
+}
+
+/// 8192-token prompt at the original outer chunk: the fused selected-K/V
+/// gather must keep the final logit bits and the final serialized state, and
+/// it must remove the separate `qsa_da_layout` copy. Both arms are measured
+/// with synchronized attribution, so the printed split is the before/after
+/// `qsa_d_attend` breakdown.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; 8192-token prompt"]
+fn flash_next_qsa_prefill_fused_gather_matches_today_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_attention::{
+        fused_gather_tiles_for_test, with_fused_gather,
+    };
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    assert_eq!(
+        tokens.len(),
+        8192,
+        "the real-pack comparison is an 8192-token prompt"
+    );
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let streaming = crate::fastpath::qwen_gated_delta_prefill_streaming_enabled();
+    let cap = crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+        streaming,
+        cfg.moe_expert_count > 0,
+    );
+    let chunk = cap.min(crate::fastpath::long_prompt_prefill_chunk()).max(1);
+    let owner = cfg.compile_cache_identity;
+    let run = |fused: bool| {
+        with_fused_gather(fused, || {
+            run_chunked_prefill(trunk, &tokens, owner, chunk, true)
+        })
+    };
+    let tiles_before = fused_gather_tiles_for_test();
+    let before = run(false);
+    assert_eq!(
+        fused_gather_tiles_for_test(),
+        tiles_before,
+        "the baseline arm ran the fused gather"
+    );
+    let after = run(true);
+    assert!(
+        fused_gather_tiles_for_test() > tiles_before,
+        "the fused arm never ran the fused gather"
+    );
+    assert_eq!(after.final_logits.len(), before.final_logits.len());
+    for (index, (left, right)) in before
+        .final_logits
+        .iter()
+        .zip(&after.final_logits)
+        .enumerate()
+    {
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "fused gather changed logit bits at {index}"
+        );
+    }
+    assert_eq!(
+        after.final_state, before.final_state,
+        "fused gather changed the final serialized state"
+    );
+
+    let qsa_split = |samples: &[Sample]| -> serde_json::Value {
+        let totals = stage_totals(samples);
+        let mut map = serde_json::Map::new();
+        for (stage, seconds) in &totals {
+            if stage.starts_with("qsa_d") {
+                map.insert(stage.clone(), serde_json::json!(seconds));
+            }
+        }
+        let attend: f64 = totals.get("qsa_d_attend").copied().unwrap_or(0.0);
+        let parts: f64 = [
+            "qsa_da_flatten",
+            "qsa_da_gather",
+            "qsa_da_layout",
+            "qsa_da_sdpa",
+        ]
+        .iter()
+        .filter_map(|stage| totals.get(*stage))
+        .sum();
+        map.insert("qsa_d_attend".to_string(), serde_json::json!(attend));
+        map.insert("qsa_da_parts_sum".to_string(), serde_json::json!(parts));
+        serde_json::Value::Object(map)
+    };
+    let evidence = serde_json::json!({
+        "prompt_tokens": tokens.len(),
+        "chunk_size": chunk,
+        "fused_gather_units": fused_gather_tiles_for_test() - tiles_before,
+        "final_logits_exact": true,
+        "final_state_exact": true,
+        "before": {
+            "seconds": before.seconds,
+            "qsa_d_split": qsa_split(&before.samples),
+        },
+        "after": {
+            "seconds": after.seconds,
+            "qsa_d_split": qsa_split(&after.samples),
+        },
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+    eprintln!("{evidence}");
 }
 
 /// How often two queries in one prefill chunk select the same complete blocks,

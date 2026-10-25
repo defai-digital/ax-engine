@@ -3922,6 +3922,7 @@ fn numerics_tier_suffix_ignores_bit_exact_switches() {
         prefix_restore_value: true,
         exact_lm_head_window: false,
         dual_qmm_swiglu_metal: true,
+        qsa_fused_gather: false,
         invariant_qmv_bf16_q4: false,
         moe_geglu_packed: false,
         ..NumericsTierSwitches::default()

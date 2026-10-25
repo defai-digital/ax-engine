@@ -231,6 +231,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT", shipped: "on", class: SwitchClass::ProvenExact("prefill_device_selection_matches_host_on_subnormal_scores_zeros_ties_and_normals") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DENSE_SHORT_CONTEXT", shipped: "on", class: SwitchClass::Token("qsa_dense=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION", shipped: "on", class: SwitchClass::Token("qsa_batched=0") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER", shipped: "on", class: SwitchClass::ProvenExact("fused_gather_batched_attention_matches_bit_for_bit") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL", shipped: "off", class: SwitchClass::Token("indexed") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES", shipped: "off", class: SwitchClass::ProvenExact("qsa_tiled_score_bits_match_monolithic") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK", shipped: "unset", class: SwitchClass::Token("chunk=8192") },
@@ -735,6 +736,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION" => {
             switches.qsa_batched_attention = false;
+            true
+        }
+        "AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER" => {
+            switches.qsa_fused_gather = false;
             true
         }
         "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL" => {

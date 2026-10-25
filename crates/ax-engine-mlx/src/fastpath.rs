@@ -5738,6 +5738,23 @@ env_flag_default_on!(
     "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER` — gather one Flash Next QSA
+    /// prefill sub-batch's selected K/V rows straight into the
+    /// `[queries, kv_heads, selected, head_dim]` layout the masked SDPA call
+    /// consumes, instead of gathering `[queries, selected, kv_heads,
+    /// head_dim]` and then transposing that tile into a second full copy.
+    ///
+    /// The flat source is `[tokens * kv_heads, head_dim]`, so one row is a
+    /// `(token, head)` pair and a per-head index tile lands the gather in
+    /// SDPA order. Same elements, same order, same dtype and the same `-1`
+    /// padding as the two-copy path, so the SDPA call and its output are
+    /// unchanged; only the copy that produced the transposed tile is gone.
+    /// Default ON; set `=0` to restore the gather-then-transpose copy.
+    flash_next_qsa_fused_gather_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER"
+);
+
 /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
 /// chunks by reading each query's selected K/V rows straight out of the
 /// sealed/tail history in a custom Metal kernel, instead of gathering a
@@ -7332,6 +7349,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) exact_lm_head_window: bool,
     pub(crate) dual_qmm_swiglu_metal: bool,
     pub(crate) qsa_batched_attention: bool,
+    pub(crate) qsa_fused_gather: bool,
     pub(crate) invariant_qmv_bf16_q4: bool,
     pub(crate) prefill_expert_sort: bool,
     pub(crate) gd_streaming: bool,
@@ -7476,6 +7494,7 @@ impl Default for NumericsTierSwitches {
             exact_lm_head_window: true,
             dual_qmm_swiglu_metal: false,
             qsa_batched_attention: true,
+            qsa_fused_gather: true,
             invariant_qmv_bf16_q4: true,
             prefill_expert_sort: true,
             gd_streaming: false,
@@ -7626,6 +7645,7 @@ impl NumericsTierSwitches {
             exact_lm_head_window: exact_lm_head_window_invariant_enabled(),
             dual_qmm_swiglu_metal: qwen_prefill_dual_qmm_swiglu_metal_enabled(),
             qsa_batched_attention: flash_next_qsa_batched_attention_enabled(),
+            qsa_fused_gather: flash_next_qsa_fused_gather_enabled(),
             invariant_qmv_bf16_q4: invariant_qmv_bf16_q4_enabled(),
             prefill_expert_sort: flash_next_prefill_expert_sort_enabled(),
             gd_streaming: qwen_gated_delta_prefill_streaming_enabled(),
@@ -7788,6 +7808,7 @@ fn acknowledge_bit_exact_switches(switches: &NumericsTierSwitches) {
         switches.prefix_restore_value,
         switches.exact_lm_head_window,
         switches.dual_qmm_swiglu_metal,
+        switches.qsa_fused_gather,
         switches.invariant_qmv_bf16_q4,
         switches.moe_geglu_packed,
     );
