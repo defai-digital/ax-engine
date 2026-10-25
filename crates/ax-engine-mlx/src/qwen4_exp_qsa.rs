@@ -2419,6 +2419,9 @@ fn map_nan_to_neg_inf(scores: &MlxArray) -> MlxArray {
 /// mapped to -inf before the negated-score argsort. That argsort is stable and
 /// the axis is block-id order, so equal keys (signed zero included, and a NaN
 /// tied with -inf) keep the lower block id. The tie-break is unique.
+/// Stability and NaN-last ordering are MLX 0.32.4 implementation properties
+/// (stable Metal merge sort, CPU `std::stable_sort`), not documented API:
+/// re-verify them on any MLX bump.
 ///
 /// Unlike [`select_tokens_device_prefill`], decode does not raise
 /// [`QsaError::NonFiniteScore`]. A non-finite causal score means the forward
