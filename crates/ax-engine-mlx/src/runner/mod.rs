@@ -3076,6 +3076,42 @@ impl MlxRunner {
                 mtp_dummy_cache.reset();
             }
         }
+        // Flash Next QSA prefill block-key kernel. The limits live in a
+        // buffer, so one launch compiles the pipeline every later chunk
+        // reuses. Other families never launch it. `AX_MLX_LOAD_KERNEL_WARMUP=0`
+        // skips it with the other load-time compiles, and
+        // `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT=0` restores the host
+        // sort, which does not launch it. Best-effort: a build failure is
+        // logged once and prefill selection stays on the host sort.
+        if crate::qwen4_exp_qsa::qsa_prefill_key_warmup_applies(
+            weights.qwen4_exp.is_some(),
+            crate::fastpath::load_kernel_warmup_enabled(),
+            crate::fastpath::flash_next_qsa_prefill_device_select_enabled(),
+        ) {
+            let warm_started = std::time::Instant::now();
+            match crate::qwen4_exp_qsa::warm_prefill_key_kernel() {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed the Flash Next QSA prefill block-key kernel at model load"
+                ),
+                Err(error) => {
+                    if crate::qwen4_exp_qsa::prefill_block_key_kernel_available() {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::runner",
+                            %error,
+                            "QSA prefill block-key warm-up failed; the first prefill pays the compile"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::runner",
+                            %error,
+                            "QSA prefill block-key warm-up failed; prefill selection uses the host sort"
+                        );
+                    }
+                }
+            }
+        }
         // Flash Next n-gram aux-plane page-cache warm-up. It must run after the
         // weights are fully read (the generation warm-up above materialises
         // them): the ~70 GB weight read would otherwise evict the ~6 GB of

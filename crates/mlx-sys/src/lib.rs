@@ -32,6 +32,9 @@ pub mod ops;
 pub mod stream;
 pub mod transforms;
 
+#[cfg(test)]
+mod test_support;
+
 /// Raw auto-generated FFI bindings.
 ///
 /// Prefer the safe modules above. This module remains public so wrappers can

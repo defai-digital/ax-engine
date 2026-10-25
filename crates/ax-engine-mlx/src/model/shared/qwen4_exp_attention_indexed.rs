@@ -62,7 +62,9 @@ static INDEXED: LazyKernel = LazyKernel::new(
 );
 
 /// Selected rows one query may keep. This bounds the host-side packed index
-/// tile, not the kernel: the kernel walks each row once in selection order.
+/// tile, not the kernel: the kernel walks each row once in selection order. A
+/// selection wider than this is one the gathered path serves instead, so a
+/// larger configured budget costs this optimisation, never correctness.
 const MAX_SELECTED_WIDTH: i32 = 8192;
 
 fn enabled() -> bool {
@@ -140,9 +142,9 @@ pub(super) fn attend_selected_indexed(
         return Ok(None);
     }
     // Decode and verifier windows keep their existing arms: this path is
-    // admitted for prefill chunks only, and device-selected rows carry a
-    // different (dense, -1 padded) shape.
-    if selection.device_tokens().is_some() {
+    // admitted for prefill chunks only. A singleton device selection carries
+    // one exact-length row rather than the per-query tile the kernel walks.
+    if selection.device_tokens().is_some() && !selection.device_multi_query() {
         return Ok(None);
     }
     let q_shape = queries.shape();
@@ -326,15 +328,26 @@ fn batch_row(segment: &MlxArray) -> Option<MlxArray> {
 
 /// Pack the ordered selection into the row-major index tile the kernel reads.
 ///
-/// Returns `Ok(None)` when the selection does not have the block-then-tail
-/// shape the kernel assumes, or when a row is out of range: the gathered path
-/// then handles it unchanged.
+/// Host selections are copied from their token lists after the block-then-tail
+/// shape and range checks. Device selections are already an int32 tile on the
+/// GPU in the same valid-prefix-then-`-1` layout, so they are read in place:
+/// the per-query lengths come from the closed-form segment sizes the selector
+/// keeps on the host, and no index row is copied back to the host.
+///
+/// Returns `Ok(None)` when the selection does not have the shape the kernel
+/// assumes, or when a row is out of range: the gathered path then handles it
+/// unchanged.
 fn pack_selection(
     selection: &QsaSelection,
     seq: i32,
     total_rows: i32,
     compress_ratio: i32,
 ) -> Result<Option<PackedSelection>> {
+    // A device selection has no host token lists (they would cost a read-back
+    // of exactly the tile this path exists to avoid), so it takes its own arm.
+    if selection.device_multi_query() {
+        return Ok(pack_device_selection(selection, seq));
+    }
     let mut rows: Vec<&[i32]> = Vec::with_capacity(seq as usize);
     let mut longest = 0usize;
     for s in 0..seq as usize {
@@ -348,13 +361,12 @@ fn pack_selection(
         longest = longest.max(chosen.len());
         rows.push(chosen);
     }
+    // A selection wider than this path packs is one the kernel would still
+    // attend correctly, so fall back rather than fail the request: the switch
+    // must never turn a chunk the gathered path serves into an error.
     let width = match i32::try_from(longest) {
         Ok(width) if width > 0 && width <= MAX_SELECTED_WIDTH => width,
-        Ok(_) | Err(_) => {
-            return Err(Qwen4ExpAttentionError::InvalidScalar(
-                "selected token count",
-            ));
-        }
+        Ok(_) | Err(_) => return Ok(None),
     };
     let mut indices = vec![-1_i32; seq as usize * width as usize];
     let mut lengths = Vec::with_capacity(seq as usize);
@@ -378,6 +390,48 @@ fn pack_selection(
         ),
         width,
     }))
+}
+
+/// Device selection: `[1, seq, width]` int32 rows with each query's visible
+/// tokens packed at the front and `-1` after them, built on the GPU by
+/// [`QsaSelection::compact_device_indices`] in the same order as the host
+/// gather buffer.
+///
+/// The block-then-tail shape check is skipped here: it needs the token values,
+/// and reading them back is the copy this path removes. The selector produced
+/// these rows from the request's own cache, so they are in range by
+/// construction, and `lengths` is still the exact count the kernel walks.
+fn pack_device_selection(selection: &QsaSelection, seq: i32) -> Option<PackedSelection> {
+    if seq < 1 {
+        return None;
+    }
+    let compact = selection.compact_device_indices()?;
+    let shape = compact.shape();
+    if shape.len() != 3 || shape[0] != 1 || shape[1] != seq {
+        return None;
+    }
+    let width = shape[2];
+    if !(1..=MAX_SELECTED_WIDTH).contains(&width) {
+        return None;
+    }
+    let mut lengths = Vec::with_capacity(seq as usize);
+    for s in 0..seq as usize {
+        let len = selection.selected_len(0, s);
+        if len == 0 || len > width as usize {
+            return None;
+        }
+        lengths.push(len as i32);
+    }
+    Some(PackedSelection {
+        indices: reshape(&compact, &[seq, width], None),
+        lengths: MlxArray::from_raw_data(
+            lengths.as_ptr().cast(),
+            std::mem::size_of_val(lengths.as_slice()),
+            &[seq],
+            MlxDtype::Int32,
+        ),
+        width,
+    })
 }
 
 /// A QSA selection is a run of complete blocks, each `compress_ratio`
@@ -587,6 +641,117 @@ mod tests {
             .unwrap()
         });
         (result, dispatches() - before)
+    }
+
+    /// A selection in the layout `select_tokens_device_prefill` produces: each
+    /// row holds `blocks` complete blocks, then `-1` padding up to the block
+    /// segment width, then the visible partial tail. Returns the device
+    /// selection and the same tokens as dense block-then-tail host rows.
+    fn device_selection(seq: i32, rows: i32, blocks: i32) -> (QsaSelection, Vec<Vec<i32>>) {
+        let block_cols = blocks * RATIO;
+        let tail_width = RATIO - 1;
+        let width = block_cols + tail_width;
+        let mut tile = vec![-1_i32; (seq * width) as usize];
+        let mut segments = Vec::with_capacity(seq as usize);
+        let mut host_rows = Vec::with_capacity(seq as usize);
+        for s in 0..seq {
+            let visible = s + 1;
+            let complete = (visible / RATIO).max(1);
+            let mut block_tokens = Vec::new();
+            for rank in 0..blocks {
+                let block = (s + rank) % complete;
+                for token in 0..RATIO {
+                    block_tokens.push(block * RATIO + token);
+                }
+            }
+            let tail: Vec<i32> = (complete * RATIO..visible).collect();
+            assert!(block_tokens.iter().all(|&token| token < rows));
+            assert!(tail.iter().all(|&token| token < rows));
+            let base = (s * width) as usize;
+            tile[base..base + block_tokens.len()].copy_from_slice(&block_tokens);
+            let tail_start = base + block_cols as usize;
+            tile[tail_start..tail_start + tail.len()].copy_from_slice(&tail);
+            segments.push((block_tokens.len() as i32, tail.len() as i32));
+            let mut dense = block_tokens;
+            dense.extend_from_slice(&tail);
+            host_rows.push(dense);
+        }
+        let device = MlxArray::from_raw_data(
+            tile.as_ptr().cast(),
+            std::mem::size_of_val(tile.as_slice()),
+            &[1, seq, width],
+            MlxDtype::Int32,
+        );
+        (
+            QsaSelection::from_device_rows(device, segments, tail_width),
+            host_rows,
+        )
+    }
+
+    #[test]
+    fn indexed_attention_consumes_device_selected_rows_in_place() {
+        // The device arm must attend the rows the selector packed on the GPU,
+        // in the same order the host gather buffer uses, without a copy back.
+        let seq = 20;
+        let (selection, host_rows) = device_selection(seq, 48, 2);
+        assert!(selection.device_multi_query());
+        let device_fixture = Fixture {
+            selection,
+            ..fixture(seq, 48, MlxDtype::Float32)
+        };
+        let (out, dispatched) = attention(&device_fixture, true);
+        assert_eq!(dispatched, 1, "device rows must dispatch the kernel");
+        let out = out.expect("indexed output");
+        let reference = gathered_reference(&device_fixture, 1.0 / (DIM as f32).sqrt());
+        close(&out, &reference, 1e-5, 1e-4, "device rows");
+
+        // The same tokens selected on the host must give bit-identical rows:
+        // the selection's provenance may not change the arithmetic.
+        let host = Fixture {
+            selection: QsaSelection::from_host_tokens(vec![host_rows]),
+            ..fixture(seq, 48, MlxDtype::Float32)
+        };
+        let (host_out, host_dispatched) = attention(&host, true);
+        assert_eq!(host_dispatched, 1, "host rows dispatch the kernel");
+        let (device_values, host_values) = (
+            mlx_sys::contiguous(&mlx_sys::astype(&out, MlxDtype::Float32, None), None),
+            mlx_sys::contiguous(
+                &mlx_sys::astype(&host_out.expect("host output"), MlxDtype::Float32, None),
+                None,
+            ),
+        );
+        eval(&[&device_values, &host_values]);
+        assert_eq!(device_values.shape(), host_values.shape(), "output shape");
+        for (i, (&device, &host)) in device_values
+            .data_f32()
+            .iter()
+            .zip(host_values.data_f32())
+            .enumerate()
+        {
+            assert_eq!(device.to_bits(), host.to_bits(), "device vs host row [{i}]");
+        }
+    }
+
+    #[test]
+    fn indexed_attention_declines_a_singleton_device_selection() {
+        // A decode-shaped device selection carries one exact-length row, not a
+        // per-query tile: it must keep the path the decode arm already uses.
+        let seq = 20;
+        let (device, _) = device_selection(seq, 48, 2);
+        let compact = device.compact_device_indices().expect("device tile");
+        let width = compact.shape()[2];
+        // `[batch, 1, kept]` is the decode-shaped device row.
+        let row = slice(&compact, &[0, 0, 0], &[1, 1, width], &[1, 1, 1], None);
+        let selection = QsaSelection::from_device_rows(row, Vec::new(), 0);
+        assert!(selection.device_tokens().is_some());
+        assert!(!selection.device_multi_query());
+        let fixture = Fixture {
+            selection,
+            ..fixture(seq, 48, MlxDtype::Float32)
+        };
+        let (out, dispatched) = attention(&fixture, true);
+        assert_eq!(dispatched, 0, "a singleton device row must not dispatch");
+        assert!(out.is_none(), "a singleton device row falls back");
     }
 
     #[test]
@@ -998,6 +1163,17 @@ mod tests {
     }
 
     #[test]
+    fn indexed_attention_is_off_unless_the_switch_is_set() {
+        // The opt-in guard is the first thing the entry point does, so with the
+        // switch off a chunk that the kernel would otherwise cover still takes
+        // the gathered path: no dispatch and no index tile.
+        let fixture = fixture(64, 96, MlxDtype::Float32);
+        let (out, dispatched) = attention(&fixture, false);
+        assert_eq!(dispatched, 0, "the default arm must not dispatch");
+        assert!(out.is_none(), "the default arm keeps the gathered path");
+    }
+
+    #[test]
     fn indexed_attention_declines_short_windows_and_decode_rows() {
         // Fewer than BATCHED_ATTENTION_MIN_QUERIES queries keep the gathered
         // path: the indexed kernel never runs and nothing changes.
@@ -1036,6 +1212,25 @@ mod tests {
         });
         assert!(result.is_none(), "out-of-range rows fall back");
         assert_eq!(dispatches(), before, "no dispatch for a refused selection");
+    }
+
+    #[test]
+    fn pack_selection_declines_rows_wider_than_the_index_tile() {
+        // A configured budget can select more rows than this path packs. That
+        // chunk belongs to the gathered path: the switch must fall back, not
+        // error the request.
+        let (seq, blocks) = (16usize, 2050usize);
+        let mut row = Vec::new();
+        for block in 0..blocks {
+            for token in 0..RATIO {
+                row.push(block as i32 * RATIO + token);
+            }
+        }
+        assert!(row.len() > MAX_SELECTED_WIDTH as usize);
+        assert!(selection_shape_ok(&row, RATIO), "a full block run");
+        let selection = QsaSelection::from_host_tokens(vec![vec![row; seq]]);
+        let packed = pack_selection(&selection, seq as i32, 8200, RATIO).unwrap();
+        assert!(packed.is_none(), "an over-wide selection falls back");
     }
 
     #[test]

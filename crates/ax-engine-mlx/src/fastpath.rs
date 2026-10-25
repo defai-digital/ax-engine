@@ -521,8 +521,9 @@ pub(crate) fn batched_prefill_max_rows() -> u32 {
 
 env_flag_default_on!(
     /// `AX_MLX_LOAD_KERNEL_WARMUP` — at model load, compile the custom
-    /// Metal kernel specializations the decode path will hit (currently
-    /// the linear-attention gated-delta + conv1d family) so the lazy
+    /// Metal kernel specializations the first request would otherwise
+    /// hit (the linear-attention gated-delta + conv1d family, and the
+    /// Flash Next QSA prefill block-key kernel) so the lazy
     /// MSL→pipeline compile does not land inside the first request's
     /// latency. Best-effort: warm-up failure logs a warning and the
     /// model still loads.
@@ -5604,8 +5605,9 @@ env_flag_default_on!(
 );
 
 /// Short multi-query verifier windows (at most this many rows) may select on
-/// the device when `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` is on; longer
-/// chunks (prefill) always select on the host.
+/// the device when `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` is on. Longer
+/// prefill chunks select on the device when
+/// `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` is on (the default).
 pub(crate) const QSA_DEVICE_SELECT_MULTI_MAX_QUERIES: i32 = 4;
 
 env_flag_default_on!(
@@ -5617,6 +5619,20 @@ env_flag_default_on!(
     /// restore host selection for multi-query chunks.
     flash_next_qsa_device_select_multi_enabled,
     "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` — choose QSA blocks for a
+    /// prefill chunk on the device. Scores stay on the device: a total order
+    /// key (score descending, lower block id first, signed zero collapsed)
+    /// is partitioned and sorted there, then the existing attend path gathers
+    /// those indices. Default ON; the ordered indices and the logits match
+    /// the host sort. Set `=0` to restore that host sort exactly.
+    /// Single-query decode stays on `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`.
+    /// Short verifier windows stay on
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`.
+    flash_next_qsa_prefill_device_select_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT"
 );
 
 env_flag_default_on!(

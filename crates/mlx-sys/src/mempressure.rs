@@ -176,6 +176,7 @@ pub fn device_recommended_working_set_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_process_global;
 
     #[test]
     fn process_memory_footprint_is_positive_on_macos() {
@@ -221,7 +222,9 @@ mod tests {
     fn device_active_bytes_reports_or_skips_gracefully() {
         // We do not assert a particular value — MLX may or may not have
         // active allocations at this point — only that the probe does not
-        // panic and returns Some/None deterministically.
+        // panic and returns Some/None deterministically. The counter is
+        // process-global, so take the shared guard.
+        let _guard = lock_process_global();
         let _ = device_active_bytes();
     }
 
@@ -238,11 +241,15 @@ mod tests {
 
     #[test]
     fn device_peak_bytes_reports_or_skips_gracefully() {
+        // The peak counter is process-global, so take the shared guard.
+        let _guard = lock_process_global();
         let _ = device_peak_bytes();
     }
 
     #[test]
     fn device_cache_bytes_reports_or_skips_gracefully() {
+        // The cache counter is process-global, so take the shared guard.
+        let _guard = lock_process_global();
         let _ = device_cache_bytes();
     }
 }

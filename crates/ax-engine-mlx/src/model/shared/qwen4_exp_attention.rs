@@ -955,9 +955,21 @@ fn attend_selected(
     if keys.sealed_rows() != values.sealed_rows() {
         return Err(Qwen4ExpAttentionError::InvalidScalar("kv history segments"));
     }
-    let batched = selection.device_tokens().is_none()
+    let device_rows = selection.device_multi_query();
+    let batched = (selection.device_tokens().is_none() || device_rows)
         && seq >= BATCHED_ATTENTION_MIN_QUERIES
         && batched_attention_enabled();
+    // Device rows are already on the GPU. Compact them to the host gather
+    // layout (valid prefix, then -1) so a sub-batch is a slice, not a copy
+    // back to the host. Lengths stay the closed-form segment sizes.
+    let compact =
+        if batched && device_rows {
+            Some(selection.compact_device_indices().ok_or(
+                Qwen4ExpAttentionError::InvalidScalar("selected token count"),
+            )?)
+        } else {
+            None
+        };
     // Padded sub-batches reshape one contiguous array per batch row; the
     // per-query decode path gathers straight from the segments.
     let flat = if batched {
@@ -1009,7 +1021,13 @@ fn attend_selected(
                 )
             };
             batch_out.push(attend_selected_batched(
-                &q_b, &k_b, &v_b, selection, b as usize, cfg,
+                &q_b,
+                &k_b,
+                &v_b,
+                selection,
+                b as usize,
+                compact.as_ref(),
+                cfg,
             )?);
             continue;
         }
@@ -1119,27 +1137,20 @@ pub(crate) const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
 /// Width of the largest sub-batch whose *actual* padded gather fits `cap`.
 ///
 /// Each query's rows are padded to the longest list in the sub-batch, so the
-/// gather costs `width × max(lengths[..width]) × per_token` bytes. `lengths`
-/// holds the per-query selected counts of the candidate window in chunk order;
-/// the result is the longest prefix that fits, and at least one query (a single
-/// query's own selection always fits: it is bounded by the QSA token budget).
-fn sub_batch_cap_width(cap: usize, per_token: usize, lengths: &[usize]) -> usize {
-    if lengths.is_empty() {
+/// gather costs `width × max(lengths[..width]) × per_token` bytes. `initial` is
+/// the width the probe suggested and `window_max` the longest selected list
+/// anywhere in that window, which bounds every prefix of it. The result never
+/// exceeds `initial` and keeps at least one query: a single query's own
+/// selection always fits, because it is bounded by the QSA token budget.
+fn sub_batch_cap_width(cap: usize, per_token: usize, initial: usize, window_max: usize) -> usize {
+    if initial == 0 {
         return 0;
     }
-    let per_token = per_token.max(1);
-    let mut width = lengths.len();
-    loop {
-        let padded = lengths[..width].iter().copied().max().unwrap_or(0);
-        let bytes = width.saturating_mul(padded).saturating_mul(per_token);
-        if bytes <= cap || width <= 1 {
-            return width;
-        }
-        width -= 1;
-    }
+    let bytes_per_row = per_token.max(1).saturating_mul(window_max.max(1));
+    (cap / bytes_per_row).clamp(1, initial)
 }
 
-/// Attend a chunk of host-selected queries as padded sub-batches.
+/// Attend a chunk of selected queries as padded sub-batches.
 ///
 /// Each query owns its selected token list; lists are padded with `-1` to the
 /// longest in the sub-batch, gathered together, and attention masks the padding,
@@ -1147,12 +1158,17 @@ fn sub_batch_cap_width(cap: usize, per_token: usize, lengths: &[usize]) -> usize
 /// the unmasked entries; masked entries contribute exact zeros). Queries move to
 /// the batch axis, one query per entry, which replaces one gather and one
 /// attention dispatch per query with a handful per sub-batch.
+///
+/// `compact` is the device selection packed like the host gather buffer. When
+/// it is present the sub-batch is sliced from it. Host selections still copy
+/// their index lists into that buffer.
 fn attend_selected_batched(
     q_b: &MlxArray,
     k_b: &MlxArray,
     v_b: &MlxArray,
     selection: &QsaSelection,
     batch_index: usize,
+    compact: Option<&MlxArray>,
     cfg: Qwen4ExpAttentionConfig,
 ) -> Result<MlxArray> {
     let q_shape = q_b.shape();
@@ -1173,7 +1189,7 @@ fn attend_selected_batched(
     while start < seq {
         let longest = (start..seq)
             .take(BATCHED_ATTENTION_PROBE_QUERIES)
-            .map(|s| selection.tokens_for_query(batch_index, s).len())
+            .map(|s| selection.selected_len(batch_index, s))
             .max()
             .unwrap_or(0);
         if longest == 0 {
@@ -1182,43 +1198,61 @@ fn attend_selected_batched(
             ));
         }
         let per_query = longest * kv_heads as usize * dim as usize * element_bytes * 2;
-        let width = (BATCHED_ATTENTION_BYTES / per_query.max(1)).clamp(1, seq - start);
+        let initial = (BATCHED_ATTENTION_BYTES / per_query.max(1)).clamp(1, seq - start);
         // The probe above sizes the window from at most
         // `BATCHED_ATTENTION_PROBE_QUERIES` queries. Past that width a later
         // query can select more rows than the probe saw, so the *actual*
         // padded length decides: shrink the window until the real gather fits.
-        let widths: Vec<usize> = (0..width)
-            .map(|offset| {
-                selection
-                    .tokens_for_query(batch_index, start + offset)
-                    .len()
-            })
-            .collect();
-        let width = sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, &widths);
-        let end = start + width;
-        let padded = (start..end)
-            .map(|s| selection.tokens_for_query(batch_index, s).len())
+        let window_max = (start..start + initial)
+            .map(|s| selection.selected_len(batch_index, s))
             .max()
             .unwrap_or(0);
-        let mut indices = vec![-1_i32; width * padded];
-        for (row, s) in (start..end).enumerate() {
-            let chosen = selection.tokens_for_query(batch_index, s);
-            if chosen.is_empty() {
-                return Err(Qwen4ExpAttentionError::InvalidScalar(
-                    "selected token count",
-                ));
-            }
-            indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
+        let width = sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, initial, window_max);
+        let end = start + width;
+        let padded = (start..end)
+            .map(|s| selection.selected_len(batch_index, s))
+            .max()
+            .unwrap_or(0);
+        if padded == 0 || (start..end).any(|s| selection.selected_len(batch_index, s) == 0) {
+            return Err(Qwen4ExpAttentionError::InvalidScalar(
+                "selected token count",
+            ));
         }
         let width_i = width as i32;
         let padded_i = i32::try_from(padded)
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
-        let indices = MlxArray::from_raw_data(
-            indices.as_ptr().cast(),
-            std::mem::size_of_val(indices.as_slice()),
-            &[width_i, padded_i],
-            MlxDtype::Int32,
-        );
+        let indices = if let Some(compact) = compact {
+            let batch = i32::try_from(batch_index)
+                .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
+            reshape(
+                &slice(
+                    compact,
+                    &[batch, start as i32, 0],
+                    &[batch + 1, end as i32, padded_i],
+                    &[1, 1, 1],
+                    None,
+                ),
+                &[width_i, padded_i],
+                None,
+            )
+        } else {
+            let mut indices = vec![-1_i32; width * padded];
+            for (row, s) in (start..end).enumerate() {
+                let chosen = selection.tokens_for_query(batch_index, s);
+                if chosen.is_empty() {
+                    return Err(Qwen4ExpAttentionError::InvalidScalar(
+                        "selected token count",
+                    ));
+                }
+                indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
+            }
+            MlxArray::from_raw_data(
+                indices.as_ptr().cast(),
+                std::mem::size_of_val(indices.as_slice()),
+                &[width_i, padded_i],
+                MlxDtype::Int32,
+            )
+        };
         let valid = greater_equal(
             &indices,
             &MlxArray::from_raw_data(
@@ -1633,6 +1667,37 @@ mod tests {
     }
 
     #[test]
+    fn prefill_device_select_matches_host_attention_bits() {
+        use crate::qwen4_exp_qsa::with_prefill_device_select;
+
+        let (f, module) = oracle();
+        let input = array(&f["input"], &[1, 19, 16]);
+        let bits = |array: &MlxArray| {
+            let array = contiguous(array, None);
+            eval(&[&array]);
+            array
+                .data_f32()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        for rows in [16, 19] {
+            let hidden = slice(&input, &[0, 0, 0], &[1, rows, 16], &[1, 1, 1], None);
+            let host = with_prefill_device_select(false, || {
+                run(&module, &hidden, &Qwen4ExpAttentionCache::empty(), 0)
+            });
+            let device = with_prefill_device_select(true, || {
+                run(&module, &hidden, &Qwen4ExpAttentionCache::empty(), 0)
+            });
+            assert_eq!(
+                bits(device.delta()),
+                bits(host.delta()),
+                "seq {rows} attention bits"
+            );
+        }
+    }
+
+    #[test]
     fn chunk_boundaries_and_token_steps_match_output_and_state() {
         let (f, module) = oracle();
         let input = array(&f["input"], &[1, 19, 16]);
@@ -1693,37 +1758,38 @@ mod tests {
         // 2051 selected rows at the shipped row cost (2 kv heads x 256 dims x
         // 2 bytes x K+V) is 4 200 448 bytes per query, so 1 GiB holds 255.
         let per_token = 2 * 256 * 2 * 2;
-        let uniform = vec![2051usize; 2048];
         assert_eq!(
-            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, &uniform),
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 2048, 2051),
             BATCHED_ATTENTION_BYTES / (2051 * per_token)
         );
         // The probe-based width sees only the first queries; a later query that
         // selects twice as many rows would double the real gather, so the
         // window shrinks instead of overflowing the cap.
-        let mut rising = vec![1021usize; 600];
-        rising[599] = 2051;
-        let width = sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, &rising);
+        let width = sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 600, 2051);
         assert!(
             width < 600,
             "the rising tail must shrink the window: {width}"
         );
-        let padded = rising[..width].iter().copied().max().unwrap_or(0);
         assert!(
-            width * padded * per_token <= BATCHED_ATTENTION_BYTES,
-            "actual padded gather {width} x {padded} exceeds the cap"
+            width * 2051 * per_token <= BATCHED_ATTENTION_BYTES,
+            "actual padded gather {width} x 2051 exceeds the cap"
         );
         assert!(
             600 * 2051 * per_token > BATCHED_ATTENTION_BYTES,
             "the whole window would have overflowed the cap"
         );
+        // A window the probe already proved keeps its width.
+        assert_eq!(
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 64, 1021),
+            64
+        );
         // A single query always fits: its own selection is budget-bounded.
         assert_eq!(
-            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, &[2051]),
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 1, 2051),
             1
         );
         assert_eq!(
-            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, &[]),
+            sub_batch_cap_width(BATCHED_ATTENTION_BYTES, per_token, 0, 0),
             0
         );
     }
