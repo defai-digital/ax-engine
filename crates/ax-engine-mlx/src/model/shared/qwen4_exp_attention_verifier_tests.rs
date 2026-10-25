@@ -577,6 +577,161 @@ fn batched_prefill_attention_matches_the_per_query_path() {
     }
 }
 
+/// Exact bits of an array, compared through f32 so bf16 payloads survive.
+fn bit_pattern(array: &MlxArray) -> Vec<u32> {
+    let widened = contiguous(&astype(array, MlxDtype::Float32, None), None);
+    eval(&[&widened]);
+    widened
+        .data_f32()
+        .iter()
+        .map(|value| value.to_bits())
+        .collect()
+}
+
+/// The fused selected-K/V gather must leave every batched prefill attention
+/// bit unchanged: ragged host selections, a two-batch call and a segmented
+/// (sealed prefix + live tail) history.
+#[test]
+fn fused_gather_batched_attention_matches_bit_for_bit() {
+    use crate::model::shared::qwen4_exp_kv_history::{KvHistory, with_kv_segments};
+    use crate::qwen4_exp_qsa::{QsaIndexKeyCache, QsaIndexer};
+
+    let queries_n = 40;
+    // A 4-token block / 2-block budget: many queries keep different token
+    // counts, so each sub-batch is padded and the padding is masked.
+    let indexer: QsaIndexer = module(None, None).indexer;
+    let cfg = Qwen4ExpAttentionConfig::new(HIDDEN as usize, 24, 2, 64, 32, 10_000.0, 1e-6).unwrap();
+    let hidden = |seed: i32| {
+        astype(
+            &reshape(
+                &wave(queries_n, HIDDEN, seed),
+                &[1, queries_n, HIDDEN],
+                None,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        )
+    };
+    // Prefill device selection is on by default; force the host lists so this
+    // test covers the host gather buffer as well.
+    let select = |hidden: &MlxArray| {
+        crate::qwen4_exp_qsa::with_prefill_device_select(false, || {
+            indexer
+                .select(hidden, &QsaIndexKeyCache::empty(), 0)
+                .unwrap()
+        })
+    };
+    let single = select(&hidden(23));
+    let doubled = select(&concatenate(&[&hidden(23), &hidden(47)], 0, None));
+    assert!(single.device_tokens().is_none(), "host selection expected");
+    assert!(doubled.device_tokens().is_none(), "host selection expected");
+
+    for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+        let tensor = |rows: i32, seed: i32| {
+            astype(
+                &reshape(&wave(rows, 64, seed), &[1, rows, 64], None),
+                dtype,
+                None,
+            )
+        };
+        let queries = transpose(
+            &reshape(
+                &astype(&wave(queries_n * 24, 64, 29), dtype, None),
+                &[1, queries_n, 24, 64],
+                None,
+            ),
+            &[0, 2, 1, 3],
+            None,
+        );
+        // One batch row of K/V: two 64-wide halves become two KV heads.
+        let row = |seed: i32| {
+            reshape(
+                &concatenate(
+                    &[&tensor(queries_n, seed), &tensor(queries_n, seed + 6)],
+                    2,
+                    None,
+                ),
+                &[1, queries_n, 2, 64],
+                None,
+            )
+        };
+        let flat_keys = row(31);
+        let flat_values = row(41);
+        let split = |full: &MlxArray| {
+            let sealed = slice(full, &[0, 0, 0, 0], &[1, 25, 2, 64], &[1, 1, 1, 1], None);
+            let tail = slice(
+                full,
+                &[0, 25, 0, 0],
+                &[1, queries_n, 2, 64],
+                &[1, 1, 1, 1],
+                None,
+            );
+            // `seal_tokens == 25` seals the prefix and keeps the rest as a
+            // live tail, so the batched path has to flatten the history.
+            with_kv_segments(Some((2, 25)), || {
+                KvHistory::empty().append(&sealed).append(&tail)
+            })
+        };
+        let split_keys = split(&flat_keys);
+        let split_values = split(&flat_values);
+        assert!(
+            split_keys.segments().1.is_some() && split_values.segments().1.is_some(),
+            "{dtype:?}: expected a live tail"
+        );
+        let two_keys = concatenate(&[&row(31), &row(53)], 0, None);
+        let two_values = concatenate(&[&row(41), &row(67)], 0, None);
+        let queries_two = concatenate(&[&queries, &queries], 0, None);
+
+        let compare = |label: &str,
+                       q: &MlxArray,
+                       keys: &KvHistory,
+                       values: &KvHistory,
+                       selection: &QsaSelection| {
+            let run = |fused: bool| {
+                with_fused_gather(fused, || {
+                    with_batched_attention(true, || {
+                        attend_selected(q, keys, values, selection, cfg).unwrap()
+                    })
+                })
+            };
+            let baseline = run(false);
+            let before = fused_gather_tiles_for_test();
+            let fused = run(true);
+            assert!(
+                fused_gather_tiles_for_test() > before,
+                "{dtype:?} {label}: the fused gather never ran"
+            );
+            assert_eq!(fused.shape(), baseline.shape(), "{dtype:?} {label}: shape");
+            assert_eq!(
+                bit_pattern(&fused),
+                bit_pattern(&baseline),
+                "{dtype:?} {label}: attention bits"
+            );
+        };
+        compare(
+            "one batch, one segment",
+            &queries,
+            &KvHistory::from_flat(flat_keys),
+            &KvHistory::from_flat(flat_values),
+            &single,
+        );
+        compare(
+            "one batch, sealed plus tail",
+            &queries,
+            &split_keys,
+            &split_values,
+            &single,
+        );
+        compare(
+            "two batch, one segment",
+            &queries_two,
+            &KvHistory::from_flat(two_keys),
+            &KvHistory::from_flat(two_values),
+            &doubled,
+        );
+    }
+}
+
 fn values_of(value: &MlxArray) -> Vec<f32> {
     values(value)
 }
