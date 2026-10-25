@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::{ScopedEnvVar, lock_process_global};
 use crate::transforms::{eval, eval_first_u32};
 
 #[test]
@@ -1499,9 +1500,8 @@ fn compiled_split_mlp_matches_portable(bits: i32) {
 fn compiled_dual_gate_up_qmm_matches_portable_multi_token() {
     // Profile residual: multi-token dual gate/up compile vs two qmm.
     // Path is default-off after pure wall reject; enable for parity test.
-    unsafe {
-        std::env::set_var("AX_MLX_COMPILED_DUAL_GATE_UP", "1");
-    }
+    let _guard = lock_process_global();
+    let _gate_up = ScopedEnvVar::set("AX_MLX_COMPILED_DUAL_GATE_UP", "1");
     let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
     let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
     let x = MlxArray::from_raw_data(
@@ -1551,6 +1551,8 @@ fn compiled_dual_gate_up_qmm_matches_portable_multi_token() {
 fn compiled_dual_gate_up_qmm_forced_matches_portable_4bit_gs32() {
     // AXQ 27B language FFN is 4-bit gs32. Forced compile must match two
     // affine qmms without AX_MLX_COMPILED_DUAL_GATE_UP (Gemma stays off).
+    let _guard = lock_process_global();
+    let _gate_up = ScopedEnvVar::unset("AX_MLX_COMPILED_DUAL_GATE_UP");
     let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
     let gate_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
     let up_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 1024.0) * -0.0002).collect();
@@ -1629,10 +1631,8 @@ fn compiled_dual_gate_up_qmm_forced_matches_portable_4bit_gs32() {
             "forced compiled dual up must match portable 4-bit: {a} vs {b}"
         );
     }
-    // Env-gated entry stays off unless AX_MLX_COMPILED_DUAL_GATE_UP=1.
-    unsafe {
-        std::env::remove_var("AX_MLX_COMPILED_DUAL_GATE_UP");
-    }
+    // Env-gated entry stays off unless AX_MLX_COMPILED_DUAL_GATE_UP=1;
+    // the guard cleared it for this whole test.
     assert!(
         compiled_dual_gate_up_qmm(
             &x, &gq[0], &gq[1], &gq[2], &uq[0], &uq[1], &uq[2], 32, 4, None
@@ -1651,22 +1651,15 @@ fn compiled_gelu_approx_split_mlp_matches_portable_split_ffn() {
 fn compiled_gelu_approx_split_mlp_matches_portable_bits8_multitoken() {
     // Flip Gemma MLP is bits=8; multi-token shape-specific path is opt-in
     // (default OFF after mbp-m5 pure wall +2% reject).
-    // SAFETY: test process only; restored after assertion path.
-    // SAFETY: single-threaded test env mutation for kill-switch coverage.
-    unsafe {
-        std::env::set_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED", "1");
-    }
+    let _guard = lock_process_global();
+    let _shaped = ScopedEnvVar::set("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED", "1");
     compiled_split_mlp_matches_portable(8);
-    unsafe {
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
-    }
 }
 
 #[test]
 fn compiled_gelu_approx_split_mlp_bits8_multitoken_default_off() {
-    unsafe {
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
-    }
+    let _guard = lock_process_global();
+    let _shaped = ScopedEnvVar::unset("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
     let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
     let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
     let x = MlxArray::from_raw_data(
@@ -1701,10 +1694,9 @@ fn compiled_gelu_approx_split_mlp_bits8_multitoken_default_off() {
 
 #[test]
 fn compiled_gelu_approx_split_mlp_axq_p128_gs32_unset_stays_portable() {
-    unsafe {
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_AXQ_P128");
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
-    }
+    let _guard = lock_process_global();
+    let _axq = ScopedEnvVar::unset("AX_MLX_COMPILED_QGELU_AXQ_P128");
+    let _shaped = ScopedEnvVar::unset("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
     let x_data: Vec<f32> = (0..128 * 64)
         .map(|i| ((i as f32) - 4096.0) * 0.015625)
         .collect();
@@ -1745,10 +1737,9 @@ fn compiled_gelu_approx_split_mlp_axq_p128_gs32_unset_stays_portable() {
 fn compiled_gelu_approx_split_mlp_axq_p128_gs32_matches_portable() {
     // AXQ root 4-bit is gs=32. Contract p128 is the only seq that takes
     // the shape-specific compile; portable dual qmm is the oracle.
-    unsafe {
-        std::env::set_var("AX_MLX_COMPILED_QGELU_AXQ_P128", "1");
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
-    }
+    let _guard = lock_process_global();
+    let _axq = ScopedEnvVar::set("AX_MLX_COMPILED_QGELU_AXQ_P128", "1");
+    let _shaped = ScopedEnvVar::unset("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
     let hidden = 64;
     let seq = 128;
     let x_data: Vec<f32> = (0..seq * hidden)
@@ -1806,17 +1797,13 @@ fn compiled_gelu_approx_split_mlp_axq_p128_gs32_matches_portable() {
             "AXQ p128 compiled split MLP must match portable: {a} vs {b}"
         );
     }
-    unsafe {
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_AXQ_P128");
-    }
 }
 
 #[test]
 fn compiled_gelu_approx_split_mlp_axq_gs32_non_p128_stays_portable() {
-    unsafe {
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_AXQ_P128");
-        std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
-    }
+    let _guard = lock_process_global();
+    let _axq = ScopedEnvVar::unset("AX_MLX_COMPILED_QGELU_AXQ_P128");
+    let _shaped = ScopedEnvVar::unset("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
     let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
     let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
     let x = MlxArray::from_raw_data(
