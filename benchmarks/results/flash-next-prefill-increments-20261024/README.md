@@ -1,4 +1,4 @@
-# Flash Next prefill increments — 2026-10-24 (negative results)
+# Flash Next prefill increments — 2026-10-24
 
 Follow-up to the reference review's "Flash Next prefill pipeline" item. Pinned
 MLX 0.32.4, Flash Next MXFP4, 8,192 prompt tokens, chunk 2048, measured with the
@@ -18,6 +18,26 @@ full context. The selected KV is gathered once per query, and that staging is
 the attention cost. Removing both QSA buckets entirely would cap the gain at
 about 1.62x under this profile, so a matched 4x gap to the reference claim (a
 different machine and context length) is not reachable from QSA alone.
+
+## Shipped: GPU-side QSA prefill selection (default on)
+
+Prefill selection used to copy every chunk's block scores to the host and select
+there. A device kernel now builds an order-preserving key (score descending,
+block id ascending, the host's signed-zero rule) and selects on the GPU; rows with
+a causal non-finite score or fewer eligible blocks than the budget fall back to
+the host selector, and future blocks can never be selected.
+`AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT=0` restores host selection.
+
+The 8,192-token real-pack test matches indices and final-logit bits. Stage
+profile: `qsa_indexer` 1.775 -> 0.045 s, unsynchronized prefill 13.31 ->
+11.79 s. Server TTFT (one request per prompt after a purge, 128 generated
+tokens, greedy text identical at every length):
+
+| Prompt tokens | Host selection | GPU selection | Prefill tok/s |
+|---|---:|---:|---:|
+| 2,207 | 2.37 s | 2.34 s | 933 -> 945 |
+| 8,976 | 13.64 s | 11.56 s | 658 -> 776 |
+| 39,225 | 75.37 s | 57.76 s | 521 -> 679 |
 
 ## Tried and not merged
 
