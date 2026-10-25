@@ -247,7 +247,9 @@ export class AxEngineClient {
   async completion(request, options = {}) {
     return this.#requestJson("/v1/completions", {
       method: "POST",
-      body: request,
+      // Unary endpoint: a caller-supplied stream flag must not turn the
+      // response into SSE, which #requestJson cannot parse as JSON.
+      body: { ...request, stream: false },
       signal: options.signal,
     });
   }
@@ -255,7 +257,9 @@ export class AxEngineClient {
   async chatCompletion(request, options = {}) {
     return this.#requestJson("/v1/chat/completions", {
       method: "POST",
-      body: request,
+      // Unary endpoint: a caller-supplied stream flag must not turn the
+      // response into SSE, which #requestJson cannot parse as JSON.
+      body: { ...request, stream: false },
       signal: options.signal,
     });
   }
@@ -350,10 +354,11 @@ export class AxEngineClient {
   }
 
   async *#stream(path, body, options = {}, requiresDone = false) {
+    const signal = options.signal;
     const response = await this.#request(path, {
       method: "POST",
       body,
-      signal: options.signal,
+      signal,
       headers: {
         accept: "text/event-stream",
       },
@@ -377,6 +382,10 @@ export class AxEngineClient {
           break;
         }
         for (const parsed of parser.feed(decoder.decode(value, { stream: true }))) {
+          // A single transport chunk can carry several complete events. The
+          // consumer may abort after an earlier buffered event, so re-check the
+          // signal before yielding the next one or accepting a terminal event.
+          if (signal) signal.throwIfAborted();
           const decoded = decodeSseData(parsed.data);
           if (parsed.event === "error") {
             throw streamErrorFrom(decoded.data);

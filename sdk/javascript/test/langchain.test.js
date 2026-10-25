@@ -4,16 +4,19 @@ import assert from "node:assert/strict";
 let langchainAvailable = true;
 let ChatAXEngine;
 let AXEngineLLM;
+let ChatMessage;
 let HumanMessage;
 let AIMessage;
 let FunctionMessage;
 let ToolMessage;
 let InMemoryCache;
+let RunnableLambda;
 
 try {
   ({ ChatAXEngine, AXEngineLLM } = await import("../langchain.js"));
-  ({ AIMessage, FunctionMessage, HumanMessage, ToolMessage } = await import("@langchain/core/messages"));
+  ({ AIMessage, ChatMessage, FunctionMessage, HumanMessage, ToolMessage } = await import("@langchain/core/messages"));
   ({ InMemoryCache } = await import("@langchain/core/caches"));
+  ({ RunnableLambda } = await import("@langchain/core/runnables"));
 } catch (error) {
   if (error?.code === "ERR_MODULE_NOT_FOUND") {
     langchainAvailable = false;
@@ -60,6 +63,333 @@ for (const kind of ["chat", "completion"]) {
       }
     }
     assert.equal(calls, configurations.length);
+  });
+}
+
+function textOf(result) {
+  return typeof result === "string" ? result : result.content;
+}
+
+// A model sharing `cache` that records the requests it actually sends, keyed by
+// the completion text it answers with.
+function cachedModel(kind, { cache, answer, ...fields }) {
+  const Model = kind === "chat" ? ChatAXEngine : AXEngineLLM;
+  const model = new Model({ cache, ...fields });
+  model.requests = [];
+  model.client = {
+    async chatCompletion(request) {
+      model.requests.push(request);
+      return { choices: [{ message: { role: "assistant", content: answer } }] };
+    },
+    async completion(request) {
+      model.requests.push(request);
+      return { choices: [{ text: answer }] };
+    },
+  };
+  return model;
+}
+
+for (const kind of ["chat", "completion"]) {
+  for (const [label, perCall] of [["undefined", undefined], ["null", null]]) {
+    test(`${kind} cache separates constructor temperature defaults for ${label} per-call temperature`, skipIfNoLangChain, async () => {
+      const cache = new InMemoryCache();
+      const cold = cachedModel(kind, { cache, answer: "cold", model: "temperature-model", temperature: 0.1 });
+      const hot = cachedModel(kind, { cache, answer: "hot", model: "temperature-model", temperature: 0.9 });
+
+      const first = await cold.invoke("same prompt", { temperature: perCall });
+      const second = await hot.invoke("same prompt", { temperature: perCall });
+
+      assert.equal(textOf(first), "cold");
+      assert.equal(textOf(second), "hot");
+      assert.equal(cold.requests.length, 1);
+      assert.equal(hot.requests.length, 1);
+      assert.equal(cold.requests[0].temperature, 0.1);
+      assert.equal(hot.requests[0].temperature, 0.9);
+    });
+  }
+
+  test(`${kind} cache treats an equivalent per-call stop as the constructor default`, skipIfNoLangChain, async () => {
+    const cache = new InMemoryCache();
+    const viaDefault = cachedModel(kind, { cache, answer: "shared", model: "stop-model", stop: ["END"] });
+    const viaCall = cachedModel(kind, { cache, answer: "unexpected", model: "stop-model" });
+
+    const first = await viaDefault.invoke("prompt", { stop: undefined });
+    const second = await viaCall.invoke("prompt", { stop: ["END"] });
+
+    assert.equal(textOf(first), "shared");
+    assert.equal(textOf(second), "shared");
+    assert.equal(viaDefault.requests.length, 1);
+    assert.equal(viaCall.requests.length, 0);
+  });
+
+  test(`${kind} cache keys an empty stop array as an explicit override`, skipIfNoLangChain, async () => {
+    const cache = new InMemoryCache();
+    const defaulted = cachedModel(kind, { cache, answer: "defaulted", model: "stop-model", stop: ["END"] });
+    const overridden = cachedModel(kind, { cache, answer: "overridden", model: "stop-model", stop: ["END"] });
+
+    const first = await defaulted.invoke("prompt", {});
+    const second = await overridden.invoke("prompt", { stop: [] });
+
+    assert.equal(textOf(first), "defaulted");
+    assert.equal(textOf(second), "overridden");
+    assert.equal(overridden.requests.length, 1);
+    assert.deepEqual(overridden.requests[0].stop, []);
+  });
+}
+
+for (const kind of ["chat", "completion"]) {
+  for (const [label, perCall] of [["undefined", undefined], ["null", null]]) {
+    test(`${kind} cache separates constructor request metadata defaults for ${label} per-call requestMetadata`, skipIfNoLangChain, async () => {
+      const cache = new InMemoryCache();
+      const requestA = cachedModel(kind, {
+        cache,
+        answer: "request-a",
+        model: "metadata-model",
+        requestMetadata: "request-a",
+      });
+      const requestB = cachedModel(kind, {
+        cache,
+        answer: "request-b",
+        model: "metadata-model",
+        requestMetadata: "request-b",
+      });
+
+      const first = await requestA.invoke("same prompt", { requestMetadata: perCall });
+      const second = await requestB.invoke("same prompt", { requestMetadata: perCall });
+
+      assert.equal(textOf(first), "request-a");
+      assert.equal(textOf(second), "request-b");
+      assert.equal(requestA.requests.length, 1);
+      assert.equal(requestB.requests.length, 1);
+      assert.equal(requestA.requests[0].metadata, "request-a");
+      assert.equal(requestB.requests[0].metadata, "request-b");
+    });
+  }
+}
+
+// A model that records each request's metadata and answers with that value, so
+// a cache hit (or a wrong request field) is visible as a missing request.
+function metadataEchoModel(kind, fields = {}) {
+  const Model = kind === "chat" ? ChatAXEngine : AXEngineLLM;
+  const model = new Model({ model: "metadata-echo-model", ...fields });
+  model.requests = [];
+  model.client = {
+    async chatCompletion(request) {
+      model.requests.push(request.metadata);
+      return { choices: [{ message: { role: "assistant", content: `answer-${request.metadata}` } }] };
+    },
+    async completion(request) {
+      model.requests.push(request.metadata);
+      return { choices: [{ text: `answer-${request.metadata}` }] };
+    },
+  };
+  return model;
+}
+
+function echoInvoke(model, kind, options) {
+  return kind === "chat"
+    ? model.invoke([new HumanMessage("hi")], options)
+    : model.invoke("hi", options);
+}
+
+for (const kind of ["chat", "completion"]) {
+  test(`${kind} public invoke sends distinct legacy per-call metadata strings`, skipIfNoLangChain, async () => {
+    const cache = new InMemoryCache();
+    const model = metadataEchoModel(kind, { cache, requestMetadata: "ctor" });
+
+    const first = await echoInvoke(model, kind, { metadata: "legacy-a" });
+    const second = await echoInvoke(model, kind, { metadata: "legacy-b" });
+
+    assert.equal(textOf(first), "answer-legacy-a");
+    assert.equal(textOf(second), "answer-legacy-b");
+    assert.deepEqual(model.requests, ["legacy-a", "legacy-b"]);
+  });
+
+  test(`${kind} public invoke prefers explicit requestMetadata over legacy metadata`, skipIfNoLangChain, async () => {
+    const model = metadataEchoModel(kind, { requestMetadata: "ctor" });
+
+    const explicit = await echoInvoke(model, kind, { metadata: "legacy", requestMetadata: "explicit" });
+    const nullish = await echoInvoke(model, kind, { metadata: "legacy-nullish", requestMetadata: null });
+
+    assert.equal(textOf(explicit), "answer-explicit");
+    assert.equal(textOf(nullish), "answer-legacy-nullish");
+    assert.deepEqual(model.requests, ["explicit", "legacy-nullish"]);
+  });
+
+  test(`${kind} public stream forwards legacy per-call metadata`, skipIfNoLangChain, async () => {
+    const model = kind === "chat" ? new ChatAXEngine({ requestMetadata: "ctor" }) : new AXEngineLLM({ requestMetadata: "ctor" });
+    const sent = [];
+    model.client = {
+      async *[kind === "chat" ? "streamChatCompletion" : "streamCompletion"](request) {
+        sent.push(request.metadata);
+        yield { data: { choices: [kind === "chat" ? { delta: { content: "ok" } } : { text: "ok" }] } };
+        yield {
+          data: {
+            choices: [kind === "chat"
+              ? { delta: {}, finish_reason: "stop" }
+              : { text: "", finish_reason: "stop" }],
+          },
+        };
+      },
+    };
+
+    const stream = await model.stream("hi", { metadata: "legacy-stream" });
+    const parts = [];
+    for await (const chunk of stream) {
+      parts.push(kind === "chat" ? chunk.content : chunk);
+    }
+
+    assert.equal(parts.join(""), "ok");
+    assert.deepEqual(sent, ["legacy-stream"]);
+  });
+}
+
+// A fake streaming transport that records the request metadata it is handed.
+function streamingModel(kind) {
+  const Model = kind === "chat" ? ChatAXEngine : AXEngineLLM;
+  const model = new Model({ requestMetadata: "ctor" });
+  model.sent = [];
+  model.client = {
+    async *[kind === "chat" ? "streamChatCompletion" : "streamCompletion"](request) {
+      model.sent.push(request.metadata);
+      yield { data: { choices: [kind === "chat" ? { delta: { content: "ok" } } : { text: "ok" }] } };
+      yield {
+        data: {
+          choices: [kind === "chat"
+            ? { delta: {}, finish_reason: "stop" }
+            : { text: "", finish_reason: "stop" }],
+        },
+      };
+    },
+  };
+  return model;
+}
+
+// `ensureConfig` writes `metadata.timeoutMs` whenever `timeout` is set, so a
+// legacy string `metadata` threw there before this model could promote it to
+// `requestMetadata`. Capture the metadata LangChain hands to callbacks so a
+// leaked string is visible as a non-object.
+function tracingMetadataCapture() {
+  const seen = [];
+  function record(_model, _input, _runId, _parentRunId, _extraParams, _tags, metadata) {
+    seen.push(metadata);
+  }
+  return { seen, handler: { handleChatModelStart: record, handleLLMStart: record } };
+}
+
+function assertNoLeakedLegacyMetadata(tracing, legacyValue) {
+  assert.ok(tracing.seen.length > 0);
+  for (const metadata of tracing.seen) {
+    assert.equal(typeof metadata, "object");
+    assert.ok(!JSON.stringify(metadata).includes(legacyValue));
+  }
+}
+
+for (const kind of ["chat", "completion"]) {
+  test(`${kind} public stream accepts legacy metadata with a timeout`, skipIfNoLangChain, async () => {
+    const model = streamingModel(kind);
+    const tracing = tracingMetadataCapture();
+    const options = { metadata: "legacy-timeout", timeout: 5000, callbacks: [tracing.handler] };
+
+    const parts = [];
+    for await (const chunk of await model.stream("hi", options)) {
+      parts.push(kind === "chat" ? chunk.content : chunk);
+    }
+
+    assert.equal(parts.join(""), "ok");
+    assert.deepEqual(model.sent, ["legacy-timeout"]);
+    assertNoLeakedLegacyMetadata(tracing, "legacy-timeout");
+    assert.equal(tracing.seen[0].timeoutMs, 5000);
+    // The caller's options object is not rewritten.
+    assert.equal(options.metadata, "legacy-timeout");
+    assert.equal(options.requestMetadata, undefined);
+  });
+
+  test(`${kind} public stream keeps explicit requestMetadata above a legacy string`, skipIfNoLangChain, async () => {
+    const model = streamingModel(kind);
+    const parts = [];
+
+    const stream = await model.stream("hi", {
+      metadata: "legacy-timeout",
+      requestMetadata: "explicit",
+      timeout: 5000,
+    });
+    for await (const chunk of stream) {
+      parts.push(kind === "chat" ? chunk.content : chunk);
+    }
+
+    assert.equal(parts.join(""), "ok");
+    assert.deepEqual(model.sent, ["explicit"]);
+  });
+
+  test(`${kind} public streamEvents accepts legacy metadata with a timeout`, skipIfNoLangChain, async () => {
+    const model = streamingModel(kind);
+    const tracing = tracingMetadataCapture();
+    const options = {
+      version: "v2",
+      metadata: "legacy-events",
+      timeout: 5000,
+      callbacks: [tracing.handler],
+    };
+
+    // Chat and completion runs report a different run type and event prefix.
+    const runType = kind === "chat" ? "chat_model" : "llm";
+    const events = [];
+    for await (const event of model.streamEvents("hi", options, { includeTypes: [runType] })) {
+      events.push(event);
+    }
+
+    assert.deepEqual(model.sent, ["legacy-events"]);
+    assert.ok(events.some((event) => event.event.endsWith("_stream")));
+    assertNoLeakedLegacyMetadata(tracing, "legacy-events");
+  });
+
+  test(`${kind} public streamLog accepts legacy metadata with a timeout`, skipIfNoLangChain, async () => {
+    const model = streamingModel(kind);
+    const tracing = tracingMetadataCapture();
+    const options = { metadata: "legacy-log", timeout: 5000, callbacks: [tracing.handler] };
+
+    const runType = kind === "chat" ? "chat_model" : "llm";
+    const logs = [];
+    for await (const log of model.streamLog("hi", options, { includeTypes: [runType] })) {
+      logs.push(log);
+    }
+
+    assert.deepEqual(model.sent, ["legacy-log"]);
+    assert.ok(logs.some((log) => JSON.stringify(log.ops).includes("streamed_output")));
+    assertNoLeakedLegacyMetadata(tracing, "legacy-log");
+  });
+
+  test(`${kind} public batch accepts legacy metadata with a timeout`, skipIfNoLangChain, async () => {
+    const model = metadataEchoModel(kind);
+
+    await model.batch(["hi"], { metadata: "legacy-batch", timeout: 5000 });
+    await model.batch(
+      ["hi", "hi"],
+      [
+        { metadata: "legacy-array-a", timeout: 5000 },
+        { metadata: "legacy-array-b", timeout: 5000 },
+      ],
+    );
+
+    // Batched calls run concurrently, so compare without relying on order.
+    assert.deepEqual(model.requests.sort(), ["legacy-array-a", "legacy-array-b", "legacy-batch"]);
+  });
+
+  test(`${kind} public transform accepts legacy metadata with a timeout`, skipIfNoLangChain, async () => {
+    const model = streamingModel(kind);
+    async function* inputs() {
+      yield "hi";
+    }
+
+    const parts = [];
+    const stream = model.transform(inputs(), { metadata: "legacy-transform", timeout: 5000 });
+    for await (const chunk of stream) {
+      parts.push(kind === "chat" ? chunk.content : chunk);
+    }
+
+    assert.equal(parts.join(""), "ok");
+    assert.deepEqual(model.sent, ["legacy-transform"]);
   });
 }
 
@@ -277,6 +607,25 @@ test("ChatAXEngine preserves assistant, tool, and function history", skipIfNoLan
   });
 });
 
+test("ChatAXEngine forwards the ChatMessage role through a public invoke", skipIfNoLangChain, async () => {
+  const chat = new ChatAXEngine();
+  let capturedRequest;
+  chat.client = {
+    async chatCompletion(request) {
+      capturedRequest = request;
+      return { choices: [{ message: { role: "assistant", content: "ok" } }] };
+    },
+  };
+
+  await chat.invoke([
+    new ChatMessage({ role: "system", content: "Be terse." }),
+    new HumanMessage("hi"),
+  ]);
+
+  assert.deepEqual(capturedRequest.messages[0], { role: "system", content: "Be terse." });
+  assert.deepEqual(capturedRequest.messages[1], { role: "user", content: "hi" });
+});
+
 test("ChatAXEngine bindTools forwards tools and a specific choice", skipIfNoLangChain, async () => {
   const chat = new ChatAXEngine();
   let capturedRequest;
@@ -341,5 +690,99 @@ for (const kind of ["chat", "completion"]) {
     assert.equal(parts.join(""), "Hello world");
     assert.equal(result.generations[0][0].text, "Hello world");
     assert.equal(result.generations[0][0].generationInfo.finishReason, "stop");
+  });
+}
+
+test("AXEngineLLM streams aggregate inside a RunnableLambda event stream", skipIfNoLangChain, async () => {
+  const llm = new AXEngineLLM();
+  llm.client = {
+    async *streamCompletion() {
+      for (const text of ["Hello", " world"]) {
+        yield { data: { choices: [{ text, finish_reason: null }] } };
+      }
+      yield { data: { choices: [{ text: "", finish_reason: "stop" }] } };
+    },
+  };
+  const runnable = RunnableLambda.from((input, config) => llm.invoke(input, config));
+
+  const events = [];
+  for await (const event of runnable.streamEvents("hello", { version: "v2" })) {
+    events.push(event);
+  }
+
+  const tokens = events
+    .filter((event) => event.event === "on_llm_stream")
+    .map((event) => event.data.chunk.text)
+    .join("");
+  const endEvent = events.find((event) => event.event === "on_llm_end");
+  assert.equal(tokens, "Hello world");
+  assert.equal(endEvent.data.output.generations[0][0].text, "Hello world");
+  assert.equal(endEvent.data.output.generations[0][0].generationInfo.finishReason, "stop");
+});
+
+test("ChatAXEngine bindings preserve legacy metadata and tools", skipIfNoLangChain, async () => {
+  const model = streamingModel("chat");
+  model.client.chatCompletion = async (request) => {
+    model.sent.push(request.metadata);
+    return { choices: [{ message: { role: "assistant", content: "ok" } }] };
+  };
+  const tracing = tracingMetadataCapture();
+  const bound = model.bindTools([{
+    type: "function",
+    function: { name: "weather", description: "Get weather", parameters: { type: "object" } },
+  }], { metadata: "legacy-bound", tool_choice: "weather" });
+
+  const result = await bound.invoke("hi");
+  assert.equal(result.content, "ok");
+  assert.deepEqual(model.sent, ["legacy-bound"]);
+  assert.equal(bound.kwargs.tools[0].function.name, "weather");
+  assert.equal(bound.kwargs.tool_choice.function.name, "weather");
+
+  const options = { metadata: "legacy-call", timeout: 5000, callbacks: [tracing.handler] };
+  const parts = [];
+  for await (const chunk of await bound.stream("hi", options)) {
+    parts.push(chunk.content);
+  }
+  assert.equal(parts.join(""), "ok");
+  assert.deepEqual(model.sent, ["legacy-bound", "legacy-bound"]);
+  assertNoLeakedLegacyMetadata(tracing, "legacy-call");
+  assert.equal(options.metadata, "legacy-call");
+});
+
+for (const kind of ["chat", "completion"]) {
+  test(`${kind} withConfig chains preserve the latest legacy metadata`, skipIfNoLangChain, async () => {
+    const model = metadataEchoModel(kind, { requestMetadata: "ctor" });
+    const bound = model
+      .withConfig({ metadata: "first" })
+      .withConfig({ metadata: "second" });
+
+    const result = await echoInvoke(bound, kind, {});
+    assert.equal(textOf(result), "answer-second");
+    assert.deepEqual(model.requests, ["second"]);
+
+    const explicit = await echoInvoke(bound, kind, { requestMetadata: "call" });
+    assert.equal(textOf(explicit), "answer-call");
+    assert.deepEqual(model.requests, ["second", "call"]);
+  });
+
+  test(`${kind} withRetry normalizes legacy metadata before retry config`, skipIfNoLangChain, async () => {
+    const model = metadataEchoModel(kind, { requestMetadata: "ctor" });
+    const bound = model.withRetry({ stopAfterAttempt: 1 });
+
+    const result = await echoInvoke(bound, kind, { metadata: "legacy-retry" });
+    assert.equal(textOf(result), "answer-legacy-retry");
+    assert.deepEqual(model.requests, ["legacy-retry"]);
+
+    const streamed = streamingModel(kind);
+    const retryStream = streamed.withRetry({ stopAfterAttempt: 1 });
+    const parts = [];
+    for await (const chunk of await retryStream.stream("hi", {
+      metadata: "legacy-retry-stream",
+      timeout: 5000,
+    })) {
+      parts.push(kind === "chat" ? chunk.content : chunk);
+    }
+    assert.equal(parts.join(""), "ok");
+    assert.deepEqual(streamed.sent, ["legacy-retry-stream"]);
   });
 }

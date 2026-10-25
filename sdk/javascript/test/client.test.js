@@ -855,3 +855,197 @@ test("SSE handles empty fields and preserves event-name whitespace", async () =>
     assert.deepEqual(events, [expected]);
   }
 });
+
+// Abort handling is checked per buffered event: a single transport chunk can
+// carry several complete SSE events (plus [DONE] or a terminal response), so
+// only consulting options.signal when calling fetch would leak post-abort
+// events to a consumer that already stopped reading.
+const ABORTED_BUFFERED_STREAM_CASES = [
+  {
+    method: "streamGenerate",
+    request: { input_tokens: [1], max_output_tokens: 2 },
+    firstEvent: { event: "step", data: { index: 1 } },
+    wire:
+      'event: step\ndata: {"index":1}\n\n' +
+      'event: step\ndata: {"index":2}\n\n' +
+      'event: response\ndata: {"finish_reason":"stop"}\n\n',
+  },
+  {
+    method: "streamCompletion",
+    request: { prompt: "Hello" },
+    firstEvent: { event: "message", data: { index: 1 } },
+    wire:
+      'data: {"index":1}\n\n' +
+      'data: {"index":2}\n\n' +
+      'data: [DONE]\n\n',
+  },
+  {
+    method: "streamChatCompletion",
+    request: { messages: [{ role: "user", content: "Hello" }] },
+    firstEvent: { event: "message", data: { index: 1 } },
+    wire:
+      'data: {"index":1}\n\n' +
+      'data: {"index":2}\n\n' +
+      'data: [DONE]\n\n',
+  },
+];
+
+for (const { method, request, firstEvent, wire } of ABORTED_BUFFERED_STREAM_CASES) {
+  test(`${method} drops buffered events after the consumer aborts`, async () => {
+    const client = new AxEngineClient({
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(wire));
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+
+    const controller = new AbortController();
+    const received = [];
+    await assert.rejects(
+      async () => {
+        for await (const event of client[method](request, { signal: controller.signal })) {
+          received.push(event);
+          // Abort after the first event of the coalesced chunk is delivered.
+          controller.abort();
+        }
+      },
+      (error) => error.name === "AbortError",
+    );
+
+    assert.deepEqual(received, [firstEvent]);
+  });
+}
+
+test("streamCompletion rejects a buffered [DONE] once the consumer aborts", async () => {
+  const client = new AxEngineClient({
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('data: {"index":1}\n\ndata: [DONE]\n\n'),
+            );
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+  });
+
+  const controller = new AbortController();
+  const received = [];
+  await assert.rejects(
+    async () => {
+      for await (const event of client.streamCompletion(
+        { prompt: "Hello" },
+        { signal: controller.signal },
+      )) {
+        received.push(event);
+        controller.abort();
+      }
+    },
+    (error) => error.name === "AbortError",
+  );
+
+  // [DONE] must not be accepted as a normal completion after the abort.
+  assert.deepEqual(received, [{ event: "message", data: { index: 1 } }]);
+});
+
+test("streamCompletion and streamChatCompletion still force stream:true", async () => {
+  for (const [method, path] of [
+    ["streamCompletion", "/v1/completions"],
+    ["streamChatCompletion", "/v1/chat/completions"],
+  ]) {
+    const calls = [];
+    const client = new AxEngineClient({
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        return new Response('data: {"id":"first"}\n\ndata: [DONE]\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+
+    const request = { prompt: "Hello", stream: false };
+    const events = [];
+    for await (const event of client[method](request)) events.push(event);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `http://127.0.0.1:31418${path}`);
+    assert.equal(calls[0].body.stream, true);
+    assert.equal(request.stream, false, "caller request must not be mutated");
+    assert.deepEqual(events, [{ event: "message", data: { id: "first" } }]);
+  }
+});
+
+// Unary completions use a JSON contract. Forwarding a caller-supplied
+// stream:true would make the server answer with SSE and #requestJson would
+// then raise a non-JSON AxEngineHttpError on an HTTP 200 response.
+const UNARY_STREAM_REQUEST_CASES = [
+  {
+    method: "completion",
+    path: "/v1/completions",
+    request: {
+      prompt: "Hello",
+      max_tokens: 4,
+      stream: true,
+      metadata: { source: "test" },
+    },
+    response: {
+      id: "cmpl-1",
+      object: "text_completion",
+      choices: [{ index: 0, text: "Hi", finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+  },
+  {
+    method: "chatCompletion",
+    path: "/v1/chat/completions",
+    request: {
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 4,
+      stream: true,
+      metadata: { source: "test" },
+    },
+    response: {
+      id: "chatcmpl-1",
+      object: "chat.completion",
+      choices: [
+        { index: 0, message: { role: "assistant", content: "Hi" }, finish_reason: "stop" },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+  },
+];
+
+for (const { method, path, request, response } of UNARY_STREAM_REQUEST_CASES) {
+  test(`${method} overrides stream:true and parses the unary JSON response`, async () => {
+    const calls = [];
+    const client = new AxEngineClient({
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        return Response.json(response);
+      },
+    });
+
+    const snapshot = structuredClone(request);
+    const result = await client[method](request);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `http://127.0.0.1:31418${path}`);
+    assert.equal(calls[0].body.stream, false);
+    // Every other field survives the override.
+    assert.equal(calls[0].body.max_tokens, 4);
+    assert.deepEqual(calls[0].body.metadata, { source: "test" });
+    assert.deepEqual(result, response);
+    // The caller's object is not mutated.
+    assert.deepEqual(request, snapshot);
+    assert.equal(request.stream, true);
+  });
+}
