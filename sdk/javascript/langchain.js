@@ -14,6 +14,23 @@ function firstChoice(response, endpoint) {
   return choices[0];
 }
 
+function identifyingParams(model) {
+  return {
+    baseUrl: model.client.baseUrl,
+    model: model.model,
+    maxTokens: model.maxTokens,
+    temperature: model.temperature,
+    topP: model.topP,
+    topK: model.topK,
+    minP: model.minP,
+    repetitionPenalty: model.repetitionPenalty,
+    // LangChain adds the per-call stop field, even when it is undefined.
+    defaultStop: model.stop,
+    seed: model.seed,
+    requestMetadata: model.requestMetadata,
+  };
+}
+
 function messageToOpenAi(message) {
   const type = message._getType ? message._getType() : message.role;
   let role;
@@ -43,6 +60,9 @@ function messageToOpenAi(message) {
           typeof toolCall.args === "string" ? toolCall.args : JSON.stringify(toolCall.args ?? {}),
       },
     }));
+  }
+  if (role === "assistant" && message.additional_kwargs?.function_call) {
+    converted.function_call = message.additional_kwargs.function_call;
   }
   return converted;
 }
@@ -150,6 +170,10 @@ export class ChatAXEngine extends BaseChatModel {
 
   _llmType() {
     return "ax-engine";
+  }
+
+  _identifyingParams() {
+    return identifyingParams(this);
   }
 
   bindTools(tools, kwargs = {}) {
@@ -267,6 +291,10 @@ export class AXEngineLLM extends LLM {
 
   _llmType() {
     return "ax-engine";
+  }
+
+  _identifyingParams() {
+    return identifyingParams(this);
   }
 
   _buildCompletionRequest(prompt, options) {

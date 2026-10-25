@@ -8,10 +8,12 @@ let HumanMessage;
 let AIMessage;
 let FunctionMessage;
 let ToolMessage;
+let InMemoryCache;
 
 try {
   ({ ChatAXEngine, AXEngineLLM } = await import("../langchain.js"));
   ({ AIMessage, FunctionMessage, HumanMessage, ToolMessage } = await import("@langchain/core/messages"));
+  ({ InMemoryCache } = await import("@langchain/core/caches"));
 } catch (error) {
   if (error?.code === "ERR_MODULE_NOT_FOUND") {
     langchainAvailable = false;
@@ -21,6 +23,60 @@ try {
 }
 
 const skipIfNoLangChain = { skip: !langchainAvailable && "@langchain/core not installed" };
+
+for (const kind of ["chat", "completion"]) {
+  test(`${kind} cache separates endpoint, model, and generation defaults`, skipIfNoLangChain, async () => {
+    const cache = new InMemoryCache();
+    const configurations = [
+      {},
+      { baseUrl: "http://127.0.0.1:31418/other" },
+      { model: "another-model" },
+      { maxTokens: 12 },
+      { temperature: 0 },
+      { topP: 0.8 },
+      { topK: 20 },
+      { minP: 0.1 },
+      { repetitionPenalty: 1.1 },
+      { stop: ["END"] },
+      { seed: 42 },
+      { requestMetadata: "request-1" },
+    ];
+    let calls = 0;
+    for (const [index, configuration] of configurations.entries()) {
+      const Model = kind === "chat" ? ChatAXEngine : AXEngineLLM;
+      const model = new Model({ cache, ...configuration });
+      const text = `answer-${index}`;
+      model.client.chatCompletion = async () => {
+        calls++;
+        return { choices: [{ message: { role: "assistant", content: text } }] };
+      };
+      model.client.completion = async () => {
+        calls++;
+        return { choices: [{ text }] };
+      };
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const result = await model.invoke("hello");
+        assert.equal(typeof result === "string" ? result : result.content, text);
+      }
+    }
+    assert.equal(calls, configurations.length);
+  });
+}
+
+test("ChatAXEngine preserves legacy function calls when replaying assistant history", skipIfNoLangChain, async () => {
+  const chat = new ChatAXEngine();
+  const functionCall = { name: "weather", arguments: '{"city":"Toronto"}' };
+  chat.client = fakeClient({
+    choices: [{ message: { role: "assistant", content: null, function_call: functionCall } }],
+  });
+  const reply = await chat.invoke("What is the weather?");
+  const request = chat._buildChatRequest([
+    new HumanMessage("What is the weather?"),
+    reply,
+    new FunctionMessage({ content: "sunny", name: "weather" }),
+  ], {});
+  assert.deepEqual(request.messages[1].function_call, functionCall);
+});
 
 function fakeClient(response) {
   return {
