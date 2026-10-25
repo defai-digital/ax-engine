@@ -91,15 +91,22 @@ fn mlx_memory() -> Option<Value> {
 }
 
 /// macOS physical footprint from `mlx_sys::process_memory_footprint`.
+///
+/// The two kernel counters are not sampled atomically, so a raw lifetime
+/// peak can sit about a page under the live footprint. The probe clamps
+/// `lifetime_max` up to the live sample, and this publish path does the
+/// same, so clients always see both fields null or
+/// `lifetime_max_phys_footprint_bytes >= phys_footprint_bytes`.
 /// Delegated builds have no `mlx-sys` linkage and report nulls.
 fn physical_footprint() -> (Option<u64>, Option<u64>) {
     #[cfg(feature = "mlx-native-server")]
     {
         match mlx_sys::process_memory_footprint() {
-            Some(footprint) => (
-                Some(footprint.phys_footprint_bytes),
-                Some(footprint.lifetime_max_phys_footprint_bytes),
-            ),
+            Some(footprint) => {
+                let live = footprint.phys_footprint_bytes;
+                let peak = footprint.lifetime_max_phys_footprint_bytes.max(live);
+                (Some(live), Some(peak))
+            }
             None => (None, None),
         }
     }

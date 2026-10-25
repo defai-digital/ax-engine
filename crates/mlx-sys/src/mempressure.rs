@@ -66,17 +66,36 @@ pub fn host_resident_bytes() -> Option<u64> {
 }
 
 /// Physical footprint of this process from macOS `proc_pid_rusage`.
+///
+/// `lifetime_max_phys_footprint_bytes` is at least `phys_footprint_bytes`.
+/// The kernel does not sample the live footprint and the lifetime peak
+/// atomically, so a raw peak a page under the live value is raised to the
+/// live sample before it is returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessFootprint {
     pub phys_footprint_bytes: u64,
     pub lifetime_max_phys_footprint_bytes: u64,
 }
 
+/// Lifetime peak published next to a live footprint sample.
+///
+/// `proc_pid_rusage` fills `ri_phys_footprint` and
+/// `ri_lifetime_max_phys_footprint` in one struct, but the kernel does not
+/// sample the two counters atomically. The live value can therefore exceed
+/// the recorded lifetime peak by about a page. Raising the peak to the live
+/// sample keeps the published invariant `lifetime_max >= live`.
+fn lifetime_max_at_least_live(live_bytes: u64, lifetime_max_bytes: u64) -> u64 {
+    lifetime_max_bytes.max(live_bytes)
+}
+
 /// Current and lifetime-max physical footprint of this process.
 ///
 /// On macOS this calls `proc_pid_rusage` with `RUSAGE_INFO_V4` and reads
-/// `ri_phys_footprint` and `ri_lifetime_max_phys_footprint`. Returns `None`
-/// off macOS and when the call fails.
+/// `ri_phys_footprint` and `ri_lifetime_max_phys_footprint`. The lifetime
+/// peak is then raised to the live sample when the two counters disagree,
+/// so a caller always observes
+/// `lifetime_max_phys_footprint_bytes >= phys_footprint_bytes`.
+/// Returns `None` off macOS and when the call fails.
 pub fn process_memory_footprint() -> Option<ProcessFootprint> {
     #[cfg(target_os = "macos")]
     {
@@ -100,9 +119,13 @@ pub fn process_memory_footprint() -> Option<ProcessFootprint> {
         // SAFETY: a zero return means `proc_pid_rusage` initialized the
         // `RUSAGE_INFO_V4` struct.
         let info = unsafe { info.assume_init() };
+        let live = info.ri_phys_footprint;
         Some(ProcessFootprint {
-            phys_footprint_bytes: info.ri_phys_footprint,
-            lifetime_max_phys_footprint_bytes: info.ri_lifetime_max_phys_footprint,
+            phys_footprint_bytes: live,
+            lifetime_max_phys_footprint_bytes: lifetime_max_at_least_live(
+                live,
+                info.ri_lifetime_max_phys_footprint,
+            ),
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -177,6 +200,22 @@ pub fn device_recommended_working_set_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use crate::test_support::lock_process_global;
+
+    #[test]
+    fn lifetime_max_at_least_live_clamps_a_stale_peak() {
+        // The kernel race reports a live footprint about a page above the
+        // lifetime counter. The published peak must rise to the live sample.
+        assert_eq!(
+            lifetime_max_at_least_live(37_274_392, 37_241_624),
+            37_274_392
+        );
+        assert_eq!(lifetime_max_at_least_live(4_096 + 100, 4_096), 4_196);
+        // A peak that is already ahead of the live sample stays put.
+        assert_eq!(lifetime_max_at_least_live(100, 4_096), 4_096);
+        assert_eq!(lifetime_max_at_least_live(7, 7), 7);
+        assert_eq!(lifetime_max_at_least_live(0, 0), 0);
+        assert_eq!(lifetime_max_at_least_live(u64::MAX, u64::MAX - 1), u64::MAX);
+    }
 
     #[test]
     fn process_memory_footprint_is_positive_on_macos() {
