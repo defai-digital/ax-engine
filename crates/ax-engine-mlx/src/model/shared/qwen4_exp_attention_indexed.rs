@@ -30,7 +30,7 @@
 
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, LazyKernel, MlxArray, MlxDtype, contiguous, reshape,
-    transpose,
+    transpose, zeros,
 };
 
 use super::qwen4_exp_attention::{BATCHED_ATTENTION_MIN_QUERIES, Qwen4ExpAttentionError};
@@ -53,7 +53,7 @@ const INDEXED_SOURCE: &str = include_str!(concat!(
 static INDEXED: LazyKernel = LazyKernel::new(
     "ax_flash_next_qsa_indexed_attention_v1",
     &[
-        "q", "k_sealed", "k_tail", "v_sealed", "v_tail", "indices", "lengths", "scales",
+        "q", "k_sealed", "k_tail", "v_sealed", "v_tail", "indices", "lengths", "scales", "params",
     ],
     &["out"],
     INDEXED_SOURCE,
@@ -177,13 +177,60 @@ pub(super) fn attend_selected_indexed(
     let Some(kernel) = INDEXED.get() else {
         return Ok(None);
     };
+    launch_indexed(
+        kernel,
+        queries,
+        &segments,
+        &packed.indices,
+        &packed.lengths,
+        q_heads,
+        kv_heads,
+        dim,
+        seq,
+        total_rows,
+        packed.width,
+        scale,
+    )
+}
 
+/// Launch the indexed-attention pipeline for one packed selection.
+///
+/// The template holds only model geometry; the per-chunk row counts and the
+/// selection width ride in a `params` buffer. This is the one launch the
+/// request path and the load-time warm-up share, so a warm-up with the model's
+/// own geometry compiles exactly the pipeline production dispatches.
+#[allow(clippy::too_many_arguments)]
+fn launch_indexed(
+    kernel: &mlx_sys::MlxMetalKernel,
+    queries: &MlxArray,
+    segments: &Segments,
+    indices: &MlxArray,
+    lengths: &MlxArray,
+    q_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    seq: i32,
+    total_rows: i32,
+    width: i32,
+    scale: f32,
+) -> Result<Option<MlxArray>> {
     let q_rows = contiguous(&transpose(queries, &[2, 1, 0, 3], None), None);
     let scale = MlxArray::from_raw_data(
         (&scale as *const f32).cast(),
         std::mem::size_of::<f32>(),
         &[1],
         MlxDtype::Float32,
+    );
+    // The row counts and the selection width change with the request position
+    // and the chosen block count, so they travel in a buffer: the compiled
+    // pipeline is specialised only by the model geometry, which lets the
+    // load-time warm-up cover every later chunk.
+    let params_data = [segments.sealed_rows, total_rows, width];
+    let params = MlxArray::from_raw_data(
+        params_data.as_ptr().cast(),
+        std::mem::size_of_val(params_data.as_slice()),
+        &[3],
+        MlxDtype::Int32,
     );
     let template = [
         KernelTemplateArg::Dtype {
@@ -192,7 +239,7 @@ pub(super) fn attend_selected_indexed(
         },
         KernelTemplateArg::Int {
             name: "HeadDim",
-            value: dim,
+            value: head_dim,
         },
         KernelTemplateArg::Int {
             name: "Heads",
@@ -206,18 +253,6 @@ pub(super) fn attend_selected_indexed(
             name: "Group",
             value: q_heads / kv_heads,
         },
-        KernelTemplateArg::Int {
-            name: "SealedRows",
-            value: segments.sealed_rows,
-        },
-        KernelTemplateArg::Int {
-            name: "TotalRows",
-            value: total_rows,
-        },
-        KernelTemplateArg::Int {
-            name: "MaxSelected",
-            value: packed.width,
-        },
     ];
     let outputs = match kernel.try_apply_with_template(
         &[
@@ -226,12 +261,13 @@ pub(super) fn attend_selected_indexed(
             &segments.k_tail,
             &segments.v_sealed,
             &segments.v_tail,
-            &packed.indices,
-            &packed.lengths,
+            indices,
+            lengths,
             &scale,
+            &params,
         ],
         &[KernelOutputSpec {
-            shape: vec![seq, q_heads, dim],
+            shape: vec![seq, q_heads, head_dim],
             dtype: queries.dtype(),
         }],
         &template,
@@ -253,9 +289,100 @@ pub(super) fn attend_selected_indexed(
     // the layout the caller's gate and output stages expect.
     Ok(Some(reshape(
         &transpose(&out, &[1, 0, 2], None),
-        &[1, q_heads, seq, dim],
+        &[1, q_heads, seq, head_dim],
         None,
     )))
+}
+
+/// Whether model load should compile the indexed QSA prefill kernel.
+///
+/// Only Flash Next packs ever dispatch it, `AX_MLX_LOAD_KERNEL_WARMUP=0` skips
+/// every load-time compile, and `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` is
+/// default OFF, so a stock load compiles nothing.
+pub(crate) fn indexed_prefill_warmup_applies(
+    qwen4_exp: bool,
+    kernel_warmup: bool,
+    indexed_prefill: bool,
+) -> bool {
+    qwen4_exp && kernel_warmup && indexed_prefill
+}
+
+/// Compile the production indexed-attention pipeline once, at load.
+///
+/// The template is the model geometry (`T`, `HeadDim`, `Heads`, `KvHeads`,
+/// `Group`), so one launch with the config's own values compiles the same
+/// pipeline every later prefill chunk reuses; the per-chunk row counts and the
+/// selection width travel in a buffer, not in the specialization. Best-effort:
+/// the caller logs `Err` and the request path keeps the gathered fallback.
+pub(crate) fn warm_indexed_prefill_kernel(
+    q_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    dtype: MlxDtype,
+) -> std::result::Result<(), String> {
+    if !enabled() {
+        return Err("indexed QSA prefill warm-up skipped: the switch is off".to_string());
+    }
+    if !kernel_geometry_ok(q_heads, kv_heads, head_dim, dtype) {
+        return Err(format!(
+            "indexed QSA prefill warm-up geometry is unsupported: q_heads={q_heads}, \
+             kv_heads={kv_heads}, head_dim={head_dim}, dtype={dtype:?}"
+        ));
+    }
+    let Some(kernel) = INDEXED.get() else {
+        return Err("indexed QSA prefill warm-up could not build the kernel".to_string());
+    };
+    // The request path admits prefill chunks only, so the probe is the smallest
+    // chunk-shaped window. Every query keeps one row: the kernel walks a single
+    // index and writes one value row per query, which is enough to build and
+    // evaluate the whole pipeline. The probe goes through [`launch_indexed`],
+    // the same launch the request path uses.
+    let seq = BATCHED_ATTENTION_MIN_QUERIES;
+    let rows = seq;
+    let keys = zeros(&[rows, kv_heads, head_dim], dtype, None);
+    let values = zeros(&[rows, kv_heads, head_dim], dtype, None);
+    let segments = Segments {
+        sealed_rows: rows,
+        // Every probe token is below `sealed_rows`, so the kernel never reads
+        // the tail bindings; they only have to be valid arrays.
+        k_tail: keys.clone(),
+        v_tail: values.clone(),
+        k_sealed: keys,
+        v_sealed: values,
+    };
+    let indices_data: Vec<i32> = (0..seq).collect();
+    let indices = MlxArray::from_raw_data(
+        indices_data.as_ptr().cast(),
+        std::mem::size_of_val(indices_data.as_slice()),
+        &[seq, 1],
+        MlxDtype::Int32,
+    );
+    let lengths_data = vec![1_i32; seq as usize];
+    let lengths = MlxArray::from_raw_data(
+        lengths_data.as_ptr().cast(),
+        std::mem::size_of_val(lengths_data.as_slice()),
+        &[seq],
+        MlxDtype::Int32,
+    );
+    let queries = zeros(&[1, q_heads, seq, head_dim], dtype, None);
+    let out = launch_indexed(
+        kernel,
+        &queries,
+        &segments,
+        &indices,
+        &lengths,
+        q_heads,
+        kv_heads,
+        head_dim,
+        seq,
+        rows,
+        1,
+        1.0 / (head_dim as f32).sqrt(),
+    )
+    .map_err(|error| format!("indexed QSA prefill warm-up failed: {error}"))?
+    .ok_or_else(|| "indexed QSA prefill warm-up declined the probe launch".to_string())?;
+    mlx_sys::try_eval(&[&out])
+        .map_err(|error| format!("indexed QSA prefill warm-up failed: {error}"))
 }
 
 /// Geometry the kernel is compiled for: one warp per query head of a kv-head
@@ -1221,6 +1348,47 @@ mod tests {
         let (out, dispatched) = attention(&fixture, false);
         assert_eq!(dispatched, 0, "the default arm must not dispatch");
         assert!(out.is_none(), "the default arm keeps the gathered path");
+    }
+
+    #[test]
+    fn indexed_prefill_warmup_applies_only_for_flash_next_with_the_switch_on() {
+        assert!(indexed_prefill_warmup_applies(true, true, true));
+        assert!(
+            !indexed_prefill_warmup_applies(false, true, true),
+            "non-Flash-Next packs never compile the indexed kernel"
+        );
+        assert!(
+            !indexed_prefill_warmup_applies(true, true, false),
+            "the default-off switch must not compile it"
+        );
+        assert!(
+            !indexed_prefill_warmup_applies(true, false, true),
+            "AX_MLX_LOAD_KERNEL_WARMUP=0 skips load-time compiles"
+        );
+    }
+
+    #[test]
+    fn indexed_prefill_warmup_declines_when_the_switch_is_off() {
+        // The entry point's opt-in guard runs before the kernel is touched, so
+        // a warm-up call with the switch off compiles nothing.
+        let skipped = with_indexed_attention(false, || {
+            warm_indexed_prefill_kernel(24, 2, 256, MlxDtype::Bfloat16)
+        });
+        assert!(
+            skipped.is_err(),
+            "the switch off must not compile the indexed kernel"
+        );
+    }
+
+    #[test]
+    fn indexed_prefill_warmup_compiles_the_shipped_geometry() {
+        // The probe uses the model geometry, the only thing the kernel
+        // template specialises on, so this is the pipeline production
+        // dispatches for every later chunk.
+        with_indexed_attention(true, || {
+            warm_indexed_prefill_kernel(24, 2, 256, MlxDtype::Bfloat16)
+        })
+        .expect("shipped geometry warm-up");
     }
 
     #[test]

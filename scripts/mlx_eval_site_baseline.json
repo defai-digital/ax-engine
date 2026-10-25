@@ -81,6 +81,9 @@
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention.rs": {
     "try_eval": 1
   },
+  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention_indexed.rs": {
+    "try_eval": 1
+  },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_fused.rs": {
     "try_eval": 1
   },

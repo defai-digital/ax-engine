@@ -9,7 +9,7 @@
 // touches it through `crates/mlx-sys`.
 //
 // Buffers (host order): q, k_sealed, k_tail, v_sealed, v_tail, indices,
-// lengths, scales -> out.
+// lengths, scales, params -> out.
 //
 //   q          [Queries, Heads, HeadDim]    query rows, token-major
 //   k_sealed   [SealedRows, KvHeads, HeadDim]
@@ -19,10 +19,16 @@
 //   indices    [Queries, MaxSelected] int32, absolute token rows, -1 padded
 //   lengths    [Queries] int32, exact selected count per query
 //   scales     [1] float32, softmax scale
+//   params     [3] int32: SealedRows, TotalRows, MaxSelected
 //   out        [Queries, Heads, HeadDim]
 //
 // Template constants: `T` (query dtype), `HeadDim`, `Heads`, `KvHeads`,
-// `Group`, `SealedRows`, `TotalRows` and `MaxSelected`.
+// `Group`. They are the only values that specialise the compiled pipeline, and
+// all of them come from the model config, so one load-time launch compiles the
+// same pipeline every later chunk reuses. The per-chunk row counts and the
+// selection width ride in `params`: they change with the request position and
+// the selected block count, and making them template constants would force a
+// fresh compile per distinct shape.
 //
 // One threadgroup handles one (query, kv head) pair, so a selected K/V row is
 // staged into threadgroup memory once and read by every query head that shares
@@ -53,8 +59,11 @@ threadgroup float staged_k[HeadDim];
 threadgroup float staged_v[HeadDim];
 
 const float scale = static_cast<float>(scales[0]);
+const int sealed_rows = params[0];
+const int total_rows = params[1];
+const int max_selected = params[2];
 const int length = lengths[query];
-const int index_base = static_cast<int>(query) * MaxSelected;
+const int index_base = static_cast<int>(query) * max_selected;
 
 // `q_reg` carries the softmax scale so the inner loop is one FMA per dimension.
 // A power-of-two scale (HeadDim = 256) is exact in every supported dtype.
@@ -73,13 +82,13 @@ for (int j = 0; j < length; ++j) {
   const int token = indices[index_base + j];
   // `-1` is the padding marker. The index tile is built on the device and is
   // not validated by the host, so a selector regression can also name a row
-  // past the history: skip anything outside `[0, TotalRows)` instead of
+  // past the history: skip anything outside `[0, total_rows)` instead of
   // reading out of bounds, the same way a padding slot is skipped.
-  if (token < 0 || token >= TotalRows) {
+  if (token < 0 || token >= total_rows) {
     continue;
   }
-  const bool in_sealed = token < SealedRows;
-  const int row = in_sealed ? token : token - SealedRows;
+  const bool in_sealed = token < sealed_rows;
+  const int row = in_sealed ? token : token - sealed_rows;
   const int row_base = row * (KvHeads * HeadDim) + static_cast<int>(kv_head) * HeadDim;
   for (uint dim = tid; dim < static_cast<uint>(HeadDim); dim += ThreadgroupSize) {
     staged_k[dim] = in_sealed ? static_cast<float>(k_sealed[row_base + static_cast<int>(dim)])
