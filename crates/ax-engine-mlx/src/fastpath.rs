@@ -5687,6 +5687,23 @@ env_flag_default_on!(
     "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER` — gather one Flash Next QSA
+    /// prefill sub-batch's selected K/V rows straight into the
+    /// `[queries, kv_heads, selected, head_dim]` layout the masked SDPA call
+    /// consumes, instead of gathering `[queries, selected, kv_heads,
+    /// head_dim]` and then transposing that tile into a second full copy.
+    ///
+    /// The flat source is `[tokens * kv_heads, head_dim]`, so one row is a
+    /// `(token, head)` pair and a per-head index tile lands the gather in
+    /// SDPA order. Same elements, same order, same dtype and the same `-1`
+    /// padding as the two-copy path, so the SDPA call and its output are
+    /// unchanged; only the copy that produced the transposed tile is gone.
+    /// Default ON; set `=0` to restore the gather-then-transpose copy.
+    flash_next_qsa_fused_gather_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER"
+);
+
 env_flag!(
     /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
     /// chunks by reading each query's selected K/V rows straight out of the

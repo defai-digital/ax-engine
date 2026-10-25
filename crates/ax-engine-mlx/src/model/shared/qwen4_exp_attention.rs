@@ -12,9 +12,10 @@
 //! state only after the rest of the step succeeds.
 
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, ScaledDotProductAttentionMask, astype, concatenate, contiguous,
-    greater_equal, maximum, multiply, reshape, rms_norm, scaled_dot_product_attention,
-    scaled_dot_product_attention_with_mask, slice, split, take, transpose,
+    MlxArray, MlxClosure, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype,
+    concatenate, contiguous, greater_equal, maximum, multiply, reshape, rms_norm,
+    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, slice, split, take,
+    transpose,
 };
 use thiserror::Error;
 
@@ -977,6 +978,12 @@ fn attend_selected(
     } else {
         None
     };
+    // Test-only attribution: a segmented history flattened for the padded
+    // sub-batches is a whole-history copy, separate from the tile gathers.
+    #[cfg(test)]
+    if let Some((key_rows, value_rows)) = &flat {
+        crate::model::qwen4_exp::profiling::mark("qsa_da_flatten", &[key_rows, value_rows]);
+    }
     let mut batch_out = Vec::new();
     batch_out
         .try_reserve_exact(batch as usize)
@@ -1063,8 +1070,14 @@ fn attend_selected(
             };
             let (k_sel, v_sel) = gather_selected(&key_rows, &value_rows, &idx)
                 .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+            #[cfg(test)]
+            crate::model::qwen4_exp::profiling::mark("qsa_da_gather", &[&k_sel, &v_sel]);
             let k_sel = transpose(&k_sel, &[0, 2, 1, 3], None);
             let v_sel = transpose(&v_sel, &[0, 2, 1, 3], None);
+            let k_sel = contiguous(&k_sel, None);
+            let v_sel = contiguous(&v_sel, None);
+            #[cfg(test)]
+            crate::model::qwen4_exp::profiling::mark("qsa_da_layout", &[&k_sel, &v_sel]);
             let q_s = if seq == 1 {
                 q_b.clone()
             } else {
@@ -1083,14 +1096,17 @@ fn attend_selected(
             // every query. That mapping is identical to the removed
             // `repeat_axis(.., 1)` expansion; see
             // `native_gqa_attention_matches_explicit_head_expansion_across_kv_groups`.
-            seq_out.push(scaled_dot_product_attention(
+            let attended = scaled_dot_product_attention(
                 &contiguous(&q_s, None),
-                &contiguous(&k_sel, None),
-                &contiguous(&v_sel, None),
+                &k_sel,
+                &v_sel,
                 cfg.scale,
                 false,
                 None,
-            ));
+            );
+            #[cfg(test)]
+            crate::model::qwen4_exp::profiling::mark("qsa_da_sdpa", &[&attended]);
+            seq_out.push(attended);
         }
         batch_out.push(concat_owned(&seq_out, 2));
     }
@@ -1125,6 +1141,89 @@ pub(crate) fn with_batched_attention<T>(enabled: bool, action: impl FnOnce() -> 
     }
     let _restore = Restore(BATCHED_OVERRIDE.with(|value| value.replace(Some(enabled))));
     action()
+}
+
+fn fused_gather_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = FUSED_GATHER_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_fused_gather_enabled()
+}
+
+#[cfg(test)]
+thread_local! {
+    static FUSED_GATHER_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+    /// Fused selected-K/V tiles gathered on this thread, so a real-pack
+    /// comparison can prove the fused arm ran instead of silently falling
+    /// back.
+    static FUSED_GATHER_TILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `action` with the fused selected-K/V gather forced on or off.
+#[cfg(test)]
+pub(crate) fn with_fused_gather<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FUSED_GATHER_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(FUSED_GATHER_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Fused selected-K/V tiles gathered on this thread.
+#[cfg(test)]
+pub(crate) fn fused_gather_tiles_for_test() -> u64 {
+    FUSED_GATHER_TILES.with(std::cell::Cell::get)
+}
+
+/// One padded sub-batch of selected K or V rows in the
+/// `[width, kv_heads, padded, head_dim]` layout the masked SDPA call consumes.
+///
+/// `rows` is one batch row of the K/V history as `[tokens, kv_heads,
+/// head_dim]` and `safe` the `[width, padded]` non-negative token indices
+/// (`-1` padding already clamped to `0`).
+///
+/// `fused` reads the rows out of the flattened `[tokens * kv_heads,
+/// head_dim]` view with a per-head index tile, so the single gather copy is
+/// already in SDPA order. The previous path gathers
+/// `[width, padded, kv_heads, head_dim]` and transposes it, which costs a
+/// second full-tile copy. Both read the same rows in the same order, so the
+/// tiles are bit-identical.
+fn gather_selected_tile(
+    rows: &MlxArray,
+    safe: &MlxArray,
+    width: i32,
+    padded: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    fused: bool,
+) -> MlxArray {
+    if fused {
+        let tokens = rows.shape().first().copied().unwrap_or(0);
+        #[cfg(test)]
+        FUSED_GATHER_TILES.with(|counter| counter.set(counter.get().saturating_add(1)));
+        let flat_rows = reshape(rows, &[tokens * kv_heads, head_dim], None);
+        // Row `token * kv_heads + head` of `flat_rows` is `rows[token, head,
+        // :]`, so an index tile that carries the head offset lands the gather
+        // directly in `[width, kv_heads, padded, head_dim]`.
+        let positions = reshape(safe, &[width, 1, padded], None);
+        let strided = multiply(&positions, &int32_scalar(kv_heads), None);
+        let heads = reshape(
+            &arange(0.0, kv_heads as f64, 1.0, MlxDtype::Int32, None),
+            &[1, kv_heads, 1],
+            None,
+        );
+        let indices = add(&strided, &heads, None);
+        return take(&flat_rows, &indices, 0, None);
+    }
+    let flat = reshape(safe, &[width * padded], None);
+    let gathered = take(rows, &flat, 0, None);
+    let tile = reshape(&gathered, &[width, padded, kv_heads, head_dim], None);
+    transpose(&tile, &[0, 2, 1, 3], None)
 }
 
 /// Upper bound on the gathered K+V bytes of one sub-batch.
@@ -1253,39 +1352,22 @@ fn attend_selected_batched(
                 MlxDtype::Int32,
             )
         };
-        let valid = greater_equal(
-            &indices,
-            &MlxArray::from_raw_data(
-                (&0_i32 as *const i32).cast(),
-                std::mem::size_of::<i32>(),
-                &[1],
-                MlxDtype::Int32,
-            ),
-            None,
-        );
-        let safe = maximum(
-            &indices,
-            &MlxArray::from_raw_data(
-                (&0_i32 as *const i32).cast(),
-                std::mem::size_of::<i32>(),
-                &[1],
-                MlxDtype::Int32,
-            ),
-            None,
-        );
-        let flat = reshape(&safe, &[width_i * padded_i], None);
+        let valid = greater_equal(&indices, &int32_scalar(0), None);
+        let safe = maximum(&indices, &int32_scalar(0), None);
+        let fused = fused_gather_enabled();
         let gather = |source: &MlxArray| {
-            transpose(
-                &reshape(
-                    &take(source, &flat, 0, None),
-                    &[width_i, padded_i, kv_heads, dim],
-                    None,
-                ),
-                &[0, 2, 1, 3],
-                None,
-            )
+            gather_selected_tile(source, &safe, width_i, padded_i, kv_heads, dim, fused)
         };
         let (k_sel, v_sel) = (gather(&keys), gather(&values));
+        // Test-only attribution. `qsa_da_gather` is the gather copy;
+        // `qsa_da_layout` the transpose copy, which is a no-op when the fused
+        // gather already landed in SDPA order; `qsa_da_sdpa` the kernel.
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_da_gather", &[&k_sel, &v_sel]);
+        let k_sel = contiguous(&k_sel, None);
+        let v_sel = contiguous(&v_sel, None);
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_da_layout", &[&k_sel, &v_sel]);
         let q_sub = transpose(
             &slice(
                 q_b,
@@ -1300,12 +1382,14 @@ fn attend_selected_batched(
         let mask = reshape(&valid, &[width_i, 1, 1, padded_i], None);
         let attended = scaled_dot_product_attention_with_mask(
             &contiguous(&q_sub, None),
-            &contiguous(&k_sel, None),
-            &contiguous(&v_sel, None),
+            &k_sel,
+            &v_sel,
             cfg.scale,
             ScaledDotProductAttentionMask::Array(&mask),
             None,
         );
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_da_sdpa", &[&attended]);
         // [width, q_heads, 1, dim] -> [1, q_heads, width, dim]
         outputs.push(transpose(&attended, &[2, 1, 0, 3], None));
         start = end;
@@ -1364,6 +1448,16 @@ fn index_array(tokens: &[i32]) -> Result<MlxArray> {
         detail,
     })?;
     Ok(indices)
+}
+
+/// One-element int32 tensor, for broadcast index arithmetic.
+fn int32_scalar(value: i32) -> MlxArray {
+    MlxArray::from_raw_data(
+        (&value as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    )
 }
 
 fn concat_owned(parts: &[MlxArray], axis: i32) -> MlxArray {
@@ -2849,6 +2943,140 @@ mod tests {
                 f32_value_bits(&legacy2),
                 "{dtype:?} batch 2 seq 3 diverged from the previous slicing"
             );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Fused selected-K/V gather (`AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER`)
+    // ------------------------------------------------------------------
+
+    /// `[tokens, kv_heads, head_dim]` K/V rows with a distinct value per
+    /// element, so a wrong row, head or dimension cannot compare equal.
+    fn tile_rows(tokens: i32, kv_heads: i32, head_dim: i32, dtype: MlxDtype) -> MlxArray {
+        let data: Vec<f32> = (0..(tokens * kv_heads * head_dim) as usize)
+            .map(|i| (i as f32 * 0.017).sin() * 3.0)
+            .collect();
+        astype(
+            &array_f32(&data, &[tokens, kv_heads, head_dim]),
+            dtype,
+            None,
+        )
+    }
+
+    /// Ragged `[width, padded]` token indices already clamped to `>= 0`: what
+    /// the batched path hands the tile gather after `maximum(indices, 0)`.
+    /// Positions run out of order and repeat, and each row keeps a different
+    /// prefix, so padding, order and duplicates are all exercised.
+    fn ragged_selection(width: i32, padded: i32, tokens: i32) -> MlxArray {
+        let mut data = Vec::with_capacity((width * padded) as usize);
+        let stride = (tokens / 7).max(1);
+        for row in 0..width {
+            let keep = ((padded * (row + 1)) / width).max(1);
+            for column in 0..padded {
+                let value = if column < keep {
+                    (row * 31 + column * stride) % tokens
+                } else {
+                    // `-1` padding, clamped to token 0 by `safe`.
+                    0
+                };
+                data.push(value);
+            }
+        }
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[width, padded],
+            MlxDtype::Int32,
+        )
+    }
+
+    /// The fused gather must produce the same tile, in the same layout, as the
+    /// gather-then-transpose copy for every selected width the QSA budget can
+    /// reach, including the padding boundary and non-power-of-two geometry.
+    #[test]
+    fn fused_gather_tile_matches_the_transpose_copy_across_selected_widths() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for &padded in &[1i32, 15, 16, 17, 1023, 1024, 1025, 2048, 2049, 2050, 2051] {
+                for &(width, kv_heads, head_dim) in &[(3i32, 2i32, 8i32), (1, 2, 8), (17, 3, 16)] {
+                    let tokens = padded + 37;
+                    let rows = tile_rows(tokens, kv_heads, head_dim, dtype);
+                    let safe = ragged_selection(width, padded, tokens);
+                    let baseline = gather_selected_tile(
+                        &rows, &safe, width, padded, kv_heads, head_dim, false,
+                    );
+                    let fused =
+                        gather_selected_tile(&rows, &safe, width, padded, kv_heads, head_dim, true);
+                    let label = format!(
+                        "{dtype:?} width={width} padded={padded} kv={kv_heads} d={head_dim}"
+                    );
+                    assert_eq!(
+                        fused.shape(),
+                        vec![width, kv_heads, padded, head_dim],
+                        "{label}: SDPA layout"
+                    );
+                    assert_eq!(fused.shape(), baseline.shape(), "{label}: shape");
+                    assert_eq!(
+                        f32_value_bits(&fused),
+                        f32_value_bits(&baseline),
+                        "{label}: tile bits"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The two tiles must feed the masked SDPA call identically, so the
+    /// attention output bits are unchanged by the fused gather.
+    #[test]
+    fn fused_gather_attention_output_matches_across_selected_widths() {
+        let cfg = Qwen4ExpAttentionConfig::new(8 * 16, 8, 2, 16, 8, BASE, EPS).unwrap();
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for &padded in &[1023i32, 1024, 1025, 2048, 2049, 2050, 2051] {
+                let width = 4i32;
+                let (kv_heads, head_dim) = (2i32, 16i32);
+                let tokens = padded + 11;
+                let rows = tile_rows(tokens, kv_heads, head_dim, dtype);
+                let safe = ragged_selection(width, padded, tokens);
+                let queries = astype(
+                    &array_f32(
+                        &(0..(cfg.query_heads * width * head_dim) as usize)
+                            .map(|i| (i as f32 * 0.011).cos())
+                            .collect::<Vec<_>>(),
+                        &[1, cfg.query_heads, width, head_dim],
+                    ),
+                    dtype,
+                    None,
+                );
+                let valid = greater_equal(&safe, &int32_scalar(0), None);
+                let mask = reshape(&valid, &[width, 1, 1, padded], None);
+                let q_sub = transpose(&queries, &[2, 1, 0, 3], None);
+                let run = |fused: bool| {
+                    let k = gather_selected_tile(
+                        &rows, &safe, width, padded, kv_heads, head_dim, fused,
+                    );
+                    let v = gather_selected_tile(
+                        &rows, &safe, width, padded, kv_heads, head_dim, fused,
+                    );
+                    let k = contiguous(&k, None);
+                    let v = contiguous(&v, None);
+                    scaled_dot_product_attention_with_mask(
+                        &contiguous(&q_sub, None),
+                        &k,
+                        &v,
+                        cfg.scale,
+                        ScaledDotProductAttentionMask::Array(&mask),
+                        None,
+                    )
+                };
+                let baseline = run(false);
+                let fused = run(true);
+                assert_eq!(fused.shape(), baseline.shape(), "{dtype:?} padded={padded}");
+                assert_eq!(
+                    f32_value_bits(&fused),
+                    f32_value_bits(&baseline),
+                    "{dtype:?} padded={padded}: attention bits"
+                );
+            }
         }
     }
 }
