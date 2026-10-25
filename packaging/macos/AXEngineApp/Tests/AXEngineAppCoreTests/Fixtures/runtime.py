@@ -52,7 +52,12 @@ class Handler(BaseHTTPRequestHandler):
         return True
     def do_GET(self):
         if not self.auth(): return
-        if self.path == '/v1/models':
+        if self.path == '/redirect':
+            self.send_response(302)
+            self.send_header('Location', '/v1/models')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        elif self.path == '/v1/models':
             self.json_response({'object': 'list', 'data': [{'id': 'fixture', 'owned_by': 'ax-engine',
                 'context_length': 2048, 'capabilities': {'temperature': True}}]})
         elif self.path == '/metrics':
@@ -66,9 +71,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self.auth(): return
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or b'{}')
         if self.path.endswith('/cancel'):
-            self.json_response({})
+            self.json_response({}, 403 if self.path == '/v1/requests/999/cancel' else 200)
             return
         prompt = body['messages'][-1]['content']
+        if prompt == 'redirect' and self.path == '/v1/chat/completions':
+            self.send_response(307)
+            self.send_header('Location', '/v1/redirect-completion')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Connection', 'close')

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Darwin
+import AppKit
 @testable import AXEngineAppCore
 
 private func temporary() throws -> URL {
@@ -212,8 +213,27 @@ private func temporary() throws -> URL {
     #expect(!attached.ready)
     #expect(attached.error?.contains("API key") == true)
     #expect(runtime.job.running)
+    // The generated runtime key reaches an independent client only through the copy action.
+    let pasteboard = NSPasteboard.withUniqueName()
+    let clipboard = SensitiveClipboard(pasteboard: pasteboard)
+    defer { clipboard.clearIfOwned(); pasteboard.releaseGlobally() }
+    #expect(client.copyAPIKey(to: clipboard))
+    let copiedKey = pasteboard.string(forType: .string) ?? ""
+    await attached.attach(port: settings.port, apiKey: copiedKey)
+    #expect(attached.ready)
+    #expect(attached.connection?.apiURL == client.apiURL)
+    clipboard.clearIfOwned()
+    #expect(pasteboard.string(forType: .string) == nil)
+    let logsExcludeKey = !runtime.logs.contains(copiedKey)
+    #expect(logsExcludeKey)
+    var redirectRejected = false
+    do { _ = try await client.data("redirect") } catch { redirectRejected = error.localizedDescription.contains("HTTP 302") }
+    #expect(redirectRejected)
+    var cancellationRejected = false
+    do { try await client.cancel(requestID: 999) } catch { cancellationRejected = error.localizedDescription.contains("API key") }
+    #expect(cancellationRejected)
     let chat = ChatStore(storage: root.appendingPathComponent("chat.json"))
-    for (prompt, expected) in [("hello", "Complete"), ("truncate", "Failed"), ("error", "Failed")] {
+    for (prompt, expected) in [("hello", "Complete"), ("truncate", "Failed"), ("error", "Failed"), ("redirect", "Failed")] {
         chat.clear(); chat.send(prompt, model: "fixture", connection: client, settings: settings)
         while chat.generating { try await Task.sleep(for: .milliseconds(30)) }
         #expect(chat.messages.last?.state == expected)
@@ -222,6 +242,7 @@ private func temporary() throws -> URL {
     chat.send("history", model: "fixture", connection: client, settings: settings)
     while chat.generating { try await Task.sleep(for: .milliseconds(30)) }
     #expect(chat.messages.last?.content.contains("error") == false)
+    #expect(chat.messages.last?.content.contains("redirect") == false)
     #expect(chat.messages.last?.content.contains("history") == true)
     let restored = ChatStore(storage: root.appendingPathComponent("chat.json"))
     let retainedCount = restored.messages.count

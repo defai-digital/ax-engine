@@ -25,6 +25,8 @@ struct MainView: View {
     @State private var removeTarget: LocalModel?
     @State private var stopConfirmation = false
     @State private var apiKey = ""
+    @State private var clientClipboard = SensitiveClipboard()
+    @State private var clientCopyNotice = ""
 
     var body: some View {
         NavigationSplitView {
@@ -77,7 +79,17 @@ struct MainView: View {
         .task { if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) } }
         .onAppear { syncHostMonitoring() }
         .onChange(of: model.hostMonitoringEnabled) { _, _ in syncHostMonitoring() }
-        .onDisappear { model.hostMonitor.setActive(false) }
+        .onDisappear { model.hostMonitor.setActive(false); clientClipboard.clearIfOwned() }
+        .onChange(of: runtime.ready) { _, ready in
+            if !ready { clientClipboard.clearIfOwned(); clientCopyNotice = "" }
+        }
+        .onChange(of: runtime.connection?.id) { _, _ in
+            clientClipboard.clearIfOwned()
+            clientCopyNotice = ""
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            clientClipboard.clearIfOwned()
+        }
         .onChange(of: model.searchFocusRequest) { _, _ in
             Task { @MainActor in await Task.yield(); searchFocused = true }
         }
@@ -281,8 +293,28 @@ struct MainView: View {
                     HStack {
                         PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle", tint: runtime.ready ? Brand.accentChrome : .secondary)
                         Spacer()
-                        Text("127.0.0.1:\(String(model.settings.port))").font(.system(.callout, design: .monospaced))
-                        Button("Copy API URL", systemImage: "doc.on.doc") { copyText("http://127.0.0.1:\(model.settings.port)/v1") }
+                        Text(runtime.connection?.apiURL.absoluteString ?? "127.0.0.1:\(String(model.settings.port))")
+                            .font(.system(.callout, design: .monospaced))
+                    }
+                    if let connection = runtime.connection {
+                        HStack {
+                            Button("Copy API URL", systemImage: "doc.on.doc") {
+                                guard let current = runtime.connection else { return }
+                                copyText(current.apiURL.absoluteString)
+                                clientCopyNotice = "API URL copied."
+                            }
+                            Button("Copy API key", systemImage: "key") {
+                                guard runtime.ready, let current = runtime.connection else { return }
+                                clientCopyNotice = current.copyAPIKey(to: clientClipboard)
+                                    ? "API key copied for up to 60 seconds. Paste it into your client."
+                                    : "The API key could not be copied. Try again."
+                            }.disabled(!runtime.ready || !connection.hasAPIKey)
+                        }
+                        Text("Copy the URL and API key into your local client. The copied key stays on this Mac and clears after 60 seconds if unchanged.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !clientCopyNotice.isEmpty {
+                            Text(clientCopyNotice).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     Text(model.selectedPath.isEmpty ? "Choose an installed AutomatosX model below." : model.selectedPath)
                         .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)

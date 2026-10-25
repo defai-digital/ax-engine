@@ -68,8 +68,17 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
 3. **Server:** choose an installed AutomatosX model. Start uses offline
    resolution and loopback only. Runtime MTP and expert-streaming defaults remain
    unchanged. An app-owned server uses a per-launch in-memory API key.
-4. **Chat:** select a running model, send text, inspect reasoning when supplied,
-   copy replies, retry or stop. Command-Return sends; Return enters a new line.
+   Once connected, **Copy API URL** copies the actual connected endpoint,
+   and **Copy API key** copies its current key for an external local client.
+   The key is copied only on your click, stays on this device, and is cleared
+   after 60 seconds if the clipboard has not changed. It is also cleared when
+   the connection becomes unavailable or the window closes. Confidential and
+   transient markers request exclusion from compatible clipboard histories;
+   they do not prevent other local apps from reading the clipboard. The key
+   is never added to saved settings. A restarted app-owned server gets a new
+   key, so copy it again after restarting.
+4. **Playground:** select a running model, send text, inspect reasoning when supplied,
+   copy replies, retry or stop. Return or Command-Return sends; Shift-Return enters a new line.
    Streaming text is coalesced; settled replies receive basic Markdown/code-block
    rendering. Generated HTML and tool calls are never executed.
 5. **Server metrics:** inspect live runtime counters. Missing measurements appear
