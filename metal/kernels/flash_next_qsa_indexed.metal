@@ -21,6 +21,9 @@
 //   scales     [1] float32, softmax scale
 //   out        [Queries, Heads, HeadDim]
 //
+// Template constants: `T` (query dtype), `HeadDim`, `Heads`, `KvHeads`,
+// `Group`, `SealedRows`, `TotalRows` and `MaxSelected`.
+//
 // One threadgroup handles one (query, kv head) pair, so a selected K/V row is
 // staged into threadgroup memory once and read by every query head that shares
 // that kv head (native GQA: query head `h` reads kv head `h / Group`). The
@@ -68,7 +71,11 @@ float running_sum = 0.0f;
 
 for (int j = 0; j < length; ++j) {
   const int token = indices[index_base + j];
-  if (token < 0) {
+  // `-1` is the padding marker. The index tile is built on the device and is
+  // not validated by the host, so a selector regression can also name a row
+  // past the history: skip anything outside `[0, TotalRows)` instead of
+  // reading out of bounds, the same way a padding slot is skipped.
+  if (token < 0 || token >= TotalRows) {
     continue;
   }
   const bool in_sealed = token < SealedRows;

@@ -168,7 +168,7 @@ pub(super) fn attend_selected_indexed(
         Ok(total) => total,
         Err(_) => return Ok(None),
     };
-    let Some(segments) = split_segments(keys, values, total_rows) else {
+    let Some(segments) = split_segments(keys, values, total_rows, kv_heads, head_dim) else {
         return Ok(None);
     };
     let Some(packed) = pack_selection(selection, seq, total_rows, compress_ratio)? else {
@@ -209,6 +209,10 @@ pub(super) fn attend_selected_indexed(
         KernelTemplateArg::Int {
             name: "SealedRows",
             value: segments.sealed_rows,
+        },
+        KernelTemplateArg::Int {
+            name: "TotalRows",
+            value: total_rows,
         },
         KernelTemplateArg::Int {
             name: "MaxSelected",
@@ -276,11 +280,18 @@ fn kernel_geometry_ok(q_heads: i32, kv_heads: i32, head_dim: i32, dtype: MlxDtyp
 
 /// K/V rows the kernel reads, split exactly like the history's segments.
 ///
-/// A history with one segment passes that segment in both bindings and sets
-/// `sealed_rows` to the whole history, so the kernel's `token < SealedRows`
-/// test always picks the real array and never reads the duplicate binding.
-/// Shapes are `[rows, kv_heads, head_dim]`: the kernel only runs for a single
-/// batch row, so the batch axis is dropped here instead of in the kernel.
+/// A history with one logical segment is passed in both bindings and sets
+/// `sealed_rows` to the whole history, so the kernel's
+/// `token < SealedRows` test always picks the real array and never reads the
+/// duplicate binding. Shapes are `[rows, kv_heads, head_dim]`: the kernel only
+/// runs for a single batch row, so the batch axis is dropped here instead of in
+/// the kernel.
+///
+/// Every binding is checked against the kernel template (`KvHeads`, `HeadDim`,
+/// the dtype) and against the logical row count, because the kernel indexes a
+/// row as `row * (KvHeads * HeadDim) + kv_head * HeadDim` and reads the tail as
+/// `token - SealedRows`. A history whose arrays disagree with the claimed
+/// geometry returns `None` and the caller keeps the gathered path.
 struct Segments {
     sealed_rows: i32,
     k_sealed: MlxArray,
@@ -289,25 +300,57 @@ struct Segments {
     v_tail: MlxArray,
 }
 
-fn split_segments(keys: &KvHistory, values: &KvHistory, total_rows: i32) -> Option<Segments> {
-    let (k_sealed, k_tail) = keys.segments();
-    let (v_sealed, v_tail) = values.segments();
-    let k_sealed = batch_row(k_sealed.or(k_tail)?)?;
-    let v_sealed = batch_row(v_sealed.or(v_tail)?)?;
-    let k_tail = match k_tail {
-        Some(segment) => batch_row(segment)?,
-        None => k_sealed.clone(),
+fn split_segments(
+    keys: &KvHistory,
+    values: &KvHistory,
+    total_rows: i32,
+    kv_heads: i32,
+    head_dim: i32,
+) -> Option<Segments> {
+    let (k_sealed_src, k_tail_src) = keys.segments();
+    let (v_sealed_src, v_tail_src) = values.segments();
+    let k_sealed = batch_row(k_sealed_src.or(k_tail_src)?, kv_heads, head_dim)?;
+    let v_sealed = batch_row(v_sealed_src.or(v_tail_src)?, kv_heads, head_dim)?;
+    let k_tail = match k_tail_src {
+        Some(segment) => Some(batch_row(segment, kv_heads, head_dim)?),
+        None => None,
     };
-    let v_tail = match v_tail {
-        Some(segment) => batch_row(segment)?,
-        None => v_sealed.clone(),
+    let v_tail = match v_tail_src {
+        Some(segment) => Some(batch_row(segment, kv_heads, head_dim)?),
+        None => None,
     };
-    // `sealed_rows` is `Some` only for a two-segment history, which is exactly
-    // when the sealed binding holds a strict prefix.
-    let sealed_rows = keys.sealed_rows().unwrap_or(total_rows);
-    if k_sealed.dtype() != v_sealed.dtype() || k_sealed.shape()[2] != v_sealed.shape()[2] {
+    // `split` is `Some` only for a history with both physical segments, which
+    // is exactly when the sealed binding holds a strict prefix.
+    let split = keys.sealed_rows();
+    let sealed_rows = split.unwrap_or(total_rows);
+    let dtype = k_sealed.dtype();
+    if sealed_rows < 0
+        || sealed_rows > total_rows
+        || k_sealed.shape()[0] != sealed_rows
+        || v_sealed.shape()[0] != sealed_rows
+        || v_sealed.dtype() != dtype
+    {
         return None;
     }
+    let (k_tail, v_tail) = match split {
+        Some(_) => {
+            let (k_tail, v_tail) = (k_tail?, v_tail?);
+            // The kernel reads `[SealedRows, TotalRows)` from the tail, so the
+            // two segments must account for exactly the logical history.
+            let tail_rows = total_rows.checked_sub(sealed_rows)?;
+            if k_tail.shape()[0] != tail_rows
+                || v_tail.shape()[0] != tail_rows
+                || k_tail.dtype() != dtype
+                || v_tail.dtype() != dtype
+            {
+                return None;
+            }
+            (k_tail, v_tail)
+        }
+        // One logical segment: both bindings hold the whole history and the
+        // kernel never reads the tail slot.
+        None => (k_sealed.clone(), v_sealed.clone()),
+    };
     Some(Segments {
         sealed_rows,
         k_sealed,
@@ -317,10 +360,17 @@ fn split_segments(keys: &KvHistory, values: &KvHistory, total_rows: i32) -> Opti
     })
 }
 
-/// `[1, rows, kv_heads, head_dim]` -> `[rows, kv_heads, head_dim]`.
-fn batch_row(segment: &MlxArray) -> Option<MlxArray> {
+/// `[1, rows, kv_heads, head_dim]` -> `[rows, kv_heads, head_dim]`, or `None`
+/// unless the batch is 1 and the row geometry is the one the kernel template
+/// was compiled for.
+fn batch_row(segment: &MlxArray, kv_heads: i32, head_dim: i32) -> Option<MlxArray> {
     let shape = segment.shape();
-    if shape.len() != 4 || shape[0] != 1 || shape[1] < 0 || shape[2] < 1 || shape[3] < 1 {
+    if shape.len() != 4
+        || shape[0] != 1
+        || shape[1] < 0
+        || shape[2] != kv_heads
+        || shape[3] != head_dim
+    {
         return None;
     }
     Some(reshape(segment, &[shape[1], shape[2], shape[3]], None))
@@ -1212,6 +1262,204 @@ mod tests {
         });
         assert!(result.is_none(), "out-of-range rows fall back");
         assert_eq!(dispatches(), before, "no dispatch for a refused selection");
+    }
+
+    #[test]
+    fn indexed_attention_skips_out_of_range_device_tokens() {
+        // The device index tile is never validated on the host, so a selector
+        // regression can name a row past the end of the history. The kernel
+        // must treat that token like `-1` and keep the rest of the row instead
+        // of reading past the K/V arrays.
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let seq = 20i32;
+        let (sealed, tail) = (64i32, 8i32);
+        let rows = sealed + tail;
+        let q = data((seq * Q_HEADS * DIM) as usize, 1);
+        let k = data((rows * KV_HEADS * DIM) as usize, 2);
+        let v = data((rows * KV_HEADS * DIM) as usize, 3);
+        let queries = array_f32(&q, &[1, Q_HEADS, seq, DIM]);
+        let history = |values: &[f32]| {
+            with_kv_segments(Some((1, sealed as usize)), || {
+                let array = array_f32(values, &[1, rows, KV_HEADS, DIM]);
+                let first = slice(
+                    &array,
+                    &[0, 0, 0, 0],
+                    &[1, sealed, KV_HEADS, DIM],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let rest = slice(
+                    &array,
+                    &[0, sealed, 0, 0],
+                    &[1, rows, KV_HEADS, DIM],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                KvHistory::empty().append(&first).append(&rest)
+            })
+        };
+        let keys = history(&k);
+        let values = history(&v);
+        assert_eq!(
+            keys.sealed_rows(),
+            Some(sealed),
+            "the fixture needs a real sealed prefix and tail"
+        );
+
+        let width = 2;
+        let mut tile = vec![-1_i32; (seq * width) as usize];
+        let mut segments = Vec::new();
+        for s in 0..seq {
+            let base = (s * width) as usize;
+            // One in-range token, then one past the end of the history.
+            tile[base] = s;
+            tile[base + 1] = rows + s;
+            segments.push((width, 0));
+        }
+        let device = MlxArray::from_raw_data(
+            tile.as_ptr().cast(),
+            std::mem::size_of_val(tile.as_slice()),
+            &[1, seq, width],
+            MlxDtype::Int32,
+        );
+        let selection = QsaSelection::from_device_rows(device, segments, 0);
+        let before = dispatches();
+        let out = with_indexed_attention(true, || {
+            attend_selected_indexed(
+                &queries, &keys, &values, &selection, Q_HEADS, KV_HEADS, DIM, RATIO, 0.5,
+            )
+            .unwrap()
+        })
+        .expect("indexed output");
+        assert_eq!(
+            dispatches() - before,
+            1,
+            "an out-of-range token still dispatches the kernel"
+        );
+
+        let out = mlx_sys::contiguous(&mlx_sys::astype(&out, MlxDtype::Float32, None), None);
+        eval(&[&out]);
+        let got = out.data_f32();
+        // Only the in-range token contributes, so each row is that token's
+        // value row.
+        for s in 0..seq as usize {
+            for h in 0..Q_HEADS as usize {
+                let kvh = h / (Q_HEADS / KV_HEADS) as usize;
+                for d in 0..DIM as usize {
+                    let index = (h * seq as usize + s) * DIM as usize + d;
+                    let want = v[(s * KV_HEADS as usize + kvh) * DIM as usize + d];
+                    assert!(
+                        (got[index] - want).abs() < 1e-4,
+                        "s={s} h={h} d={d}: {} vs {want}",
+                        got[index]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_attention_declines_history_geometry_that_disagrees_with_the_template() {
+        // The kernel indexes K/V as `row * (KvHeads * HeadDim)` and reads the
+        // tail as `token - SealedRows`, so a history whose arrays disagree with
+        // the geometry the caller claims must fall back instead of reading the
+        // wrong strides.
+        let fixture = fixture(20, 48, MlxDtype::Float32);
+        let attempt = |queries: &MlxArray, kv_heads: i32, head_dim: i32| {
+            let before = dispatches();
+            let result = with_indexed_attention(true, || {
+                attend_selected_indexed(
+                    queries,
+                    &fixture.keys,
+                    &fixture.values,
+                    &fixture.selection,
+                    Q_HEADS,
+                    kv_heads,
+                    head_dim,
+                    RATIO,
+                    1.0,
+                )
+                .unwrap()
+            });
+            (result, dispatches() - before)
+        };
+        // The fixture's histories hold `KV_HEADS` kv heads; a template claiming
+        // a different count is not one the kernel can index.
+        let (result, dispatched) = attempt(&fixture.queries, 1, DIM);
+        assert!(result.is_none(), "kv_heads mismatch falls back");
+        assert_eq!(dispatched, 0, "kv_heads mismatch must not dispatch");
+
+        // Same from the other side: queries that claim twice the head dimension
+        // the histories hold.
+        let wide = array_f32(
+            &data((20 * Q_HEADS * DIM * 2) as usize, 1),
+            &[1, Q_HEADS, 20, DIM * 2],
+        );
+        let (result, dispatched) = attempt(&wide, KV_HEADS, DIM * 2);
+        assert!(result.is_none(), "head_dim mismatch falls back");
+        assert_eq!(dispatched, 0, "head_dim mismatch must not dispatch");
+    }
+
+    #[test]
+    fn split_segments_requires_arrays_to_match_the_kernel_template() {
+        let fixture = fixture(20, 48, MlxDtype::Float32);
+        let total = fixture.keys.token_count() as i32;
+        assert!(
+            split_segments(&fixture.keys, &fixture.values, total, KV_HEADS, DIM).is_some(),
+            "the fixture geometry is the template geometry"
+        );
+        assert!(
+            split_segments(&fixture.keys, &fixture.values, total, KV_HEADS - 1, DIM).is_none(),
+            "kv_heads must match the arrays"
+        );
+        assert!(
+            split_segments(&fixture.keys, &fixture.values, total, KV_HEADS, DIM + 32).is_none(),
+            "head_dim must match the arrays"
+        );
+        assert!(
+            split_segments(&fixture.keys, &fixture.values, total + 4, KV_HEADS, DIM).is_none(),
+            "the logical row count must be the sealed plus tail rows"
+        );
+
+        // The same accounting across two physical segments: the tail has to
+        // hold exactly the rows after the seal.
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let sealed_rows = 32i32;
+        let cut = |history: &KvHistory| -> KvHistory {
+            let segments = history.segments();
+            let flat = segments.0.or(segments.1).expect("single segment");
+            let shape = flat.shape();
+            with_kv_segments(Some((1, sealed_rows as usize)), || {
+                let sealed = slice(
+                    flat,
+                    &[0, 0, 0, 0],
+                    &[1, sealed_rows, shape[2], shape[3]],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let tail = slice(
+                    flat,
+                    &[0, sealed_rows, 0, 0],
+                    &[1, total, shape[2], shape[3]],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                KvHistory::empty().append(&sealed).append(&tail)
+            })
+        };
+        let keys = cut(&fixture.keys);
+        let values = cut(&fixture.values);
+        assert_eq!(keys.sealed_rows(), Some(sealed_rows));
+        assert!(
+            split_segments(&keys, &values, total, KV_HEADS, DIM).is_some(),
+            "a two-segment history whose rows add up is admitted"
+        );
+        assert!(
+            split_segments(&keys, &values, total - 1, KV_HEADS, DIM).is_none(),
+            "a tail that does not hold the rows after the seal is refused"
+        );
     }
 
     #[test]
