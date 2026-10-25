@@ -70,6 +70,17 @@ now 57.8 s / 679 tok/s and the opt-in relaxed path 42.4 s / 925 tok/s.
 Already shipped from the same item: tiled QSA scores (opt-in, ~2.6% TTFT with an
 outer chunk of 2048 or more on M5 Max; see `../reference-wave-m5max-20261024/`).
 
+## Shared-gather exactness check (no benefit)
+
+A bit-exact way to cut the per-query KV staging would be to run queries with an
+identical score-ordered selection (and the same tail start) as rows of one SDPA
+call over one gather; MLX 0.32.4's vector SDPA reduces each query independently,
+so that would keep today's arithmetic. The ignored test
+`flash_next_qsa_prefill_pair_rate_on_real_pack` measured it on the 8,192-token
+MXFP4 prefill: 0 of 18.8 million query pairs qualify. Adjacent queries share
+about 68% of their blocks, but identical block sets occur in 0.07% of adjacent
+pairs and never with the same order and tail. Not pursued.
+
 ## What would move the number
 
 MoE compute is the largest bucket and is expert-matmul bound with sorted rows
