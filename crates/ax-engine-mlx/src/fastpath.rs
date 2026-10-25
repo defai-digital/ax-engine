@@ -711,7 +711,9 @@ env_flag_default_on!(
     ///
     /// This covers MoE expert paths where gate/up projections are already
     /// materialized as separate tensors. Packed dense FFN layers use the
-    /// narrower packed GEGLU kernel below.
+    /// narrower packed GEGLU kernel below. The split Metal kernel is not
+    /// bit-exact against `gelu_approx_mul` (the kill path), so `=0` is a
+    /// numerics-tier token.
     geglu_mul_metal_enabled,
     "AX_MLX_GEGLU_MUL_METAL"
 );
@@ -728,7 +730,9 @@ env_flag_default_on!(
     /// gate/up split plus `gelu_approx(gate) * up` activation into one lazy MLX
     /// graph node. Quantized gate/up and down matmuls remain the normal MLX
     /// operations, preserving profiling and avoiding the decode regression
-    /// observed with the whole-FFN direct shim.
+    /// observed with the whole-FFN direct shim. The kill path is bit-exact
+    /// with this kernel (`packed_geglu_metal_matches_direct_geglu_for_bf16_packed_gate_up`),
+    /// so `=0` adds no numerics-tier token.
     dense_geglu_packed_metal_enabled,
     "AX_MLX_DENSE_GEGLU_PACKED_METAL"
 );
@@ -743,7 +747,10 @@ env_flag_default_on!(
     /// Mirrors the packed GEGLU fast path for dense FFN layers that already
     /// materialize gate/up as one projection. The Metal node fuses the last-dim
     /// split plus `silu(gate) * up`; unsupported shapes fall back to the existing
-    /// compiled-closure / imperative SwiGLU path.
+    /// compiled-closure / imperative SwiGLU path. Low-precision rows already
+    /// call `silu_mul`, which is bit-exact. The f32 kernel is not
+    /// (`packed_swiglu_metal_matches_direct_swiglu_for_bf16_packed_gate_up`
+    /// only bounds the error), so `=0` is a numerics-tier token.
     dense_swiglu_packed_metal_enabled,
     "AX_MLX_DENSE_SWIGLU_PACKED_METAL"
 );
@@ -5724,8 +5731,9 @@ env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION` — attend a Flash Next prefill
     /// chunk of 16 or more queries in padded, masked sub-batches instead of one
     /// gather and attention call per query. Each query still attends to exactly
-    /// its own selected tokens. Default ON; set `=0` to restore the per-query
-    /// path.
+    /// its own selected tokens. The padded call reduces over the sub-batch's
+    /// max length, so it is not bit-identical to the per-query exact-length
+    /// SDPA. Default ON; set `=0` to restore that path (a numerics-tier token).
     flash_next_qsa_batched_attention_enabled,
     "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
 );
@@ -5843,8 +5851,9 @@ env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT` — gather routed experts in
     /// expert-id order for Flash Next prefill chunks of at least 64 tokens, as
     /// mlx-lm's SwitchGLU does for long prompts. Default ON; set `=0` to
-    /// restore the unsorted gather. Decode and short verifier windows never
-    /// sort.
+    /// restore the unsorted gather. A sorted gather can take MLX's grouped
+    /// RHS kernel instead of the per-row QMV, so the kill is a numerics-tier
+    /// token. Decode and short verifier windows never sort.
     flash_next_prefill_expert_sort_enabled,
     "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT"
 );
@@ -5946,7 +5955,9 @@ env_flag_default_on!(
     ///
     /// **Default: ON** (kill-switch via `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0`).
     /// Promoted from opt-in after validation confirmed token-for-token
-    /// equivalence with the `precise=True` reference path.
+    /// equivalence with the `precise=True` reference path. Full-width softmax
+    /// plus a top-k renormalize is not bit-identical to the subset softmax,
+    /// so the kill is a numerics-tier token.
     qwen3_moe_narrow_softmax_enabled,
     "AX_MLX_QWEN3_MOE_NARROW_SOFTMAX"
 );
@@ -6173,7 +6184,8 @@ env_flag!(
     /// **Default: OFF** (opt-in). When eligible (seq==1 decode), runs the
     /// compositional whole-layer linear-attention Metal path (gated-delta +
     /// Metal gate helpers + projections). Decode-only. Falls back when
-    /// ineligible. Single-dispatch mega-kernel remains residual.
+    /// ineligible. Single-dispatch mega-kernel remains residual. `=1` swaps
+    /// in that kernel, so it is a numerics-tier token.
     linear_attention_whole_layer_metal_enabled,
     "AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL"
 );
@@ -6185,7 +6197,8 @@ env_flag!(
     /// **Default: OFF** (opt-in). Compositional path: gather_qmm gate_up →
     /// Metal fused activation/unsort → gather_qmm down → Metal weighted-sum.
     /// Decode-only batch=1. Falls back when ineligible. Single-dispatch
-    /// 4-bit mega-kernel remains residual.
+    /// 4-bit mega-kernel remains residual. `=1` swaps in that kernel, so
+    /// it is a numerics-tier token.
     moe_deep_expert_block_metal_enabled,
     "AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL"
 );
@@ -6237,7 +6250,9 @@ env_flag_default_on!(
     /// and bandwidth-bound, where the separate slice+silu_mul ops are
     /// faster than the single packed dispatch, so prefill uses the split
     /// path. Also falls back when the kernel is ineligible or the flag is
-    /// off.
+    /// off. The packed kernel and the split path are different arithmetic
+    /// routes, and there is no bit-exact proof, so `=0` is a numerics-tier
+    /// token.
     moe_swiglu_packed_metal_enabled,
     "AX_MLX_MOE_SWIGLU_PACKED_METAL"
 );
@@ -6256,7 +6271,10 @@ env_flag_default_on!(
     /// graph nodes per MoE layer per decode step (~48 nodes on Gemma4 27B
     /// with 24 MoE layers). Engages for decode and for **moderate prefill**
     /// (`seq <= MOE_PACKED_GEGLU_PREFILL_MAX_SEQ`); very long prefill keeps
-    /// the split path where separate ops are bandwidth-friendlier.
+    /// the split path where separate ops are bandwidth-friendlier. The
+    /// packed kernel matches the split path bit-for-bit
+    /// (`packed_geglu_metal_matches_direct_geglu_for_bf16_packed_gate_up`),
+    /// so `=0` adds no numerics-tier token.
     moe_geglu_packed_metal_enabled,
     "AX_MLX_MOE_GEGLU_PACKED_METAL"
 );
@@ -6300,11 +6318,13 @@ pub(crate) fn moe_packed_swiglu_prefill_max_seq() -> usize {
 /// bandwidth-bound and the fused kernel's extra input read costs more").
 /// `AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD=N` overrides for A/B on the
 /// 35B-A3B class contract shapes.
-pub(crate) fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
+fn moe_shared_fusion_seq_override() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
-    CACHED
-        .get_or_init(|| parse_positive_usize_env("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD"))
-        .unwrap_or(default_threshold)
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD"))
+}
+
+pub(crate) fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
+    moe_shared_fusion_seq_override().unwrap_or(default_threshold)
 }
 
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
@@ -7217,12 +7237,61 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `throughput_mtp=0` — Qwen throughput MTP profile off
 /// - `mtp_depth=N` — throughput draft width not 3, only while that profile is on
 /// - `qwen_exact=0` — explicit `AX_MLX_QWEN_LINEAR_MTP_EXACT` kill
+/// - `narrow_softmax=0` — full-width MoE softmax instead of the top-k subset
+/// - `expert_sort=0` — unsorted Flash Next prefill expert gather
+/// - `qsa_batched=0` — padded max-length QSA SDPA off (different reduction)
+/// - `gd_streaming` / `gd_tile_512` / `gd_chunkwise` — GatedDelta prefill route
+/// - `gd_decode_metal=0` — singleton GatedDelta decode leaves the Metal kernel
+/// - `single_2048` / `prefill_chunk=1536` / `prefill_chunk=1280` —
+///   linear-attention runner chunk cap not the shipped 1024
+/// - `moe_single_2048=0` — MoE hybrid prefill leaves the one-2048 chunk
+/// - `mla_chunk=N` / `mla_cold=N` — MLA prefill chunk overrides
+/// - `gdn_prefill_mlx=0` — Flash Next GDN prefill leaves the MLX recurrence
+/// - `qwen_gdn_mlx` — Qwen GatedDelta prefill uses the MLX recurrence
+/// - `dequant_dense=off|cached|transient` — dense-GEMM prefill differs from auto
+/// - `dequant_min=N` — that route's minimum sequence differs from auto
+/// - `ffn_gs64` / `ffn_q3` / `la_q2` / `down_q2` — prefill bit-width overlays
+/// - `moe_parallel` — expert-parallel prefill gather
+/// - `nax_attn=0` — NAX attention killed on a host that would use it
+/// - `native_causal` / `qwen_native_causal` — native causal SDPA instead of an array mask
+/// - `geglu_down_fuse` / `swiglu_down_fuse` / `dual_qmm_swiglu` — fused FFN graphs
+/// - `flat_qmm` / `flat_ffn` / `flat_down` / `tile_qmm` — prefill GEMM shape changes
+/// - `la_fused_qkvz` / `la_norm_qkvz` / `ffn_f32` — fused or upcast prefill qmms
+/// - `wide_gemv` / `matvec_ext` / `rms_gate_metal` — decode kernels without a bit-exact proof
+/// - `moe_swiglu_packed=0` — packed MoE SwiGLU leaves the f32 kernel
+/// - `la_whole_layer` / `moe_deep_expert` — opt-in whole-layer linear attention or deep expert block
+/// - `geglu_mul=0` / `dense_swiglu_packed=0` — dense activation kernels without a bit-exact kill
+/// - `pack_qkv=0` / `pack_gate_up=0` / `pack_la=0` — load-time projection packing off
+/// - `layer_scalar=0` / `moe_shared_add=0` / `f32_pack_bf16=0` — fused or dtype-normalization kills
+/// - `gemma4_bf16_embed=0` / `dense_bf16_fold=0` / `gemma4_attn_qkv_fuse=0` / `la_decode_post=0`
+/// - `qwen_cpp_qk=0` / `qwen_cpp_la_in=0` / `qwen_cpp_la_post=0` / `mtp_la_out_fuse=0`
+/// - opt-in route names (`gemma_dual_gate_up`, `dual_qmm_geglu`, `qwen_add_rms`,
+///   `dense_qmm_rms`, `attn_qkv_fuse`, `cpp_qk`, `mtp_fused_gdn`, `qwen_split_packed`,
+///   `last_query_sdpa`, and the other default-off numeric routes in the suffix)
+/// - `moe_swiglu_prefill=N` / `moe_shared_seq=N` — seq ceilings moved off the shipped value
+/// - `batched_prefill` — padded cohort prefill (reduction shape is not bit-exact)
+/// - `batched_rows=N` / `batched_tokens=N` — that cohort's admission caps moved
+/// - `gdn_tgy=N` — gated-delta verifier threadgroup not 4
+/// - `native_greedy_logits` — native greedy post-norm logits instead of sampled softmax
+/// - `reuse_rope` — one precomputed RoPE table instead of the fused QK-norm path
+/// - `mtp_packed_verify` — raw packed verifier FFN opt-in (throughput already covers its profile)
+/// - `mtp_exact_replay` — exact linear-MTP replay engaged
+/// - `mtp_projected_replay` / `mtp_refold` / `mtp_committed_fold` / `mtp_last_query` —
+///   raw opts that change verifier state or history; throughput already covers the profile
+/// - `mtp_tape` — tape capture, which leaves the fused gated-delta verifier
+/// - `qwen4_vision` — Qwen4 vision tower loaded
 /// - `act=f16` or `act=bf16` — activation dtype differs from the auto policy
 ///
 /// Switches whose docs prove bit-identical results, or that never change
 /// text (`AX_MLX_PREFIX_RESTORE_VALUE`), are fields on this struct so a test
 /// can flip them, and they contribute no token. Semantic cuts stay in the
 /// existing `semantic_cuts=` field of the execution signature.
+///
+/// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT=0` is not bit-identical. Sorting
+/// the gather is a permutation of rows only while each row stays on the
+/// per-row QMV. MLX's grouped RHS kernel runs instead when the indices are
+/// sorted, each product is one row, the batch is at least 16, and each
+/// expert is reused at least four times. A 64-token prefill meets that.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NumericsTierSwitches {
     pub(crate) indexed_prefill: bool,
@@ -7264,6 +7333,106 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) dual_qmm_swiglu_metal: bool,
     pub(crate) qsa_batched_attention: bool,
     pub(crate) invariant_qmv_bf16_q4: bool,
+    pub(crate) prefill_expert_sort: bool,
+    pub(crate) gd_streaming: bool,
+    pub(crate) gd_tile_512: bool,
+    pub(crate) gd_chunkwise: bool,
+    pub(crate) gd_decode_metal: bool,
+    pub(crate) single_2048: bool,
+    pub(crate) prefill_chunk_1536: bool,
+    pub(crate) prefill_chunk_1280: bool,
+    pub(crate) moe_single_2048: bool,
+    pub(crate) mla_prefill_chunk: Option<usize>,
+    pub(crate) mla_cold_chunk: Option<usize>,
+    pub(crate) flash_gdn_prefill_mlx: bool,
+    pub(crate) qwen_gdn_prefill_mlx: bool,
+    pub(crate) dequant_dense: Option<&'static str>,
+    pub(crate) dequant_dense_min_seq: Option<i32>,
+    pub(crate) ffn_gs64: bool,
+    pub(crate) ffn_q3: bool,
+    pub(crate) la_q2: bool,
+    pub(crate) down_q2: bool,
+    pub(crate) moe_expert_parallel: bool,
+    pub(crate) nax_attention_killed: bool,
+    pub(crate) native_offset_causal: bool,
+    pub(crate) qwen_native_offset_causal: bool,
+    pub(crate) geglu_down_fuse: bool,
+    pub(crate) swiglu_down_fuse: bool,
+    pub(crate) dual_qmm_swiglu: bool,
+    pub(crate) flat_qmm: bool,
+    pub(crate) flat_ffn: bool,
+    pub(crate) flat_down: bool,
+    pub(crate) tile_qmm: bool,
+    pub(crate) la_fused_qkvz: bool,
+    pub(crate) ffn_f32: bool,
+    pub(crate) wide_gemv: bool,
+    pub(crate) matvec_ext_bits: bool,
+    pub(crate) exact_rms_gate: bool,
+    pub(crate) la_norm_qkvz: bool,
+    pub(crate) moe_swiglu_packed: bool,
+    pub(crate) moe_geglu_packed: bool,
+    pub(crate) linear_attention_whole_layer: bool,
+    pub(crate) moe_deep_expert_block: bool,
+    pub(crate) geglu_mul: bool,
+    pub(crate) dense_swiglu_packed: bool,
+    pub(crate) pack_qkv: bool,
+    pub(crate) pack_gate_up: bool,
+    pub(crate) pack_la: bool,
+    pub(crate) layer_scalar: bool,
+    pub(crate) moe_shared_add: bool,
+    pub(crate) f32_pack_bf16: bool,
+    pub(crate) gemma4_bf16_embed: bool,
+    pub(crate) dense_bf16_fold: bool,
+    pub(crate) gemma4_attn_qkv_fuse: bool,
+    pub(crate) la_decode_post: bool,
+    pub(crate) qwen_cpp_qk: bool,
+    pub(crate) qwen_cpp_la_in: bool,
+    pub(crate) qwen_cpp_la_post: bool,
+    pub(crate) mtp_la_out_fuse: bool,
+    pub(crate) gemma_dual_gate_up: bool,
+    pub(crate) dual_qmm_geglu: bool,
+    pub(crate) qwen_add_rms: bool,
+    pub(crate) qwen_inter_add_rms: bool,
+    pub(crate) dense_qmm_rms: bool,
+    pub(crate) o_proj_rms: bool,
+    pub(crate) attn_qkv_fuse: bool,
+    pub(crate) qwen_attn_qkv_fuse: bool,
+    pub(crate) la_out_proj_fuse: bool,
+    pub(crate) qwen_bf16_embed: bool,
+    pub(crate) qwen_skip_bf16_astype: bool,
+    pub(crate) qwen_dual_affine: bool,
+    pub(crate) la_prefill_post: bool,
+    pub(crate) cpp_qk: bool,
+    pub(crate) gemma_cpp_qk: bool,
+    pub(crate) cpp_la_in: bool,
+    pub(crate) cpp_la_post: bool,
+    pub(crate) cpp_gemma4_ffn: bool,
+    pub(crate) mtp_fused_gdn: bool,
+    pub(crate) mtp_gdn_prework: bool,
+    pub(crate) gemma4_p128_packed: bool,
+    pub(crate) qwen_split_packed: bool,
+    pub(crate) gemma4_moe_long: bool,
+    pub(crate) gemma4_verify_qmm: bool,
+    pub(crate) last_query_sdpa: bool,
+    pub(crate) last_query_q: bool,
+    pub(crate) last_token_o: bool,
+    pub(crate) gemma4_last_query: bool,
+    pub(crate) moe_swiglu_prefill: Option<usize>,
+    pub(crate) moe_shared_seq: Option<usize>,
+    pub(crate) batched_prefill: bool,
+    pub(crate) batched_rows: Option<u32>,
+    pub(crate) batched_tokens: Option<u32>,
+    pub(crate) gdn_tgy: Option<i32>,
+    pub(crate) native_greedy_logits: bool,
+    pub(crate) reuse_rope: bool,
+    pub(crate) mtp_packed_verify: bool,
+    pub(crate) mtp_exact_replay: bool,
+    pub(crate) mtp_projected_replay: bool,
+    pub(crate) mtp_refold: bool,
+    pub(crate) mtp_committed_fold: bool,
+    pub(crate) mtp_last_query: bool,
+    pub(crate) mtp_tape: bool,
+    pub(crate) qwen4_vision: bool,
 }
 
 impl Default for NumericsTierSwitches {
@@ -7308,6 +7477,106 @@ impl Default for NumericsTierSwitches {
             dual_qmm_swiglu_metal: false,
             qsa_batched_attention: true,
             invariant_qmv_bf16_q4: true,
+            prefill_expert_sort: true,
+            gd_streaming: false,
+            gd_tile_512: false,
+            gd_chunkwise: false,
+            gd_decode_metal: true,
+            single_2048: false,
+            prefill_chunk_1536: false,
+            prefill_chunk_1280: false,
+            moe_single_2048: true,
+            mla_prefill_chunk: None,
+            mla_cold_chunk: None,
+            flash_gdn_prefill_mlx: true,
+            qwen_gdn_prefill_mlx: false,
+            dequant_dense: None,
+            dequant_dense_min_seq: None,
+            ffn_gs64: false,
+            ffn_q3: false,
+            la_q2: false,
+            down_q2: false,
+            moe_expert_parallel: false,
+            nax_attention_killed: false,
+            native_offset_causal: false,
+            qwen_native_offset_causal: false,
+            geglu_down_fuse: false,
+            swiglu_down_fuse: false,
+            dual_qmm_swiglu: false,
+            flat_qmm: false,
+            flat_ffn: false,
+            flat_down: false,
+            tile_qmm: false,
+            la_fused_qkvz: false,
+            ffn_f32: false,
+            wide_gemv: false,
+            matvec_ext_bits: false,
+            exact_rms_gate: false,
+            la_norm_qkvz: false,
+            moe_swiglu_packed: true,
+            moe_geglu_packed: true,
+            linear_attention_whole_layer: false,
+            moe_deep_expert_block: false,
+            geglu_mul: true,
+            dense_swiglu_packed: true,
+            pack_qkv: true,
+            pack_gate_up: true,
+            pack_la: true,
+            layer_scalar: true,
+            moe_shared_add: true,
+            f32_pack_bf16: true,
+            gemma4_bf16_embed: true,
+            dense_bf16_fold: true,
+            gemma4_attn_qkv_fuse: true,
+            la_decode_post: true,
+            qwen_cpp_qk: true,
+            qwen_cpp_la_in: true,
+            qwen_cpp_la_post: true,
+            mtp_la_out_fuse: true,
+            gemma_dual_gate_up: false,
+            dual_qmm_geglu: false,
+            qwen_add_rms: false,
+            qwen_inter_add_rms: false,
+            dense_qmm_rms: false,
+            o_proj_rms: false,
+            attn_qkv_fuse: false,
+            qwen_attn_qkv_fuse: false,
+            la_out_proj_fuse: false,
+            qwen_bf16_embed: false,
+            qwen_skip_bf16_astype: false,
+            qwen_dual_affine: false,
+            la_prefill_post: false,
+            cpp_qk: false,
+            gemma_cpp_qk: false,
+            cpp_la_in: false,
+            cpp_la_post: false,
+            cpp_gemma4_ffn: false,
+            mtp_fused_gdn: false,
+            mtp_gdn_prework: false,
+            gemma4_p128_packed: false,
+            qwen_split_packed: false,
+            gemma4_moe_long: false,
+            gemma4_verify_qmm: false,
+            last_query_sdpa: false,
+            last_query_q: false,
+            last_token_o: false,
+            gemma4_last_query: false,
+            moe_swiglu_prefill: None,
+            moe_shared_seq: None,
+            batched_prefill: false,
+            batched_rows: None,
+            batched_tokens: None,
+            gdn_tgy: None,
+            native_greedy_logits: false,
+            reuse_rope: false,
+            mtp_packed_verify: false,
+            mtp_exact_replay: false,
+            mtp_projected_replay: false,
+            mtp_refold: false,
+            mtp_committed_fold: false,
+            mtp_last_query: false,
+            mtp_tape: false,
+            qwen4_vision: false,
         }
     }
 }
@@ -7358,6 +7627,127 @@ impl NumericsTierSwitches {
             dual_qmm_swiglu_metal: qwen_prefill_dual_qmm_swiglu_metal_enabled(),
             qsa_batched_attention: flash_next_qsa_batched_attention_enabled(),
             invariant_qmv_bf16_q4: invariant_qmv_bf16_q4_enabled(),
+            prefill_expert_sort: flash_next_prefill_expert_sort_enabled(),
+            gd_streaming: qwen_gated_delta_prefill_streaming_enabled(),
+            gd_tile_512: qwen_gated_delta_prefill_tile_512_enabled(),
+            gd_chunkwise: qwen_gd_prefill_chunkwise_enabled(),
+            gd_decode_metal: qwen_gated_delta_decode_metal_enabled(),
+            single_2048: qwen_prefill_single_2048_enabled(),
+            prefill_chunk_1536: qwen_prefill_chunk_1536_enabled(),
+            prefill_chunk_1280: qwen_prefill_chunk_1280_enabled(),
+            moe_single_2048: qwen_moe_prefill_single_2048_enabled(),
+            mla_prefill_chunk: mla_chunk_tier_deviation(mla_prefill_chunk_override()),
+            mla_cold_chunk: mla_cold_prefill_chunk_override(),
+            flash_gdn_prefill_mlx: flash_next_gdn_prefill_mlx_enabled(),
+            qwen_gdn_prefill_mlx: qwen_gated_delta_prefill_mlx_enabled(),
+            dequant_dense: dequant_dense_tier_token(
+                qwen_prefill_dequant_dense_mode(),
+                prefill_dequant_dense_mode_for(None, || mlx_sys::gpu_device_architecture().ok()),
+            ),
+            dequant_dense_min_seq: {
+                let auto = prefill_dequant_dense_default_min_seq(|| {
+                    mlx_sys::gpu_device_architecture().ok()
+                });
+                let actual = qwen_prefill_dequant_dense_min_seq();
+                (actual != auto).then_some(actual)
+            },
+            ffn_gs64: qwen_prefill_ffn_gs64_enabled(),
+            ffn_q3: qwen_prefill_q3_ffn_enabled(),
+            la_q2: qwen_la_prefill_q2_proj_enabled(),
+            down_q2: qwen_prefill_q2_down_enabled(),
+            moe_expert_parallel: moe_expert_parallel_enabled(),
+            nax_attention_killed: nax_attention_killed_for_tier(
+                nax_attention_allowed(),
+                crate::hardware::neural_accelerator_active(),
+            ),
+            native_offset_causal: native_offset_causal_enabled(),
+            qwen_native_offset_causal: qwen_prefill_native_offset_causal_enabled(),
+            geglu_down_fuse: dense_geglu_down_fuse_enabled(),
+            swiglu_down_fuse: qwen_swiglu_down_fuse_enabled(),
+            dual_qmm_swiglu: qwen_dual_qmm_swiglu_enabled(),
+            flat_qmm: qwen_prefill_flat_qmm_enabled(),
+            flat_ffn: qwen_prefill_flat_ffn_enabled(),
+            flat_down: qwen_prefill_flat_down_qmm_enabled(),
+            tile_qmm: qwen_prefill_tile_qmm_enabled(),
+            la_fused_qkvz: qwen_la_fused_qkvz_ba_qmm_enabled(),
+            ffn_f32: qwen_prefill_ffn_f32_input_enabled(),
+            wide_gemv: dense_wide_gemv_enabled(),
+            matvec_ext_bits: qwen_dense_ffn_matvec_ext_bits_enabled(),
+            exact_rms_gate: exact_rms_gate_metal_enabled(),
+            la_norm_qkvz: qwen_la_norm_qkvz_fuse_enabled(),
+            moe_swiglu_packed: moe_swiglu_packed_metal_enabled(),
+            moe_geglu_packed: moe_geglu_packed_metal_enabled(),
+            linear_attention_whole_layer: linear_attention_whole_layer_metal_enabled(),
+            moe_deep_expert_block: moe_deep_expert_block_metal_enabled(),
+            geglu_mul: geglu_mul_metal_enabled(),
+            dense_swiglu_packed: dense_swiglu_packed_metal_enabled(),
+            pack_qkv: dense_attention_qkv_packing_enabled(),
+            pack_gate_up: dense_ffn_gate_up_packing_enabled(),
+            pack_la: linear_attention_projection_packing_enabled(),
+            layer_scalar: layer_scalar_fused_add_enabled(),
+            moe_shared_add: moe_fuse_shared_expert_add_enabled(),
+            f32_pack_bf16: f32_pack_bf16_normalize_enabled(),
+            gemma4_bf16_embed: gemma4_prefill_bf16_embed_enabled(),
+            dense_bf16_fold: dense_long_mt_bf16_fold_enabled_env(),
+            gemma4_attn_qkv_fuse: gemma4_attn_norm_qkv_fuse_p128_enabled(),
+            la_decode_post: qwen_linear_attention_decode_post_input_metal_enabled(),
+            qwen_cpp_qk: qwen_direct_cpp_qk_norm_rope_enabled(),
+            qwen_cpp_la_in: qwen_direct_cpp_linear_attention_inputs_enabled(),
+            qwen_cpp_la_post: qwen_direct_cpp_linear_attention_post_input_enabled(),
+            mtp_la_out_fuse: mtp_la_out_proj_silu_mul_qmm_enabled(),
+            gemma_dual_gate_up: gemma_dual_gate_up_metal_enabled(),
+            dual_qmm_geglu: dual_qmm_geglu_enabled(),
+            qwen_add_rms: qwen_linear_add_rms_norm_enabled(),
+            qwen_inter_add_rms: qwen_prefill_interlayer_add_rms_enabled(),
+            dense_qmm_rms: dense_qmatmul_rms_norm_enabled(),
+            o_proj_rms: o_proj_qmatmul_rms_norm_enabled(),
+            attn_qkv_fuse: attn_norm_qkv_fuse_enabled(),
+            qwen_attn_qkv_fuse: qwen_attn_norm_qkv_fuse_enabled(),
+            la_out_proj_fuse: qwen_la_out_proj_silu_mul_qmm_enabled(),
+            qwen_bf16_embed: qwen_prefill_bf16_embed_dequant_enabled(),
+            qwen_skip_bf16_astype: qwen_prefill_skip_bf16_astype_enabled(),
+            qwen_dual_affine: qwen_prefill_dual_affine_qmm_enabled(),
+            la_prefill_post: qwen_linear_attention_prefill_post_input_metal_enabled(),
+            cpp_qk: direct_cpp_qk_norm_rope_enabled(),
+            gemma_cpp_qk: gemma_direct_cpp_qk_norm_rope_enabled(),
+            cpp_la_in: direct_cpp_linear_attention_inputs_enabled(),
+            cpp_la_post: direct_cpp_linear_attention_post_input_enabled(),
+            cpp_gemma4_ffn: direct_cpp_gemma4_post_attn_ffn_enabled(),
+            mtp_fused_gdn: mtp_fused_gated_delta_verify_env(),
+            mtp_gdn_prework: mtp_gdn_prework_simd32_enabled(),
+            gemma4_p128_packed: gemma4_packed_ffn_compile_p128_enabled(),
+            qwen_split_packed: qwen_prefill_split_packed_enabled(),
+            gemma4_moe_long: gemma4_moe_long_mt_enabled(),
+            gemma4_verify_qmm: gemma4_verify_qmm_lm_head_enabled(),
+            last_query_sdpa: qwen_prefill_last_query_sdpa_enabled(),
+            last_query_q: qwen_prefill_last_query_q_proj_enabled(),
+            last_token_o: qwen_prefill_last_token_o_proj_enabled(),
+            gemma4_last_query: gemma4_prefill_last_query_p128_enabled(),
+            moe_swiglu_prefill: {
+                let seq = moe_packed_swiglu_prefill_max_seq();
+                (seq != 0).then_some(seq)
+            },
+            moe_shared_seq: moe_shared_fusion_seq_override(),
+            batched_prefill: batched_prefill_enabled(),
+            batched_rows: {
+                let rows = batched_prefill_max_rows();
+                (rows != 8).then_some(rows)
+            },
+            batched_tokens: batched_prefill_token_budget_override(),
+            gdn_tgy: {
+                let rows = gated_delta_verify_threadgroup_y_env();
+                (rows != 4).then_some(rows)
+            },
+            native_greedy_logits: mtp_native_greedy_verify_logits_enabled(),
+            reuse_rope: qwen_prefill_reuse_rope_enabled(),
+            mtp_packed_verify: mtp_packed_verify_ffn_env(),
+            mtp_exact_replay: mtp_linear_exact_replay_enabled(),
+            mtp_projected_replay: mtp_linear_projected_replay_env(),
+            mtp_refold: mtp_refold_accepted_history_env(),
+            mtp_committed_fold: mtp_batched_committed_fold_env(),
+            mtp_last_query: mtp_last_committed_query_env(),
+            mtp_tape: mtp_linear_tape_capture_env(),
+            qwen4_vision: qwen4_exp_vision_enabled(),
         }
     }
 }
@@ -7394,14 +7784,53 @@ fn acknowledge_bit_exact_switches(switches: &NumericsTierSwitches) {
         switches.tiled_scores,
         switches.prefill_device_select,
         switches.gdn_metal,
-        switches.narrow_softmax,
         switches.auto_buffer_caps,
         switches.prefix_restore_value,
         switches.exact_lm_head_window,
         switches.dual_qmm_swiglu_metal,
-        switches.qsa_batched_attention,
         switches.invariant_qmv_bf16_q4,
+        switches.moe_geglu_packed,
     );
+}
+
+/// MLA chunk override that differs from [`MLA_DEFAULT_PREFILL_CHUNK`].
+/// An explicit 16 keeps the shipped partition and adds no token.
+pub(crate) fn mla_chunk_tier_deviation(chunk: Option<usize>) -> Option<usize> {
+    chunk.filter(|value| *value != MLA_DEFAULT_PREFILL_CHUNK)
+}
+
+/// Token when the dequant-dense mode differs from the architecture auto policy.
+pub(crate) fn dequant_dense_tier_token(
+    mode: PrefillDequantDenseMode,
+    auto: PrefillDequantDenseMode,
+) -> Option<&'static str> {
+    if mode == auto {
+        return None;
+    }
+    Some(match mode {
+        PrefillDequantDenseMode::Off => "dequant_dense=off",
+        PrefillDequantDenseMode::Cached => "dequant_dense=cached",
+        PrefillDequantDenseMode::Transient => "dequant_dense=transient",
+    })
+}
+
+/// True when MLX `GatherQMM` takes the grouped RHS kernel instead of the
+/// per-row QMV. `batch` is the number of gathered rows and `experts` is the
+/// weight-stack count. The grouped kernel reuses weights across rows, so a
+/// sort of those rows is not a bit-identical permutation.
+#[cfg(test)]
+pub(crate) fn gather_qmm_grouped_rhs_kernel(
+    rows_per_matvec: i32,
+    batch: i32,
+    experts: i32,
+    right_sorted: bool,
+) -> bool {
+    rows_per_matvec == 1 && batch >= 16 && right_sorted && experts > 0 && batch / experts >= 4
+}
+
+/// `AX_MLX_NAX_ATTENTION=0` changes SDPA only on a host whose accelerator is on.
+pub(crate) fn nax_attention_killed_for_tier(allowed: bool, accelerator_active: bool) -> bool {
+    !allowed && accelerator_active
 }
 
 /// Compact numerics-tier component. Empty at shipped defaults.
@@ -7492,6 +7921,309 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if switches.qwen_exact_killed {
         tokens.push("qwen_exact=0".to_string());
+    }
+    if !switches.narrow_softmax {
+        tokens.push("narrow_softmax=0".to_string());
+    }
+    if !switches.prefill_expert_sort {
+        tokens.push("expert_sort=0".to_string());
+    }
+    if !switches.qsa_batched_attention {
+        tokens.push("qsa_batched=0".to_string());
+    }
+    if switches.gd_streaming {
+        tokens.push("gd_streaming".to_string());
+    }
+    if switches.gd_tile_512 {
+        tokens.push("gd_tile_512".to_string());
+    }
+    if switches.gd_chunkwise {
+        tokens.push("gd_chunkwise".to_string());
+    }
+    if !switches.gd_decode_metal {
+        tokens.push("gd_decode_metal=0".to_string());
+    }
+    if switches.single_2048 {
+        tokens.push("single_2048".to_string());
+    }
+    if switches.prefill_chunk_1536 {
+        tokens.push("prefill_chunk=1536".to_string());
+    }
+    if switches.prefill_chunk_1280 {
+        tokens.push("prefill_chunk=1280".to_string());
+    }
+    if !switches.moe_single_2048 {
+        tokens.push("moe_single_2048=0".to_string());
+    }
+    if let Some(chunk) = switches.mla_prefill_chunk {
+        tokens.push(format!("mla_chunk={chunk}"));
+    }
+    if let Some(chunk) = switches.mla_cold_chunk {
+        tokens.push(format!("mla_cold={chunk}"));
+    }
+    if !switches.flash_gdn_prefill_mlx {
+        tokens.push("gdn_prefill_mlx=0".to_string());
+    }
+    if switches.qwen_gdn_prefill_mlx {
+        tokens.push("qwen_gdn_mlx".to_string());
+    }
+    if let Some(dequant) = switches.dequant_dense {
+        tokens.push(dequant.to_string());
+    }
+    if let Some(min_seq) = switches.dequant_dense_min_seq {
+        tokens.push(format!("dequant_min={min_seq}"));
+    }
+    if switches.ffn_gs64 {
+        tokens.push("ffn_gs64".to_string());
+    }
+    if switches.ffn_q3 {
+        tokens.push("ffn_q3".to_string());
+    }
+    if switches.la_q2 {
+        tokens.push("la_q2".to_string());
+    }
+    if switches.down_q2 {
+        tokens.push("down_q2".to_string());
+    }
+    if switches.moe_expert_parallel {
+        tokens.push("moe_parallel".to_string());
+    }
+    if switches.nax_attention_killed {
+        tokens.push("nax_attn=0".to_string());
+    }
+    if switches.native_offset_causal {
+        tokens.push("native_causal".to_string());
+    }
+    if switches.qwen_native_offset_causal {
+        tokens.push("qwen_native_causal".to_string());
+    }
+    if switches.geglu_down_fuse {
+        tokens.push("geglu_down_fuse".to_string());
+    }
+    if switches.swiglu_down_fuse {
+        tokens.push("swiglu_down_fuse".to_string());
+    }
+    if switches.dual_qmm_swiglu {
+        tokens.push("dual_qmm_swiglu".to_string());
+    }
+    if switches.flat_qmm {
+        tokens.push("flat_qmm".to_string());
+    }
+    if switches.flat_ffn {
+        tokens.push("flat_ffn".to_string());
+    }
+    if switches.flat_down {
+        tokens.push("flat_down".to_string());
+    }
+    if switches.tile_qmm {
+        tokens.push("tile_qmm".to_string());
+    }
+    if switches.la_fused_qkvz {
+        tokens.push("la_fused_qkvz".to_string());
+    }
+    if switches.ffn_f32 {
+        tokens.push("ffn_f32".to_string());
+    }
+    if switches.wide_gemv {
+        tokens.push("wide_gemv".to_string());
+    }
+    if switches.matvec_ext_bits {
+        tokens.push("matvec_ext".to_string());
+    }
+    if switches.exact_rms_gate {
+        tokens.push("rms_gate_metal".to_string());
+    }
+    if switches.la_norm_qkvz {
+        tokens.push("la_norm_qkvz".to_string());
+    }
+    if !switches.moe_swiglu_packed {
+        tokens.push("moe_swiglu_packed=0".to_string());
+    }
+    if switches.linear_attention_whole_layer {
+        tokens.push("la_whole_layer".to_string());
+    }
+    if switches.moe_deep_expert_block {
+        tokens.push("moe_deep_expert".to_string());
+    }
+    if !switches.geglu_mul {
+        tokens.push("geglu_mul=0".to_string());
+    }
+    if !switches.dense_swiglu_packed {
+        tokens.push("dense_swiglu_packed=0".to_string());
+    }
+    if !switches.pack_qkv {
+        tokens.push("pack_qkv=0".to_string());
+    }
+    if !switches.pack_gate_up {
+        tokens.push("pack_gate_up=0".to_string());
+    }
+    if !switches.pack_la {
+        tokens.push("pack_la=0".to_string());
+    }
+    if !switches.layer_scalar {
+        tokens.push("layer_scalar=0".to_string());
+    }
+    if !switches.moe_shared_add {
+        tokens.push("moe_shared_add=0".to_string());
+    }
+    if !switches.f32_pack_bf16 {
+        tokens.push("f32_pack_bf16=0".to_string());
+    }
+    if !switches.gemma4_bf16_embed {
+        tokens.push("gemma4_bf16_embed=0".to_string());
+    }
+    if !switches.dense_bf16_fold {
+        tokens.push("dense_bf16_fold=0".to_string());
+    }
+    if !switches.gemma4_attn_qkv_fuse {
+        tokens.push("gemma4_attn_qkv_fuse=0".to_string());
+    }
+    if !switches.la_decode_post {
+        tokens.push("la_decode_post=0".to_string());
+    }
+    if !switches.qwen_cpp_qk {
+        tokens.push("qwen_cpp_qk=0".to_string());
+    }
+    if !switches.qwen_cpp_la_in {
+        tokens.push("qwen_cpp_la_in=0".to_string());
+    }
+    if !switches.qwen_cpp_la_post {
+        tokens.push("qwen_cpp_la_post=0".to_string());
+    }
+    if !switches.mtp_la_out_fuse {
+        tokens.push("mtp_la_out_fuse=0".to_string());
+    }
+    if switches.gemma_dual_gate_up {
+        tokens.push("gemma_dual_gate_up".to_string());
+    }
+    if switches.dual_qmm_geglu {
+        tokens.push("dual_qmm_geglu".to_string());
+    }
+    if switches.qwen_add_rms {
+        tokens.push("qwen_add_rms".to_string());
+    }
+    if switches.qwen_inter_add_rms {
+        tokens.push("qwen_inter_add_rms".to_string());
+    }
+    if switches.dense_qmm_rms {
+        tokens.push("dense_qmm_rms".to_string());
+    }
+    if switches.o_proj_rms {
+        tokens.push("o_proj_rms".to_string());
+    }
+    if switches.attn_qkv_fuse {
+        tokens.push("attn_qkv_fuse".to_string());
+    }
+    if switches.qwen_attn_qkv_fuse {
+        tokens.push("qwen_attn_qkv_fuse".to_string());
+    }
+    if switches.la_out_proj_fuse {
+        tokens.push("la_out_proj_fuse".to_string());
+    }
+    if switches.qwen_bf16_embed {
+        tokens.push("qwen_bf16_embed".to_string());
+    }
+    if switches.qwen_skip_bf16_astype {
+        tokens.push("qwen_skip_bf16_astype".to_string());
+    }
+    if switches.qwen_dual_affine {
+        tokens.push("qwen_dual_affine".to_string());
+    }
+    if switches.la_prefill_post {
+        tokens.push("la_prefill_post".to_string());
+    }
+    if switches.cpp_qk {
+        tokens.push("cpp_qk".to_string());
+    }
+    if switches.gemma_cpp_qk {
+        tokens.push("gemma_cpp_qk".to_string());
+    }
+    if switches.cpp_la_in {
+        tokens.push("cpp_la_in".to_string());
+    }
+    if switches.cpp_la_post {
+        tokens.push("cpp_la_post".to_string());
+    }
+    if switches.cpp_gemma4_ffn {
+        tokens.push("cpp_gemma4_ffn".to_string());
+    }
+    if switches.mtp_fused_gdn {
+        tokens.push("mtp_fused_gdn".to_string());
+    }
+    if switches.mtp_gdn_prework {
+        tokens.push("mtp_gdn_prework".to_string());
+    }
+    if switches.gemma4_p128_packed {
+        tokens.push("gemma4_p128_packed".to_string());
+    }
+    if switches.qwen_split_packed {
+        tokens.push("qwen_split_packed".to_string());
+    }
+    if switches.gemma4_moe_long {
+        tokens.push("gemma4_moe_long".to_string());
+    }
+    if switches.gemma4_verify_qmm {
+        tokens.push("gemma4_verify_qmm".to_string());
+    }
+    if switches.last_query_sdpa {
+        tokens.push("last_query_sdpa".to_string());
+    }
+    if switches.last_query_q {
+        tokens.push("last_query_q".to_string());
+    }
+    if switches.last_token_o {
+        tokens.push("last_token_o".to_string());
+    }
+    if switches.gemma4_last_query {
+        tokens.push("gemma4_last_query".to_string());
+    }
+    if let Some(seq) = switches.moe_swiglu_prefill {
+        tokens.push(format!("moe_swiglu_prefill={seq}"));
+    }
+    if let Some(seq) = switches.moe_shared_seq {
+        tokens.push(format!("moe_shared_seq={seq}"));
+    }
+    if switches.batched_prefill {
+        tokens.push("batched_prefill".to_string());
+    }
+    if let Some(rows) = switches.batched_rows {
+        tokens.push(format!("batched_rows={rows}"));
+    }
+    if let Some(tokens_cap) = switches.batched_tokens {
+        tokens.push(format!("batched_tokens={tokens_cap}"));
+    }
+    if let Some(rows) = switches.gdn_tgy {
+        tokens.push(format!("gdn_tgy={rows}"));
+    }
+    if switches.native_greedy_logits {
+        tokens.push("native_greedy_logits".to_string());
+    }
+    if switches.reuse_rope {
+        tokens.push("reuse_rope".to_string());
+    }
+    if switches.mtp_packed_verify {
+        tokens.push("mtp_packed_verify".to_string());
+    }
+    if switches.mtp_exact_replay {
+        tokens.push("mtp_exact_replay".to_string());
+    }
+    if switches.mtp_projected_replay {
+        tokens.push("mtp_projected_replay".to_string());
+    }
+    if switches.mtp_refold {
+        tokens.push("mtp_refold".to_string());
+    }
+    if switches.mtp_committed_fold {
+        tokens.push("mtp_committed_fold".to_string());
+    }
+    if switches.mtp_last_query {
+        tokens.push("mtp_last_query".to_string());
+    }
+    if switches.mtp_tape {
+        tokens.push("mtp_tape".to_string());
+    }
+    if switches.qwen4_vision {
+        tokens.push("qwen4_vision".to_string());
     }
     if let Some(activation) = switches.activation_deviation {
         tokens.push(activation.to_string());

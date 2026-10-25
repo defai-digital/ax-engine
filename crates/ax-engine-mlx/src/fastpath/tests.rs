@@ -3679,6 +3679,170 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     activation.activation_deviation = Some("act=f16");
     push("act=f16", activation);
 
+    let mut narrow = base;
+    narrow.narrow_softmax = false;
+    push("narrow_softmax=0", narrow);
+
+    let mut expert_sort = base;
+    expert_sort.prefill_expert_sort = false;
+    push("expert_sort=0", expert_sort);
+
+    let mut qsa_batched = base;
+    qsa_batched.qsa_batched_attention = false;
+    push("qsa_batched=0", qsa_batched);
+
+    let mut gd_streaming = base;
+    gd_streaming.gd_streaming = true;
+    push("gd_streaming", gd_streaming);
+
+    let mut gd_tile = base;
+    gd_tile.gd_tile_512 = true;
+    push("gd_tile_512", gd_tile);
+
+    let mut gd_chunkwise = base;
+    gd_chunkwise.gd_chunkwise = true;
+    push("gd_chunkwise", gd_chunkwise);
+
+    let mut gd_decode = base;
+    gd_decode.gd_decode_metal = false;
+    push("gd_decode_metal=0", gd_decode);
+
+    let mut single = base;
+    single.single_2048 = true;
+    push("single_2048", single);
+
+    let mut chunk_1536 = base;
+    chunk_1536.prefill_chunk_1536 = true;
+    push("prefill_chunk=1536", chunk_1536);
+
+    let mut chunk_1280 = base;
+    chunk_1280.prefill_chunk_1280 = true;
+    push("prefill_chunk=1280", chunk_1280);
+
+    let mut moe_chunk = base;
+    moe_chunk.moe_single_2048 = false;
+    push("moe_single_2048=0", moe_chunk);
+
+    let mut mla_chunk = base;
+    mla_chunk.mla_prefill_chunk = Some(64);
+    push("mla_chunk=64", mla_chunk);
+
+    let mut mla_cold = base;
+    mla_cold.mla_cold_chunk = Some(256);
+    push("mla_cold=256", mla_cold);
+
+    let mut gdn_mlx = base;
+    gdn_mlx.flash_gdn_prefill_mlx = false;
+    push("gdn_prefill_mlx=0", gdn_mlx);
+
+    let mut qwen_gdn = base;
+    qwen_gdn.qwen_gdn_prefill_mlx = true;
+    push("qwen_gdn_mlx", qwen_gdn);
+
+    let mut dequant = base;
+    dequant.dequant_dense = Some("dequant_dense=cached");
+    push("dequant_dense=cached", dequant);
+
+    let mut dequant_min = base;
+    dequant_min.dequant_dense_min_seq = Some(256);
+    push("dequant_min=256", dequant_min);
+
+    let mut gs64 = base;
+    gs64.ffn_gs64 = true;
+    push("ffn_gs64", gs64);
+
+    let mut q3 = base;
+    q3.ffn_q3 = true;
+    push("ffn_q3", q3);
+
+    let mut la_q2 = base;
+    la_q2.la_q2 = true;
+    push("la_q2", la_q2);
+
+    let mut down_q2 = base;
+    down_q2.down_q2 = true;
+    push("down_q2", down_q2);
+
+    let mut parallel = base;
+    parallel.moe_expert_parallel = true;
+    push("moe_parallel", parallel);
+
+    let mut nax = base;
+    nax.nax_attention_killed = true;
+    push("nax_attn=0", nax);
+
+    let mut native_causal = base;
+    native_causal.native_offset_causal = true;
+    push("native_causal", native_causal);
+
+    let mut qwen_causal = base;
+    qwen_causal.qwen_native_offset_causal = true;
+    push("qwen_native_causal", qwen_causal);
+
+    let mut geglu = base;
+    geglu.geglu_down_fuse = true;
+    push("geglu_down_fuse", geglu);
+
+    let mut swiglu = base;
+    swiglu.swiglu_down_fuse = true;
+    push("swiglu_down_fuse", swiglu);
+
+    let mut dual = base;
+    dual.dual_qmm_swiglu = true;
+    push("dual_qmm_swiglu", dual);
+
+    let mut flat_qmm = base;
+    flat_qmm.flat_qmm = true;
+    push("flat_qmm", flat_qmm);
+
+    let mut flat_ffn = base;
+    flat_ffn.flat_ffn = true;
+    push("flat_ffn", flat_ffn);
+
+    let mut flat_down = base;
+    flat_down.flat_down = true;
+    push("flat_down", flat_down);
+
+    let mut tile_qmm = base;
+    tile_qmm.tile_qmm = true;
+    push("tile_qmm", tile_qmm);
+
+    let mut fused_qkvz = base;
+    fused_qkvz.la_fused_qkvz = true;
+    push("la_fused_qkvz", fused_qkvz);
+
+    let mut ffn_f32 = base;
+    ffn_f32.ffn_f32 = true;
+    push("ffn_f32", ffn_f32);
+
+    let mut wide = base;
+    wide.wide_gemv = true;
+    push("wide_gemv", wide);
+
+    let mut ext_bits = base;
+    ext_bits.matvec_ext_bits = true;
+    push("matvec_ext", ext_bits);
+
+    let mut rms_gate = base;
+    rms_gate.exact_rms_gate = true;
+    push("rms_gate_metal", rms_gate);
+
+    let mut la_norm = base;
+    la_norm.la_norm_qkvz = true;
+    push("la_norm_qkvz", la_norm);
+
+    let mut moe_swiglu = base;
+    moe_swiglu.moe_swiglu_packed = false;
+    push("moe_swiglu_packed=0", moe_swiglu);
+
+    let mut whole_layer = base;
+    whole_layer.linear_attention_whole_layer = true;
+    push("la_whole_layer", whole_layer);
+
+    let mut deep_expert = base;
+    deep_expert.moe_deep_expert_block = true;
+    push("moe_deep_expert", deep_expert);
+
     let mut seen = std::collections::BTreeSet::new();
     for (token, switches) in &cases {
         let suffix = numerics_tier_suffix(switches);
@@ -3689,18 +3853,77 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
 }
 
 #[test]
+fn numerics_tier_suffix_records_exact_order_for_combined_switches() {
+    let base = NumericsTierSwitches::default();
+
+    // `qsa_batched=0` follows `expert_sort=0`, not the earlier QSA kills.
+    let mut qsa = base;
+    qsa.qsa_dense_short = false;
+    qsa.prefill_expert_sort = false;
+    qsa.qsa_batched_attention = false;
+    assert_eq!(
+        numerics_tier_suffix(&qsa),
+        ";numerics=qsa_dense=0,expert_sort=0,qsa_batched=0"
+    );
+
+    let mut packed = base;
+    packed.moe_swiglu_packed = false;
+    packed.moe_geglu_packed = false;
+    packed.linear_attention_whole_layer = true;
+    packed.moe_deep_expert_block = true;
+    assert_eq!(
+        numerics_tier_suffix(&packed),
+        ";numerics=moe_swiglu_packed=0,la_whole_layer,moe_deep_expert"
+    );
+
+    let mut span = base;
+    span.indexed_prefill = true;
+    span.narrow_softmax = false;
+    span.linear_attention_whole_layer = true;
+    span.activation_deviation = Some("act=bf16");
+    assert_eq!(
+        numerics_tier_suffix(&span),
+        ";numerics=indexed,narrow_softmax=0,la_whole_layer,act=bf16"
+    );
+
+    // A killed throughput profile suppresses `mtp_depth` even when depth differs.
+    let mut depth = base;
+    depth.throughput_mtp = false;
+    depth.throughput_mtp_depth = 7;
+    depth.qsa_batched_attention = false;
+    depth.moe_deep_expert_block = true;
+    assert_eq!(
+        numerics_tier_suffix(&depth),
+        ";numerics=throughput_mtp=0,qsa_batched=0,moe_deep_expert"
+    );
+
+    // New kills stay in suffix order, and the activation token stays last.
+    let mut tail = base;
+    tail.geglu_mul = false;
+    tail.dense_swiglu_packed = false;
+    tail.pack_qkv = false;
+    tail.gemma_dual_gate_up = true;
+    tail.batched_prefill = true;
+    tail.qwen4_vision = true;
+    tail.activation_deviation = Some("act=bf16");
+    assert_eq!(
+        numerics_tier_suffix(&tail),
+        ";numerics=geglu_mul=0,dense_swiglu_packed=0,pack_qkv=0,gemma_dual_gate_up,batched_prefill,qwen4_vision,act=bf16"
+    );
+}
+
+#[test]
 fn numerics_tier_suffix_ignores_bit_exact_switches() {
     let switches = NumericsTierSwitches {
         tiled_scores: true,
         prefill_device_select: false,
         gdn_metal: false,
-        narrow_softmax: false,
         auto_buffer_caps: false,
         prefix_restore_value: true,
         exact_lm_head_window: false,
         dual_qmm_swiglu_metal: true,
-        qsa_batched_attention: false,
         invariant_qmv_bf16_q4: false,
+        moe_geglu_packed: false,
         ..NumericsTierSwitches::default()
     };
     assert_eq!(numerics_tier_suffix(&switches), "");
@@ -3709,3 +3932,47 @@ fn numerics_tier_suffix_ignores_bit_exact_switches() {
         "layers=4;ordered-prefix-v2"
     );
 }
+
+#[test]
+fn sorted_prefill_expert_gather_can_leave_the_per_row_kernel() {
+    // 64 tokens, top-4, 32 experts: batch 256, eight rows per expert.
+    // The grouped RHS kernel is eligible only when the indices are sorted.
+    assert!(gather_qmm_grouped_rhs_kernel(1, 64 * 4, 32, true));
+    assert!(!gather_qmm_grouped_rhs_kernel(1, 64 * 4, 32, false));
+    assert!(!gather_qmm_grouped_rhs_kernel(1, 8, 2, true));
+    assert!(!gather_qmm_grouped_rhs_kernel(8, 256, 32, true));
+    assert!(!gather_qmm_grouped_rhs_kernel(1, 64, 0, true));
+}
+
+#[test]
+fn mla_and_dequant_deviations_keep_the_shipped_policy_untokenized() {
+    assert_eq!(mla_chunk_tier_deviation(None), None);
+    assert_eq!(
+        mla_chunk_tier_deviation(Some(MLA_DEFAULT_PREFILL_CHUNK)),
+        None
+    );
+    assert_eq!(mla_chunk_tier_deviation(Some(64)), Some(64));
+    assert_eq!(
+        dequant_dense_tier_token(PrefillDequantDenseMode::Off, PrefillDequantDenseMode::Off),
+        None
+    );
+    assert_eq!(
+        dequant_dense_tier_token(
+            PrefillDequantDenseMode::Transient,
+            PrefillDequantDenseMode::Off
+        ),
+        Some("dequant_dense=transient")
+    );
+    assert_eq!(
+        dequant_dense_tier_token(
+            PrefillDequantDenseMode::Cached,
+            PrefillDequantDenseMode::Transient
+        ),
+        Some("dequant_dense=cached")
+    );
+    assert!(!nax_attention_killed_for_tier(true, true));
+    assert!(!nax_attention_killed_for_tier(false, false));
+    assert!(nax_attention_killed_for_tier(false, true));
+}
+
+include!("numerics_switch_table.rs");

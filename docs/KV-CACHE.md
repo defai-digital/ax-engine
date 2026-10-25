@@ -322,8 +322,18 @@ the decode block key, device-select kills whose float order can change a
 subnormal or tie, fused prefill paths that are not bit-identical, the MoE
 router and GeGLU expert block, a non-512 long-prompt chunk, batched-projection
 row-exact mode, f32-attention kills, Gemma assistant-MTP exactness kills,
-relaxed Qwen MTP, an explicit Qwen exact-profile kill, and an activation dtype
-that differs from the auto policy). Switches documented as bit-identical, and
+relaxed Qwen MTP, an explicit Qwen exact-profile kill, the Qwen3
+narrow-softmax kill, the Flash Next prefill expert-sort kill, padded QSA
+attention, GatedDelta and linear-attention chunk routes, MLA chunk overrides,
+a dequant-dense or bit-width overlay, a NAX attention kill on a host that
+would use it, native causal SDPA, fused FFN graphs that are not bit-identical, prefill
+GEMM shape and dtype changes, decode kernels without a bit-exact proof,
+the packed MoE SwiGLU kill, dense activation kills that lack a bit-exact test
+(`AX_MLX_GEGLU_MUL_METAL`, `AX_MLX_DENSE_SWIGLU_PACKED_METAL`), projection-packing
+kills, padded batched prefill, and an activation dtype that differs from the auto
+policy). Packed GeGLU adds no token: the same kernel is bit-exact in
+`packed_geglu_metal_matches_direct_geglu_for_bf16_packed_gate_up`. Switches with
+a named bit-exact test, placement and scheduling switches, and
 `AX_MLX_PREFIX_RESTORE_VALUE` (it never changes text), add no token. When
 every tracked switch is at its shipped default the suffix is omitted, so the
 signature bytes and the v4 key bytes stay the same as before the tier existed.
