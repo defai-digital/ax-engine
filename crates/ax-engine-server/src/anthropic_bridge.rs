@@ -646,7 +646,10 @@ pub(crate) async fn run_bridged(
     let chat_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(chat_body)
         .map_err(|error| invalid(format!("invalid Anthropic request: {error}")))?;
     let id = format!("msg-{request_id}");
-    let response = openai_chat_completions(State(state), Ok(Json(chat_request))).await?;
+    let api_polish = state.env.api_polish;
+    let response = openai_chat_completions(State(state), Ok(Json(chat_request)))
+        .await
+        .map_err(|error| crate::anthropic::map_anthropic_generation_error(error, api_polish))?;
     if !streaming {
         let bytes = axum::body::to_bytes(response.into_body(), MAX_CHAT_RESPONSE_BYTES)
             .await

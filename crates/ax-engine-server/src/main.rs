@@ -36,6 +36,7 @@ mod grpc;
 mod grpc_auth;
 mod grpc_metrics;
 mod lan_advertise;
+mod memory;
 mod metadata;
 mod metrics;
 mod model_load;

@@ -97,15 +97,113 @@ pub(crate) fn apply_client_stops_to_generate_response(
     response: &mut GenerateResponse,
     client_stop_sequences: &[String],
 ) -> Option<String> {
+    apply_client_stops(response, client_stop_sequences, false)
+}
+
+/// Like [`apply_client_stops_to_generate_response`], but a stop string inside
+/// a separated reasoning span (`<think>…</think>`, a prefilled `</think>`
+/// body, or a `<|channel>thought` channel) does not end the generation.
+/// Native EOS is not a string stop and is left to the engine finish reason.
+pub(crate) fn apply_client_stops_to_answer_only(
+    response: &mut GenerateResponse,
+    client_stop_sequences: &[String],
+) -> Option<String> {
+    apply_client_stops(response, client_stop_sequences, true)
+}
+
+fn apply_client_stops(
+    response: &mut GenerateResponse,
+    client_stop_sequences: &[String],
+    answer_only: bool,
+) -> Option<String> {
     if client_stop_sequences.is_empty() {
         return None;
     }
     let text = response.output_text.as_mut()?;
-    let (index, len) = find_earliest_stop(text, client_stop_sequences)?;
+    let (index, len) = if answer_only {
+        find_earliest_answer_stop(text, client_stop_sequences)?
+    } else {
+        find_earliest_stop(text, client_stop_sequences)?
+    };
     let matched = text[index..index + len].to_string();
     text.truncate(index);
     response.finish_reason = Some(GenerateFinishReason::Stop);
     Some(matched)
+}
+
+/// Byte ranges of reasoning spans, including their tags, so a stop that
+/// sits inside the reasoning text does not match.
+fn reasoning_mask_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    if let Some(close) = text.find("</think>")
+        && !text[..close].contains("<think>")
+    {
+        let end = close + "</think>".len();
+        spans.push((0, end));
+        cursor = end;
+    }
+    while let Some(relative) = text[cursor..].find("<think>") {
+        let start = cursor + relative;
+        let after = start + "<think>".len();
+        if let Some(end_rel) = text[after..].find("</think>") {
+            let end = after + end_rel + "</think>".len();
+            spans.push((start, end));
+            cursor = end;
+        } else {
+            spans.push((start, text.len()));
+            break;
+        }
+    }
+    let mut scan = 0usize;
+    const CHANNEL_OPEN: &str = "<|channel>thought\n";
+    const CHANNEL_CLOSE: &str = "<channel|>";
+    while let Some(relative) = text[scan..].find(CHANNEL_OPEN) {
+        let start = scan + relative;
+        let after = start + CHANNEL_OPEN.len();
+        if let Some(end_rel) = text[after..].find(CHANNEL_CLOSE) {
+            let end = after + end_rel + CHANNEL_CLOSE.len();
+            spans.push((start, end));
+            scan = end;
+        } else {
+            spans.push((start, text.len()));
+            break;
+        }
+    }
+    spans
+}
+
+fn find_earliest_answer_stop(text: &str, sequences: &[String]) -> Option<(usize, usize)> {
+    let masked = reasoning_mask_spans(text);
+    let mut earliest: Option<(usize, usize)> = None;
+    for sequence in sequences {
+        if sequence.is_empty() {
+            continue;
+        }
+        let mut from = 0usize;
+        while let Some(relative) = text[from..].find(sequence.as_str()) {
+            let index = from + relative;
+            let end = index + sequence.len();
+            let overlaps_reasoning = masked
+                .iter()
+                .any(|(start, mask_end)| index < *mask_end && end > *start);
+            if !overlaps_reasoning {
+                let better = match earliest {
+                    None => true,
+                    Some((at, len)) => index < at || (index == at && sequence.len() > len),
+                };
+                if better {
+                    earliest = Some((index, sequence.len()));
+                }
+                break;
+            }
+            from = index + sequence.len();
+            if from > text.len() {
+                break;
+            }
+        }
+    }
+    earliest
 }
 
 /// Incremental stop matcher for streamed text. Emits text as soon as it can
@@ -308,5 +406,83 @@ mod tests {
         let step = scanner.push("za");
         assert!(step.matched);
         assert_eq!(step.emit, "");
+    }
+
+    fn response_with_text(text: &str) -> GenerateResponse {
+        GenerateResponse {
+            request_id: 1,
+            model_id: "qwen3".to_string(),
+            prompt_tokens: Vec::new(),
+            prompt_text: None,
+            output_tokens: Vec::new(),
+            output_token_logprobs: Vec::new(),
+            output_text: Some(text.to_string()),
+            prompt_token_count: None,
+            output_token_count: None,
+            status: ax_engine_sdk::GenerateStatus::Finished,
+            finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
+            step_count: 1,
+            ttft_step: None,
+            route: ax_engine_sdk::GenerateRouteReport::default(),
+            runtime: ax_engine_sdk::RuntimeReport {
+                selected_backend: ax_engine_sdk::SelectedBackend::Mlx,
+                support_tier: ax_engine_sdk::SupportTier::MlxPreview,
+                resolution_policy: ax_engine_sdk::ResolutionPolicy::MlxOnly,
+                capabilities: ax_engine_sdk::CapabilityReport::mlx_preview(),
+                fallback_reason: None,
+                host: Default::default(),
+                metal_toolchain: Default::default(),
+                mlx_runtime: None,
+                mlx_model: None,
+                delegated_runtime: None,
+            },
+            performance: Default::default(),
+        }
+    }
+
+    #[test]
+    fn answer_only_stop_ignores_a_match_inside_think_tags() {
+        let mut response = response_with_text("<think>STOP now</think>hello STOP tail");
+        let matched = apply_client_stops_to_answer_only(&mut response, &["STOP".to_string()]);
+        assert_eq!(matched.as_deref(), Some("STOP"));
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("<think>STOP now</think>hello ")
+        );
+        assert_eq!(response.finish_reason, Some(GenerateFinishReason::Stop));
+    }
+
+    #[test]
+    fn answer_only_stop_keeps_generation_when_the_only_match_is_reasoning() {
+        let mut response = response_with_text("<think>please STOP</think>the answer");
+        let matched = apply_client_stops_to_answer_only(&mut response, &["STOP".to_string()]);
+        assert!(matched.is_none());
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("<think>please STOP</think>the answer")
+        );
+        assert_eq!(
+            response.finish_reason,
+            Some(GenerateFinishReason::MaxOutputTokens)
+        );
+    }
+
+    #[test]
+    fn answer_only_stop_ignores_a_prefilled_think_close() {
+        let mut response = response_with_text("STOP inside</think>visible");
+        let matched = apply_client_stops_to_answer_only(&mut response, &["STOP".to_string()]);
+        assert!(matched.is_none());
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("STOP inside</think>visible")
+        );
+    }
+
+    #[test]
+    fn full_text_stop_still_matches_inside_think_tags() {
+        let mut response = response_with_text("<think>STOP</think>hello");
+        let matched = apply_client_stops_to_generate_response(&mut response, &["STOP".to_string()]);
+        assert_eq!(matched.as_deref(), Some("STOP"));
+        assert_eq!(response.output_text.as_deref(), Some("<think>"));
     }
 }

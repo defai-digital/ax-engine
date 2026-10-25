@@ -663,10 +663,22 @@ extern "C" int mlx_fast_scaled_dot_product_attention(mlx_array* r,
     bool force_fused, const mlx_stream s) {
   AX_TRY {
     aset(r, mx::fast::scaled_dot_product_attention(
-        aref(q), aref(k), aref(v), scale, safe_str(mask_mode), opt_arr(mask_arr),
+        aref(q), aref(k), aref(v), scale, AX_SDPA_WINDOW_ARG safe_str(mask_mode), opt_arr(mask_arr),
         opt_arr(sinks), force_fused, sd(s)));
     return 0;
   } AX_CATCH }
+#ifdef AX_MLX_HAS_SDPA_WINDOW
+extern "C" int mlx_fast_scaled_dot_product_attention_windowed(mlx_array* r,
+    const mlx_array q, const mlx_array k, const mlx_array v,
+    float scale, int window_size, const char* mask_mode, const mlx_array mask_arr,
+    const mlx_array sinks, bool force_fused, const mlx_stream s) {
+  AX_TRY {
+    aset(r, mx::fast::scaled_dot_product_attention(
+        aref(q), aref(k), aref(v), scale, window_size, safe_str(mask_mode),
+        opt_arr(mask_arr), opt_arr(sinks), force_fused, sd(s)));
+    return 0;
+  } AX_CATCH }
+#endif
 extern "C" int mlx_fast_layer_norm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array b, float eps, const mlx_stream s) {
   AX_TRY { aset(r, mx::fast::layer_norm(aref(x), opt_arr(w), opt_arr(b), eps, sd(s))); return 0; } AX_CATCH }
 

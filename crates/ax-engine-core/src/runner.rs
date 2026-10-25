@@ -5,6 +5,7 @@ use crate::ids::{RequestId, StepId};
 use crate::kv::BlockTableView;
 use crate::metal::MetalDispatchTrace;
 use crate::model::NativeModelArtifactsSummary;
+use crate::prefill_handoff::{CheckpointReason, CheckpointReceipt, MemoryPressureSample};
 use crate::request::RequestMultimodalInputs;
 use crate::sampling::StopReason;
 use crate::scheduler::{ExecutionBatch, ExecutionMode, RouteMetadata};
@@ -30,6 +31,16 @@ pub struct RunnerInput {
     /// Grammars of the requests in this batch that are constrained;
     /// `json_grammar_active` in [`RunnerRequestContext`] marks them.
     pub request_json_grammars: Vec<RunnerRequestJsonGrammar>,
+    /// Typed prefill hints (semantic snapshot cut points) for the requests
+    /// in this batch that carry any. A sidecar, like `logit_bias`, because
+    /// [`RunnerRequestContext`] is `Copy`.
+    pub request_prefill_hints: Vec<RunnerRequestPrefillHints>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunnerRequestPrefillHints {
+    pub request_id: RequestId,
+    pub hints: crate::request::PrefillHints,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,6 +144,17 @@ impl RunnerInput {
             .iter()
             .find(|entry| entry.request_id == request_id)
             .map(|entry| &entry.grammar)
+    }
+
+    /// The request's typed prefill hints, when it carries any.
+    pub fn request_prefill_hints(
+        &self,
+        request_id: RequestId,
+    ) -> Option<&crate::request::PrefillHints> {
+        self.request_prefill_hints
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .map(|entry| &entry.hints)
     }
 }
 
@@ -371,6 +393,41 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
 
     fn release_request_state(&self, _request_id: RequestId) {}
 
+    /// Capture at most `committed_limit` tokens before preemption, cancel, or
+    /// a pressure spill releases runner state. The default reports an
+    /// unsupported layout so the engine recomputes and does not claim an SSD
+    /// hit. One call serializes once; this is not a per-chunk portable store.
+    fn checkpoint_request(
+        &self,
+        request_id: RequestId,
+        _reason: CheckpointReason,
+        committed_limit: u32,
+    ) -> CheckpointReceipt {
+        CheckpointReceipt::miss(request_id, committed_limit)
+    }
+
+    /// Drop restorable device state after a committed spill receipt.
+    fn release_restorable_state(&self, _request_id: RequestId) {}
+
+    /// MLX active-memory sample. `None` leaves pressure requeue off.
+    fn memory_pressure_sample(&self) -> Option<MemoryPressureSample> {
+        None
+    }
+
+    /// Return the idle MLX cache to the allocator before a pressure check.
+    fn reclaim_idle_cache(&self) {}
+
+    /// GDN, QSA, and MLA change recurrent or latent state with the prefill
+    /// chunk, so the first quantum of a request stays in force.
+    fn chunk_sensitive_prefill(&self) -> bool {
+        false
+    }
+
+    /// Model-based multi-token prediction is active for this runner.
+    fn mtp_active(&self) -> bool {
+        false
+    }
+
     fn metal_dispatch_trace(&self) -> Option<MetalDispatchTrace> {
         None
     }
@@ -390,6 +447,26 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     /// are inspected. Servers use the resolved value to avoid resident-model
     /// warmup loops that would otherwise perform many full SSD sweeps.
     fn native_expert_streaming_active(&self) -> bool {
+        false
+    }
+
+    /// Live decode sequences the loaded model may run concurrently.
+    ///
+    /// `None` means this runner imposes no cap. A runner whose load-time memory
+    /// plan proved residency at fewer live sequences than the caller configured
+    /// reports that smaller number here, and the engine admits at most that
+    /// many requests at a time (leaving the rest queued) instead of crossing
+    /// the priced ceiling and paging weights out of GPU residency.
+    fn native_live_sequence_cap(&self) -> Option<u32> {
+        None
+    }
+
+    /// Submit one tiny GPU copy so an idle device keeps model buffers wired.
+    ///
+    /// The default is a no-op. The MLX runner overrides it and does not change
+    /// the wired limit. Call only from the thread that owns the runner, and
+    /// never while a request is in flight.
+    fn touch_idle_residency(&self) -> bool {
         false
     }
 }
@@ -470,6 +547,7 @@ mod tests {
             crossover_decisions: vec![("prefix_reused_requests".into(), 0)],
         };
         let output = runner.run(RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {
@@ -603,6 +681,7 @@ mod tests {
     fn deterministic_runner_counts_shared_blocks_once() {
         let runner = DeterministicRunner;
         let output = runner.run(RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {
@@ -677,6 +756,7 @@ mod tests {
     fn deterministic_runner_does_not_synthesize_stub_route_labels() {
         let runner = DeterministicRunner;
         let output = runner.run(RunnerInput {
+            request_prefill_hints: Vec::new(),
             block_size_tokens: 16,
             memory_pressure: None,
             execution_batch: ExecutionBatch {

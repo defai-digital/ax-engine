@@ -138,6 +138,20 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) response_format: Option<Value>,
 }
 
+/// Kill switch for the WP12 OpenAI/Anthropic contract polish
+/// (`AX_API_POLISH`). Default is on so `#[serde(skip)]` fields and
+/// `..Default::default()` keep the polished contract. `0` / `false` / `off`
+/// restores the previous behaviour. Handlers that own [`crate::app_state::AppState`]
+/// overwrite the request field from the process config.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ApiPolish(pub bool);
+
+impl Default for ApiPolish {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiChatCompletionHttpRequest {
     #[serde(default)]
@@ -148,6 +162,10 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     /// `num_predict` sentinels `-1`/`-2`.
     #[serde(skip)]
     pub(crate) fit_max_tokens_to_context: bool,
+    /// Internal (never deserialized): [`ApiPolish`] from `AX_API_POLISH`.
+    /// Skipped fields default on; request handlers stamp the env value.
+    #[serde(skip)]
+    pub(crate) api_polish: ApiPolish,
     #[serde(default)]
     pub(crate) input_tokens: Vec<u32>,
     #[serde(default)]
@@ -498,7 +516,7 @@ pub(crate) struct OpenAiFunctionCallDelta {
     pub(crate) arguments: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OpenAiInferencePerformance {
     pub(crate) metrics_version: u32,
     /// Actual uncached prompt tokens, absent when physical cache reuse is unknown.
@@ -513,7 +531,7 @@ pub(crate) struct OpenAiInferencePerformance {
     pub(crate) decode_time_us: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OpenAiUsage {
     pub(crate) prompt_tokens: u32,
     pub(crate) completion_tokens: u32,
@@ -525,6 +543,16 @@ pub(crate) struct OpenAiUsage {
     /// Per-request native evaluation timings; never global metrics or client estimates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) ax_engine: Option<OpenAiInferencePerformance>,
+    /// Reasoning tokens are a subset of `completion_tokens`, counted from
+    /// the output token ids. Omitted when the count is unknown. They are
+    /// not added again into `completion_tokens` or `total_tokens`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) completion_tokens_details: Option<OpenAiCompletionTokensDetails>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct OpenAiCompletionTokensDetails {
+    pub(crate) reasoning_tokens: u32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

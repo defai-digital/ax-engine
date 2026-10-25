@@ -13,7 +13,7 @@ use crate::openai::generation::{
 use crate::openai::requests::{
     build_openai_chat_request_offloading_media, reject_unsupported_reasoning_effort,
 };
-use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
+use crate::openai::schema::{ApiPolish, OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::validation::select_openai_model;
 
 pub(crate) async fn openai_chat_completions(
@@ -23,13 +23,14 @@ pub(crate) async fn openai_chat_completions(
     // Fold axum's JSON rejections into the documented 400 invalid_request
     // envelope; the default extractor answers with a plain-text 422 OpenAI
     // clients cannot parse (same pattern as openai::embeddings).
-    let Json(request) = payload.map_err(|rejection| {
+    let Json(mut request) = payload.map_err(|rejection| {
         crate::errors::error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             format!("invalid request body: {}", rejection.body_text()),
         )
     })?;
+    request.api_polish = ApiPolish(state.env.api_polish);
     let live = select_openai_model(&state, request.model.as_deref())?;
     if request.skip_special_tokens.is_some() || request.vllm_xargs.is_some() {
         return Err(crate::errors::error_response(

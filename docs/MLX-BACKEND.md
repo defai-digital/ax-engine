@@ -85,9 +85,25 @@ synchronization on the shared default stream.
 
 ### Wired weight memory
 
-`mlx_set_wired_limit(recommendedMaxWorkingSetSize)` is called at startup to
-wire model weights into GPU memory, preventing Metal from paging them between
-requests.
+`mlx_set_wired_limit(...)` is called once at startup to wire model weights into
+GPU memory, preventing Metal from paging them between requests. The default is
+`0.9 x recommendedMaxWorkingSetSize` (96.8 GiB on a 128 GB Mac), the historical
+share that avoids wiring the full recommendation. The share is raised only when
+the priced plan says the pack needs it: a pack whose resident working set lands
+between `0.9x` and `1.0x` of the recommendation gets the smallest share that
+still covers it (up to `1.0x`), and a pack above the recommendation gets `1.0x`.
+Packs under the default share — MXFP4 Flash Next, the 27B packs, denser models
+— see exactly the wiring they had before. `AX_MLX_WIRED_LIMIT_SCALE` pins the
+share explicitly.
+
+The wired limit is reported, not enforced: the plan keeps its RAM-derived
+placement decision and only states the gap. When a resident plan prices above
+the wired limit, AX logs one warning with the shortfall and the exact remedy
+(`sudo sysctl iogpu.wired_limit_mb=<MiB>`, whose value covers the priced
+working set plus 4 GiB and is capped at `RAM - os reserve`), and `GET
+/v1/memory` carries `memory_plan.wired_limit_bytes` and
+`memory_plan.wired_shortfall_bytes` for later sampling. The kernel applies that
+sysctl process-wide, needs root, and resets it on reboot; AX cannot set it.
 
 ### Chunked prefill
 
@@ -298,6 +314,69 @@ invite a scoped PR after the evidence and validation gate are agreed.
 Use `--disable-ngram-acceleration` when a direct same-policy comparison row is
 required. AX Engine does not expose deprecated decode-mode aliases.
 
+### Environment switches
+
+These process-environment keys are read from the environment, not from CLI
+flags. Placement and scheduling keys change *which* memory or route a request
+uses, never the model arithmetic; each row says what the default path is and
+what the kill switch restores.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AX_MLX_PRICED_MEMORY` | on (unset is on) | Auto placement is decided by the priced memory plan: non-expert weights, KV cache, GDN/QSA state, prefill scratch, and runtime reserves are priced separately from the expert weights and the never-resident n-gram table. `0`, `false`, `no`, or `off` restores the legacy 48 GiB fixed-headroom formula (and the flat prefill-scratch estimate that came with it). Placement only: the same weights and kernels run either way. |
+| `AX_MLX_WIRED_LIMIT_SCALE` | unset (working-set sized, `0.9` floor) | Explicit wired-limit share of Metal's `recommendedMaxWorkingSetSize`, clamped to `0.0..=1.0` (`0` leaves the weights unwired). When unset, the runner wires `0.9x` unless the priced plan says the pack needs more, in which case it wires the smallest share that covers the working set, up to `1.0x`. Setting it pins the historical behaviour exactly and also disables the Tiel auto-no-wire policy. Wiring only: placement, kernels and output are unchanged. |
+| `AX_STREAM_EXPERT_CACHE_BYTES` | unset (no operator byte cap) | Explicit byte budget for resident expert layer stacks. A positive integer wins over the priced plan's remainder; blank, zero, and unparsable values mean "no byte cap", leaving `AX_STREAM_EXPERT_LAYERS` as the only limit. Placement only. |
+| `AX_MLX_MEMORY_CEILING_BYTES` | unset (derived from host RAM) | Explicit load-admission ceiling in bytes. When RAM is known the value is clamped to `RAM - 4 GiB` so an override can never page the kernel out; when RAM is unknown it is used as is. Blank, zero, and unparsable values keep the derived ceiling. Placement only. |
+| `AX_FLASH_NEXT_MTP_COST` | on | Enables the measured Flash Next MTP cost policy. Under the `auto` policy a head whose rounds lose to direct decode is parked for the rest of the request, which switches the mechanism to direct decode without changing the accepted greedy token stream. `0` restores the pre-WP03 gate order exactly: the machine never arms and `cost_direct` stays false. `AX_FLASH_NEXT_MTP_COST_POLICY` selects the policy; `required` reports `would_park` and never parks, `disabled` never measures. |
+| `AX_MLX_BATCHED_STATE_MATERIALIZE` | on | Schedules the batched gated-delta conv/recurrent state for evaluation (`async_eval`, not a blocking `eval`) at the end of every batched decode step, so a long cohort does not keep one suspended graph per step alive. `0` restores the purely lazy state update. State bytes and logits are unchanged. |
+| `AX_FLASH_NEXT_NORM_CONTRACT` | on (strict) | The Flash Next loader refuses a pack whose RMSNorm gain contract (raw delta versus already folded) is omitted or contradictory, instead of guessing from tensor values or file names. `0` (read once, needs a process restart) restores the legacy loader that treated an omitted `weight_sanitize` as already folded. Metadata only; a correctly declared pack loads identically. |
+| `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` | on | Chooses Flash Next QSA blocks for a prefill chunk on the device. The ordered indices match the host sort (score descending, lower block id first, signed zero collapsed), and the logits are bit-identical. On M5 Max 128 GB, Flash Next MXFP4, the 8192-token check matched host indices and logit bits. Stage `qsa_indexer` 1.775 s to 0.045 s; unsynchronized prefill 13.31 s to 11.79 s. Server TTFT 9k 13.64 s to 11.77 s, 39k 75.87 s to 58.06 s; greedy text identical at 2.2k, 9k, and 39k. `=0` restores the host sort exactly. A causal non-finite score, or a row with fewer finite causal blocks than the block budget, selects that chunk on the host and reports the same error the host sort would. When `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES=1` and the monolithic score workspace exceeds 256 MiB, the tiled host path takes precedence over this switch. Single-query decode stays on `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`. Short verifier windows stay on `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`. The block-key kernel is compiled at model load (`AX_MLX_LOAD_KERNEL_WARMUP=0` skips that compile). Before that, the first 2.2k request after load paid the compile (2.37 s to 2.70 s) and the second request was already at parity (2.657 s versus 2.681 s). |
+| `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY` | off | Opts Flash Next QSA single-query decode and short verifier windows into a unique device block key (score descending, lower block id, signed zero collapsed, a causal NaN in the -inf class, future blocks after every causal key) instead of the negated-score argsort. Finite-score token order matches the host sort. The selection graph does not read the key back. Unset or `0` keeps that argsort and does not launch or compile the key kernel on the decode path. `=1` opts in. On M5 Max, Flash Next MXFP4, 256 tokens, two interleaved rounds, the kernel changed decode 9k 45.72 to 45.38 tok/s and 39k 44.32 to 43.97 tok/s (-0.8% on every row; text identical), so the default stays off. Enable it when an MLX bump breaks the argsort tie and NaN order the default path relies on. This does not change prefill selection. Single-query steps still follow `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`; short windows still follow `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`. |
+| `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` | off | Scores Flash Next QSA blocks in query tiles so a long prefill chunk is not rejected by the monolithic 256 MiB score workspace. Tiling runs only for the MLX 0.32.4 GEMM shapes whose tests match the monolithic score bits, so those gated shapes are bit-identical; every other shape keeps monolithic scores and the 256 MiB check. `1` opts in; unset or `0` keeps the default path. This does not by itself change the outer prefill chunk. It takes precedence over `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` when the monolithic score workspace exceeds 256 MiB: that chunk is scored in tiles and selected on the host, and device selection still runs when the monolithic scores fit. |
+| `AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK` | unset | With tiled scores on and the runtime gate open (GPU architecture, MLX version, production score contract), runs the outer Flash Next prefill at `2048`, `4096`, or `8192` instead of the long-prompt clamp. Any other value, or tiled scores off, keeps the current chunk. This changes the prefill partition, so it is a measurement configuration: compare same-chunk A/B, and treat a chunk the monolithic check would reject as not a baseline. |
+| `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` | off | Attends a Flash Next QSA prefill chunk by reading each query's selected K/V rows straight out of the sealed prefix and tail of the request's K/V history in a custom Metal kernel, instead of gathering a padded `chunk × selected` K/V tile and running masked `scaled_dot_product_attention` over it. Unset or `0` runs the gathered path: no new ops, no kernel compile, no allocation. That gathered path is no longer byte-for-byte the pre-indexed one: it now caps each sub-batch's width by the *actual* padded gather, so a window whose longest selection exceeds the 512-query sizing probe can split into narrower sub-batches (the earlier path could exceed its own 1 GiB gather reservation there). The math and outputs are identical; only the sub-batch partition can differ. Relaxed, not bit-exact: selection order, causal membership, the softmax scale, the GQA mapping and the dtype transition are preserved, so it attends the same values, but the reduction order and the online softmax rescaling differ, so greedy text can differ at a near-tie (a step whose top-2 logits sit inside that rounding). On an M2-class host it measured -4.8% `qsa_d_attend`. It consumes the device-chosen block indices when `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` selected them, and the host-selected rows otherwise, without reading the index tile back to the host. Both arms skip an index outside `[0, total rows)` instead of reading past the K/V arrays. Decode, verifier windows, multi-batch calls and geometries the kernel does not cover keep the gathered path. Use it to cut the per-chunk prefill attention transient on a pack whose QSA selection is long, and keep it off wherever greedy output must match the gathered path bit for bit. When the switch is on, model load compiles the pipeline once with the model geometry (`AX_MLX_LOAD_KERNEL_WARMUP=0` skips that compile), so the first request does not pay it; with the switch unset or `0` nothing is compiled. |
+| `AX_MLX_TREE_VERIFY` | off | Verifies a DFlash2 draft as a tree of at most four nodes (top-2 tokens at the first two draft positions) instead of one linear chain. Each root-to-leaf branch runs the canonical greedy verify on its own cache clone; the longest accepted prefix wins and a tie keeps the primary branch, so only target-greedy-accepted tokens are emitted and greedy output is identical to the linear path. `1` opts in; unset or `0` keeps the linear DFlash2 path. |
+| `AX_MLX_IDLE_TICK_MS` | `0` (off) | Positive interval in milliseconds (whitespace trimmed). After the last request the model worker submits one tiny GPU copy on that cadence so macOS keeps the model's buffers wired. The tick is skipped while a request runs, under memory pressure, and after shutdown; it never changes the wired, cache, or memory limit and does not affect model output. Unset, empty, non-numeric, or `0` leaves the worker on its blocking receive. Delegated builds ignore it. |
+| `AX_MLX_IDLE_TICK_MAX_S` | `900` | Seconds to keep ticking after the last request. Unset, empty, or non-numeric values keep 900; `0` is a zero window. Only bounds the keep-warm episode. |
+| `MLX_LIB_DIR` / `AX_MLX_EXPERIMENT_COMMIT` | unset | Build-time only, experiment path. `MLX_LIB_DIR` (with `MLX_INCLUDE_DIR`) is the first resolution choice for the MLX include and library directories. A dev-suffixed MLX version header is linked only when `AX_MLX_EXPERIMENT_COMMIT` names the exact full 40-hex commit embedded in that header and in the built `libmlx` provenance bytes; otherwise the build fails. Production stays on the pinned MLX release, and no bit-exactness claim applies to a dev build. |
+
+Memory rule: the usable ceiling is `RAM - max(8 GiB, 10% RAM)`, so a 128 GiB
+host reserves 12.8 GiB and admits about 115.2 GiB. The Metal
+`recommendedMaxWorkingSetSize` is reported but never bounds the ceiling: a
+measured Flash Next session ran resident above it. The wired limit does bound
+GPU residency, and it is normally below the recommendation's full value; a
+resident plan that prices above the wired limit is what makes macOS page
+weights out, so the plan warns with the gap and the `iogpu.wired_limit_mb`
+value that closes it. With the priced plan on, Auto keeps the whole pack
+resident when the priced working set fits under the ceiling, streams experts
+with a byte-budgeted cache when only the fixed part fits, and refuses the load
+when even the fixed part does not fit.
+
+Concurrency is part of that pricing. Per-request gated-delta-net state is
+charged once per live decode sequence, so a pack can fit at one row and not at
+the runner's default eight-row cohort: the affine 6-bit Flash Next pack prices
+116.17 GiB at eight rows and 115.15 GiB at one against the same 115.20 GiB
+ceiling. When the configured live-sequence count `N` does not fit but some
+smaller `L` does, the plan stays resident and publishes `live_sequence_cap = L`;
+the engine admits at most `L` concurrently prefill/decode requests for that
+model and leaves the rest in the scheduler's queue, in arrival order. Only when
+even `L = 1` does not fit does the plan fall back to the stream/refuse ladder
+unchanged. The effective admission is `min(explicit --max-concurrent-requests,
+L)`, and the reduction is announced once with a `configured=N admitted=L`
+warning. MXFP4 Flash Next keeps its full cohort: nothing is capped when the
+configured count fits. `GET /v1/memory` reports `memory_plan.live_sequences`
+(the configured count) and `memory_plan.live_sequence_cap` (the admitted one),
+so lower parallelism than requested is diagnosable without reading logs. Both
+fields are `null` when the configured count fits (no cap) or when priced memory
+is off (`AX_MLX_PRICED_MEMORY=0` publishes no cap and keeps the historical
+0.9 wired scale). A priced cache too small to hold one
+layer stack is refused rather than thrashed. The prefill-scratch term is
+shape-derived from the configured chunk — residual/attention copies, gated-delta
+chunk intermediates, `chunk x top_k` MoE staging, the QSA score workspace and
+selected-K/V gather, and hyper-connection buffers — instead of a flat
+activation copy, because a profiled 8192-token Flash Next prefill peaked about
+3.5 GiB above the flat estimate.
+
 ## Benchmarking
 
 Repo-owned MLX runtime throughput is benchmarked through the MLX
@@ -345,7 +424,7 @@ Interpretation rule:
 
 ### Phase 1 — mlx-sys crate
 
-- `bindgen` over `crates/mlx-sys/native/ax_shim.h`, linked against Homebrew `libmlx`
+- `bindgen` over `crates/mlx-sys/native/ax_shim.h`, originally linked against Homebrew `libmlx` (the build now links the pinned MLX wheel and refuses Homebrew unless `AX_MLX_ALLOW_HOMEBREW=1`)
 - Safe `MlxArray` (RAII, `Drop` calls `mlx_array_free`)
 - Core ops: matmul, add, multiply, softmax, reshape, transpose, astype, take,
   slice, slice_update, zeros, as_strided, repeat_axis, concatenate, argmax

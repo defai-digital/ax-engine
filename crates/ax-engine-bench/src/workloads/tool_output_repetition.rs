@@ -82,6 +82,7 @@ impl ToolOutputRepetition {
         // synthetic_prompt_tokens returns identical tokens iteration over
         // iteration. This is the explicit exerciser for the n-gram cache.
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             input_tokens: synthetic_prompt_tokens(
                 self.prompt_tokens,

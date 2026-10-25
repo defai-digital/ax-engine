@@ -125,9 +125,29 @@ Qwen 3.8 caveat:
   single-stream resident (ADR-049). MXFP8 MTP admission is pending.
   CLI aliases `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4`
   select MXFP4 MTP; `qwen3.8-flash-next:axq-6bit` selects the affine 6-bit
-  MTP pack (ADR-050). On MacBook Pro M5 Max 128 GB start it with
-  `--stream-experts off --max-concurrent-requests 1`: resident it decodes about
-  41-46 tok/s at about 103 GiB; Auto streams its experts there at 0.17 tok/s. Other standalone affine widths stay unsupported and
+  MTP pack (ADR-050). On MacBook Pro M5 Max 128 GB it stays resident under
+  Auto at one live sequence and decodes about 41-46 tok/s at about 103 GiB.
+  The priced plan charges per-request state once per live sequence, so at the
+  default eight-row cohort this pack prices 116.17 GiB against the 115.20 GiB
+  ceiling and used to stream its experts at 0.17 tok/s. It now stays resident
+  and caps concurrency instead: the plan publishes `live_sequence_cap = 1`
+  (the 6-bit pack fits no more than one row), the engine serves one request at
+  a time and queues the rest, and start-up logs one warning naming the
+  configured and admitted counts. `--max-concurrent-requests 1` is still the
+  way to make that single-stream intent explicit, and `--stream-experts off`
+  remains a valid override for operators who have measured it. MXFP4 Flash Next
+  keeps the full eight-row cohort on the same host.
+  The affine 6-bit pack is the one Flash Next format that needs a raised wired
+  limit on a 128 GB Mac: the runner wires 0.9 x Metal's 107.5 GiB
+  recommendation (96.8 GiB) while the resident working set prices at about
+  115 GiB, so macOS pages part of the weights out of GPU residency and long
+  context collapses. With `sudo sysctl iogpu.wired_limit_mb=120000` (needs
+  root, resets on reboot; the recommendation becomes 117.19 GiB) the same run
+  improves from 28.5 s to 14.7 s TTFT at 9k context, 163 s to 81.9 s at 39k,
+  and 26 to 40.1 tok/s decode at 39k. Raising `AX_MLX_MEMORY_LIMIT` alone does
+  not help and no swap is involved. AX logs the gap and the exact sysctl value
+  at start-up and reports it at `GET /v1/memory`; it cannot change the sysctl
+  itself. Other standalone affine widths stay unsupported and
   experimental flags cannot bypass this. MXFP8 MTP remains in scope
   pending a verified pack and native-path audit. MXFP4 admission alone does
   not qualify the SKU or promote MTP defaults. Record:

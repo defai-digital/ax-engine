@@ -61,6 +61,7 @@ Current preview endpoints:
 - `GET /v1/discovery` (unauthenticated LAN verify document; see [LAN-DISCOVERY.md](./LAN-DISCOVERY.md))
 - `GET /metrics`
 - `GET /v1/runtime`
+- `GET /v1/memory` (process and allocator memory sample; see below)
 - `GET /v1/models`
 - `POST /v1/model/load`
 - `POST /v1/model/unload`
@@ -177,7 +178,11 @@ Notes:
   stepwise requests hold both leases until their blocking job is terminal, even
   after a transport timeout or disconnect. Saturated HTTP calls return 429;
   saturated gRPC calls return `RESOURCE_EXHAUSTED`. Health, metrics, and
-  metadata reads do not consume engine capacity.
+  metadata reads do not consume engine capacity. The effective bound — the
+  smaller cap when both are set — is also handed to the engine session, so the
+  priced memory plan charges per-request hybrid/QSA state once per admitted
+  live decode sequence. With neither cap set, the runner's batched cohort
+  capacity is the bound.
 - Inline chat media preprocessing has a separate server-wide limit of two
   active tasks and a 60-second deadline, shared across models and the OpenAI,
   Ollama, and Anthropic adapters. Saturation returns HTTP 429
@@ -226,6 +231,59 @@ when no execution batch selected the request. Temporarily blocked prompts that
 fit the pool retain normal deferral. Increase `--total-blocks` only when the
 host has sufficient memory for the intended workload; the collection deadline
 does not make an undersized KV pool capable of completing a larger prompt.
+
+## API Contract Switches
+
+Two process-environment keys adjust the OpenAI/Anthropic wire contract. Both
+are read once at start-up and have no CLI flag.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AX_API_POLISH` | on | Gates the polished OpenAI/Anthropic contract: reasoning-token usage, the Anthropic answer-only client-stop path, `GET /v1/memory`, and the Anthropic context-overflow remap. Only trimmed `0`, `false`, or `off` (case-insensitive) disable it; anything else, including unset, keeps it on. Turning it off restores the previous contract and makes `/v1/memory` return 404. |
+| `AX_API_INCREMENTAL_TOOL_ARGS` | off | Streams JSON `<tool_call>` arguments as deltas instead of one final chunk. Only `1`, `true`, `on`, or `yes` (trimmed, case-insensitive) enable it. A delta is emitted only while the argument text stays a prefix of the canonical arguments; tools whose argument keys can be canonicalized stay one-shot, and a non-prefix continuation is never appended. With the flag off each call is a single chunk. |
+
+With `AX_API_POLISH` on, reasoning tokens are reported in
+`usage.completion_tokens_details.reasoning_tokens` when a tokenizer and output
+token ids are available; a count larger than the completion is dropped rather
+than added on top. Anthropic `context_length_exceeded` is remapped to
+`invalid_request_error` so Anthropic clients see their own error shape, and
+the direct Anthropic path enforces client stops on answer-only responses and
+surfaces the matched sequence as `stop_sequence`.
+
+`AX_API_INCREMENTAL_TOOL_ARGS` is independent of the polish switch and only
+affects streaming requests that already use an AX-rendered native tool path.
+Because a tool-call header may already have been streamed when a span fails to
+parse, such a stream does not finish with `finish_reason=tool_calls`; the
+buffered one-chunk default cannot hit that state.
+
+### `GET /v1/memory`
+
+Returns the process physical footprint and, when the native MLX runtime is
+linked, the MLX allocator gauges. It does not load a model, does not consume
+engine admission capacity, and uses the same authentication as the other
+`/v1/*` routes (`/health`, `/healthz`, and `/v1/discovery` are the only
+unauthenticated paths). The route itself is gated on `AX_API_POLISH` and
+returns 404 when polish is off.
+
+```json
+{
+  "phys_footprint_bytes": 3221225472,
+  "lifetime_max_phys_footprint_bytes": 4563402752,
+  "sampled_at": "2026-10-24T12:00:00.000000000Z",
+  "mlx": {
+    "active_bytes": 1073741824,
+    "cache_bytes": 268435456,
+    "peak_bytes": 2147483648
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `phys_footprint_bytes` | macOS physical footprint of the server process, or `null` on a delegated build with no `mlx-sys` linkage. |
+| `lifetime_max_phys_footprint_bytes` | Lifetime peak footprint. Paired with the field above: both are `null` together, or both are integers with peak at least the current footprint. |
+| `sampled_at` | RFC 3339 UTC timestamp with nanosecond precision. |
+| `mlx.active_bytes` / `cache_bytes` / `peak_bytes` | MLX allocator active bytes, cached-but-free bytes, and peak bytes. The `mlx` object is present only when the server was built with the native MLX feature; it is omitted on delegated builds. |
 
 ## Observability
 

@@ -6,12 +6,15 @@
 //!
 //! - [`host_resident_bytes`] returns the current process's resident-set
 //!   size, sampled via `getrusage(RUSAGE_SELF)` on Unix.
+//! - [`process_memory_footprint`] returns this process's physical footprint
+//!   from macOS `proc_pid_rusage(RUSAGE_INFO_V4)`.
 //! - [`device_active_bytes`] returns MLX's currently-allocated GPU memory
 //!   in bytes via `mlx_get_active_memory`.
 //! - [`device_recommended_working_set_bytes`] returns Metal's
 //!   `recommendedMaxWorkingSetSize` as the device budget.
 //!
-//! All three return `Option<u64>`; absent or failing probes return `None`
+//! Numeric probes return `Option<u64>`; [`process_memory_footprint`] returns
+//! `Option<ProcessFootprint>`. Absent or failing probes return `None`
 //! so the downstream classifier can distinguish "probe unavailable" from
 //! a probe that legitimately sampled zero (PRD §7.2).
 //!
@@ -57,6 +60,75 @@ pub fn host_resident_bytes() -> Option<u64> {
         }
     }
     #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Physical footprint of this process from macOS `proc_pid_rusage`.
+///
+/// `lifetime_max_phys_footprint_bytes` is at least `phys_footprint_bytes`.
+/// The kernel does not sample the live footprint and the lifetime peak
+/// atomically, so a raw peak a page under the live value is raised to the
+/// live sample before it is returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessFootprint {
+    pub phys_footprint_bytes: u64,
+    pub lifetime_max_phys_footprint_bytes: u64,
+}
+
+/// Lifetime peak published next to a live footprint sample.
+///
+/// `proc_pid_rusage` fills `ri_phys_footprint` and
+/// `ri_lifetime_max_phys_footprint` in one struct, but the kernel does not
+/// sample the two counters atomically. The live value can therefore exceed
+/// the recorded lifetime peak by about a page. Raising the peak to the live
+/// sample keeps the published invariant `lifetime_max >= live`.
+fn lifetime_max_at_least_live(live_bytes: u64, lifetime_max_bytes: u64) -> u64 {
+    lifetime_max_bytes.max(live_bytes)
+}
+
+/// Current and lifetime-max physical footprint of this process.
+///
+/// On macOS this calls `proc_pid_rusage` with `RUSAGE_INFO_V4` and reads
+/// `ri_phys_footprint` and `ri_lifetime_max_phys_footprint`. The lifetime
+/// peak is then raised to the live sample when the two counters disagree,
+/// so a caller always observes
+/// `lifetime_max_phys_footprint_bytes >= phys_footprint_bytes`.
+/// Returns `None` off macOS and when the call fails.
+pub fn process_memory_footprint() -> Option<ProcessFootprint> {
+    #[cfg(target_os = "macos")]
+    {
+        // `rusage_info_v4` is a POD of integers and a byte array, so the
+        // all-zero bit pattern is valid. `proc_pid_rusage` writes that
+        // struct through `*mut rusage_info_t` (`*mut *mut c_void`).
+        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
+        // SAFETY: `info` is a zeroed `rusage_info_v4`, large enough for
+        // `RUSAGE_INFO_V4`. The pid is this process. The kernel writes the
+        // struct and does not retain the pointer.
+        let rc = unsafe {
+            libc::proc_pid_rusage(
+                std::process::id() as libc::pid_t,
+                libc::RUSAGE_INFO_V4,
+                info.as_mut_ptr() as *mut libc::rusage_info_t,
+            )
+        };
+        if rc != 0 {
+            return None;
+        }
+        // SAFETY: a zero return means `proc_pid_rusage` initialized the
+        // `RUSAGE_INFO_V4` struct.
+        let info = unsafe { info.assume_init() };
+        let live = info.ri_phys_footprint;
+        Some(ProcessFootprint {
+            phys_footprint_bytes: live,
+            lifetime_max_phys_footprint_bytes: lifetime_max_at_least_live(
+                live,
+                info.ri_lifetime_max_phys_footprint,
+            ),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
     {
         None
     }
@@ -127,6 +199,43 @@ pub fn device_recommended_working_set_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_process_global;
+
+    #[test]
+    fn lifetime_max_at_least_live_clamps_a_stale_peak() {
+        // The kernel race reports a live footprint about a page above the
+        // lifetime counter. The published peak must rise to the live sample.
+        assert_eq!(
+            lifetime_max_at_least_live(37_274_392, 37_241_624),
+            37_274_392
+        );
+        assert_eq!(lifetime_max_at_least_live(4_096 + 100, 4_096), 4_196);
+        // A peak that is already ahead of the live sample stays put.
+        assert_eq!(lifetime_max_at_least_live(100, 4_096), 4_096);
+        assert_eq!(lifetime_max_at_least_live(7, 7), 7);
+        assert_eq!(lifetime_max_at_least_live(0, 0), 0);
+        assert_eq!(lifetime_max_at_least_live(u64::MAX, u64::MAX - 1), u64::MAX);
+    }
+
+    #[test]
+    fn process_memory_footprint_is_positive_on_macos() {
+        let value = process_memory_footprint();
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                value.is_some_and(|footprint| {
+                    footprint.phys_footprint_bytes > 0
+                        && footprint.lifetime_max_phys_footprint_bytes
+                            >= footprint.phys_footprint_bytes
+                }),
+                "process_memory_footprint should return a positive footprint on macOS, got {value:?}"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(value.is_none());
+        }
+    }
 
     #[test]
     fn host_resident_bytes_is_nonzero_on_unix() {
@@ -152,7 +261,9 @@ mod tests {
     fn device_active_bytes_reports_or_skips_gracefully() {
         // We do not assert a particular value — MLX may or may not have
         // active allocations at this point — only that the probe does not
-        // panic and returns Some/None deterministically.
+        // panic and returns Some/None deterministically. The counter is
+        // process-global, so take the shared guard.
+        let _guard = lock_process_global();
         let _ = device_active_bytes();
     }
 
@@ -169,11 +280,15 @@ mod tests {
 
     #[test]
     fn device_peak_bytes_reports_or_skips_gracefully() {
+        // The peak counter is process-global, so take the shared guard.
+        let _guard = lock_process_global();
         let _ = device_peak_bytes();
     }
 
     #[test]
     fn device_cache_bytes_reports_or_skips_gracefully() {
+        // The cache counter is process-global, so take the shared guard.
+        let _guard = lock_process_global();
         let _ = device_cache_bytes();
     }
 }

@@ -92,14 +92,49 @@ impl RequestManager {
         Ok(request_id)
     }
 
+    /// Admit every waiting request, unbounded.
+    ///
+    /// The engine calls [`Self::admit_waiting_up_to`] so a model's live-sequence
+    /// cap is honoured; this uncapped form is kept for tests that exercise the
+    /// queue itself.
+    #[cfg(test)]
     pub(crate) fn admit_waiting(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
-        let request_ids = self.sorted_request_ids(|record| record.state == RequestState::Waiting);
+        self.admit_waiting_up_to(None)
+    }
+
+    /// Admit waiting requests, stopping once `max_live` requests are live.
+    ///
+    /// `max_live` is the concurrency the model's load-time memory plan proved
+    /// (`ExecutionRunner::native_live_sequence_cap`). Requests left in
+    /// `Waiting` keep their arrival order and are admitted as earlier ones
+    /// reach a terminal state, so the engine queues rather than rejects. `None`
+    /// admits every waiting request, which is the historical behaviour.
+    pub(crate) fn admit_waiting_up_to(
+        &mut self,
+        max_live: Option<usize>,
+    ) -> Result<Vec<RequestId>, RequestManagerError> {
+        let mut request_ids =
+            self.sorted_request_ids(|record| record.state == RequestState::Waiting);
+
+        if let Some(max_live) = max_live {
+            let room = max_live.saturating_sub(self.live_request_count());
+            request_ids.truncate(room);
+        }
 
         for request_id in &request_ids {
             self.transition_request(*request_id, RequestRecord::mark_runnable)?;
         }
 
         Ok(request_ids)
+    }
+
+    /// Requests that hold per-sequence runner state: submitted, not waiting for
+    /// admission, and not yet terminal.
+    pub(crate) fn live_request_count(&self) -> usize {
+        self.records
+            .values()
+            .filter(|record| record.state != RequestState::Waiting && !record.state.is_terminal())
+            .count()
     }
 
     pub(crate) fn retry_memory_blocked(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
@@ -111,6 +146,58 @@ impl RequestManager {
         }
 
         Ok(request_ids)
+    }
+
+    pub(crate) fn memory_blocked_ids(&self) -> Vec<RequestId> {
+        self.sorted_request_ids(|record| record.state == RequestState::BlockedOnMemory)
+    }
+
+    pub(crate) fn unblock_memory_request(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<(), RequestManagerError> {
+        self.transition_request(request_id, RequestRecord::unblock_memory)
+    }
+
+    pub(crate) fn block_on_memory(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<(), RequestManagerError> {
+        self.transition_request(request_id, RequestRecord::mark_blocked_on_memory)
+    }
+
+    /// Count one step spent `BlockedOnMemory` without a resume. At
+    /// [`MEMORY_BLOCKED_STEP_LIMIT`] the request fails with the same error
+    /// the scheduler path uses.
+    pub(crate) fn sustain_memory_block(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<bool, RequestManagerError> {
+        let fail = {
+            let record = self
+                .records
+                .get_mut(&request_id)
+                .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+            if record.state != RequestState::BlockedOnMemory {
+                return Ok(false);
+            }
+            let count = record.memory_blocked_step_count.saturating_add(1);
+            if count >= MEMORY_BLOCKED_STEP_LIMIT {
+                true
+            } else {
+                record.memory_blocked_step_count = count;
+                false
+            }
+        };
+        if fail {
+            self.transition_request(request_id, |record| {
+                record.fail(
+                    "request could not obtain KV capacity within the memory-blocked step limit",
+                )
+            })?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub(crate) fn cancel(&mut self, request_id: RequestId) -> Result<(), RequestManagerError> {
@@ -811,6 +898,7 @@ mod tests {
         model_id: &str,
     ) -> RequestSubmission {
         RequestSubmission {
+            prefill_hints: Default::default(),
             request_id: RequestId(request_id),
             model_id: ModelId(model_id.into()),
             input_tokens: vec![10, 11, 12],

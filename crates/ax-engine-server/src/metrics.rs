@@ -159,6 +159,24 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             .generation_completed_requests_total
             .load(Ordering::Relaxed),
     );
+    append_counter(
+        &mut body,
+        "ax_engine_idle_residency_ticks_total",
+        "Idle GPU keep-warm copies that completed. A false touch from a deterministic or delegated runner is not counted.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.idle_residency_tick_count())
+            .sum(),
+    );
+    append_counter(
+        &mut body,
+        "ax_engine_idle_residency_failures_total",
+        "Idle GPU keep-warm touches that failed. A false result from a deterministic or delegated runner is not a failure.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.idle_residency_failure_count())
+            .sum(),
+    );
 
     let request_owners = state.request_owner_telemetry();
     for (name, help, value) in [
@@ -552,6 +570,64 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 value,
             );
         }
+        // These two WP07 series are per-step route counters like their
+        // neighbours above. They must be rendered through the same
+        // aggregate-plus-`model` path: the process accumulator only receives
+        // a model's totals when that model is retired, so reading it alone
+        // reports 0 for every step of a loaded model — indistinguishable from
+        // "the switch is on but nothing fired".
+        append_step_metric(
+            &mut body,
+            "ax_engine_mlx_semantic_cut_snapshots_total",
+            "In-place MLX prefix snapshots stored at a semantic (assistant-turn) cut (AX_MLX_PREFIX_SEMANTIC_CUTS).",
+            "counter",
+            &step_models,
+            process.mlx_prefix_cache_semantic_cut_snapshots_total,
+            |step: &crate::app_state::EngineStepGauges| {
+                step.mlx_prefix_cache_semantic_cut_snapshots_total
+            },
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mlx_checkpoint_unsupported_total",
+            "Prefix checkpoints refused because linear, GDN, or QSA state was not already at the requested cut.",
+            "counter",
+            &step_models,
+            process.mlx_checkpoint_unsupported_total,
+            |step: &crate::app_state::EngineStepGauges| step.mlx_checkpoint_unsupported_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mlx_checkpoint_write_errors_total",
+            "Prefix checkpoint disk writes that failed or were dropped.",
+            "counter",
+            &step_models,
+            process.mlx_checkpoint_write_errors_total,
+            |step: &crate::app_state::EngineStepGauges| step.mlx_checkpoint_write_errors_total,
+        );
+        let restore_value_decisions: Vec<(&str, u64)> =
+            ["semantic_cut", "priced_restore", "ram_baseline"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, decision)| {
+                    let live: u64 = step_models
+                        .iter()
+                        .map(|(_, step)| step.mlx_prefix_cache_restore_value_decisions_total[index])
+                        .sum();
+                    (
+                        decision,
+                        process.mlx_prefix_cache_restore_value_decisions_total[index]
+                            .saturating_add(live),
+                    )
+                })
+                .collect();
+        append_labeled_counter(
+            &mut body,
+            "ax_engine_mlx_prefix_restore_value_decisions_total",
+            "Value-priced MLX prefix restore decisions by outcome.",
+            "decision",
+            &restore_value_decisions,
+        );
         if emit_gauges {
             for (name, help, value) in [
                 (
@@ -1278,6 +1354,34 @@ fn append_gauge_f64(body: &mut String, name: &str, help: &str, value: f64) {
 fn append_optional_gauge(body: &mut String, name: &str, help: &str, value: Option<u64>) {
     if let Some(value) = value {
         append_gauge(body, name, help, value);
+    }
+}
+
+/// Append one counter family whose samples all carry the same single label.
+fn append_labeled_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label: &str,
+    samples: &[(&str, u64)],
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    for (label_value, count) in samples {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label);
+        body.push_str("=\"");
+        body.push_str(label_value);
+        body.push_str("\"} ");
+        body.push_str(&count.to_string());
+        body.push('\n');
     }
 }
 

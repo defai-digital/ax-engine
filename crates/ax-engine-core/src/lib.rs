@@ -22,7 +22,9 @@ pub mod model;
 pub mod multimodal_adapter;
 pub mod nemotron_omni;
 pub mod prefill_cohort;
+pub mod prefill_handoff;
 pub mod prefill_stall;
+pub mod prefix_features;
 mod qwen38_quantization;
 pub mod qwen3_vl;
 pub mod repo_ref;
@@ -107,8 +109,8 @@ pub use nemotron_omni::{
 };
 pub use qwen3_vl::{Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs};
 pub use request::{
-    RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord, RequestSnapshot,
-    RequestState, RequestSubmission, RequestWorkloadHints, StateTransitionError,
+    PrefillHints, RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord,
+    RequestSnapshot, RequestState, RequestSubmission, RequestWorkloadHints, StateTransitionError,
     json_number_is_nonzero,
 };
 pub use request_manager::{RequestManager, RequestManagerError};

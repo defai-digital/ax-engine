@@ -18,6 +18,7 @@ pub(crate) mod gemma4_unified;
 pub mod gemma4_vl;
 pub mod generate;
 pub(crate) mod hardware;
+pub mod idle_residency;
 pub mod kv_block_pool;
 pub mod kv_cache;
 pub(crate) mod minicpm_v;
@@ -32,6 +33,8 @@ pub mod whisper;
 mod whisper_mel;
 mod whisper_tokenizer;
 
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod vl_fixture_tests;
 // Public for the kernel-dispatch probe binaries (`src/bin/`), like the
@@ -63,7 +66,7 @@ pub mod diagnostics {
     };
 }
 
-pub use runner::{MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell};
+pub use runner::{MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell, MtpSessionPolicy};
 pub use whisper::{WhisperError, WhisperModel, WhisperTranscription};
 
 /// Clear process-global compiled graphs and MLX allocator caches.

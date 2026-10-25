@@ -32,6 +32,9 @@ pub mod ops;
 pub mod stream;
 pub mod transforms;
 
+#[cfg(test)]
+mod test_support;
+
 /// Raw auto-generated FFI bindings.
 ///
 /// Prefer the safe modules above. This module remains public so wrappers can
@@ -53,10 +56,12 @@ pub use closure::{MlxClosure, MlxVectorArray};
 pub use error::{
     QuietErrorCapture, install_recoverable_error_handler, runtime_version, take_last_error,
 };
+#[cfg(ax_mlx_sdpa_window)]
+pub use fast::fast_sdpa_windowed;
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
-    try_gated_delta_update, try_scaled_dot_product_attention,
+    sdpa_window_capability_report, try_gated_delta_update, try_scaled_dot_product_attention,
 };
 pub use io::{
     SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,
@@ -65,8 +70,8 @@ pub use io_rows::{
     DEFAULT_MAX_GATHER_BYTES, MAX_HEADER_BYTES, RowTensorMeta, SafetensorsRowReader,
 };
 pub use mempressure::{
-    device_active_bytes, device_cache_bytes, device_peak_bytes,
-    device_recommended_working_set_bytes, host_resident_bytes,
+    ProcessFootprint, device_active_bytes, device_cache_bytes, device_peak_bytes,
+    device_recommended_working_set_bytes, host_resident_bytes, process_memory_footprint,
 };
 pub use metal::{KernelOutputSpec, KernelTemplateArg, LazyKernel, MlxMetalKernel};
 pub use op_count::{OpTraceEntry, op_count_snapshot, op_count_take, op_trace_begin, op_trace_end};

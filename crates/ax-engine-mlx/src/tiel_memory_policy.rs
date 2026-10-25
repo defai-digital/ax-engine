@@ -336,12 +336,112 @@ pub(crate) fn maybe_clear_wired_residency(
 
 /// A valid numeric `AX_MLX_WIRED_LIMIT_SCALE` value, when present. Absent or
 /// non-numeric values are not an operator override.
-fn wired_limit_scale_override() -> Option<f64> {
+pub(crate) fn wired_limit_scale_override() -> Option<f64> {
     std::env::var("AX_MLX_WIRED_LIMIT_SCALE")
         .ok()?
         .trim()
         .parse()
         .ok()
+}
+
+/// Share of Metal's `recommendedMaxWorkingSetSize` the runner wires when it has
+/// no reason to wire more.
+///
+/// 0.9 is the historical default: wiring the full recommendation was linked to
+/// kernel panics on some hosts (mlx-lm#883), so the runner keeps a tenth of the
+/// recommendation unwired.
+pub(crate) const DEFAULT_WIRED_LIMIT_SCALE: f64 = 0.9;
+
+/// Which rule decided the wired limit. Carried for the startup log.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WiredLimitSource {
+    /// Metal reported no recommendation (or a delegated build): nothing wired.
+    Unavailable,
+    /// `AX_MLX_WIRED_LIMIT_SCALE` named the share explicitly.
+    Operator,
+    /// The pack's priced working set does not need more than the default.
+    Default,
+    /// The priced working set needs more than the default share.
+    WorkingSet,
+}
+
+/// Resolved wired limit for this runner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WiredLimit {
+    /// Bytes passed to `mlx_set_wired_limit` (`0` when unavailable).
+    pub limit_bytes: u64,
+    /// Share of the recommendation that produced `limit_bytes`.
+    pub scale: f64,
+    pub source: WiredLimitSource,
+}
+
+/// Size the wired limit against the working set this session will keep
+/// resident.
+///
+/// The 0.9 default is retained whenever the working set fits inside it, which
+/// keeps MXFP4 packs and smaller models on exactly the wiring they had before.
+/// A pack whose priced working set lands between 0.9× and 1.0× of the
+/// recommendation — the Flash Next 6-bit case on a 128 GiB host — gets the
+/// smallest share that still covers it, because wiring less than the weights
+/// need is what makes macOS page them out and collapses long-context decode.
+/// Above the recommendation there is nothing left to give: the limit is the
+/// recommendation, and the plan reports the remaining gap (the operator's
+/// remedy is the `iogpu.wired_limit_mb` sysctl, which raises the recommendation
+/// itself).
+///
+/// An explicit `AX_MLX_WIRED_LIMIT_SCALE` always wins, clamped to `0.0..=1.0`.
+pub(crate) fn resolve_wired_limit(
+    recommended_bytes: usize,
+    working_set_bytes: Option<u64>,
+    explicit_scale: Option<f64>,
+) -> WiredLimit {
+    if recommended_bytes == 0 {
+        return WiredLimit {
+            limit_bytes: 0,
+            scale: 0.0,
+            source: WiredLimitSource::Unavailable,
+        };
+    }
+    let recommended = recommended_bytes as u64;
+    let default_limit = (recommended_bytes as f64 * DEFAULT_WIRED_LIMIT_SCALE) as u64;
+    if let Some(scale) = explicit_scale {
+        let scale = scale.clamp(0.0, 1.0);
+        return WiredLimit {
+            limit_bytes: (recommended_bytes as f64 * scale) as u64,
+            scale,
+            source: WiredLimitSource::Operator,
+        };
+    }
+    let Some(working_set) = working_set_bytes else {
+        return WiredLimit {
+            limit_bytes: default_limit,
+            scale: DEFAULT_WIRED_LIMIT_SCALE,
+            source: WiredLimitSource::Default,
+        };
+    };
+    if working_set <= default_limit {
+        return WiredLimit {
+            limit_bytes: default_limit,
+            scale: DEFAULT_WIRED_LIMIT_SCALE,
+            source: WiredLimitSource::Default,
+        };
+    }
+    if working_set > recommended {
+        return WiredLimit {
+            limit_bytes: recommended,
+            scale: 1.0,
+            source: WiredLimitSource::WorkingSet,
+        };
+    }
+    // Smallest share that still covers the working set. Rounded up so the
+    // rescaled limit can never land one byte (or one ulp) short of it.
+    let needed = working_set as f64 / recommended as f64;
+    let limit_bytes = ((recommended as f64) * needed).ceil() as u64;
+    WiredLimit {
+        limit_bytes: limit_bytes.max(working_set).min(recommended),
+        scale: needed.clamp(DEFAULT_WIRED_LIMIT_SCALE, 1.0),
+        source: WiredLimitSource::WorkingSet,
+    }
 }
 
 /// Read a small metadata file, bounded to [`MAX_METADATA_BYTES`]. Returns
@@ -523,6 +623,131 @@ mod tests {
         inputs.wired_limit_scale_override = None;
         assert!(decide_clear_wired_residency(&inputs));
     }
+    /// Metal `recommendedMaxWorkingSetSize` an M5 Max with 128 GiB reports.
+    const M5_MAX_RECOMMENDED_WORKING_SET_BYTES: usize = 115_448_725_504;
+
+    /// Pre-change wiring: `wired_cap as f64 * 0.9` truncated, so the default
+    /// path stays byte-identical to what every earlier session set.
+    #[test]
+    fn default_share_matches_the_historical_wire() {
+        let wired = resolve_wired_limit(M5_MAX_RECOMMENDED_WORKING_SET_BYTES, None, None);
+        assert_eq!(
+            wired.limit_bytes,
+            (M5_MAX_RECOMMENDED_WORKING_SET_BYTES as f64 * 0.9) as u64
+        );
+        assert_eq!(wired.scale, DEFAULT_WIRED_LIMIT_SCALE);
+        assert_eq!(wired.source, WiredLimitSource::Default);
+    }
+
+    #[test]
+    fn packs_that_fit_the_default_share_keep_it() {
+        let default_limit = (M5_MAX_RECOMMENDED_WORKING_SET_BYTES as f64 * 0.9) as u64;
+        // MXFP4 Flash Next prices at ~82 GiB, well under the 96.8 GiB share.
+        let wired = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(88 * 1024 * 1024 * 1024),
+            None,
+        );
+        assert_eq!(wired.limit_bytes, default_limit);
+        assert_eq!(wired.source, WiredLimitSource::Default);
+        // Exactly at the share is still "fits".
+        let wired = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(default_limit),
+            None,
+        );
+        assert_eq!(wired.limit_bytes, default_limit);
+        assert_eq!(wired.source, WiredLimitSource::Default);
+    }
+
+    #[test]
+    fn a_working_set_above_the_default_share_raises_it_just_enough() {
+        // 100 GiB: above 0.9 x 107.52 GiB, below the recommendation.
+        let working_set = 100 * 1024 * 1024 * 1024u64;
+        let wired = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(working_set),
+            None,
+        );
+        assert_eq!(wired.source, WiredLimitSource::WorkingSet);
+        assert!(
+            wired.limit_bytes >= working_set,
+            "the wired limit must cover the working set: {} < {working_set}",
+            wired.limit_bytes
+        );
+        assert!((M5_MAX_RECOMMENDED_WORKING_SET_BYTES as u64) >= wired.limit_bytes);
+        assert!(wired.scale > DEFAULT_WIRED_LIMIT_SCALE && wired.scale <= 1.0);
+        // The previous default would not have covered it.
+        assert!(((M5_MAX_RECOMMENDED_WORKING_SET_BYTES as f64 * 0.9) as u64) < working_set);
+    }
+
+    #[test]
+    fn a_working_set_above_the_recommendation_uses_all_of_it() {
+        // Flash Next 6-bit prices at ~113.5 GiB, above the 107.52 GiB
+        // recommendation: there is nothing left to give, and the plan reports
+        // the remaining gap (the sysctl raises the recommendation itself).
+        let working_set = 113 * 1024 * 1024 * 1024u64;
+        let wired = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(working_set),
+            None,
+        );
+        assert_eq!(wired.source, WiredLimitSource::WorkingSet);
+        assert_eq!(
+            wired.limit_bytes,
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES as u64
+        );
+        assert_eq!(wired.scale, 1.0);
+        assert!(wired.limit_bytes < working_set);
+    }
+
+    #[test]
+    fn an_operator_scale_always_wins() {
+        // Explicit 0.9 keeps the historical wire even though the working set
+        // would have raised it, and keeps the Tiel no-wire policy disabled.
+        let working_set = 100 * 1024 * 1024 * 1024;
+        let wired = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(working_set),
+            Some(0.9),
+        );
+        assert_eq!(wired.source, WiredLimitSource::Operator);
+        assert_eq!(
+            wired.limit_bytes,
+            (M5_MAX_RECOMMENDED_WORKING_SET_BYTES as f64 * 0.9) as u64
+        );
+        // 0.0 unwires.
+        let off = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(working_set),
+            Some(0.0),
+        );
+        assert_eq!(off.limit_bytes, 0);
+        assert_eq!(off.source, WiredLimitSource::Operator);
+        // Above 1.0 clamps to the full recommendation.
+        let clamped = resolve_wired_limit(
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES,
+            Some(working_set),
+            Some(1.5),
+        );
+        assert_eq!(
+            clamped.limit_bytes,
+            M5_MAX_RECOMMENDED_WORKING_SET_BYTES as u64
+        );
+        assert_eq!(clamped.scale, 1.0);
+    }
+
+    #[test]
+    fn no_recommendation_wires_nothing() {
+        let wired = resolve_wired_limit(0, Some(100 * 1024 * 1024 * 1024), None);
+        assert_eq!(wired.limit_bytes, 0);
+        assert_eq!(wired.source, WiredLimitSource::Unavailable);
+        // An operator override cannot invent a cap either.
+        let overridden = resolve_wired_limit(0, None, Some(0.9));
+        assert_eq!(overridden.limit_bytes, 0);
+        assert_eq!(overridden.source, WiredLimitSource::Unavailable);
+    }
+
     #[test]
     fn metadata_reader_rejects_missing_and_oversized_files() -> std::io::Result<()> {
         let root = std::env::temp_dir().join(format!("ax-tiel-metadata-{}", std::process::id()));

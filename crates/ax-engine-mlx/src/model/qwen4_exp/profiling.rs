@@ -551,6 +551,76 @@ impl Drop for CaptureGuard {
     }
 }
 
+/// Host-side recorder for the QSA attention outputs the indexed-prefill drift
+/// test compares. Whole-module `#[cfg(test)]` so the evaluation it needs is
+/// test-only machinery, not a request-path eval site.
+#[cfg(test)]
+mod attention_capture {
+    use super::{DUMP_LAYER, DUMP_OFFSET};
+    use mlx_sys::{MlxArray, MlxDtype};
+    use std::cell::{Cell, RefCell};
+
+    /// One QSA attention output captured at the `qsa_d_attend` boundary, in
+    /// call order, together with the layer and chunk that produced it. Copied
+    /// to the host as fp32 so the drift test can compare two arms element by
+    /// element instead of through timing or the attention timing mark.
+    #[derive(Clone)]
+    pub(crate) struct AttentionSample {
+        pub(crate) layer: Option<usize>,
+        pub(crate) chunk_offset: usize,
+        pub(crate) ordinal: usize,
+        pub(crate) shape: Vec<i32>,
+        pub(crate) values: Vec<f32>,
+    }
+
+    thread_local! {
+        static SAMPLES: RefCell<Option<Vec<AttentionSample>>> = const { RefCell::new(None) };
+        static ORDINAL: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Start recording QSA attention outputs on this thread.
+    pub(crate) fn begin() {
+        ORDINAL.set(0);
+        SAMPLES.with_borrow_mut(|slot| *slot = Some(Vec::new()));
+    }
+
+    /// Stop recording and return the captured outputs in call order.
+    pub(crate) fn take() -> Vec<AttentionSample> {
+        SAMPLES.with_borrow_mut(Option::take).unwrap_or_default()
+    }
+
+    /// Record one attention output. Only the drift test enables this, so the
+    /// copy to the host costs nothing on any other test or on the product path.
+    pub(crate) fn capture(array: &MlxArray) {
+        SAMPLES.with_borrow_mut(|slot| {
+            let Some(samples) = slot.as_mut() else {
+                return;
+            };
+            // `astype` preserves the source strides and one arm's attention is a
+            // transposed view of the kernel tile, so force a row-major copy
+            // before reading it back.
+            let values =
+                mlx_sys::contiguous(&mlx_sys::astype(array, MlxDtype::Float32, None), None);
+            mlx_sys::try_eval(&[&values]).expect("attention capture evaluation");
+            let layer = DUMP_LAYER.get();
+            samples.push(AttentionSample {
+                layer: (layer != usize::MAX).then_some(layer),
+                chunk_offset: DUMP_OFFSET.get(),
+                ordinal: ORDINAL.get(),
+                shape: array.shape(),
+                values: values.data_f32().to_vec(),
+            });
+            ORDINAL.set(ORDINAL.get().saturating_add(1));
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) use attention_capture::{
+    AttentionSample, begin as begin_attention_capture, capture as capture_attention,
+    take as take_attention_capture,
+};
+
 fn snapshot(state: Qwen4ExpState) -> Vec<u8> {
     let mut cache = crate::kv_cache::MlxKVCache::new_contiguous(state.layers.len());
     cache.advance(state.position());
@@ -586,21 +656,30 @@ fn deterministic_prompt_ids(len: usize, vocab: u32) -> Vec<u32> {
         .collect()
 }
 
+fn prompt_ids(source: &str, vocab: u32) -> Vec<u32> {
+    let tokens: Vec<u32> =
+        serde_json::from_str(source).unwrap_or_else(|err| panic!("prompt ids JSON: {err}"));
+    assert!(!tokens.is_empty(), "prompt ids must not be empty");
+    assert!(
+        tokens.iter().all(|&id| id < vocab),
+        "prompt ids contain an out-of-vocab id"
+    );
+    tokens
+}
+
 fn profile_prompt_ids(vocab: u32) -> Vec<u32> {
     if let Ok(raw) = std::env::var("AX_FLASH_NEXT_PROMPT_IDS") {
-        let tokens: Vec<u32> = serde_json::from_str(&raw).unwrap();
-        assert!(
-            !tokens.is_empty(),
-            "AX_FLASH_NEXT_PROMPT_IDS must not be empty"
-        );
-        assert!(
-            tokens.iter().all(|&id| id < vocab),
-            "AX_FLASH_NEXT_PROMPT_IDS contains an out-of-vocab id"
-        );
-        return tokens;
+        return prompt_ids(&raw, vocab);
     }
-    let len = env_usize("AX_FLASH_NEXT_PROFILE_TOKENS")
-        .expect("AX_FLASH_NEXT_PROMPT_IDS or AX_FLASH_NEXT_PROFILE_TOKENS");
+    // A long prompt is easier to keep in a file than in the environment.
+    if let Ok(path) = std::env::var("AX_FLASH_NEXT_PROMPT_IDS_FILE") {
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("AX_FLASH_NEXT_PROMPT_IDS_FILE {path}: {err}"));
+        return prompt_ids(&raw, vocab);
+    }
+    let len = env_usize("AX_FLASH_NEXT_PROFILE_TOKENS").expect(
+        "AX_FLASH_NEXT_PROMPT_IDS, AX_FLASH_NEXT_PROMPT_IDS_FILE or AX_FLASH_NEXT_PROFILE_TOKENS",
+    );
     assert!(
         (1..=32768).contains(&len),
         "AX_FLASH_NEXT_PROFILE_TOKENS {len} is out of range"
@@ -1254,6 +1333,681 @@ fn flash_next_last_row_logits_match_the_full_projection() {
         snapshot(skip.state) == snapshot(all.state),
         "skipping the LM head changed the state"
     );
+}
+
+/// Greedy identity of the indexed QSA prefill arm against the gathered arm on
+/// the real pack.
+///
+/// The indexed kernel is not bit-identical to fused SDPA (different reduction
+/// order and online rescaling), so the contract is behavioural: the same
+/// prompt must produce the same greedy token ids, decoded from each arm's own
+/// state, and the same generated text. Logit deltas are reported instead of
+/// asserted.
+///
+/// `AX_FLASH_NEXT_INDEXED_PROMPT_TOKENS` (default 2048) selects how much of the
+/// fixture prompt to prefill and `AX_FLASH_NEXT_INDEXED_DECODE_TOKENS`
+/// (default 32) how many tokens to generate greedily. Prefill runs in 1024-token
+/// chunks, the schedule the server uses.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS"]
+fn flash_next_indexed_prefill_keeps_greedy_tokens_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_attention_indexed::with_indexed_attention;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    // Default to the whole fixture prompt and the 256 greedy tokens the
+    // acceptance contract names, so a bare run needs no numeric tuning.
+    let prompt_len = env_usize("AX_FLASH_NEXT_INDEXED_PROMPT_TOKENS")
+        .unwrap_or(tokens.len())
+        .min(tokens.len());
+    let decode_steps = env_usize("AX_FLASH_NEXT_INDEXED_DECODE_TOKENS").unwrap_or(256);
+    assert!(prompt_len >= 1024, "the prompt needs at least one chunk");
+
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let vocab = artifacts.manifest().vocab_size as usize;
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+
+    // Last position's logits, the ones greedy sampling reads.
+    let last_logits = |array: &MlxArray| -> Vec<f32> {
+        let logits = astype(array, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        let data = logits.data_f32();
+        data[data.len() - vocab..].to_vec()
+    };
+    let argmax = |logits: &[f32]| -> u32 {
+        let mut best = 0usize;
+        for (index, value) in logits.iter().enumerate() {
+            if value > &logits[best] {
+                best = index;
+            }
+        }
+        best as u32
+    };
+
+    struct Arm {
+        /// Logits at the end of prefill: the only place the two arms can
+        /// disagree before decode amplifies rounding.
+        prefill: Vec<f32>,
+        boundary: Vec<f32>,
+        ids: Vec<u32>,
+        state: Vec<u8>,
+    }
+    let run = |indexed: bool| -> Arm {
+        with_indexed_attention(indexed, || {
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            let mut logits = None;
+            for (offset, end) in chunk_ranges(prompt_len, 1024) {
+                let output = forward(
+                    trunk,
+                    &tokens[offset..end],
+                    &state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+                state = output.state;
+                logits = Some(output.logits);
+            }
+            let prefill = last_logits(&logits.expect("prefill logits"));
+            let mut boundary = prefill.clone();
+            let mut ids = Vec::new();
+            for _ in 0..decode_steps {
+                let id = argmax(&boundary);
+                ids.push(id);
+                let output =
+                    forward(trunk, &[id], &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+                state = output.state;
+                boundary = last_logits(&output.logits);
+            }
+            Arm {
+                prefill,
+                boundary,
+                ids,
+                state: snapshot(state),
+            }
+        })
+    };
+
+    let gathered = run(false);
+    let indexed = run(true);
+    assert_eq!(
+        gathered.ids.len(),
+        decode_steps,
+        "greedy decode produced the wrong token count"
+    );
+    let first_mismatch = gathered
+        .ids
+        .iter()
+        .zip(&indexed.ids)
+        .position(|(a, b)| a != b);
+    let prefill_delta = gathered
+        .prefill
+        .iter()
+        .zip(&indexed.prefill)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let max_logit_delta = gathered
+        .boundary
+        .iter()
+        .zip(&indexed.boundary)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let top = |logits: &[f32]| -> (usize, f32, f32) {
+        let mut best = 0usize;
+        for (index, value) in logits.iter().enumerate() {
+            if value > &logits[best] {
+                best = index;
+            }
+        }
+        let mut second = f32::NEG_INFINITY;
+        for (index, value) in logits.iter().enumerate() {
+            if index != best && *value > second {
+                second = *value;
+            }
+        }
+        (best, logits[best], logits[best] - second)
+    };
+    let (gbest, gval, gmargin) = top(&gathered.boundary);
+    let (ibest, ival, imargin) = top(&indexed.boundary);
+    eprintln!(
+        "INDEXED_GREEDY prompt_tokens={prompt_len} decode_steps={decode_steps} ids_equal={} state_bytes_equal={} prefill_logit_delta={prefill_delta:.6} final_logit_delta={max_logit_delta:.6} gathered_top={gbest}:{gval:.6}(+{gmargin:.6}) indexed_top={ibest}:{ival:.6}(+{imargin:.6})",
+        first_mismatch.is_none(),
+        gathered.state == indexed.state,
+    );
+    assert!(
+        first_mismatch.is_none(),
+        "indexed prefill changed greedy token {first_mismatch:?} (max logit delta {max_logit_delta:.6})"
+    );
+    // Identical ids are identical text: this crate has no tokenizer (it lives
+    // in ax-engine-sdk), and decoding is a pure function of the id sequence.
+}
+
+/// Per-layer, per-chunk drift of the indexed QSA prefill arm against the
+/// gathered arm on the real pack.
+///
+/// This is the diagnosis for a failing greedy identity check: both arms run the
+/// same prompt chunk by chunk on their own request state, every QSA layer's
+/// attention output is captured at the `qsa_d_attend` boundary, and the two
+/// arms are compared element by element. The report names the layer, chunk,
+/// query, head and dim where the arms first diverge and where they differ most,
+/// plus the last-row logits per chunk and the greedy continuation.
+///
+/// A wrong selected block, tail, GQA mapping, mask or segment boundary moves
+/// whole query rows by O(1); a different accumulation order moves every row by
+/// a rounding step. So the tripwire is the *first* layer that differs: no row
+/// may move by more than 1e-2 on average, and no element by more than
+/// `ATTENTION_DRIFT_CEILING`. Later layers only amplify that first difference
+/// and are reported, not gated.
+///
+/// A chunk both arms attend with the gathered path is the harness control: it
+/// must be bit-identical, which proves the capture itself adds no noise.
+///
+/// `AX_FLASH_NEXT_INDEXED_REQUIRE_IDENTICAL=1` turns the diagnosis into the
+/// acceptance gate: every attention element and every greedy token must match.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS(_FILE)"]
+fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_attention_indexed::{
+        dispatch_count, with_indexed_attention,
+    };
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    /// One bf16 rounding step is 2^-8 relative, so two reduction orders can
+    /// only disagree by about that much; anything far above it came from
+    /// reading different rows.
+    const ATTENTION_DRIFT_CEILING: f32 = 2e-2;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    assert!(
+        tokens.len() > 1024,
+        "the drift test needs a multi-chunk prompt"
+    );
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let chunk_size = env_usize("AX_FLASH_NEXT_INDEXED_CHUNK_SIZE")
+        .unwrap_or(crate::generate::DEFAULT_PREFILL_CHUNK);
+    let decode_steps = env_usize("AX_FLASH_NEXT_INDEXED_DECODE_TOKENS").unwrap_or(256);
+    let require_identical =
+        std::env::var("AX_FLASH_NEXT_INDEXED_REQUIRE_IDENTICAL").is_ok_and(|value| value == "1");
+
+    // Only the last row's logits are read, and both arms use the same
+    // projection mode, so the comparison stays exact while a full
+    // multi-thousand-row projection (gigabytes per chunk) is avoided.
+    let last_logits = |array: &MlxArray| -> Vec<f32> {
+        let logits = astype(array, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        let data = logits.data_f32();
+        data[data.len() - vocab as usize..].to_vec()
+    };
+    let argmax = |logits: &[f32]| -> usize {
+        let mut best = 0usize;
+        for (index, value) in logits.iter().enumerate() {
+            if value > &logits[best] {
+                best = index;
+            }
+        }
+        best
+    };
+    // Distance from the winning logit to the runner-up: how much drift a
+    // flipped argmax had to cross.
+    let margin = |logits: &[f32], best: usize| -> f32 {
+        let mut second = f32::NEG_INFINITY;
+        for (index, value) in logits.iter().enumerate() {
+            if index != best && *value > second {
+                second = *value;
+            }
+        }
+        logits[best] - second
+    };
+
+    struct Drift {
+        layer: Option<usize>,
+        chunk_offset: usize,
+        shape: Vec<i32>,
+        elements: usize,
+        differing: usize,
+        first: Option<(usize, f32, f32)>,
+        /// Largest absolute difference and the element that carries it.
+        max_abs: f32,
+        max_abs_at: Option<(usize, f32, f32)>,
+        /// Largest difference in bf16 steps at the element's own magnitude,
+        /// with the multiple and the element. Informational: it is ill
+        /// conditioned near zero, where the step shrinks with the value.
+        max_ulp: f32,
+        max_ulp_at: Option<(usize, f32, f32, f32)>,
+        over_one_ulp: usize,
+        over_eight_ulp: usize,
+        over_64_ulp: usize,
+        /// Mean absolute difference per query row, and how many query rows a
+        /// wrong block, tail or head group would have pushed above 1e-2: such
+        /// a bug moves a whole row, rounding moves every row a little.
+        max_query_mean: f64,
+        queries_mean_over_1e_2: usize,
+    }
+
+    // `[batch, heads, queries, head_dim]` flat index -> (query, head, dim).
+    let coordinates = |shape: &[i32], index: usize| -> (usize, usize, usize) {
+        assert_eq!(shape.len(), 4, "attention output rank");
+        let (heads, queries, dim) = (shape[1] as usize, shape[2] as usize, shape[3] as usize);
+        (
+            (index / (heads * dim)) % queries,
+            (index / dim) % heads,
+            index % dim,
+        )
+    };
+
+    // Both arms store bf16, so this is the smallest step either one can
+    // represent at `value`: eight significant bits, spacing 2^(exponent - 7).
+    let bf16_step = |value: f32| -> f32 {
+        let magnitude = value.abs();
+        if !magnitude.is_finite() || magnitude < f32::MIN_POSITIVE {
+            return f32::MIN_POSITIVE;
+        }
+        let exponent = ((magnitude.to_bits() >> 23) & 0xff) as i32 - 127;
+        2f32.powi(exponent - 7)
+    };
+
+    let drift = |gathered: &AttentionSample, indexed: &AttentionSample| -> Drift {
+        assert_eq!(gathered.shape, indexed.shape, "attention output shape");
+        assert_eq!(
+            gathered.values.len(),
+            indexed.values.len(),
+            "attention output size"
+        );
+        let shape = gathered.shape.clone();
+        let (heads, queries, dim) = (
+            shape[1].max(0) as usize,
+            shape[2].max(0) as usize,
+            shape[3].max(0) as usize,
+        );
+        let row = heads.saturating_mul(dim).max(1);
+        let mut row_abs = vec![0.0f64; queries.max(1)];
+        let mut differing = 0usize;
+        let mut first = None;
+        let mut max_abs = 0.0f32;
+        let mut max_abs_at = None;
+        let mut max_ulp = 0.0f32;
+        let mut max_ulp_at = None;
+        let (mut over_one_ulp, mut over_eight_ulp, mut over_64_ulp) = (0usize, 0usize, 0usize);
+        for (index, (&a, &b)) in gathered.values.iter().zip(&indexed.values).enumerate() {
+            if a.to_bits() == b.to_bits() {
+                continue;
+            }
+            let abs = (a - b).abs();
+            let ulps = abs / bf16_step(a.abs().max(b.abs()));
+            differing += 1;
+            if first.is_none() {
+                first = Some((index, a, b));
+            }
+            // Compare against the running metric, never against a value from
+            // the element: a previous version compared `abs` with the gathered
+            // value and silently kept the first differing element.
+            if abs > max_abs {
+                max_abs = abs;
+                max_abs_at = Some((index, a, b));
+            }
+            if ulps > max_ulp {
+                max_ulp = ulps;
+                max_ulp_at = Some((index, a, b, ulps));
+            }
+            if ulps > 1.0 {
+                over_one_ulp += 1;
+            }
+            if ulps > 8.0 {
+                over_eight_ulp += 1;
+            }
+            if ulps > 64.0 {
+                over_64_ulp += 1;
+            }
+            if let Some(slot) = row_abs.get_mut(index / row) {
+                *slot += f64::from(abs);
+            }
+        }
+        let max_query_mean = row_abs
+            .iter()
+            .map(|sum| sum / row as f64)
+            .fold(0.0f64, f64::max);
+        let queries_mean_over_1e_2 = row_abs
+            .iter()
+            .filter(|sum| **sum / row as f64 > 1e-2)
+            .count();
+        Drift {
+            layer: gathered.layer,
+            chunk_offset: gathered.chunk_offset,
+            shape,
+            elements: gathered.values.len(),
+            differing,
+            first,
+            max_abs,
+            max_abs_at,
+            max_ulp,
+            max_ulp_at,
+            over_one_ulp,
+            over_eight_ulp,
+            over_64_ulp,
+            max_query_mean,
+            queries_mean_over_1e_2,
+        }
+    };
+
+    let ranges = chunk_ranges(tokens.len(), chunk_size);
+    let mut states = [
+        Qwen4ExpState::new(trunk, owner),
+        Qwen4ExpState::new(trunk, owner),
+    ];
+    let mut drifts: Vec<Drift> = Vec::new();
+    let mut chunk_logits: Vec<(usize, Vec<f32>, Vec<f32>)> = Vec::new();
+    let mut dispatches_total = 0u64;
+    for &(offset, end) in &ranges {
+        let mut captured: [Vec<AttentionSample>; 2] = [Vec::new(), Vec::new()];
+        let mut logits: [Vec<f32>; 2] = [Vec::new(), Vec::new()];
+        let mut dispatched = [0u64; 2];
+        for (arm, indexed) in [(0usize, false), (1usize, true)] {
+            let before = dispatch_count();
+            begin_attention_capture();
+            let output = with_indexed_attention(indexed, || {
+                forward_with_rows(
+                    trunk,
+                    &tokens[offset..end],
+                    &states[arm],
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                    LogitRows::Last,
+                )
+                .unwrap()
+            });
+            dispatched[arm] = dispatch_count().saturating_sub(before);
+            captured[arm] = take_attention_capture();
+            logits[arm] = last_logits(&output.logits);
+            states[arm] = output.state;
+        }
+        dispatches_total = dispatches_total.saturating_add(dispatched[1]);
+        assert_eq!(
+            captured[0].len(),
+            captured[1].len(),
+            "chunk {offset}: attention call count"
+        );
+        for (gathered, indexed) in captured[0].iter().zip(&captured[1]) {
+            assert_eq!(gathered.layer, indexed.layer, "chunk {offset}: call order");
+            assert_eq!(
+                gathered.ordinal, indexed.ordinal,
+                "chunk {offset}: attention call ordinal"
+            );
+            assert_eq!(
+                gathered.chunk_offset, indexed.chunk_offset,
+                "chunk {offset}: capture window"
+            );
+            drifts.push(drift(gathered, indexed));
+        }
+        if dispatched[1] == 0 {
+            for sample in drifts.iter().filter(|d| d.chunk_offset == offset) {
+                assert_eq!(
+                    sample.differing, 0,
+                    "chunk {offset} layer {:?} took the gathered arm twice but drifted",
+                    sample.layer
+                );
+            }
+        } else {
+            assert_eq!(
+                dispatched[0], 0,
+                "chunk {offset}: the gathered arm dispatched the indexed kernel"
+            );
+        }
+        chunk_logits.push((offset, logits[0].clone(), logits[1].clone()));
+    }
+    assert!(
+        dispatches_total > 0,
+        "the indexed arm never dispatched: the drift report would be vacuous"
+    );
+    assert!(!drifts.is_empty(), "no attention outputs were captured");
+
+    let layer_order = |layer: Option<usize>| layer.unwrap_or(usize::MAX);
+    drifts.sort_by_key(|d| (d.chunk_offset, layer_order(d.layer)));
+    let mut worst_abs = 0.0f32;
+    let mut worst_query_mean = 0.0f64;
+    for d in &drifts {
+        worst_abs = worst_abs.max(d.max_abs);
+        worst_query_mean = worst_query_mean.max(d.max_query_mean);
+        let describe = |point: Option<(usize, f32, f32)>| -> String {
+            match point {
+                None => "none".to_string(),
+                Some((index, a, b)) => {
+                    let (query, head, dim) = coordinates(&d.shape, index);
+                    format!("q{query}/h{head}/d{dim}:{a:.6}/{b:.6}")
+                }
+            }
+        };
+        let ulp_point = match d.max_ulp_at {
+            None => "none".to_string(),
+            Some((index, a, b, ulps)) => {
+                let (query, head, dim) = coordinates(&d.shape, index);
+                format!("{ulps:.2}ulp@q{query}/h{head}/d{dim}:{a:.6}/{b:.6}")
+            }
+        };
+        eprintln!(
+            "INDEXED_DRIFT layer={} chunk={} elements={} differing={} max_abs={:.6}@{} max_ulp={} gt1ulp={} gt8ulp={} gt64ulp={} max_query_mean_abs={:.8} rows_over_1e-2={} first={}",
+            d.layer
+                .map_or_else(|| "none".to_string(), |layer| layer.to_string()),
+            d.chunk_offset,
+            d.elements,
+            d.differing,
+            d.max_abs,
+            describe(d.max_abs_at),
+            ulp_point,
+            d.over_one_ulp,
+            d.over_eight_ulp,
+            d.over_64_ulp,
+            d.max_query_mean,
+            d.queries_mean_over_1e_2,
+            describe(d.first),
+        );
+    }
+
+    let mut logit_rows = Vec::new();
+    for (offset, gathered, indexed) in &chunk_logits {
+        let delta = gathered
+            .iter()
+            .zip(indexed)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        let (gathered_top, indexed_top) = (argmax(gathered), argmax(indexed));
+        let (gathered_margin, indexed_margin) =
+            (margin(gathered, gathered_top), margin(indexed, indexed_top));
+        eprintln!(
+            "INDEXED_DRIFT_LOGITS chunk={offset} max_abs={delta:.6} gathered_argmax={gathered_top}(+{gathered_margin:.6}) indexed_argmax={indexed_top}(+{indexed_margin:.6})"
+        );
+        logit_rows.push(serde_json::json!({
+            "chunk_offset": offset,
+            "max_abs": delta,
+            "gathered_argmax": gathered_top,
+            "indexed_argmax": indexed_top,
+            "gathered_margin": gathered_margin,
+            "indexed_margin": indexed_margin,
+        }));
+    }
+
+    let Some((_, gathered_logits, indexed_logits)) = chunk_logits.last() else {
+        panic!("prefill produced no logits");
+    };
+    let mut next = [argmax(gathered_logits), argmax(indexed_logits)];
+    let mut ids: [Vec<u32>; 2] = [Vec::new(), Vec::new()];
+    let mut argmax_flips = 0usize;
+    let mut first_flip: Option<serde_json::Value> = None;
+    let mut max_step_delta = 0.0f32;
+    for step in 0..decode_steps {
+        let mut step_logits: [Vec<f32>; 2] = [Vec::new(), Vec::new()];
+        for (arm, token) in next.iter().enumerate() {
+            ids[arm].push(*token as u32);
+            let output = forward_with_rows(
+                trunk,
+                &[*token as u32],
+                &states[arm],
+                owner,
+                ProjectionBatchPolicy::Shared,
+                LogitRows::Last,
+            )
+            .unwrap();
+            step_logits[arm] = last_logits(&output.logits);
+            states[arm] = output.state;
+        }
+        let delta = step_logits[0]
+            .iter()
+            .zip(&step_logits[1])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        max_step_delta = max_step_delta.max(delta);
+        let picks = [argmax(&step_logits[0]), argmax(&step_logits[1])];
+        if picks[0] != picks[1] {
+            argmax_flips += 1;
+            if first_flip.is_none() {
+                first_flip = Some(serde_json::json!({
+                    "step": step,
+                    "gathered": picks[0],
+                    "indexed": picks[1],
+                    "gathered_margin": margin(&step_logits[0], picks[0]),
+                    "indexed_margin": margin(&step_logits[1], picks[1]),
+                    "logit_delta": delta,
+                }));
+            }
+        }
+        next = picks;
+    }
+    let diverged_at = ids[0].iter().zip(&ids[1]).position(|(a, b)| a != b);
+
+    let summary = serde_json::json!({
+        "prompt_tokens": tokens.len(),
+        "chunk_size": chunk_size,
+        "decode_steps": decode_steps,
+        "indexed_dispatches": dispatches_total,
+        "max_attention_delta": worst_abs,
+        "attention": drifts
+            .iter()
+            .map(|d| {
+                let point = |point: Option<(usize, f32, f32)>| -> serde_json::Value {
+                    match point {
+                        None => serde_json::Value::Null,
+                        Some((index, a, b)) => {
+                            let (query, head, dim) = coordinates(&d.shape, index);
+                            serde_json::json!({
+                                "index": index,
+                                "query": query,
+                                "head": head,
+                                "dim": dim,
+                                "gathered": a,
+                                "indexed": b,
+                            })
+                        }
+                    }
+                };
+                serde_json::json!({
+                    "layer": d.layer,
+                    "chunk_offset": d.chunk_offset,
+                    "elements": d.elements,
+                    "differing": d.differing,
+                    "max_abs": d.max_abs,
+                    "max_abs_at": point(d.max_abs_at),
+                    "max_ulp": d.max_ulp,
+                    "max_ulp_at": d.max_ulp_at.map(|(index, a, b, ulps)| {
+                        let (query, head, dim) = coordinates(&d.shape, index);
+                        serde_json::json!({
+                            "index": index,
+                            "query": query,
+                            "head": head,
+                            "dim": dim,
+                            "gathered": a,
+                            "indexed": b,
+                            "ulps": ulps,
+                        })
+                    }),
+                    "over_one_ulp": d.over_one_ulp,
+                    "over_eight_ulp": d.over_eight_ulp,
+                    "over_64_ulp": d.over_64_ulp,
+                    "max_query_mean_abs": d.max_query_mean,
+                    "rows_over_1e-2": d.queries_mean_over_1e_2,
+                    "first": point(d.first),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "logits": logit_rows,
+        "greedy": {
+            "diverged_at": diverged_at,
+            "argmax_flips": argmax_flips,
+            "first_flip": first_flip,
+            "max_step_logit_delta": max_step_delta,
+        },
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
+    }
+    eprintln!(
+        "INDEXED_DRIFT_SUMMARY prompt_tokens={} chunk_size={chunk_size} captures={} indexed_dispatches={dispatches_total} max_attention_delta={worst_abs:.6} max_query_mean_abs={worst_query_mean:.8} greedy_diverged_at={diverged_at:?} argmax_flips={argmax_flips} max_step_logit_delta={max_step_delta:.6}",
+        tokens.len(),
+        drifts.len(),
+    );
+
+    // A wrong block, tail, GQA mapping, mask or segment boundary puts O(1)
+    // differences on specific queries in the FIRST QSA layer, before any
+    // upstream amplification can contaminate the comparison. Rounding only
+    // moves each element by a small multiple of its own bf16 step.
+    let first_qsa_layer = drifts.iter().find(|d| d.differing > 0);
+    if let Some(first) = first_qsa_layer {
+        // The first layer that differs is the first place the kernel can be
+        // blamed: anything later has already been through a different residual
+        // stream. A wrong block, tail, GQA mapping, mask or segment boundary
+        // moves whole rows, so the per-row mean would jump to the scale of the
+        // attention values; a different reduction order moves every row by a
+        // rounding step.
+        assert_eq!(
+            first.queries_mean_over_1e_2,
+            0,
+            "layer {:?} chunk {}: {} query rows moved by more than 1e-2 on average (max row mean {:.6}, max element {:.6} at {:?}): a wrong block, tail, GQA mapping, mask or segment boundary, not rounding",
+            first.layer,
+            first.chunk_offset,
+            first.queries_mean_over_1e_2,
+            first.max_query_mean,
+            first.max_abs,
+            first.max_abs_at,
+        );
+        assert!(
+            first.max_abs <= ATTENTION_DRIFT_CEILING,
+            "layer {:?} chunk {}: one attention element moved by {:.6} (ceiling {ATTENTION_DRIFT_CEILING}) at {:?}",
+            first.layer,
+            first.chunk_offset,
+            first.max_abs,
+            first.max_abs_at,
+        );
+    }
+    // Anything past the first differing layer has already been through a
+    // different residual stream, so its drift is amplification of the
+    // first-layer rounding, not an independent verdict. Report it, do not gate
+    // on it: the ceiling above is the first-layer tripwire.
+    eprintln!(
+        "INDEXED_DRIFT_AMPLIFICATION first_layer_max={:.6} downstream_max={worst_abs:.6} downstream_max_query_mean={worst_query_mean:.8} (rounding at layer {:?} amplified by the remaining layers)",
+        first_qsa_layer.map_or(0.0, |d| d.max_abs),
+        first_qsa_layer.and_then(|d| d.layer),
+    );
+    if require_identical {
+        let differing: usize = drifts.iter().map(|d| d.differing).sum();
+        assert_eq!(differing, 0, "indexed attention is not bit-identical");
+        assert_eq!(
+            diverged_at, None,
+            "indexed prefill changed the greedy continuation"
+        );
+    }
 }
 
 #[test]
@@ -2242,5 +2996,119 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
             );
         }
         eprintln!("LONG_ARM {name}: identical, gdn kernel dispatches {dispatches}");
+    }
+}
+
+/// 8192-token prompt at the original outer chunk. Compares host QSA indices
+/// and final-logit bits with tiled scores off and on. A chunk the monolithic
+/// score check would reject is not this comparison.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; 8192-token prompt at the original outer chunk"]
+fn flash_next_qsa_tiled_matches_monolithic_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::{capture_host_selections, with_tiled_scores};
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    assert_eq!(
+        tokens.len(),
+        8192,
+        "the real-pack comparison is an 8192-token prompt"
+    );
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let streaming = crate::fastpath::qwen_gated_delta_prefill_streaming_enabled();
+    let cap = crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+        streaming,
+        cfg.moe_expert_count > 0,
+    );
+    let chunk = cap.min(crate::fastpath::long_prompt_prefill_chunk()).max(1);
+    let owner = cfg.compile_cache_identity;
+    let run = |tiled: bool| {
+        capture_host_selections(|| {
+            with_tiled_scores(tiled, || {
+                run_chunked_prefill(trunk, &tokens, owner, chunk, false)
+            })
+        })
+    };
+    let ((off, off_indices), (on, on_indices)) = (run(false), run(true));
+    assert!(!off_indices.is_empty(), "host selections were not recorded");
+    assert_eq!(
+        on_indices, off_indices,
+        "tiled scores changed ordered QSA indices at chunk {chunk}"
+    );
+    assert_eq!(on.final_logits.len(), off.final_logits.len());
+    for (index, (left, right)) in off.final_logits.iter().zip(&on.final_logits).enumerate() {
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "tiled scores changed logit bits at {index}"
+        );
+    }
+}
+
+/// 8192-token prompt at the same outer chunk as the tiled comparison.
+/// Device prefill selection must keep the host index order and the final
+/// logit bits.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; 8192-token prompt at the original outer chunk"]
+fn flash_next_qsa_prefill_device_select_matches_host_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::{capture_host_selections, with_prefill_device_select};
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    assert_eq!(
+        tokens.len(),
+        8192,
+        "the real-pack comparison is an 8192-token prompt"
+    );
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let streaming = crate::fastpath::qwen_gated_delta_prefill_streaming_enabled();
+    let cap = crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+        streaming,
+        cfg.moe_expert_count > 0,
+    );
+    let chunk = cap.min(crate::fastpath::long_prompt_prefill_chunk()).max(1);
+    let owner = cfg.compile_cache_identity;
+    let run = |device: bool| {
+        capture_host_selections(|| {
+            with_prefill_device_select(device, || {
+                run_chunked_prefill(trunk, &tokens, owner, chunk, false)
+            })
+        })
+    };
+    let ((host, host_indices), (device, device_indices)) = (run(false), run(true));
+    assert!(
+        !host_indices.is_empty(),
+        "host selections were not recorded"
+    );
+    assert_eq!(
+        device_indices, host_indices,
+        "prefill device selection changed ordered QSA indices at chunk {chunk}"
+    );
+    assert_eq!(device.final_logits.len(), host.final_logits.len());
+    for (index, (left, right)) in host
+        .final_logits
+        .iter()
+        .zip(&device.final_logits)
+        .enumerate()
+    {
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "prefill device selection changed logit bits at {index}"
+        );
     }
 }

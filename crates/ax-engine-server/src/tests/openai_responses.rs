@@ -4,6 +4,7 @@ use crate::openai::requests::{OpenAiResponseOptions, OpenAiToolContract};
 use crate::openai::responses::{
     openai_chat_completion_response, openai_completion_response, openai_finish_reason,
 };
+use crate::openai::schema::ApiPolish;
 use ax_engine_sdk::{
     CapabilityReport, EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateRouteReport,
     GenerateStatus, ResolutionPolicy, RuntimeReport, SelectedBackend, SupportTier,
@@ -1018,6 +1019,194 @@ fn json_object_validation_accepts_json_objects_only() {
     let array_response = sample_generate_response(r#"[1,2]"#, Vec::new(), Vec::new());
     let _ = validate_openai_response_format(&array_response, &options)
         .expect_err("non-object JSON should fail closed");
+}
+
+#[test]
+fn client_stop_inside_think_tags_does_not_truncate_the_answer() {
+    let mut response = sample_generate_response(
+        "<think>STOP</think>the answer",
+        vec![10, 11, 12],
+        Vec::new(),
+    );
+    response.finish_reason = Some(GenerateFinishReason::MaxOutputTokens);
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            client_stop_sequences: vec!["STOP".to_string()],
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    let choice = &openai.choices[0];
+    assert_eq!(choice.message.content, "the answer");
+    assert_eq!(choice.message.reasoning_content.as_deref(), Some("STOP"));
+    assert_eq!(choice.finish_reason, Some("length"));
+}
+
+#[test]
+fn usage_reports_reasoning_tokens_from_output_ids_without_double_counting() {
+    let dir = reasoning_tokenizer_dir();
+    let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer");
+    let response =
+        sample_generate_response("<think>STOP</think> answer", vec![1, 2, 3, 4], Vec::new());
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        Some(&tokenizer),
+    );
+    let usage = openai.usage.expect("usage");
+    let details = usage.completion_tokens_details.expect("reasoning count");
+    assert_eq!(details.reasoning_tokens, 1);
+    assert_eq!(usage.completion_tokens, 4);
+    assert_eq!(
+        usage.total_tokens,
+        usage.prompt_tokens + usage.completion_tokens
+    );
+    let plain = sample_generate_response("answer", vec![4], Vec::new());
+    let openai = openai_chat_completion_response(
+        &plain,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        Some(&tokenizer),
+    );
+    assert_eq!(
+        openai
+            .usage
+            .expect("usage")
+            .completion_tokens_details
+            .expect("zero is known")
+            .reasoning_tokens,
+        0
+    );
+    let hidden = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            api_polish: ApiPolish(false),
+            ..Default::default()
+        },
+        None,
+        Some(&tokenizer),
+    );
+    assert!(
+        hidden
+            .usage
+            .expect("usage")
+            .completion_tokens_details
+            .is_none()
+    );
+    let unknown = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    assert!(
+        unknown
+            .usage
+            .expect("usage")
+            .completion_tokens_details
+            .is_none()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tagged_reasoning_token_count_stays_linear_for_thousands_of_tokens() {
+    let dir = reasoning_word_tokenizer_dir();
+    let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer");
+    let mut tokens = Vec::with_capacity(4_002);
+    tokens.push(1);
+    tokens.extend(std::iter::repeat_n(6, 4_000));
+    tokens.push(3);
+    let started = std::time::Instant::now();
+    let count = crate::openai::responses::reasoning_token_count(&tokenizer, &tokens)
+        .expect("aligned decode");
+    let elapsed = started.elapsed();
+    assert_eq!(count, 4_000);
+    assert!(
+        elapsed.as_millis() < 1_500,
+        "counting {len} tokens took {elapsed:?}; a per-token full-prefix decode is quadratic",
+        len = tokens.len()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn reasoning_word_tokenizer_dir() -> std::path::PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-reasoning-linear-{unique}"));
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("config.json"), r#"{"eos_token_id":5}"#).expect("config");
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "<think>": 1, "STOP": 2, "</think>": 3, "answer": 4, "<eos>": 5, "w": 6},
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer");
+    dir
+}
+
+fn reasoning_tokenizer_dir() -> std::path::PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-reasoning-tokens-{unique}"));
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("config.json"), r#"{"eos_token_id":5}"#).expect("config");
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "<think>": 1, "STOP": 2, "</think>": 3, "answer": 4, "<eos>": 5},
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer");
+    dir
 }
 
 #[test]

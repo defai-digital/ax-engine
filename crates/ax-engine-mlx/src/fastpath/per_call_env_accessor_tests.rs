@@ -264,6 +264,10 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
         "src/runner/mtp_depth_controller.rs",
         "mtp_cost_depth_config_from_env",
     ),
+    (
+        "src/runner/mtp_depth_controller.rs",
+        "flash_next_mtp_cost_config_from_env",
+    ),
     ("src/runner/mtp_profitability.rs", "env_u32"),
     ("src/runner/mtp_profitability.rs", "env_f64"),
     ("src/runner/mtp_step_trace.rs", "trace_sink"),

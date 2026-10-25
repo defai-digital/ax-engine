@@ -122,8 +122,11 @@ mod mtp_step_trace;
 mod mtp_tuning;
 mod pipeline;
 mod prefix_cache;
+mod restore_value;
 mod runner_telemetry;
+mod snapshot_cuts;
 mod step_telemetry;
+mod tree_verify;
 mod util;
 
 use manifest_validation::*;
@@ -133,6 +136,8 @@ use mtp_ngram_gates::*;
 use mtp_profitability::*;
 use mtp_routing::*;
 use mtp_tuning::*;
+use restore_value::*;
+use snapshot_cuts::*;
 use step_telemetry::*;
 
 use pipeline::*;
@@ -213,6 +218,10 @@ const NGRAM_REPEATING_PROMPT_FEED_MAX: usize = 512;
 const NGRAM_MIN_OUTPUT_FOR_ACCELERATION: u32 = 64;
 const DEFAULT_PREFIX_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_PREFIX_CACHE_MAX_ENTRIES: usize = 64;
+/// How many block-aligned lengths the candidate scan may inspect with
+/// an L1 hash lookup or one `stat` before it stops looking. Never a
+/// file open: metadata probes run only for candidates that exist.
+const MAX_ALIGNED_RESTORE_SCAN: usize = 64;
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS: &str = "ax_mlx_prefix_cache_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_MISSES: &str = "ax_mlx_prefix_cache_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED: &str = "ax_mlx_prefix_cache_blocked";
@@ -245,6 +254,20 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTED_BYTES_KIB: &str =
     "ax_mlx_prefix_cache_demoted_bytes_kib";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTION_SKIPS: &str =
     "ax_mlx_prefix_cache_demotion_skips";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_SEMANTIC_CUT_SNAPSHOTS: &str =
+    "ax_mlx_prefix_cache_semantic_cut_snapshots";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_SEMANTIC_CUT: &str =
+    "ax_mlx_prefix_cache_restore_value_semantic_cut";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_PRICED_RESTORE: &str =
+    "ax_mlx_prefix_cache_restore_value_priced_restore";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_RAM_BASELINE: &str =
+    "ax_mlx_prefix_cache_restore_value_ram_baseline";
+/// Lifetime count of prefix checkpoints refused because linear, GDN, or QSA
+/// state was not already at the requested cut. Emitted as a per-step delta.
+const ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED: &str = "ax_mlx_checkpoint_unsupported";
+/// Lifetime count of prefix checkpoint disk writes that failed or were dropped.
+/// Emitted as a per-step delta, same as [`ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED`].
+const ROUTE_DECISION_AX_MLX_CHECKPOINT_WRITE_ERRORS: &str = "ax_mlx_checkpoint_write_errors";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
@@ -361,6 +384,9 @@ struct RequestState {
     /// Set only by successful native media prefill, never by a prefix restore.
     multimodal_prefill_complete: bool,
     prompt_prefix_tokens: Vec<u32>,
+    /// First effective prefill chunk for a chunk-sensitive model. Later
+    /// steps of this request keep it unless warm-extend alignment disagrees.
+    frozen_prefill_chunk: Option<u32>,
     generated_tokens: Vec<u32>,
     cached_prefill_output_token: Option<u32>,
     /// Lazy cache clone captured mid-prefill at the largest block-aligned
@@ -586,6 +612,9 @@ struct RequestState {
     /// Request-local DFlash2 drafter state (ADR-045). `None` until a prefill
     /// under an eligible request captured hidden states.
     dflash2: Option<dflash2_decode::Dflash2RequestState>,
+    /// Set when the linear DFlash2 verify fence fails after rebind. The cache
+    /// is not restored; `run_item` fails this request and drops the state.
+    dflash2_verify_fence_error: Option<String>,
 }
 
 /// Draft history for the Flash Next candidate plus its route counters.
@@ -755,6 +784,18 @@ struct FlashNextMtpTelemetry {
     verified_steps: u32,
     /// Verified steps whose draft token was accepted.
     accepted_steps: u32,
+    /// Decode steps served direct by the measured cost policy (WP03 park and
+    /// the bounded calibration direct window), not by a fallback reason.
+    cost_parked_steps: u32,
+    /// Times the cost policy parked the request.
+    cost_parks: u32,
+    /// Times a probe window resumed MTP after a park.
+    cost_resumes: u32,
+    /// Times the `required` policy reported `would_park` without parking.
+    cost_would_parks: u32,
+    /// Cost-parked steps that found a misaligned cursor with no catch-up
+    /// buffer, so the park could not keep it and the step decoded direct.
+    cost_parked_misaligned: u32,
     /// Decode steps served direct while the candidate was requested.
     direct_fallback_steps: u32,
     /// `direct_fallback_steps` split by the block or error reason that forced
@@ -789,6 +830,11 @@ impl Default for FlashNextMtpTelemetry {
             cursor_pause_overflows: 0,
             verified_steps: 0,
             accepted_steps: 0,
+            cost_parked_steps: 0,
+            cost_parks: 0,
+            cost_resumes: 0,
+            cost_would_parks: 0,
+            cost_parked_misaligned: 0,
             direct_fallback_steps: 0,
             direct_fallback_by_reason: [0; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
             step_errors: 0,
@@ -823,6 +869,15 @@ impl FlashNextMtpTelemetry {
             .saturating_add(other.cursor_pause_overflows);
         self.verified_steps = self.verified_steps.saturating_add(other.verified_steps);
         self.accepted_steps = self.accepted_steps.saturating_add(other.accepted_steps);
+        self.cost_parked_steps = self
+            .cost_parked_steps
+            .saturating_add(other.cost_parked_steps);
+        self.cost_parks = self.cost_parks.saturating_add(other.cost_parks);
+        self.cost_resumes = self.cost_resumes.saturating_add(other.cost_resumes);
+        self.cost_would_parks = self.cost_would_parks.saturating_add(other.cost_would_parks);
+        self.cost_parked_misaligned = self
+            .cost_parked_misaligned
+            .saturating_add(other.cost_parked_misaligned);
         self.direct_fallback_steps = self
             .direct_fallback_steps
             .saturating_add(other.direct_fallback_steps);
@@ -877,6 +932,20 @@ impl FlashNextMtpTelemetry {
             ),
             ("ax_mlx_flash_next_mtp_verified_steps", self.verified_steps),
             ("ax_mlx_flash_next_mtp_accepted_steps", self.accepted_steps),
+            (
+                "ax_mlx_flash_next_mtp_cost_parked_steps",
+                self.cost_parked_steps,
+            ),
+            ("ax_mlx_flash_next_mtp_cost_parks", self.cost_parks),
+            ("ax_mlx_flash_next_mtp_cost_resumes", self.cost_resumes),
+            (
+                "ax_mlx_flash_next_mtp_cost_would_parks",
+                self.cost_would_parks,
+            ),
+            (
+                "ax_mlx_flash_next_mtp_cost_parked_misaligned",
+                self.cost_parked_misaligned,
+            ),
             (
                 "ax_mlx_flash_next_mtp_direct_fallback_steps",
                 self.direct_fallback_steps,
@@ -972,7 +1041,7 @@ impl FlashNextMtpDecodeBlock {
             Self::ThinkControl => FlashNextMtpFallbackReason::ThinkControl,
             Self::PendingDirect => FlashNextMtpFallbackReason::PendingDirect,
             Self::NoBudget => FlashNextMtpFallbackReason::NoBudget,
-            Self::CursorUnavailable | Self::CursorPaused => {
+            Self::CursorUnavailable | Self::CursorPaused | Self::CostParked => {
                 FlashNextMtpFallbackReason::CursorUnavailable
             }
         }
@@ -1041,6 +1110,41 @@ enum FlashNextMtpDecodeBlock {
     /// The cursor is retained but deliberately behind the trunk: this step
     /// continues the paused catch-up instead of proposing.
     CursorPaused,
+    /// The measured cost policy parked the head: every completed round lost to
+    /// direct decode, so this step serves direct on the paused catch-up route.
+    /// Distinct from `CursorPaused` because the parked state is a *decision*
+    /// and must not be flushed away inside the same step.
+    CostParked,
+}
+
+/// WP03 cost gate, evaluated before the regular decode gate.
+///
+/// `cost_direct` is `true` for a parked request and for the bounded direct
+/// window a fresh evidence band calibrates with. The park only opens when
+/// every cursor-independent gate already cleared, so it can never replace a
+/// step that would have decoded direct anyway, and it is checked before
+/// `CursorPaused` so a park is not mistaken for a pause that one absorb can
+/// end. `AX_FLASH_NEXT_MTP_COST=0` leaves `cost_direct` false for the whole
+/// request and restores the pre-WP03 gate order exactly.
+const fn flash_next_mtp_cost_park_block(
+    cost_direct: bool,
+    strict_greedy: bool,
+    think_soft_close_armed: bool,
+    think_budget_close_due: bool,
+    pending_direct: bool,
+    remaining_output: usize,
+) -> Option<FlashNextMtpDecodeBlock> {
+    if cost_direct
+        && strict_greedy
+        && !think_soft_close_armed
+        && !think_budget_close_due
+        && !pending_direct
+        && remaining_output > 0
+    {
+        Some(FlashNextMtpDecodeBlock::CostParked)
+    } else {
+        None
+    }
 }
 
 /// Decode-time admission for the Flash Next cursor. Pure so the gate order is
@@ -1157,6 +1261,7 @@ impl RequestState {
             cache,
             multimodal_prefill_complete: false,
             prompt_prefix_tokens: Vec::new(),
+            frozen_prefill_chunk: None,
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             prefill_boundary_snapshot: None,
@@ -1223,6 +1328,7 @@ impl RequestState {
             mtp_ngram_utility_hysteresis_remaining: 0,
             flash_next_mtp: FlashNextMtpRequestState::default(),
             dflash2: None,
+            dflash2_verify_fence_error: None,
         }
     }
 
@@ -1409,6 +1515,33 @@ type EmbedGemmaBatchCompileKey = (
     Vec<usize>,
 );
 
+/// Session-level MTP policy, mirroring the SDK's `MlxMtpPolicy`.
+///
+/// The MLX crate cannot depend on the SDK, so the session builder maps its
+/// tri-state onto this enum. It qualifies the Flash Next measured cost policy:
+/// `Required` still measures and reports `would_park`, but never parks;
+/// `Disabled` never measures or probes; `Auto` may park a losing head.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MtpSessionPolicy {
+    /// The default: the cost policy may park a losing head.
+    #[default]
+    Auto,
+    /// The force-MTP contract (`--mlx-mtp-policy required`): report only.
+    Required,
+    /// No MTP at all: the cost machine never arms.
+    Disabled,
+}
+
+impl MtpSessionPolicy {
+    const fn flash_next_cost_policy(self) -> FlashNextCostPolicy {
+        match self {
+            Self::Auto => FlashNextCostPolicy::Auto,
+            Self::Required => FlashNextCostPolicy::Required,
+            Self::Disabled => FlashNextCostPolicy::Disabled,
+        }
+    }
+}
+
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
     cfg: ModelConfig,
@@ -1479,6 +1612,10 @@ pub struct MlxRunner {
     /// request sampling are available. Studio deliberately disables n-gram
     /// while leaving this enabled for validated MTP packages.
     mtp_requested: bool,
+    /// Session MTP policy (`--mlx-mtp-policy`). The SDK sets it at
+    /// construction; it qualifies the Flash Next cost policy so a `required`
+    /// session reports `would_park` and never parks.
+    mtp_session_policy: MtpSessionPolicy,
     /// Immutable, model-scoped MTP family/default/safety policy. The setter
     /// cannot bypass its hard route gate.
     mtp_model_policy: MtpModelPolicy,
@@ -1522,6 +1659,27 @@ pub struct MlxRunner {
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
     direct_clear_cache_cadence: u32,
+    /// Effective MLX memory limit in bytes (`0` when the limit is unknown).
+    /// Pressure requeue uses 90% / 80% of this value and stays off at `0`.
+    mlx_memory_limit: u64,
+    /// Live decode sequences this session may run concurrently, resolved by the
+    /// priced memory plan at load time.
+    ///
+    /// `None` when the plan did not price live sequences or did not stay
+    /// resident, in which case residency imposes no cap and the caller's own
+    /// admission limit stands. A `Some(n)` below the configured count means the
+    /// per-request state term was re-priced for `n` rows: admitting more would
+    /// cross the ceiling the plan proved.
+    live_sequence_cap: Option<u32>,
+    /// Model id from the latest `run`, used when a checkpoint stores a prefix.
+    last_prefix_model_id: Mutex<String>,
+    /// Block size from the latest `run`, paired with `last_prefix_model_id`.
+    last_block_size_tokens: std::sync::atomic::AtomicU32,
+    /// Disk prefix writes that failed or were dropped during checkpoint.
+    checkpoint_write_errors: std::sync::atomic::AtomicU32,
+    /// Checkpoints refused because linear, GDN, or QSA state was not already
+    /// at the requested cut. `trim_to` cannot roll that state back.
+    checkpoint_unsupported: std::sync::atomic::AtomicU32,
     /// Weight-layout snapshot computed once at construction. `runner.run`
     /// emits this as `ax_mlx_dense_ffn_gate_up_packed_layers` /
     /// `ax_mlx_dense_ffn_split_gate_up_layers` and
@@ -2204,6 +2362,20 @@ impl MlxRunner {
         self.mtp_requested
     }
 
+    /// Latch the session's MTP policy (`--mlx-mtp-policy`).
+    ///
+    /// The SDK calls this next to [`Self::set_mtp_requested`]. It is the only
+    /// input that can make the Flash Next measured cost machine report-only:
+    /// `Required` keeps measuring and emitting `would_park` telemetry but never
+    /// parks, which is the force-MTP harness contract (`required` never parks).
+    pub fn set_mtp_session_policy(&mut self, policy: MtpSessionPolicy) {
+        self.mtp_session_policy = policy;
+    }
+
+    pub fn mtp_session_policy(&self) -> MtpSessionPolicy {
+        self.mtp_session_policy
+    }
+
     /// Whether this pack is certified for *default-on* model MTP
     /// (`MlxMtpPolicy::Auto`). Dense QwenCalibrated still requires publisher
     /// certification. Linear Qwen candidates require an explicit opt-in until
@@ -2332,6 +2504,14 @@ impl MlxRunner {
 
     /// Build a session with its admitted KV pool available to load-time Auto
     /// residency. Existing raw constructors retain conservative admission.
+    ///
+    /// `max_live_sequences` is the session's configured bound on concurrently
+    /// live decode sequences (the server's admitted concurrency). The priced
+    /// plan charges per-request hybrid/QSA state once per live row, so it must
+    /// see the bound the session is actually started with rather than a
+    /// generic upper bound. `None` falls back to the runner's batched cohort
+    /// capacity.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_artifacts_with_session_budget(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
@@ -2340,6 +2520,7 @@ impl MlxRunner {
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
         kv_pool_tokens: u64,
+        max_live_sequences: Option<u32>,
     ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_inner(
             artifacts,
@@ -2351,6 +2532,7 @@ impl MlxRunner {
             Some(crate::expert_stream::SessionResidencyBudget {
                 kv_pool_tokens,
                 prefill_chunk,
+                max_live_sequences,
             }),
         )
     }
@@ -2429,17 +2611,60 @@ impl MlxRunner {
         stream.set_as_default();
 
         // Wire weights into GPU memory to prevent paging between requests.
-        // Scale to 90% of Metal's recommended working set to avoid macOS kernel
-        // panics caused by wiring the full max (documented in mlx-lm#883).
-        // Override via AX_MLX_WIRED_LIMIT_SCALE (0.0-1.0).
+        // 90% of Metal's recommended working set is the default, because
+        // wiring the full max was linked to macOS kernel panics (mlx-lm#883).
+        // The share is raised only as far as this pack's priced working set
+        // actually needs, up to the full recommendation: a resident Flash Next
+        // 6-bit session prices above the 0.9 share on a 128 GiB host, and
+        // wiring less than the weights need is exactly what makes macOS page
+        // them out during long-context prefill. Override (and thus pin the
+        // historical behaviour) via AX_MLX_WIRED_LIMIT_SCALE (0.0-1.0).
         let wired_cap = max_recommended_working_set_size();
+        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&c| c >= 1)
+            .unwrap_or(8);
+        let live_sequences = crate::expert_stream::resolved_live_sequences(
+            session_budget.and_then(|budget| budget.max_live_sequences),
+            batched_cap,
+        );
+        // Priced residency of the pack about to load, estimated from the
+        // manifest and headers only: the working set sizes the wired limit, and
+        // the live-sequence cap it resolves is the concurrency this session may
+        // actually run at. An empty report (no sidecar, required streaming,
+        // plan already streaming) keeps the historical 0.9 share and no cap.
+        let priced_residency = session_budget.map_or_else(
+            crate::expert_stream::PricedSessionResidency::default,
+            |budget| {
+                crate::expert_stream::price_session_residency(artifacts, budget, live_sequences)
+            },
+        );
+        let planned_working_set_bytes = priced_residency.resident_working_set_bytes;
+        let live_sequence_cap = priced_residency.live_sequence_cap;
+        let wired_limit = crate::tiel_memory_policy::resolve_wired_limit(
+            wired_cap,
+            planned_working_set_bytes,
+            crate::tiel_memory_policy::wired_limit_scale_override(),
+        );
         let wired_residency = if wired_cap > 0 {
-            let scale: f64 = std::env::var("AX_MLX_WIRED_LIMIT_SCALE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.9);
-            let scaled = (wired_cap as f64 * scale.clamp(0.0, 1.0)) as usize;
-            set_wired_limit(scaled);
+            set_wired_limit(usize::try_from(wired_limit.limit_bytes).unwrap_or(usize::MAX));
+            tracing::info!(
+                target: "ax_engine_mlx::runner",
+                wired_limit_bytes = wired_limit.limit_bytes,
+                wired_limit_scale = wired_limit.scale,
+                wired_limit_source = ?wired_limit.source,
+                recommended_working_set_bytes = wired_cap,
+                planned_working_set_bytes = ?planned_working_set_bytes,
+                "wired GPU residency for this session"
+            );
+            ax_engine_core::memory_budget::publish_wired_memory_report(
+                ax_engine_core::memory_budget::WiredMemoryReport::from_wired_limit(
+                    wired_limit.limit_bytes,
+                    planned_working_set_bytes,
+                    crate::expert_stream::unified_memory_bytes(),
+                ),
+            );
             crate::tiel_memory_policy::WiredResidencyGuard::acquire()
         } else {
             crate::tiel_memory_policy::WiredResidencyGuard::unheld()
@@ -2504,6 +2729,59 @@ impl MlxRunner {
         // safetensors read + GPU eval entirely.
         let preloaded_weights = shared_weights.and_then(MlxSharedWeightsCell::get);
         let reused_shared_weights = preloaded_weights.is_some();
+        // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
+        // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
+        // `batched_cap` and `live_sequences` were resolved above, before the
+        // wired limit needed the session's priced working set. The priced plan
+        // charges per-request hybrid/QSA state once per live row, but the
+        // effective count also honours the session's admitted concurrency
+        // (`SessionResidencyBudget::max_live_sequences`): a server limited to
+        // one request must not be priced for eight.
+        // Priced-plan inputs for this session, installed on the thread that
+        // loads the weights (the same per-session latch pattern as
+        // `set_stream_experts_mode`). Builders without an admitted session
+        // budget clear it, so a later load cannot inherit this one's pool.
+        crate::expert_stream::set_auto_residency_context(session_budget.map(|budget| {
+            let (kv_bytes, state_bytes, prefill_scratch_bytes) =
+                crate::expert_stream::estimate_auto_residency_costs(
+                    artifacts.manifest(),
+                    budget,
+                    live_sequences,
+                );
+            // Floor the plan's resident share with the tensors the loader
+            // actually keeps resident. The streamed expert stack is priced from
+            // the manifest and the disk-served n-gram table is already
+            // discounted out of the manifest estimate, so neither is added back
+            // here.
+            let resident_tensor_inventory_bytes =
+                crate::expert_stream::resident_tensor_inventory_bytes(
+                    artifacts.tensor_specs(),
+                    crate::fastpath::expert_stream_discount_ngram_enabled(),
+                );
+            crate::expert_stream::AutoResidencyContext {
+                kv_bytes,
+                state_bytes,
+                prefill_scratch_bytes,
+                // Filled per pack by the loader (the table is a pack property).
+                ngram_table_bytes: 0,
+                resident_tensor_inventory_bytes,
+                host_ram_bytes: crate::expert_stream::unified_memory_bytes(),
+                metal_recommended_max_working_set_bytes:
+                    crate::expert_stream::metal_recommended_working_set_bytes(),
+                // The plan compares its priced working set against the limit
+                // this process actually set, not against a re-derived guess.
+                wired_limit_bytes: (wired_cap > 0).then_some(wired_limit.limit_bytes),
+                ceiling_override_bytes: crate::expert_stream::memory_ceiling_override_bytes(),
+                // The plan re-prices its per-request state term against this
+                // live-sequence count, so the concurrency it charges is the
+                // concurrency the engine admits.
+                live_sequences: Some(live_sequences.max(1)),
+                state_bytes_per_live_sequence: crate::expert_stream::per_live_sequence_state_bytes(
+                    artifacts.manifest(),
+                ),
+                live_sequences_operator_capped: budget.max_live_sequences.is_some(),
+            }
+        }));
         let weights = match preloaded_weights {
             Some(weights) => weights,
             None => {
@@ -2798,6 +3076,75 @@ impl MlxRunner {
                 mtp_dummy_cache.reset();
             }
         }
+        // Flash Next QSA prefill block-key kernel. The limits live in a
+        // buffer, so one launch compiles the pipeline every later chunk
+        // reuses. Other families never launch it. `AX_MLX_LOAD_KERNEL_WARMUP=0`
+        // skips it with the other load-time compiles, and
+        // `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT=0` restores the host
+        // sort, which does not launch it. Best-effort: a build failure is
+        // logged once and prefill selection stays on the host sort.
+        if crate::qwen4_exp_qsa::qsa_prefill_key_warmup_applies(
+            weights.qwen4_exp.is_some(),
+            crate::fastpath::load_kernel_warmup_enabled(),
+            crate::fastpath::flash_next_qsa_prefill_device_select_enabled(),
+        ) {
+            let warm_started = std::time::Instant::now();
+            match crate::qwen4_exp_qsa::warm_prefill_key_kernel() {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed the Flash Next QSA prefill block-key kernel at model load"
+                ),
+                Err(error) => {
+                    if crate::qwen4_exp_qsa::prefill_block_key_kernel_available() {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::runner",
+                            %error,
+                            "QSA prefill block-key warm-up failed; the first prefill pays the compile"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::runner",
+                            %error,
+                            "QSA prefill block-key warm-up failed; prefill selection uses the host sort"
+                        );
+                    }
+                }
+            }
+        }
+        // Flash Next indexed QSA prefill kernel. It is opt-in
+        // (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`), so with the switch off
+        // nothing is compiled. The kernel template is the model geometry
+        // (`head_dim`, query/kv heads and their group), so one launch with the
+        // config's own values compiles the pipeline every later prefill chunk
+        // reuses; the per-chunk row counts and selection width travel in a
+        // buffer. Other families never launch it. `AX_MLX_LOAD_KERNEL_WARMUP=0`
+        // skips it with the other load-time compiles. Best-effort: a build
+        // failure is logged once and the request keeps the gathered path.
+        if crate::model::shared::qwen4_exp_attention_indexed::indexed_prefill_warmup_applies(
+            weights.qwen4_exp.is_some(),
+            crate::fastpath::load_kernel_warmup_enabled(),
+            crate::fastpath::flash_next_qsa_indexed_prefill_enabled(),
+        ) {
+            let warm_started = std::time::Instant::now();
+            match crate::model::shared::qwen4_exp_attention_indexed::warm_indexed_prefill_kernel(
+                cfg.n_heads as i32,
+                cfg.n_kv_heads as i32,
+                cfg.head_dim as i32,
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+            ) {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed the Flash Next indexed QSA prefill kernel at model load"
+                ),
+                Err(error) => tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "indexed QSA prefill warm-up failed; the first prefill pays the compile"
+                ),
+            }
+        }
         // Flash Next n-gram aux-plane page-cache warm-up. It must run after the
         // weights are fully read (the generation warm-up above materialises
         // them): the ~70 GB weight read would otherwise evict the ~6 GB of
@@ -2844,6 +3191,14 @@ impl MlxRunner {
             }
         }
         let native_prefix_cache_policy = prefix_cache.lock().policy;
+        // One line per model load: the two opt-in prefix features are read
+        // once, so this is the only place a mis-set environment is visible.
+        tracing::info!(
+            target: "ax_engine_mlx::runner",
+            prefix_semantic_cuts = crate::fastpath::prefix_semantic_cuts_enabled(),
+            prefix_restore_value = crate::fastpath::prefix_restore_value_enabled(),
+            "resolved MLX prefix-cache value features"
+        );
 
         let cfg_arc = Arc::new(cfg.clone());
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
@@ -2893,13 +3248,8 @@ impl MlxRunner {
         let batched_decode_model_eligible = batched_decode_capabilities
             .eligible(allow_uncertified_batched_decode)
             && weights.qwen4_exp.is_none();
-        // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
-        // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
-        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .filter(|&c| c >= 1)
-            .unwrap_or(8);
+        // Capacity for the batched cohort: `batched_cap`, computed above before
+        // the priced-plan context so both read the same live-row bound.
         let batched_session = Mutex::new(BatchedDecodeSession::new(cfg.layer_count, batched_cap));
         // The CLI n-gram switch controls only the independent n-gram drafter.
         // AX_NO_SPEC remains the process-wide kill switch for every speculative
@@ -2999,6 +3349,7 @@ impl MlxRunner {
             _wired_residency: wired_residency,
             disable_ngram_acceleration,
             mtp_requested,
+            mtp_session_policy: MtpSessionPolicy::default(),
             mtp_model_policy,
             qwen_linear_mtp_exact_eligible,
             qwen_linear_mtp_exact_enabled,
@@ -3020,6 +3371,12 @@ impl MlxRunner {
             disk_prefix_writer,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
+            mlx_memory_limit: u64::try_from(memory_limit).unwrap_or(u64::MAX),
+            live_sequence_cap,
+            last_prefix_model_id: Mutex::new(String::new()),
+            last_block_size_tokens: std::sync::atomic::AtomicU32::new(0),
+            checkpoint_write_errors: std::sync::atomic::AtomicU32::new(0),
+            checkpoint_unsupported: std::sync::atomic::AtomicU32::new(0),
             dflash2: None,
             weight_layout_telemetry,
             affine_quant_telemetry,
@@ -4341,8 +4698,201 @@ struct StagedBatchedPrefill {
     seq_len: usize,
 }
 
+fn prefix_checkpoint_write_error_count(telemetry: &MlxPrefixCacheTelemetry) -> u32 {
+    telemetry
+        .disk_store_commit_failed
+        .saturating_add(telemetry.disk_store_dropped)
+}
+
+fn warn_prefix_checkpoint_write_errors(
+    request_id: RequestId,
+    telemetry: &MlxPrefixCacheTelemetry,
+) -> u32 {
+    let errors = prefix_checkpoint_write_error_count(telemetry);
+    if errors > 0 {
+        tracing::warn!(
+            target: "ax_engine_mlx::prefix_cache",
+            request_id = request_id.0,
+            errors,
+            commit_failed = telemetry.disk_store_commit_failed,
+            dropped = telemetry.disk_store_dropped,
+            "prefix checkpoint write failed"
+        );
+    }
+    errors
+}
+
+/// A checkpoint is committed when L1 or the disk tier accepted the snapshot.
+/// `ssd_hit` is set only when the disk tier accepted. Write errors stay
+/// visible through the counter even when L1 succeeded.
+fn checkpoint_receipt_from_prefix_store(
+    request_id: RequestId,
+    cut: u32,
+    telemetry: &MlxPrefixCacheTelemetry,
+    l1_resident: bool,
+) -> ax_engine_core::prefill_handoff::CheckpointReceipt {
+    let disk_accepted = telemetry.disk_store_committed > 0 || telemetry.disk_store_enqueued > 0;
+    let accepted = telemetry.stores > 0 || l1_resident || disk_accepted;
+    if !accepted {
+        return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(request_id, cut);
+    }
+    ax_engine_core::prefill_handoff::CheckpointReceipt {
+        request_id,
+        cut,
+        committed: true,
+        ssd_hit: disk_accepted,
+        unsupported_layout: false,
+        device_capture: true,
+    }
+}
+
+/// Label one restore choice for route telemetry.
+///
+/// `priced_restore` is recorded only when `price_value` is set and the chosen
+/// prefix is not a cut. Cuts-only (semantic cuts on, value pricing off) labels
+/// a chosen cut `semantic_cut` and every other longest-candidate outcome,
+/// including no candidate, `ram_baseline`.
+fn restore_value_decision(
+    chosen_len: Option<usize>,
+    chosen_is_cut: bool,
+    price_value: bool,
+) -> RestoreValueDecision {
+    match chosen_len {
+        Some(_) if chosen_is_cut => RestoreValueDecision::SemanticCut,
+        Some(_) if price_value => RestoreValueDecision::PricedRestore,
+        _ => RestoreValueDecision::RamBaseline,
+    }
+}
+
 impl ExecutionRunner for MlxRunner {
+    fn checkpoint_request(
+        &self,
+        request_id: ax_engine_core::RequestId,
+        _reason: ax_engine_core::prefill_handoff::CheckpointReason,
+        committed_limit: u32,
+    ) -> ax_engine_core::prefill_handoff::CheckpointReceipt {
+        let Some(cut) = usize::try_from(committed_limit).ok().filter(|cut| *cut > 0) else {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        };
+        let model_id = self.last_prefix_model_id.lock().clone();
+        let block_size = self
+            .last_block_size_tokens
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if model_id.is_empty() || block_size == 0 {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        let states = self.states.lock();
+        let Some(state) = states.get(&request_id) else {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        };
+        if state.rotating_sliding_latch.is_some() || state.cache.has_unserializable_layers() {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        if state.cache.seq_len() < cut || state.prompt_prefix_tokens.len() < cut {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        // Linear, GDN, and QSA snapshots are sound only when captured at
+        // `cut`. `trim_to` cannot roll that state back, so a longer cache
+        // must be a counted miss instead of a trimmed store.
+        if state.cache.seq_len() != cut && state.cache.recurrent_capture_requires_exact_prefix() {
+            self.checkpoint_unsupported
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        let mut snapshot = state.cache.clone();
+        if snapshot.seq_len() > cut && !snapshot.trim_to(cut) {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        if snapshot.seq_len() != cut || snapshot.has_unserializable_layers() {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        let telemetry = self.store_at_cut(&model_id, block_size, state, cut, &snapshot, 0, "");
+        let errors = warn_prefix_checkpoint_write_errors(request_id, &telemetry);
+        if errors > 0 {
+            self.checkpoint_write_errors
+                .fetch_add(errors, std::sync::atomic::Ordering::Relaxed);
+        }
+        let tokens = &state.prompt_prefix_tokens[..cut];
+        let key = self.prefix_cache_key_with_media(&model_id, block_size, tokens, "");
+        let l1_resident = self.prefix_cache.lock().contains_exact_tokens(&key, tokens);
+        checkpoint_receipt_from_prefix_store(request_id, committed_limit, &telemetry, l1_resident)
+    }
+
+    fn release_restorable_state(&self, request_id: ax_engine_core::RequestId) {
+        self.release_request_state(request_id);
+    }
+
+    fn memory_pressure_sample(
+        &self,
+    ) -> Option<ax_engine_core::prefill_handoff::MemoryPressureSample> {
+        if self.mlx_memory_limit == 0 {
+            return None;
+        }
+        let active_bytes = mlx_sys::mempressure::device_active_bytes()?;
+        let idle_cache_bytes = mlx_sys::mempressure::device_cache_bytes().unwrap_or(0);
+        let chunk = self.cold_prefill_chunk.max(self.prefill_chunk).max(1) as u64;
+        Some(ax_engine_core::prefill_handoff::MemoryPressureSample {
+            active_bytes,
+            limit_bytes: self.mlx_memory_limit,
+            idle_cache_bytes,
+            // MLX activation workspace for the next text chunk. This is not a
+            // host RSS or mmap budget.
+            next_chunk_workspace_bytes: chunk.saturating_mul(64 * 1024),
+        })
+    }
+
+    fn reclaim_idle_cache(&self) {
+        clear_cache();
+    }
+
+    fn mtp_active(&self) -> bool {
+        self.mtp_requested && self.has_mtp()
+    }
+
+    fn chunk_sensitive_prefill(&self) -> bool {
+        self.cfg.linear_attention.is_some()
+            || self.cfg.mla_attention.is_some()
+            || self.cfg.deepseek_v4.is_some()
+            || self.weights.qwen4_exp.is_some()
+            || self.cfg.model_family == "qwen4_exp"
+    }
+
+    fn touch_idle_residency(&self) -> bool {
+        // The worker thread already made this stream the default at load.
+        // Pin it again so the copy and its eval stay on that stream.
+        crate::idle_residency::touch_gpu_residency(&self._stream)
+    }
+
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        *self.last_prefix_model_id.lock() = input.execution_batch.model_id.clone();
+        self.last_block_size_tokens.store(
+            input.block_size_tokens,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // Keep exact arithmetic model-scoped. This prevents one resident Qwen
         // MTP model from changing the projection path of another model in the
         // same server process. Direct sessions stay off the verifier
@@ -4913,6 +5463,7 @@ impl ExecutionRunner for MlxRunner {
         // here; each row's result is consumed inside its own run_item call
         // below, so per-request bookkeeping and ordering are unchanged.
         let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
+        let adaptive_decisions = &input.execution_batch.route_metadata.crossover_decisions;
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
                 continue;
@@ -4921,6 +5472,12 @@ impl ExecutionRunner for MlxRunner {
                 .request_contexts
                 .iter()
                 .find(|c| c.request_id == item.request_id);
+            let adaptive_prefill_chunk =
+                ax_engine_core::prefill_handoff::published_adaptive_prefill_quantum(
+                    adaptive_decisions,
+                    item.request_id.0,
+                )
+                .map(|quantum| quantum as usize);
 
             // The request's `logit_bias` (if any) for the host sampler.
             let _logit_bias_scope =
@@ -4931,8 +5488,10 @@ impl ExecutionRunner for MlxRunner {
                 &input.execution_batch.model_id,
                 input.block_size_tokens,
                 input.request_multimodal_inputs(item.request_id),
+                input.request_prefill_hints(item.request_id),
                 staged_prefill.remove(&item.request_id.0),
                 input.request_json_grammar(item.request_id),
+                adaptive_prefill_chunk,
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -5046,6 +5605,38 @@ impl ExecutionRunner for MlxRunner {
                 "ax_mlx_flash_next_selected_expert_payload_kib",
                 u32::try_from(selected_reads.payload_bytes / 1024).unwrap_or(u32::MAX),
             );
+            // Per-step delta of checkpoints refused for an untrimmed linear,
+            // GDN, or QSA capture. A zero load stays off the route map.
+            let checkpoint_unsupported = self
+                .checkpoint_unsupported
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if checkpoint_unsupported > 0 {
+                let checkpoint_unsupported = self
+                    .checkpoint_unsupported
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                if checkpoint_unsupported > 0 {
+                    route_decisions.upsert_route_decision(
+                        ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED,
+                        checkpoint_unsupported,
+                    );
+                }
+            }
+            // Per-step delta of checkpoint disk writes that failed or were
+            // dropped. A zero load stays off the route map.
+            let checkpoint_write_errors = self
+                .checkpoint_write_errors
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if checkpoint_write_errors > 0 {
+                let checkpoint_write_errors = self
+                    .checkpoint_write_errors
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                if checkpoint_write_errors > 0 {
+                    route_decisions.upsert_route_decision(
+                        ROUTE_DECISION_AX_MLX_CHECKPOINT_WRITE_ERRORS,
+                        checkpoint_write_errors,
+                    );
+                }
+            }
             if let Some(trunk) = self.weights.qwen4_exp.as_ref() {
                 route_decisions.upsert_route_decision(
                     "ax_mlx_flash_next_mtp_verifier_schedule",
@@ -5119,6 +5710,10 @@ impl ExecutionRunner for MlxRunner {
 
     fn native_expert_streaming_active(&self) -> bool {
         self.weights.expert_stream.is_some()
+    }
+
+    fn native_live_sequence_cap(&self) -> Option<u32> {
+        self.live_sequence_cap
     }
 
     fn release_request_state(&self, request_id: RequestId) {
@@ -6203,6 +6798,10 @@ impl MlxRunner {
             prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
         }
 
+        record_prefill(
+            state.prompt_prefix_tokens.len(),
+            u64::from(elapsed_us(prefill_started)),
+        );
         state
             .decode_telemetry
             .record_prefill(elapsed_us(prefill_started));
@@ -6233,8 +6832,10 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         multimodal_inputs: Option<&RequestMultimodalInputs>,
+        prefill_hints: Option<&ax_engine_core::PrefillHints>,
         mut staged_batched_prefill: Option<StagedBatchedPrefill>,
         json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
+        adaptive_prefill_chunk: Option<usize>,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -6457,6 +7058,7 @@ impl MlxRunner {
                     !has_native_multimodal_prefill
                         && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
                     media_key.as_deref(),
+                    prefill_hints,
                 )
             };
         self.reclaim_native_prefix_capacity(
@@ -6874,12 +7476,41 @@ impl MlxRunner {
                         );
                     // Long remaining prompts clamp to the pure-thr chunk (512);
                     // short prompts keep the session base (e.g. 1536 for S0 TTFT).
+                    // The request's own adaptive quantum wins over that scale.
+                    // A warm-extend quantum is applied only when it equals the
+                    // selected MLA chunk, so the SDPA trail stays aligned.
+                    // Absent when `AX_ENGINE_ADAPTIVE_PREFILL` is off.
+                    let scaled_chunk = crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+                        base_prefill_chunk,
+                        prefill_tokens.len(),
+                        &self.cfg.model_family,
+                    );
+                    let requested_quantum = if self.chunk_sensitive_prefill() {
+                        state
+                            .frozen_prefill_chunk
+                            .filter(|quantum| *quantum > 0)
+                            .map(|quantum| quantum as usize)
+                            .or(adaptive_prefill_chunk)
+                    } else {
+                        adaptive_prefill_chunk
+                    };
+                    let warm_extend = matches!(
+                        prefill_chunk_mode,
+                        crate::fastpath::PrefillChunkMode::WarmExtend
+                    );
                     let prefill_chunk_for_request =
-                        crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
-                            base_prefill_chunk,
-                            prefill_tokens.len(),
-                            &self.cfg.model_family,
-                        );
+                        ax_engine_core::prefill_handoff::effective_prefill_chunk(
+                            requested_quantum.and_then(|chunk| u32::try_from(chunk).ok()),
+                            u32::try_from(base_prefill_chunk).unwrap_or(u32::MAX),
+                            warm_extend,
+                            u32::try_from(scaled_chunk).unwrap_or(u32::MAX),
+                        ) as usize;
+                    if self.chunk_sensitive_prefill()
+                        && state.frozen_prefill_chunk.is_none()
+                        && adaptive_prefill_chunk.is_some()
+                    {
+                        state.frozen_prefill_chunk = u32::try_from(prefill_chunk_for_request).ok();
+                    }
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
                         matches!(
@@ -6939,6 +7570,73 @@ impl MlxRunner {
                         state.prefill_grid_snapshot =
                             Some((state.cache.seq_len(), state.cache.clone()));
                         &prefill_tokens[head..]
+                    } else {
+                        prefill_tokens
+                    };
+                    // Semantic cut capture (`AX_MLX_PREFIX_SEMANTIC_CUTS`)
+                    // runs *after* the grid-rung capture above and before the
+                    // boundary capture below. The rung is the prefix a warm
+                    // request claims, so its snapshot must be taken from the
+                    // whole item; capturing cuts first would advance the cache
+                    // past the rung, and `linear_grid_rung_head_len` would
+                    // then report the rung as inside prior context and drop
+                    // the claim snapshot. Running the cuts on the post-rung
+                    // remainder still reaches every assistant-turn cut inside
+                    // the prompt body, so cut snapshots are stored in
+                    // addition to the block-aligned ones, never instead.
+                    // A semantic cut is an assistant-turn start, so it is not
+                    // block-aligned and `trim_to` cannot produce it: linear
+                    // conv/recurrent (GDN), QSA and PLE state cannot be rolled
+                    // back at store time. Split the prefill at every planned
+                    // cut and capture the live cache in place at that token
+                    // position, so the stored snapshot is exact rather than
+                    // trimmed. The plan is built from the same prompt, block
+                    // size and execution signature the restore side uses
+                    // (`snapshot_cut_plan`), so a cold store and a warm
+                    // restore agree on the partition.
+                    let mut semantic_cut_snapshots: Vec<(usize, MlxKVCache)> = Vec::new();
+                    let prefill_tokens = if self.cfg.linear_attention.is_some()
+                        && !flash_next_mtp_prefill
+                        && crate::fastpath::prefix_semantic_cuts_enabled()
+                        && self.prefix_cache.lock().enabled()
+                        && !prefill_tokens.is_empty()
+                    {
+                        let cut_start = state.cache.seq_len();
+                        let cut_end = cut_start + prefill_tokens.len();
+                        let plan = snapshot_cut_plan(
+                            cut_end,
+                            block_size_tokens as usize,
+                            prefill_hints
+                                .map(|hints| hints.semantic_cut_tokens.as_slice())
+                                .unwrap_or(&[]),
+                            true,
+                            &self.prefix_execution_signature(),
+                        );
+                        let mut cursor = 0usize;
+                        for cut in plan
+                            .cuts
+                            .iter()
+                            .filter(|cut| **cut > cut_start && **cut < cut_end)
+                        {
+                            let offset = cut - cut_start;
+                            if offset <= cursor {
+                                continue;
+                            }
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                &prefill_tokens[cursor..offset],
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                CacheOnlyPrefillLayout::Batched,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                            if state.cache.seq_len() == *cut {
+                                semantic_cut_snapshots.push((*cut, state.cache.clone()));
+                            }
+                            cursor = offset;
+                        }
+                        &prefill_tokens[cursor..]
                     } else {
                         prefill_tokens
                     };
@@ -7258,7 +7956,7 @@ impl MlxRunner {
                         && rung_len <= state.prompt_prefix_tokens.len()
                         && !rung_cache.has_rotated_sliding_layers()
                     {
-                        prefix_cache.merge_from(self.store_linear_boundary_snapshot(
+                        prefix_cache.merge_from(self.store_at_cut(
                             model_id,
                             block_size_tokens,
                             &state,
@@ -7268,11 +7966,43 @@ impl MlxRunner {
                             media_key,
                         ));
                     }
+                    // Publish the semantic cut snapshots captured in place
+                    // during this item's prefill. Each cache was cloned at
+                    // exactly its cut position, so no trim is involved.
+                    for (cut_len, cut_cache) in semantic_cut_snapshots {
+                        let Some(media_key) = media_key.as_deref() else {
+                            break;
+                        };
+                        if cut_cache.seq_len() != cut_len
+                            || cut_len > state.prompt_prefix_tokens.len()
+                            || cut_cache.has_rotated_sliding_layers()
+                        {
+                            continue;
+                        }
+                        let stored = self.store_at_cut(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            cut_len,
+                            &cut_cache,
+                            u64::from(cold_prefill_us),
+                            media_key,
+                        );
+                        if stored.stores > 0 {
+                            prefix_cache.semantic_cut_snapshots =
+                                prefix_cache.semantic_cut_snapshots.saturating_add(1);
+                        }
+                        prefix_cache.merge_from(stored);
+                    }
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
                     // Record pure prefill wall time before initialize_generation_state.
                     // MTP warmup and generation-state init are decode preparation, not
                     // prefill — including them in the prefill rate artificially lowers
                     // the reported throughput by 5–12 % on MTP workloads.
+                    record_prefill(
+                        effective_prefill_token_count,
+                        u64::from(elapsed_us(prefill_started)),
+                    );
                     state
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
@@ -7366,6 +8096,10 @@ impl MlxRunner {
                         },
                     )
                 };
+                if let Some(error) = state.dflash2_verify_fence_error.take() {
+                    clear_cache();
+                    return errored_item_run(item.request_id, error);
+                }
                 state
                     .decode_telemetry
                     .record_decode(elapsed_us(decode_started));
@@ -7659,13 +8393,63 @@ impl MlxRunner {
         }
     }
 
-    /// Canonical disk key (schema v3) for `key` plus the exact tokens, or
+    /// Resolved per-layer KV quantization identity for the durable key.
+    /// `None` per layer means full precision; otherwise the bits and group
+    /// size that actually select the quantization kernel.
+    fn kv_cache_quant_identity(&self) -> String {
+        if self.cfg.kv_cache_quant.is_empty() {
+            return "f16".to_string();
+        }
+        self.cfg
+            .kv_cache_quant
+            .iter()
+            .map(|spec| match spec {
+                None => "f16".to_string(),
+                Some(spec) => format!("{}b/g{}", spec.bits, spec.group_size),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Resolved KV storage dtype identity for the durable key.
+    fn kv_cache_dtype_identity(&self) -> String {
+        format!(
+            "{:?}",
+            crate::fastpath::activation_dtype_for_family(&self.cfg.model_family)
+        )
+        .to_lowercase()
+    }
+
+    /// Execution contract identity: the arithmetic route, prefill split
+    /// strategy, and the MLX/GPU identity that decides kernel selection.
+    /// Weight identity stays the artifact fingerprint, never a mutable
+    /// revision string.
+    fn prefix_execution_signature(&self) -> String {
+        const MLX_PIN: &str =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../mlx.version"));
+        let hardware = crate::hardware::current();
+        format!(
+            "route={};prefill_chunk={};cold_chunk={};semantic_cuts={};mlx={};soc={:?};layers={}",
+            self.prefix_cache_route_policy(),
+            self.prefill_chunk,
+            self.cold_prefill_chunk,
+            u8::from(crate::fastpath::prefix_semantic_cuts_enabled()),
+            MLX_PIN.trim(),
+            hardware.silicon_generation,
+            self.cfg.layer_count,
+        )
+    }
+
+    /// Canonical disk key (schema v4) for `key` plus the exact tokens, or
     /// `None` when the loaded model has no content-derived artifact
     /// identity — the durable L2 tier is then ineligible, because a
     /// path-only identity could restore stale KV after an in-place
     /// checkpoint replacement (spec §6).
     fn disk_prefix_key_bytes(&self, key: &MlxPrefixCacheKey, tokens: &[u32]) -> Option<Vec<u8>> {
         let fingerprint = self.artifact_fingerprint.as_deref()?;
+        let kv_quantization = self.kv_cache_quant_identity();
+        let kv_dtype = self.kv_cache_dtype_identity();
+        let execution_signature = self.prefix_execution_signature();
         Some(crate::disk_prefix_cache::canonical_key_bytes(
             &crate::disk_prefix_cache::DiskPrefixKeyFields {
                 model_id: &key.model_id,
@@ -7673,6 +8457,9 @@ impl MlxRunner {
                 route_policy: &key.route_policy,
                 layer_layout: &key.layer_layout,
                 kv_payload_version: MlxKVCache::serialize_version(),
+                kv_quantization: &kv_quantization,
+                kv_dtype: &kv_dtype,
+                execution_signature: &execution_signature,
                 block_size_tokens: key.block_size_tokens,
                 token_count: key.token_count,
                 tokens,
@@ -7827,6 +8614,12 @@ impl MlxRunner {
     /// holds a snapshot from process A). The disk check is `fs::stat`
     /// per candidate prefix — cheap; the eventual full read + SHA256
     /// validate happens once at restore time, not per probe step.
+    ///
+    /// A snapshot stored at a non-block-aligned position (a semantic cut, or
+    /// an unaligned scheduler claim) can only be found at the bound itself:
+    /// [`block_aligned_prefix_hashes`] indexes block boundaries only, so the
+    /// aligned walk cannot represent it. The bound is therefore consulted
+    /// first, exactly as the later `cache.get` on that same length would be.
     fn probe_runner_snapshot_for_prefix(
         &self,
         model_id: &str,
@@ -7864,27 +8657,250 @@ impl MlxRunner {
             Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
                 probe_key.token_count = saturating_u32(prefix.len());
                 probe_key.token_hash = block_hashes[prefix.len() / block_size_tokens as usize - 1];
-                if self
-                    .prefix_cache
-                    .lock()
-                    .contains_exact_tokens(&probe_key, prefix)
-                {
-                    return true;
-                }
-                if let Some(disk) = self.disk_prefix_cache.as_ref()
-                    && let Some(key_bytes) = self.disk_prefix_key_bytes(&probe_key, prefix)
-                    && disk.contains(&key_bytes)
-                {
-                    return true;
-                }
-                false
+                self.prefix_snapshot_present(&probe_key, prefix)
             });
+        // The bound itself: the `probe_key` built above already carries the
+        // whole-input length and hash, so this is one lookup, and it is the
+        // longest prefix the probe can ever return.
+        let exact_bound = (probe_exact_bound_needed(input.len(), block_size_tokens as usize)
+            && self.prefix_snapshot_present(&probe_key, input))
+        .then(|| input.to_vec());
+        let portable = exact_bound.or(portable);
         let portable_len = portable.as_ref().map(Vec::len);
         match (native_len, portable_len) {
             (Some(native), Some(portable_len)) if native <= portable_len => portable,
             (Some(native), _) => Some(input[..native].to_vec()),
             (None, _) => portable,
         }
+    }
+
+    /// Whether a prefix of `tokens` is stored in either tier (exact token
+    /// equality, no LRU touch). Shared by the aligned walk and the exact-bound
+    /// check so both consult the same two layers in the same order.
+    fn prefix_snapshot_present(&self, key: &MlxPrefixCacheKey, tokens: &[u32]) -> bool {
+        if self.prefix_cache.lock().contains_exact_tokens(key, tokens) {
+            return true;
+        }
+        self.disk_prefix_cache.as_ref().is_some_and(|disk| {
+            self.disk_prefix_key_bytes(key, tokens)
+                .is_some_and(|bytes| disk.contains(&bytes))
+        })
+    }
+
+    /// Bytes this runner can free before a restore: the shared FA pool's
+    /// available blocks, counted once per block. Borrowed/shared blocks are
+    /// deliberately excluded — they cannot be reclaimed under a live owner.
+    fn prefix_restore_capacity_bytes(&self) -> u64 {
+        let Some(pool) = self.shared_fa_block_pool.as_ref() else {
+            return u64::MAX;
+        };
+        let snapshot = pool.snapshot();
+        let per_block = if snapshot.allocated_blocks > 0 {
+            snapshot.slab_bytes / u64::from(snapshot.allocated_blocks)
+        } else {
+            0
+        };
+        let blocks = (0..snapshot.available_blocks)
+            .map(|id| (id, per_block, 1))
+            .collect::<Vec<_>>();
+        reclaimable_bytes(&blocks)
+    }
+
+    /// Price durable candidates (semantic cuts, the scheduler claim and the
+    /// longest block-aligned prefix) against the restore this request would
+    /// get without the value path, and return the chosen exact prefix.
+    ///
+    /// With `AX_MLX_PREFIX_RESTORE_VALUE` off this degrades to the historical
+    /// longest-candidate choice, but still consults semantic cuts when
+    /// `AX_MLX_PREFIX_SEMANTIC_CUTS` is on.
+    ///
+    /// The candidate set is deliberately small: the scheduler claim (only when
+    /// a snapshot exists for it), every semantic cut the bound reaches, and
+    /// the longest block-aligned prefix discovered by a `contains` scan (an L1
+    /// hash lookup or one `stat`, never a file open). Only those candidates
+    /// are metadata-probed, and only when the priced path needs their bytes.
+    ///
+    /// `probe_tokens` is the unpriced probe's length for an unclaimed request;
+    /// it is the baseline such a request restores without the value path.
+    #[allow(clippy::too_many_arguments)]
+    fn select_restore_prefix_by_value<'a>(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        input: &'a [u32],
+        media_key: &str,
+        cut_plan: &SnapshotCutPlan,
+        claim_tokens: usize,
+        probe_tokens: u32,
+    ) -> Option<&'a [u32]> {
+        let disk = self.disk_prefix_cache.as_ref();
+        let l1_enabled = self.prefix_cache.lock().enabled();
+        if disk.is_none() && !l1_enabled {
+            return None;
+        }
+        // A restore shorter than the claim leaves a positional gap that only
+        // a full replay can cover, so it can never beat taking the claim.
+        let claim = claim_tokens.min(input.len());
+        let price_value = crate::fastpath::prefix_restore_value_enabled();
+
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
+        let block_size = block_size_tokens as usize;
+        // One rolling pass over the bound yields every block-aligned prefix
+        // hash; non-aligned candidates (the claim and the semantic cuts) are
+        // hashed on demand. Without this the scan would look up a candidate
+        // under the *whole bound's* hash, so every length except the bound
+        // itself would report "no snapshot" and the priced path would never
+        // see a real candidate.
+        let aligned_hashes = if block_size > 0 {
+            block_aligned_prefix_hashes(input, block_size)
+        } else {
+            Vec::new()
+        };
+        let prefix_hash = |len: usize| -> u64 {
+            if block_size > 0
+                && len.is_multiple_of(block_size)
+                && let Some(hash) = aligned_hashes.get(len / block_size - 1)
+            {
+                return *hash;
+            }
+            hash_prefix_tokens(&input[..len])
+        };
+        let lengths = restore_candidate_lengths(
+            claim,
+            input.len(),
+            block_size,
+            &cut_plan.cuts,
+            |len, hash| {
+                let prefix = &input[..len];
+                key.token_count = saturating_u32(len);
+                key.token_hash = hash;
+                if l1_enabled && self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
+                    return true;
+                }
+                disk.is_some_and(|disk| {
+                    self.disk_prefix_key_bytes(&key, prefix)
+                        .is_some_and(|bytes| disk.contains(&bytes))
+                })
+            },
+            prefix_hash,
+        );
+        // Recompute the full key: the existence scan above mutated its length
+        // and hash fields.
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
+        let mut candidates = Vec::new();
+        for len in &lengths {
+            let len = *len;
+            if len == 0 || len > input.len() {
+                continue;
+            }
+            let prefix = &input[..len];
+            key.token_count = saturating_u32(len);
+            key.token_hash = prefix_hash(len);
+            // Prefer a resident RAM snapshot: rehydration from L1 is strictly
+            // cheaper than a durable read, and semantic cuts are stored in L1
+            // even when no disk layer is open.
+            let resident_bytes = if l1_enabled {
+                self.prefix_cache
+                    .lock()
+                    .resident_payload_bytes(&key, prefix)
+            } else {
+                None
+            };
+            if let Some(payload_bytes) = resident_bytes {
+                candidates.push(crate::disk_prefix_cache::RestoreCandidate {
+                    token_count: saturating_u32(len),
+                    payload_bytes,
+                    materialized_bytes: payload_bytes,
+                    estimated_prefill_us: estimated_prefill_us(saturating_u32(len)).unwrap_or(0),
+                    key: Vec::new(),
+                    resident_in_l1: true,
+                });
+                continue;
+            }
+            let Some(disk) = disk else {
+                continue;
+            };
+            let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix) else {
+                continue;
+            };
+            // A manifest read is only needed to price the restore. The
+            // longest-prefix fallback just needs to know the entry exists.
+            let (payload_bytes, materialized_bytes) = if price_value {
+                let Some(metadata) = disk.probe_metadata(&key_bytes) else {
+                    continue;
+                };
+                (metadata.payload_bytes, metadata.materialized_bytes)
+            } else if disk.contains(&key_bytes) {
+                (0, 0)
+            } else {
+                continue;
+            };
+            candidates.push(crate::disk_prefix_cache::RestoreCandidate {
+                token_count: saturating_u32(len),
+                payload_bytes,
+                materialized_bytes,
+                estimated_prefill_us: estimated_prefill_us(saturating_u32(len)).unwrap_or(0),
+                key: key_bytes,
+                resident_in_l1: false,
+            });
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        // The off-path baseline: the prefix this request would restore without
+        // the value path. A scheduler claim is only that baseline when the
+        // runner actually holds a snapshot for it — otherwise the unpriced path
+        // would miss and recompute the whole prompt, so the saving has to be
+        // measured from zero. With no claim the unpriced probe result is the
+        // baseline. Candidates below the claim stay ineligible either way
+        // (`min_tokens`), because a shorter restore leaves a positional gap.
+        let baseline_tokens = if claim > 0 {
+            if lengths.contains(&claim) {
+                saturating_u32(claim)
+            } else {
+                0
+            }
+        } else {
+            probe_tokens.min(saturating_u32(input.len()))
+        };
+        let throughput = self
+            .disk_prefix_writer
+            .as_ref()
+            .and_then(|writer| writer.cost_model().snapshot());
+        let restore_us = |candidate: &crate::disk_prefix_cache::RestoreCandidate| {
+            let read = throughput
+                .as_ref()
+                .map(|model| model.restore_us(candidate.payload_bytes));
+            restore_cost_us(candidate, read)
+        };
+        // The baseline restore pays its own materialization/read too, so only
+        // the extra cost of the longer candidate is decision relevant. A
+        // baseline with no snapshot is not a restore (`0`): the candidate then
+        // pays its full cost.
+        let baseline_restore_us = candidates
+            .iter()
+            .find(|candidate| candidate.token_count == baseline_tokens)
+            .and_then(restore_us)
+            .unwrap_or(0);
+        let chosen = if price_value {
+            choose_restore_candidate(
+                &candidates,
+                baseline_tokens,
+                saturating_u32(claim),
+                baseline_restore_us,
+                estimated_prefill_us,
+                restore_us,
+            )?
+        } else {
+            candidates
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, candidate)| candidate.token_count)?
+                .0
+        };
+        Some(&input[..candidates[chosen].token_count as usize])
     }
 
     /// Discard a probed prefix that is shorter than a *non-empty* scheduler
@@ -7915,8 +8931,8 @@ impl MlxRunner {
         probed_tokens: Vec<u32>,
         item: &ax_engine_core::ExecutionItem,
     ) -> Vec<u32> {
-        if !item.reused_prefix_token_slice.is_empty()
-            && probed_tokens.len() < item.reused_prefix_token_slice.len()
+        if restore_gap_tokens(item.reused_prefix_token_slice.len(), probed_tokens.len()) > 0
+            && !item.reused_prefix_token_slice.is_empty()
         {
             Vec::new()
         } else {
@@ -7981,6 +8997,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         needs_flash_next_cursor: bool,
         media_identity: Option<&str>,
+        prefill_hints: Option<&ax_engine_core::PrefillHints>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         // Media present but no digest: never touch the prefix-cache
@@ -7991,14 +9008,6 @@ impl MlxRunner {
         let Some(media_key) = media_identity else {
             telemetry.record_blocked_media_identity();
             let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
-            Self::pfx_dbg(
-                "restore",
-                &format!(
-                    "reused_tokens={} cache_seq={}",
-                    reused_tokens.len(),
-                    state.cache.seq_len()
-                ),
-            );
             if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
                 let capture_prefill_output = item.mode == ExecutionMode::Decode
                     && ctx.is_some_and(|ctx| ctx.generated_len == 0);
@@ -8030,44 +9039,107 @@ impl MlxRunner {
         //
         // Probe the runner-side cache to find the longest block-aligned
         // prefix that is *actually* in the snapshot map, capped at the
-        // scheduler's annotation when one exists (so the probe never
+        // scheduler's annotation when one exists (so the unpriced probe never
         // claims more tokens than core does). Cache `get` below still
         // bit-equality-checks the tokens, so a wrong probe cannot produce
         // a stale restore.
-        let probe_upper_bound = if !item.reused_prefix_token_slice.is_empty() {
-            &item.reused_prefix_token_slice[..]
-        } else {
+        let claim_tokens = &item.reused_prefix_token_slice[..];
+        let default_probe_bound: &[u32] = if claim_tokens.is_empty() {
             &item.input_token_slice[..]
+        } else {
+            claim_tokens
         };
-        let probed_tokens: Vec<u32> = if state.cache.seq_len() == 0
-            && !probe_upper_bound.is_empty()
-            && matches!(item.mode, ExecutionMode::Prefill)
-        {
-            self.probe_runner_snapshot_for_prefix(
+        // Both value features are opt-in. The default path must not build a
+        // cut plan (or the execution-signature string it carries) for a
+        // request that can never use one.
+        let value_features = crate::fastpath::prefix_restore_value_enabled()
+            || crate::fastpath::prefix_semantic_cuts_enabled();
+        // A value-priced restore may legitimately land on a semantic cut that
+        // is *beyond* the scheduler claim: the cut snapshot exists for a token
+        // position core never claimed, so a claim-capped bound could not see
+        // it. Price those positions too, as `claim + this item's own prompt
+        // tokens`, capped at `prompt_len - 1` so the final prompt token is
+        // always recomputed instead of restored. Off the value path the bound
+        // stays claim-capped and nothing is allocated.
+        let mut priced_bound: Vec<u32> = Vec::new();
+        let probe_upper_bound: &[u32] = if value_features && !claim_tokens.is_empty() {
+            let prompt_cap = ctx
+                .map(|ctx| usize::try_from(ctx.prompt_len).unwrap_or(usize::MAX))
+                .unwrap_or(0)
+                .saturating_sub(1);
+            let bound_len = claim_tokens
+                .len()
+                .saturating_add(item.input_token_slice.len())
+                .min(prompt_cap);
+            if bound_len > claim_tokens.len() {
+                priced_bound.reserve(bound_len);
+                priced_bound.extend_from_slice(claim_tokens);
+                priced_bound
+                    .extend_from_slice(&item.input_token_slice[..bound_len - claim_tokens.len()]);
+                &priced_bound
+            } else {
+                default_probe_bound
+            }
+        } else {
+            default_probe_bound
+        };
+        let probed_tokens: Vec<u32> =
+            if restore_probe_applies(state.cache.seq_len(), default_probe_bound) {
+                self.probe_runner_snapshot_for_prefix(
+                    model_id,
+                    block_size_tokens,
+                    default_probe_bound,
+                    media_key,
+                )
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        // The priced path derives its baseline from the claim when the runner
+        // holds a snapshot for it, and from the unpriced probe otherwise; the
+        // probe length is all it needs from here.
+        let value_probe_tokens = saturating_u32(probed_tokens.len());
+        let cut_plan = value_features.then(|| {
+            snapshot_cut_plan(
+                probe_upper_bound.len(),
+                block_size_tokens as usize,
+                prefill_hints
+                    .map(|hints| hints.semantic_cut_tokens.as_slice())
+                    .unwrap_or(&[]),
+                crate::fastpath::prefix_semantic_cuts_enabled(),
+                &self.prefix_execution_signature(),
+            )
+        });
+        let priced_tokens = cut_plan.as_ref().and_then(|cut_plan| {
+            self.select_restore_prefix_by_value(
                 model_id,
                 block_size_tokens,
                 probe_upper_bound,
                 media_key,
+                cut_plan,
+                item.reused_prefix_token_slice.len(),
+                value_probe_tokens,
             )
-            .unwrap_or_default()
-        } else {
-            Vec::new()
+        });
+        let priced_planned_cut = cut_plan
+            .as_ref()
+            .is_some_and(|plan| priced_tokens.is_some_and(|t| plan.cuts.contains(&t.len())));
+        if value_features {
+            telemetry.record_restore_value_decision(restore_value_decision(
+                priced_tokens.map(|tokens| tokens.len()),
+                priced_planned_cut,
+                crate::fastpath::prefix_restore_value_enabled(),
+            ));
+        }
+        let probed_tokens = match priced_tokens {
+            Some(tokens) => tokens.to_vec(),
+            None => Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item),
         };
-        let probed_tokens = Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item);
         let reused_tokens: &[u32] = if !probed_tokens.is_empty() {
             &probed_tokens
         } else {
             &item.reused_prefix_token_slice
         };
-        Self::pfx_dbg(
-            "restore-entry",
-            &format!(
-                "core_claim={} probed={} cache_seq={}",
-                item.reused_prefix_token_slice.len(),
-                probed_tokens.len(),
-                state.cache.seq_len()
-            ),
-        );
         if state.cache.seq_len() != 0 {
             return telemetry;
         }
@@ -8083,13 +9155,24 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let Some(restore_len) = grid_aligned_prefix_restore_len(
-            item,
-            reused_tokens.len(),
-            self.prefill_chunk.max(1),
-            self.cfg.linear_attention.is_some()
-                && crate::fastpath::linear_prefix_grid_rung_enabled(),
-        ) else {
+        // A restore point that the cut plan itself produced is an exact
+        // snapshot boundary captured at that token position (full
+        // conv/recurrent state, never trimmed), so it must not be floored
+        // onto the cold chunk grid. The check uses the length actually
+        // restored, not only the priced choice: the terminal anchor is
+        // block-aligned by construction, so the unpriced probe can land on a
+        // planned cut too.
+        let Some(restore_len) = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len())
+            .or_else(|| {
+                grid_aligned_prefix_restore_len(
+                    item,
+                    reused_tokens.len(),
+                    self.prefill_chunk.max(1),
+                    self.cfg.linear_attention.is_some()
+                        && crate::fastpath::linear_prefix_grid_rung_enabled(),
+                )
+            })
+        else {
             // The scheduler already removed this prefix from the input slice.
             // Recompute prefix+suffix together instead of leaving a context gap.
             telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
@@ -8136,16 +9219,6 @@ impl MlxRunner {
             telemetry.record_stats(cache.stats());
             hit
         };
-        Self::pfx_dbg(
-            "restore-get",
-            &format!(
-                "reused={} l1_hit={} native_hit={}",
-                reused_tokens.len(),
-                hit.is_some(),
-                native_hit.is_some()
-            ),
-        );
-
         // Historical context: MLA + Prefill used to refuse a snapshot restore
         // because the post-restore chunked_prefill drifted fp-wise from a
         // cold full prefill (p2_medium_explain idx=13 divergence on
@@ -8336,89 +9409,103 @@ impl MlxRunner {
             && let Some(disk) = self.disk_prefix_cache.as_ref()
             && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
         {
-            match disk.get_restored_timed(&key_bytes) {
-                Ok(Some((mut restored, read_timings))) => {
-                    // Streaming restore materializes tensors while reading;
-                    // stage timings already include payload IO + checksum.
-                    let deserialize_us = 0u64;
-                    telemetry.record_disk_hit();
-                    telemetry.record_disk_restore_stages(read_timings, deserialize_us);
-                    // Feed the observed restore throughput back into
-                    // the admission cost model.
-                    if let Some(writer) = self.disk_prefix_writer.as_ref() {
-                        writer.cost_model().record_restore(
-                            read_timings.bytes_read,
-                            read_timings
-                                .read_wall_us
-                                .saturating_add(read_timings.checksum_wall_us)
-                                .saturating_add(deserialize_us),
-                        );
-                    }
-                    if restored.cache.has_rotated_sliding_layers() {
-                        telemetry.record_blocked_unsupported_layout();
-                        telemetry.record_disk_admission(
-                            crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
-                        );
-                        telemetry.record_disk_fallback_recompute();
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            "disk prefix-cache payload contains slot-ordered rotating KV; \
-                             treating as miss and recomputing ordered prefix state",
-                        );
-                    } else if let Err(e) = self
-                        .verify_restored_prefix_snapshot(&mut restored.cache, reused_tokens.len())
-                    {
-                        telemetry.record_blocked_snapshot_incomplete();
-                        telemetry.record_disk_fallback_recompute();
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            error = %e,
-                            "disk prefix-cache payload is structurally incomplete; \
-                             treating as miss and recomputing",
-                        );
-                    } else {
-                        let prepared =
-                            self.prepare_portable_prefix_restore(restored.cache, &mut telemetry);
-                        match prepared {
-                            Ok(restored_cache) => {
-                                state.cache = restored_cache;
-                                state.prompt_prefix_tokens = reused_tokens.to_vec();
-                                // F3 M4 — the entry carries the greedy prefill
-                                // output token, so cross-restart L2 hits avoid
-                                // recomputing at decode step 0. Sampling policy
-                                // still controls whether the token is reusable.
-                                state.cached_prefill_output_token = restored
-                                    .prefill_output_token
-                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                                telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
-                                telemetry.reused_tokens = telemetry
-                                    .reused_tokens
-                                    .saturating_add(saturating_u32(reused_tokens.len()));
-                                return telemetry;
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "ax_engine_mlx::prefix_cache",
-                                    error = %e,
-                                    "disk prefix-cache payload could not enter the shared FA pool; recomputing",
-                                );
-                                telemetry.record_blocked_restore_error();
-                                telemetry.record_disk_fallback_recompute();
+            // Reserve capacity before reading the payload: materializing a
+            // snapshot that cannot fit must fall back to recompute instead of
+            // failing halfway through the read.
+            let reserve_needed = disk
+                .probe_metadata(&key_bytes)
+                .map(|metadata| metadata.materialized_bytes)
+                .unwrap_or(0);
+            if crate::fastpath::prefix_restore_value_enabled()
+                && reserve_needed > self.prefix_restore_capacity_bytes()
+            {
+                telemetry.record_disk_miss();
+                telemetry.record_disk_fallback_recompute();
+            } else {
+                let restore_started = Instant::now();
+                match disk.get_restored_timed(&key_bytes) {
+                    Ok(Some((mut restored, read_timings))) => {
+                        // Streaming restore materializes tensors while reading;
+                        // stage timings already include payload IO + checksum.
+                        let deserialize_us = 0u64;
+                        telemetry.record_disk_hit();
+                        telemetry.record_disk_restore_stages(read_timings, deserialize_us);
+                        if restored.cache.has_rotated_sliding_layers() {
+                            telemetry.record_blocked_unsupported_layout();
+                            telemetry.record_disk_admission(
+                                crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
+                            );
+                            telemetry.record_disk_fallback_recompute();
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                "disk prefix-cache payload contains slot-ordered rotating KV; \
+                                 treating as miss and recomputing ordered prefix state",
+                            );
+                        } else if let Err(e) = self.verify_restored_prefix_snapshot(
+                            &mut restored.cache,
+                            reused_tokens.len(),
+                        ) {
+                            telemetry.record_blocked_snapshot_incomplete();
+                            telemetry.record_disk_fallback_recompute();
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "disk prefix-cache payload is structurally incomplete; \
+                                 treating as miss and recomputing",
+                            );
+                        } else {
+                            let prepared = self
+                                .prepare_portable_prefix_restore(restored.cache, &mut telemetry);
+                            match prepared {
+                                Ok(restored_cache) => {
+                                    state.cache = restored_cache;
+                                    state.prompt_prefix_tokens = reused_tokens.to_vec();
+                                    // F3 M4 — the entry carries the greedy prefill
+                                    // output token, so cross-restart L2 hits avoid
+                                    // recomputing at decode step 0. Sampling policy
+                                    // still controls whether the token is reusable.
+                                    state.cached_prefill_output_token = restored
+                                        .prefill_output_token
+                                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                                    telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
+                                    telemetry.reused_tokens = telemetry
+                                        .reused_tokens
+                                        .saturating_add(saturating_u32(reused_tokens.len()));
+                                    // Feed the complete successful restore (read +
+                                    // verification + materialization + repage)
+                                    // back into the admission cost model.
+                                    if let Some(writer) = self.disk_prefix_writer.as_ref() {
+                                        writer.cost_model().record_restore(
+                                            read_timings.bytes_read,
+                                            u64::from(elapsed_us(restore_started)),
+                                        );
+                                    }
+                                    return telemetry;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "ax_engine_mlx::prefix_cache",
+                                        error = %e,
+                                        "disk prefix-cache payload could not enter the shared FA pool; recomputing",
+                                    );
+                                    telemetry.record_blocked_restore_error();
+                                    telemetry.record_disk_fallback_recompute();
+                                }
                             }
                         }
                     }
-                }
-                Ok(None) => {
-                    telemetry.record_disk_miss();
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "ax_engine_mlx::prefix_cache",
-                        error = %e,
-                        "disk prefix-cache get failed; treating as miss",
-                    );
-                    telemetry.record_disk_miss();
-                    telemetry.record_disk_fallback_recompute();
+                    Ok(None) => {
+                        telemetry.record_disk_miss();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            "disk prefix-cache get failed; treating as miss",
+                        );
+                        telemetry.record_disk_miss();
+                        telemetry.record_disk_fallback_recompute();
+                    }
                 }
             }
         }
@@ -8639,8 +9726,17 @@ impl MlxRunner {
         }
     }
 
+    /// Store a snapshot captured **in place** at `prefix_len`.
+    ///
+    /// Both callers hand over a cache that was cloned mid-prefill at exactly
+    /// `prefix_len`, so it holds complete linear (conv/recurrent), QSA and
+    /// PLE state for that position. That is what makes a non-block-aligned
+    /// semantic cut storable at all: `trim_to` cannot roll linear state back,
+    /// so a trimmed snapshot would be unsound, while this captured one is
+    /// exact. A block-aligned linear boundary capture is just the special
+    /// case where the cut lands on a block boundary.
     #[allow(clippy::too_many_arguments)]
-    fn store_linear_boundary_snapshot(
+    fn store_at_cut(
         &self,
         model_id: &str,
         block_size_tokens: u32,
@@ -8697,17 +9793,12 @@ impl MlxRunner {
                 .admits_lower_bound(lower_bound)
             {
                 telemetry.record_blocked_entry_too_large();
-                Self::pfx_dbg(
-                    "store-skip",
-                    &format!("entry_too_large lower_bound={lower_bound}"),
-                );
                 return telemetry;
             }
         }
         if snapshot_cache.has_unserializable_layers() {
             // DeepSeek V4 compressor state has no wire encoding: the
             // snapshot would claim tokens and restore as empty.
-            Self::pfx_dbg("store-skip", "unserializable_layers");
             return telemetry;
         }
         let serialize_started = Instant::now();
@@ -8769,12 +9860,6 @@ impl MlxRunner {
         telemetry
     }
 
-    fn pfx_dbg(stage: &str, detail: &str) {
-        if crate::fastpath::prefill_time_debug_env() {
-            eprintln!("AX_PREFIX_DEBUG {stage} {detail}");
-        }
-    }
-
     fn store_prompt_prefix_snapshots(
         &self,
         model_id: &str,
@@ -8791,7 +9876,6 @@ impl MlxRunner {
         } = options;
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
-            Self::pfx_dbg("store-skip", "empty_prompt_or_block");
             return telemetry;
         }
         // Media present without a digest: storing under a text-only key
@@ -8799,17 +9883,14 @@ impl MlxRunner {
         // media adopt this KV. Fail closed.
         let Some(media_key) = media_key else {
             telemetry.record_blocked_media_identity();
-            Self::pfx_dbg("store-skip", "media_identity");
             return telemetry;
         };
         if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
-            Self::pfx_dbg("store-skip", "policy_disabled");
             return telemetry;
         }
         let native_store_enabled = self.native_fa_prefix_sharing_enabled();
         if !portable_prefix_store_allowed(prefill_completes_prompt, native_store_enabled) {
-            Self::pfx_dbg("store-skip", "portable_store_not_allowed_partial");
             // A scheduler-split prefill can yield hundreds of execution
             // items. Portable snapshots serialize the complete live KV
             // state, so doing that after every partial item turns an O(N)
@@ -8821,7 +9902,6 @@ impl MlxRunner {
             return telemetry;
         }
         if state.cache.has_rotated_sliding_layers() {
-            Self::pfx_dbg("store-skip", "rotated_sliding_layers");
             // Slot order is a decode-local physical representation, not a
             // prompt-prefix representation. A no-op trim would otherwise
             // serialize it and a later warm extension could issue a
@@ -8879,7 +9959,7 @@ impl MlxRunner {
                 && boundary_cache.seq_len() == *boundary_len
                 && *boundary_len <= state.prompt_prefix_tokens.len()
             {
-                telemetry.merge_from(self.store_linear_boundary_snapshot(
+                telemetry.merge_from(self.store_at_cut(
                     model_id,
                     block_size_tokens,
                     state,
@@ -8891,7 +9971,6 @@ impl MlxRunner {
                 return telemetry;
             }
             telemetry.record_blocked_trim_failure();
-            Self::pfx_dbg("store-skip", "trim_failure_unaligned");
             return telemetry;
         }
         let snapshot_start_tokens = prefix_snapshot_start_tokens(
@@ -8901,15 +9980,6 @@ impl MlxRunner {
             native_store_enabled,
         );
 
-        Self::pfx_dbg(
-            "store-attempt",
-            &format!(
-                "prompt={} full_block={} start={}",
-                state.prompt_prefix_tokens.len(),
-                full_block_tokens,
-                snapshot_start_tokens
-            ),
-        );
         // Build the invariant key fields once and hash the prompt in a single
         // rolling pass: deriving the full key per boundary previously re-ran
         // the format! strings and an O(prefix_len) hash for every candidate.
@@ -9016,10 +10086,6 @@ impl MlxRunner {
                         .is_some_and(|key_bytes| !disk.contains(&key_bytes))
                 });
             if prefix_len < retention_floor && !native_store_needed && !disk_store_needed {
-                Self::pfx_dbg(
-                    "store-loop-skip",
-                    &format!("below_retention_floor prefix={prefix_len} floor={retention_floor}"),
-                );
                 continue;
             }
             // A live standard-FA prefill boundary needs only a runner-local
@@ -9088,17 +10154,9 @@ impl MlxRunner {
                 drop(native_outcome.evicted);
             }
             if !portable_store_phase && native_snapshot_ready {
-                Self::pfx_dbg(
-                    "store-loop-skip",
-                    &format!("native_ready prefix={prefix_len}"),
-                );
                 continue;
             }
             if l1_superseding && !disk_store_needed {
-                Self::pfx_dbg(
-                    "store-loop-skip",
-                    &format!("l1_superseding prefix={prefix_len}"),
-                );
                 continue;
             }
             if !l1_superseding {
@@ -9122,10 +10180,6 @@ impl MlxRunner {
                     .admits_lower_bound(lower_bound)
                 {
                     telemetry.record_blocked_entry_too_large();
-                    Self::pfx_dbg(
-                        "store-loop-skip",
-                        &format!("entry_too_large prefix={prefix_len} lower_bound={lower_bound}"),
-                    );
                     continue;
                 }
             }
@@ -9138,7 +10192,6 @@ impl MlxRunner {
             // future hits because shorter prefixes always derive from
             // it.
             if snapshot_cache.has_unserializable_layers() {
-                Self::pfx_dbg("store-skip", "unserializable_layers");
                 continue;
             }
             let serialize_started = Instant::now();
@@ -9166,7 +10219,6 @@ impl MlxRunner {
             // key), and the disk path clones once more only when a disk
             // write will actually fire.
             let key_for_disk = disk_payload.as_ref().map(|_| store_key.clone());
-            let payload_len = payload.len();
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
@@ -9177,12 +10229,6 @@ impl MlxRunner {
                         prefix_len,
                         snapshot_prefill_output_token,
                         mtp_cursor_payload,
-                    ),
-                );
-                Self::pfx_dbg(
-                    "store-insert",
-                    &format!(
-                        "prefix={prefix_len} payload_bytes={payload_len} serialize_us={serialize_us}"
                     ),
                 );
                 telemetry.record_stats(cache.stats());
@@ -9453,6 +10499,12 @@ impl MlxRunner {
         {
             return tokens;
         }
+        // The cache is untrustworthy after a failed verify fence. run_item
+        // consumes this flag and fails the request; any other caller of
+        // decode_one must check it too, or it sees silent empty output.
+        if state.dflash2_verify_fence_error.is_some() {
+            return Vec::new();
+        }
 
         let pure_direct_pipeline = !think_hard_close_due
             && v4_uncertified_uses_pure_direct_pipeline(
@@ -9625,6 +10677,97 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied());
         let strict_greedy = ctx.is_some() && is_greedy && !sampling.uses_logits_processors();
         let mut cursor_aligned = self.flash_next_cursor_aligned(state, primary);
+        // WP03 measured cost policy. The route is read before any gate so a
+        // parked step can serve direct while keeping the cursor buffering, and
+        // it only takes effect where the regular gate would have proposed (see
+        // `flash_next_mtp_cost_park_block`). Both routes walk the same target
+        // distribution, so the committed tokens do not depend on the route.
+        let cost_key = FlashNextCostBucketKey::new(
+            1,
+            state.cache.seq_len(),
+            self.native_expert_streaming_active(),
+        );
+        let (cost_route, cost_event) = state.mtp_cost_depth.flash_next_cost_mut().route(cost_key);
+        if let Some(event) = cost_event {
+            self.note_flash_next_cost_event(state, cost_key, event);
+        }
+        let cost_block = flash_next_mtp_cost_park_block(
+            cost_route == FlashNextCostRoute::Direct,
+            strict_greedy,
+            state.think_soft_close_armed,
+            think_budget_close_due,
+            state.pending_direct.is_some(),
+            remaining_budget as usize,
+        );
+        if state.mtp_cost_depth.flash_next_cost().enabled()
+            && matches!(cost_block, Some(FlashNextMtpDecodeBlock::CostParked))
+        {
+            if state.flash_next_mtp.cursor.is_none() {
+                // No draft history left to park: stop routing on it and let the
+                // regular gate account the cursor gap.
+                let event = state.mtp_cost_depth.flash_next_cost_mut().disarm();
+                if let Some(event) = event {
+                    self.note_flash_next_cost_event(state, cost_key, event);
+                }
+            } else if state.flash_next_mtp.paused.is_some() || cursor_aligned {
+                // Parked (or calibrating) direct step. The cursor keeps its
+                // line exactly like a pause, so the probe window can absorb the
+                // buffered rows at a commit boundary.
+                if state.flash_next_mtp.paused.is_none() {
+                    state.flash_next_mtp.paused = Some(FlashNextCursorPauseBuffer::default());
+                }
+                let started = Instant::now();
+                let step = self.run_flash_next_mtp_cost_parked_step(
+                    state,
+                    input_tokens,
+                    sampling,
+                    options,
+                );
+                let wall_us = elapsed_us(started).max(1);
+                let Some(tokens) = step else {
+                    state.flash_next_mtp.paused = None;
+                    let event = state.mtp_cost_depth.flash_next_cost_mut().disarm();
+                    if let Some(event) = event {
+                        self.note_flash_next_cost_event(state, cost_key, event);
+                    }
+                    return None;
+                };
+                let event = state
+                    .mtp_cost_depth
+                    .flash_next_cost_mut()
+                    .record_direct_step(cost_key, wall_us);
+                if let Some(event) = event {
+                    self.note_flash_next_cost_event(state, cost_key, event);
+                }
+                return Some(tokens);
+            } else {
+                // The park wants a direct step, but the cursor is misaligned
+                // with the trunk and no catch-up buffer exists. The rows
+                // between the cursor boundary and the trunk are gone, so the
+                // cursor can never catch up: fail closed, but never silently.
+                // This is a routing decision with its own counter: the `None`
+                // return hands the step to the caller's generic direct route.
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    cost_state = state.mtp_cost_depth.flash_next_cost().state().label(),
+                    cache_seq_len = state.cache.seq_len(),
+                    "Flash Next cost-parked step found a misaligned cursor and no pause buffer; keeping direct decode and dropping the cursor"
+                );
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.cost_parked_misaligned =
+                    telemetry.cost_parked_misaligned.saturating_add(1);
+                self.record_flash_next_mtp_direct_fallback(
+                    state,
+                    FlashNextMtpFallbackReason::CursorUnavailable,
+                );
+                state.flash_next_mtp.drop_cursor();
+                let event = state.mtp_cost_depth.flash_next_cost_mut().disarm();
+                if let Some(event) = event {
+                    self.note_flash_next_cost_event(state, cost_key, event);
+                }
+                return None;
+            }
+        }
         let mut block = flash_next_mtp_decode_block(
             strict_greedy,
             state.think_soft_close_armed,
@@ -9640,6 +10783,12 @@ impl MlxRunner {
             // head up now so this same step can propose again; when the flush
             // fails the cursor is already gone (fail closed) and the pause is
             // over without a catch-up.
+            //
+            // A cost park never reaches this arm: while the cost policy parked
+            // the request, a paused cursor *is* the parked state — it buffers
+            // rows for the next probe window — and the `CostParked` branch above
+            // already returned. Flushing here would propose an MTP round
+            // mid-park and contaminate the probe window's evidence.
             if !self.flush_flash_next_mtp_pause(state) {
                 return self.run_flash_next_mtp_paused_step(
                     state,
@@ -9776,6 +10925,22 @@ impl MlxRunner {
             ..MtpStepTimings::default()
         });
         state.decode_telemetry.record_production_decode_eval();
+        // WP03 cost accounting: one complete round prices the draft plus the
+        // verify (which already folds correction, bonus, rejection and the eval
+        // sync) against the tokens it committed.
+        let round_wall_us = step
+            .draft_wall_us
+            .saturating_add(step.verify_wall_us)
+            .max(1);
+        let round_tokens = saturating_u32(step.emitted.len());
+        let cost_event = state.mtp_cost_depth.flash_next_cost_mut().record_mtp_round(
+            cost_key,
+            round_wall_us,
+            round_tokens,
+        );
+        if let Some(event) = cost_event {
+            self.note_flash_next_cost_event(state, cost_key, event);
+        }
         let flash_next = &mut state.flash_next_mtp;
         flash_next.telemetry.verified_steps = flash_next.telemetry.verified_steps.saturating_add(1);
         flash_next.telemetry.accepted_steps = flash_next
@@ -9836,6 +11001,57 @@ impl MlxRunner {
         telemetry.direct_fallback_steps = telemetry.direct_fallback_steps.saturating_add(1);
         let slot = &mut telemetry.direct_fallback_by_reason[reason.index()];
         *slot = slot.saturating_add(1);
+    }
+
+    /// Cost-policy accounting plus one transition log line.
+    ///
+    /// Telemetry only: no prompt text and no token content. `ctx_band` is the
+    /// coarse context band, never the exact position.
+    fn note_flash_next_cost_event(
+        &self,
+        state: &mut RequestState,
+        key: FlashNextCostBucketKey,
+        event: FlashNextCostEvent,
+    ) {
+        let snapshot = state.mtp_cost_depth.flash_next_cost().snapshot(key);
+        let state_label = state.mtp_cost_depth.flash_next_cost().state().label();
+        let policy = state.mtp_cost_depth.flash_next_cost().policy();
+        let telemetry = &mut state.flash_next_mtp.telemetry;
+        match event {
+            FlashNextCostEvent::Parked => {
+                telemetry.cost_parks = telemetry.cost_parks.saturating_add(1);
+            }
+            FlashNextCostEvent::ProbeResumed => {
+                telemetry.cost_resumes = telemetry.cost_resumes.saturating_add(1);
+            }
+            FlashNextCostEvent::WouldPark => {
+                telemetry.cost_would_parks = telemetry.cost_would_parks.saturating_add(1);
+            }
+            FlashNextCostEvent::Activated
+            | FlashNextCostEvent::ProbeOpened
+            | FlashNextCostEvent::ProbeFailed
+            | FlashNextCostEvent::Recalibrating
+            | FlashNextCostEvent::Disarmed => {}
+        }
+        tracing::info!(
+            target: "ax_engine_mlx::runner",
+            ?event,
+            cost_state = state_label,
+            cost_policy = ?policy,
+            cost_state_code = snapshot.state,
+            ctx_band = key.ctx_label(),
+            rows = key.rows,
+            streamed = key.streamed,
+            samples = snapshot.samples,
+            direct_ms = snapshot.direct_ms,
+            round_ms = snapshot.round_ms,
+            speedup_x1000 = snapshot.estimated_speedup_x1000,
+            parks = snapshot.parks,
+            resumes = snapshot.resumes,
+            would_parks = snapshot.would_parks,
+            would_park_known = snapshot.would_park_known,
+            "Flash Next MTP cost transition"
+        );
     }
 
     /// Whether the live cursor ends exactly at the trunk boundary, so this step
@@ -9945,12 +11161,52 @@ impl MlxRunner {
         self.record_flash_next_mtp_direct_fallback(state, reason);
         let telemetry = &mut state.flash_next_mtp.telemetry;
         telemetry.cursor_paused_steps = telemetry.cursor_paused_steps.saturating_add(1);
+        self.run_flash_next_mtp_paused_body(state, input_tokens, sampling, Some(reason), options)
+    }
 
+    /// One decode step served direct because the measured cost policy parked
+    /// the head (or because the current evidence band is still calibrating its
+    /// direct baseline), not because a gate blocked the cursor.
+    ///
+    /// The cursor keeps its line exactly like a pause: every consumed token's
+    /// stream row is buffered so the probe window can absorb at a commit
+    /// boundary. This is a routing decision, not a fallback, so it does not
+    /// touch the per-reason fallback counters.
+    fn run_flash_next_mtp_cost_parked_step(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
+        if state.flash_next_mtp.cursor.is_none() {
+            state.flash_next_mtp.paused = None;
+            return None;
+        }
+        // Direct decode from here on: the generic n-gram route would make the
+        // measured step incomparable with the MTP round and could interleave a
+        // second drafter into the parked request.
+        state.flash_next_mtp.blocked_direct = true;
+        let telemetry = &mut state.flash_next_mtp.telemetry;
+        telemetry.cost_parked_steps = telemetry.cost_parked_steps.saturating_add(1);
+        self.run_flash_next_mtp_paused_body(state, input_tokens, sampling, None, options)
+    }
+
+    /// Shared paused/parked direct body. `reason` is `None` for a cost-parked
+    /// step, which has no fallback bucket to charge.
+    fn run_flash_next_mtp_paused_body(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        reason: Option<FlashNextMtpFallbackReason>,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
         let last_token = state
             .next_model_last_token
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
-        if reason == FlashNextMtpFallbackReason::PendingDirect {
+        if reason == Some(FlashNextMtpFallbackReason::PendingDirect) {
             // The lazy token already occupies the next position and its row was
             // captured by the step that consumed it: materialize it and stop
             // extending the double buffer so the next step can propose again.
@@ -9962,7 +11218,7 @@ impl MlxRunner {
                 return Some(vec![tok]);
             }
         }
-        let (tokens, consumed) = if reason == FlashNextMtpFallbackReason::ThinkControl {
+        let (tokens, consumed) = if reason == Some(FlashNextMtpFallbackReason::ThinkControl) {
             // Think control needs materialized logits for its rank probe and
             // commits nothing beyond the feed token, so it stays on single
             // decode even while paused.
@@ -9986,10 +11242,8 @@ impl MlxRunner {
                     target: "ax_engine_mlx::runner",
                     "Flash Next paused step has no trunk stream row; dropping the cursor"
                 );
-                self.record_flash_next_mtp_direct_fallback(
-                    state,
-                    FlashNextMtpFallbackReason::ComponentsUnavailable,
-                );
+                let reason = reason.unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable);
+                self.record_flash_next_mtp_direct_fallback(state, reason);
                 state.flash_next_mtp.drop_cursor();
                 return None;
             };
@@ -13832,6 +15086,25 @@ impl MlxRunner {
             mtp_cost_depth_width(qwen_linear_max_verify_drafts(), self.mtp_max_depth()),
         );
         state.mtp_cost_steps_since_decision = 0;
+        // Flash Next measured cost policy (WP03). `reset` above clears the
+        // machine, so arm it afterwards. Only a greedy Flash Next session under
+        // the `auto` policy (or its `required` reporting twin) measures at all;
+        // `AX_FLASH_NEXT_MTP_COST=0` leaves it inert and the pre-WP03 route
+        // returns exactly.
+        //
+        // The session policy (`--mlx-mtp-policy`) is folded in here, keeping the
+        // stricter of the two: a `required` session must never be read as
+        // `auto` just because the environment did not set the force-MTP harness
+        // contract, and an explicit `disabled` must survive an `auto` session.
+        let mut flash_next_cost_config = flash_next_mtp_cost_config_from_env();
+        flash_next_cost_config.policy = strictest_flash_next_cost_policy(
+            self.mtp_session_policy.flash_next_cost_policy(),
+            flash_next_cost_config.policy,
+        );
+        state.mtp_cost_depth.flash_next_cost_mut().reset(
+            is_greedy && self.flash_next_mtp_session(),
+            flash_next_cost_config,
+        );
         let profitability_config = mtp_profitability_config_from_env();
         let profitability_max_tokens_per_round =
             if crate::fastpath::mtp_profitability_throughput_enabled()
@@ -16579,6 +17852,77 @@ fn block_aligned_prefix_hashes(tokens: &[u32], block_size: usize) -> Vec<u64> {
     hashes
 }
 
+/// Candidate token lengths for the value-priced restore.
+///
+/// Exactly three groups: the scheduler claim (only when a snapshot exists for
+/// that exact length), every semantic cut the bound reaches, and the single
+/// longest block-aligned prefix that exists within the bound. `has_snapshot`
+/// is a cheap presence check (one L1 hash lookup or one `stat`, never a file
+/// open) and `prefix_hash` supplies the cache key hash for a given length; a
+/// candidate looked up under the wrong hash silently looks absent, which is
+/// what made the priced path inert.
+///
+/// Only the *longest* aligned prefix is kept: it saves the most prefill, and a
+/// longer prefix costs strictly less per saved token than a shorter one, so no
+/// shorter aligned entry can out-price it.
+fn restore_candidate_lengths(
+    claim: usize,
+    bound_len: usize,
+    block_size: usize,
+    cuts: &[usize],
+    mut has_snapshot: impl FnMut(usize, u64) -> bool,
+    prefix_hash: impl Fn(usize) -> u64,
+) -> Vec<usize> {
+    let mut lengths = Vec::new();
+    if claim > 0 && claim <= bound_len && has_snapshot(claim, prefix_hash(claim)) {
+        lengths.push(claim);
+    }
+    for cut in cuts {
+        if *cut > claim && *cut < bound_len {
+            lengths.push(*cut);
+        }
+    }
+    if block_size > 0 && bound_len >= block_size {
+        let mut aligned = (bound_len / block_size) * block_size;
+        let mut scanned = 0usize;
+        while aligned > claim && scanned < MAX_ALIGNED_RESTORE_SCAN {
+            if has_snapshot(aligned, prefix_hash(aligned)) {
+                lengths.push(aligned);
+                break;
+            }
+            scanned += 1;
+            let Some(next) = aligned.checked_sub(block_size) else {
+                break;
+            };
+            aligned = next;
+        }
+    }
+    lengths.sort_unstable();
+    lengths.dedup();
+    lengths
+}
+
+/// The exact-bound probe is only needed when the bound is not a block
+/// boundary: an aligned bound is already the first candidate of the aligned
+/// walk, so probing it twice would be pure overhead.
+fn probe_exact_bound_needed(bound_len: usize, block_size: usize) -> bool {
+    bound_len > 0 && (block_size == 0 || !bound_len.is_multiple_of(block_size))
+}
+
+/// Whether the runner-side snapshot probe applies to this item.
+///
+/// The probe answers a question about cache contents, not about execution
+/// mode: "does the snapshot map hold a prefix of this bound?" A warm request
+/// whose whole prompt is already resident is scheduled as a single Decode item
+/// with `seq_len() == 0`. Gating the probe on `ExecutionMode::Prefill` left
+/// `probed` empty on exactly those requests — they then restored the same
+/// prefix through the `cache.get` fallback, so `probed=0` alongside a cache hit
+/// looked like a probe bug and, more importantly, hid the value path's own
+/// baseline.
+fn restore_probe_applies(cache_seq_len: usize, bound: &[u32]) -> bool {
+    cache_seq_len == 0 && !bound.is_empty()
+}
+
 /// Fold media digests into the prefix-cache layer layout string (WS-M3).
 ///
 /// Empty `media_key` keeps the base layout unchanged (text-only path).
@@ -16596,9 +17940,23 @@ fn extend_prompt_prefix_tokens(
     token_ids: &[u32],
 ) {
     let expected_start = item.position_range.start as usize;
-    if state.prompt_prefix_tokens.len() > expected_start {
-        state.prompt_prefix_tokens.truncate(expected_start);
-    } else if state.prompt_prefix_tokens.len() < expected_start {
+    let restored = state.prompt_prefix_tokens.len();
+    if restored > expected_start {
+        // A restore longer than the scheduler claim already covers the first
+        // `restored - expected_start` tokens of this item (the caller sliced
+        // them off `token_ids`). Keep the restored prefix instead of
+        // truncating it back to the claim, and append only the item tokens
+        // the cache does not already hold, so `prompt_prefix_tokens` keeps
+        // matching the cache's real prefix length.
+        let covered = restored - expected_start;
+        if covered < token_ids.len() {
+            state
+                .prompt_prefix_tokens
+                .extend_from_slice(&token_ids[covered..]);
+        }
+        return;
+    }
+    if restored < expected_start {
         state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
     }
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
@@ -16637,6 +17995,23 @@ fn grid_aligned_prefix_restore_len(
     } else {
         Some(restore_len)
     }
+}
+
+/// The restore length a planned cut pins, bypassing the cold-grid floor.
+///
+/// A cut snapshot is captured in place at exactly its token position, so its
+/// conv/recurrent state is complete and the prefill that follows is the cold
+/// partition rather than a grid-aligned replay. Flooring it onto the
+/// prefill-chunk grid would both discard a usable snapshot and break that
+/// partition agreement. `None` when the restored length is not a planned cut,
+/// or when no cut plan was built (both value switches off).
+fn planned_cut_restore_len(
+    cut_plan: Option<&SnapshotCutPlan>,
+    restored_len: usize,
+) -> Option<usize> {
+    cut_plan
+        .filter(|plan| plan.cuts.contains(&restored_len))
+        .map(|_| restored_len)
 }
 
 /// Tokens a Prefill item must run after a restore that stopped short of the
@@ -17051,3 +18426,59 @@ mod flash_next_tests;
 
 #[cfg(test)]
 mod flash_next_pause_tests;
+
+/// Weight-free controls for the WP03 cost-park gate.
+#[cfg(test)]
+mod flash_next_cost_gate_tests {
+    use super::*;
+
+    #[test]
+    fn cost_park_gate_requires_every_cursor_independent_gate_clear() {
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, false, false, 8),
+            Some(FlashNextMtpDecodeBlock::CostParked)
+        );
+        // An inert cost machine must leave the route untouched.
+        assert_eq!(
+            flash_next_mtp_cost_park_block(false, true, false, false, false, 8),
+            None
+        );
+        // A park may only replace a step that would have proposed; every other
+        // gate keeps its own reason and its own accounting.
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, false, false, false, false, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, true, false, false, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, true, false, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, false, true, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, false, false, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cost_park_is_not_a_cursor_pause() {
+        // The regular gate must never report the parked state: the parked step
+        // is a routing decision, and the `CursorPaused` arm would flush it away
+        // inside the same step.
+        assert_eq!(
+            flash_next_mtp_decode_block(true, false, false, false, 8, false, true),
+            None
+        );
+        assert_eq!(
+            FlashNextMtpDecodeBlock::CostParked.fallback_reason(),
+            FlashNextMtpFallbackReason::CursorUnavailable
+        );
+    }
+}

@@ -77,6 +77,7 @@ impl CancellationDuringPrefill {
 
     fn build_request(&self, seed: u64) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             input_tokens: synthetic_prompt_tokens(
                 self.prefill_tokens,

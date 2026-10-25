@@ -2618,7 +2618,7 @@ FusedCausalPrefillOut fused_causal_prefill_attention_impl(
   k = fused_rope(k, rope_dims, rope_base, rope_freqs, 0, stream);
 
   auto attn = mx::fast::scaled_dot_product_attention(
-      q, k, v, scale, "causal", std::nullopt, std::nullopt, false, stream);
+      q, k, v, scale, AX_SDPA_WINDOW_ARG "causal", std::nullopt, std::nullopt, false, stream);
 
   attn = mx::reshape(
       mx::transpose(attn, {0, 2, 1, 3}, stream), {batch, seq, q_cols}, stream);
@@ -2777,7 +2777,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     k = fused_rope(k, rope_dims, rope_base, freqs_opt, 0, s);
 
     auto attn = mx::fast::scaled_dot_product_attention(
-        q, k, v, scale, "causal", std::nullopt, std::nullopt, false, s);
+        q, k, v, scale, AX_SDPA_WINDOW_ARG "causal", std::nullopt, std::nullopt, false, s);
     attn = mx::reshape(
         mx::transpose(attn, {0, 2, 1, 3}, s),
         {batch, seq, num_heads * head_dim}, s);
@@ -2911,10 +2911,10 @@ extern "C" int ax_mlx_fused_sdpa_oproj(
     auto mask_opt = opt_arr(mask);
     auto attn = mask_opt.has_value()
         ? mx::fast::scaled_dot_product_attention(
-              qr, aref(k), aref(v), scale, "", std::make_optional(*mask_opt),
+              qr, aref(k), aref(v), scale, AX_SDPA_WINDOW_ARG "", std::make_optional(*mask_opt),
               std::nullopt, false, s)
         : mx::fast::scaled_dot_product_attention(
-              qr, aref(k), aref(v), scale, "causal", std::nullopt,
+              qr, aref(k), aref(v), scale, AX_SDPA_WINDOW_ARG "causal", std::nullopt,
               std::nullopt, false, s);
     attn = mx::reshape(
         mx::transpose(attn, {0, 2, 1, 3}, s),

@@ -591,6 +591,14 @@ struct ServiceState {
     last_step_scheduled_tokens: AtomicU32,
     /// Current sibling-active prefill quantum (tokens/turn).
     adaptive_prefill_tokens: AtomicU32,
+    /// Idle GPU keep-warm copies that completed (`Ok(true)`). Stays zero unless
+    /// `AX_MLX_IDLE_TICK_MS` is a positive interval and the touch returns true.
+    idle_residency_ticks: AtomicU64,
+    /// Idle GPU keep-warm touches that panicked. `Ok(false)` is the normal
+    /// result for deterministic and delegated runners and is not counted here.
+    idle_residency_failures: AtomicU64,
+    /// `Ok(false)` touches. Not a failure and not exported as one.
+    idle_residency_noop: AtomicU64,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -737,6 +745,7 @@ impl NativeGenerationService {
             factory,
             env.worker_recycle_after_ticks,
             WorkerTuning::from_env_config(env),
+            IdleTickSettings::from_env_config(env),
         )
     }
 
@@ -744,6 +753,7 @@ impl NativeGenerationService {
         factory: F,
         recycle_after: u64,
         tuning: WorkerTuning,
+        idle_ticks: IdleTickSettings,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError>
     where
         F: FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static,
@@ -769,6 +779,9 @@ impl NativeGenerationService {
             adaptive_prefill_tokens: AtomicU32::new(
                 ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
             ),
+            idle_residency_ticks: AtomicU64::new(0),
+            idle_residency_failures: AtomicU64::new(0),
+            idle_residency_noop: AtomicU64::new(0),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -780,6 +793,7 @@ impl NativeGenerationService {
                     startup_sender,
                     &worker_state,
                     recycle_after,
+                    idle_ticks,
                 )
             })
             .map_err(GenerationServiceStartError::ThreadStart)?;
@@ -1017,6 +1031,19 @@ impl NativeGenerationService {
         }
     }
 
+    pub(crate) fn idle_residency_tick_count(&self) -> u64 {
+        self.state.idle_residency_ticks.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn idle_residency_failure_count(&self) -> u64 {
+        self.state.idle_residency_failures.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn idle_residency_noop_count(&self) -> u64 {
+        self.state.idle_residency_noop.load(Ordering::Acquire)
+    }
+
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
         self.sender.lock().take();
         let Some(worker) = self.worker.lock().take() else {
@@ -1137,12 +1164,267 @@ impl From<EngineSessionError> for GenerationServiceStartError {
     }
 }
 
+/// Resolved `AX_MLX_IDLE_TICK_MS` / `AX_MLX_IDLE_TICK_MAX_S`.
+///
+/// A zero `tick_interval` is the kill switch (unset, empty, non-numeric, or
+/// `0`). Delegated builds stay off: there is no MLX device to keep warm.
+#[derive(Clone, Copy, Debug)]
+struct IdleTickSettings {
+    tick_interval: Duration,
+    max_window: Duration,
+}
+
+impl IdleTickSettings {
+    fn disabled() -> Self {
+        Self {
+            tick_interval: Duration::ZERO,
+            max_window: Duration::from_secs(900),
+        }
+    }
+
+    fn from_env_config(config: &crate::args::ServerEnvConfig) -> Self {
+        // Delegated builds have no MLX device to keep warm, even when the
+        // snapshot recorded a positive interval.
+        #[cfg(feature = "mlx-native-server")]
+        {
+            if config.idle_tick_interval.is_zero() {
+                return Self::disabled();
+            }
+            Self {
+                tick_interval: config.idle_tick_interval,
+                max_window: config.idle_tick_max_window,
+            }
+        }
+        #[cfg(not(feature = "mlx-native-server"))]
+        {
+            let _ = config;
+            Self::disabled()
+        }
+    }
+}
+
+#[cfg_attr(not(feature = "mlx-native-server"), allow(dead_code))]
+enum WorkerIdleWake {
+    Block,
+    Timeout(Duration),
+    Tick { started: bool },
+    Stop { log: bool, reason: &'static str },
+}
+
+enum IdleWait {
+    // `ServiceCommand` is much larger than the other variants. Box it so the
+    // idle-wait enum stays small on the worker loop.
+    Command(Box<ServiceCommand>),
+    Disconnected,
+    /// A tick or a stop transition was handled. The caller loops.
+    Idle,
+}
+
+struct WorkerIdle {
+    settings: IdleTickSettings,
+    #[cfg(feature = "mlx-native-server")]
+    origin: Instant,
+    #[cfg(feature = "mlx-native-server")]
+    policy: ax_engine_sdk::IdleResidencyPolicy,
+}
+
+impl WorkerIdle {
+    fn new(settings: IdleTickSettings) -> Self {
+        Self {
+            #[cfg(feature = "mlx-native-server")]
+            policy: ax_engine_sdk::IdleResidencyPolicy::new(
+                ax_engine_sdk::IdleResidencyConfig::from_durations(
+                    settings.tick_interval,
+                    settings.max_window,
+                ),
+            ),
+            settings,
+            #[cfg(feature = "mlx-native-server")]
+            origin: Instant::now(),
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        #[cfg(feature = "mlx-native-server")]
+        {
+            self.policy.enabled()
+        }
+        #[cfg(not(feature = "mlx-native-server"))]
+        {
+            let _ = self.settings.tick_interval;
+            false
+        }
+    }
+
+    fn note_activity(&mut self) {
+        #[cfg(feature = "mlx-native-server")]
+        {
+            self.policy.note_activity(self.origin.elapsed());
+        }
+    }
+
+    fn tick_count(&self) -> u64 {
+        #[cfg(feature = "mlx-native-server")]
+        {
+            self.policy.tick_count()
+        }
+        #[cfg(not(feature = "mlx-native-server"))]
+        {
+            0
+        }
+    }
+
+    fn wake(
+        &mut self,
+        busy: bool,
+        under_memory_pressure: bool,
+        shutting_down: bool,
+    ) -> WorkerIdleWake {
+        #[cfg(feature = "mlx-native-server")]
+        {
+            use ax_engine_sdk::{IdleStopReason, IdleTickContext, IdleTickDecision};
+            let decision = self.policy.poll(IdleTickContext {
+                now: self.origin.elapsed(),
+                busy,
+                under_memory_pressure,
+                shutting_down,
+            });
+            match decision {
+                IdleTickDecision::Disabled
+                | IdleTickDecision::SkipBusy
+                | IdleTickDecision::Parked => WorkerIdleWake::Block,
+                IdleTickDecision::SkipPressure => WorkerIdleWake::Timeout(
+                    self.settings.tick_interval.max(Duration::from_millis(1)),
+                ),
+                IdleTickDecision::Wait { wait } => WorkerIdleWake::Timeout(wait),
+                IdleTickDecision::Tick { started } => WorkerIdleWake::Tick { started },
+                IdleTickDecision::Stopped { reason, log } => WorkerIdleWake::Stop {
+                    log,
+                    reason: match reason {
+                        IdleStopReason::MaxWindow => "max_window",
+                        IdleStopReason::Shutdown => "shutdown",
+                    },
+                },
+            }
+        }
+        #[cfg(not(feature = "mlx-native-server"))]
+        {
+            let _ = (busy, under_memory_pressure, shutting_down);
+            WorkerIdleWake::Block
+        }
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn log_idle_start(idle: &WorkerIdle) {
+    tracing::info!(
+        tick_ms = duration_millis(idle.settings.tick_interval),
+        max_window_s = idle.settings.max_window.as_secs(),
+        "idle GPU residency keep-warm started"
+    );
+}
+
+fn log_idle_stop(idle: &WorkerIdle, log: bool, reason: &'static str) {
+    if !log {
+        return;
+    }
+    tracing::info!(
+        reason,
+        ticks = idle.tick_count(),
+        "idle GPU residency keep-warm stopped"
+    );
+}
+
+fn record_idle_tick(
+    idle: &WorkerIdle,
+    session: &mut EngineSession,
+    state: &ServiceState,
+    started: bool,
+) {
+    if started {
+        log_idle_start(idle);
+    }
+    // The copy runs on this worker. A failing op must not retire the session.
+    let touched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.touch_idle_gpu_residency()
+    }));
+    match touched {
+        Ok(true) => {
+            state.idle_residency_ticks.fetch_add(1, Ordering::Relaxed);
+        }
+        // Deterministic and delegated runners return false. That is the
+        // documented no-op, not a failed touch.
+        Ok(false) => {
+            state.idle_residency_noop.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            let prior = state
+                .idle_residency_failures
+                .fetch_add(1, Ordering::Relaxed);
+            if prior == 0 {
+                tracing::warn!("idle GPU residency keep-warm touch failed");
+            }
+        }
+    }
+}
+
+fn wait_for_command_or_idle_tick(
+    receiver: &std::sync::mpsc::Receiver<ServiceCommand>,
+    idle: &mut WorkerIdle,
+    session: &mut EngineSession,
+    state: &ServiceState,
+    busy: bool,
+) -> IdleWait {
+    let pressure = if busy || !idle.enabled() {
+        false
+    } else {
+        session.idle_residency_under_memory_pressure()
+    };
+    match idle.wake(busy, pressure, false) {
+        WorkerIdleWake::Block => match receiver.recv() {
+            Ok(command) => IdleWait::Command(Box::new(command)),
+            Err(_) => IdleWait::Disconnected,
+        },
+        WorkerIdleWake::Timeout(wait) => match receiver.recv_timeout(wait) {
+            Ok(command) => IdleWait::Command(Box::new(command)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let pressure = if busy {
+                    false
+                } else {
+                    session.idle_residency_under_memory_pressure()
+                };
+                match idle.wake(busy, pressure, false) {
+                    WorkerIdleWake::Tick { started } => {
+                        record_idle_tick(idle, session, state, started);
+                    }
+                    WorkerIdleWake::Stop { log, reason } => log_idle_stop(idle, log, reason),
+                    WorkerIdleWake::Timeout(_) | WorkerIdleWake::Block => {}
+                }
+                IdleWait::Idle
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => IdleWait::Disconnected,
+        },
+        WorkerIdleWake::Tick { started } => {
+            record_idle_tick(idle, session, state, started);
+            IdleWait::Idle
+        }
+        WorkerIdleWake::Stop { log, reason } => {
+            log_idle_stop(idle, log, reason);
+            IdleWait::Idle
+        }
+    }
+}
+
 fn run_worker(
     factory: SessionFactory,
     receiver: std::sync::mpsc::Receiver<ServiceCommand>,
     startup_sender: std::sync::mpsc::SyncSender<Result<RuntimeReport, EngineSessionError>>,
     state: &ServiceState,
     recycle_after: u64,
+    idle_ticks: IdleTickSettings,
 ) {
     let _exit_guard = WorkerExitGuard(state);
     // Arms the per-thread engine_panic snapshot for this worker (load
@@ -1178,7 +1460,14 @@ fn run_worker(
     // recovery path (same contract as a stopped worker). Under
     // `panic = "abort"` builds this is a no-op by construction.
     let loop_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_worker_loop(session, receiver, state, &mut factory, recycle_after);
+        run_worker_loop(
+            session,
+            receiver,
+            state,
+            &mut factory,
+            recycle_after,
+            idle_ticks,
+        );
     }));
     if let Err(payload) = loop_outcome {
         let (step_id, kv_usage_blocks) = crate::fatal::last_step_snapshot();
@@ -1225,6 +1514,7 @@ fn run_worker_loop(
     state: &ServiceState,
     factory: &mut SessionFactory,
     recycle_after: u64,
+    idle_ticks: IdleTickSettings,
 ) {
     let mut active_streams: BTreeMap<u64, ActiveStream> = BTreeMap::new();
     let mut stepwise_permits: BTreeMap<u64, AdmissionPermit> = BTreeMap::new();
@@ -1232,11 +1522,16 @@ fn run_worker_loop(
     let mut bulk_commands = VecDeque::new();
     let mut disconnected = false;
     let mut ticks_since_recycle: u64 = 0;
+    let mut idle = WorkerIdle::new(idle_ticks);
     // Permanent factory failure (OOM, bad config) must not retry every
     // `recycle_after` ticks — the log promised disable, so honor it.
     let mut recycle_disabled = false;
     loop {
         let mut engine_advanced = false;
+        let mut saw_worker_activity = !active_streams.is_empty()
+            || !stepwise_permits.is_empty()
+            || !latency_commands.is_empty()
+            || !bulk_commands.is_empty();
         if active_streams.is_empty()
             && latency_commands.is_empty()
             && bulk_commands.is_empty()
@@ -1254,6 +1549,7 @@ fn run_worker_loop(
                     Ok(new_session) => {
                         session = new_session;
                         ticks_since_recycle = 0;
+                        idle.note_activity();
                         tracing::info!(
                             recycle_after,
                             "recycled the native generation session at idle \
@@ -1270,17 +1566,22 @@ fn run_worker_loop(
                     }
                 }
             }
-            match receiver.recv() {
-                Ok(command) => {
-                    queue_worker_command(command, &mut latency_commands, &mut bulk_commands)
+            let busy = !stepwise_permits.is_empty();
+            match wait_for_command_or_idle_tick(&receiver, &mut idle, &mut session, state, busy) {
+                IdleWait::Command(command) => {
+                    saw_worker_activity = true;
+                    idle.note_activity();
+                    queue_worker_command(*command, &mut latency_commands, &mut bulk_commands);
                 }
-                Err(_) => disconnected = true,
+                IdleWait::Disconnected => disconnected = true,
+                IdleWait::Idle => {}
             }
         }
         loop {
             match receiver.try_recv() {
                 Ok(command) => {
-                    queue_worker_command(command, &mut latency_commands, &mut bulk_commands)
+                    saw_worker_activity = true;
+                    queue_worker_command(command, &mut latency_commands, &mut bulk_commands);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1290,6 +1591,9 @@ fn run_worker_loop(
             }
         }
         if disconnected {
+            if let WorkerIdleWake::Stop { log, reason } = idle.wake(false, false, true) {
+                log_idle_stop(&idle, log, reason);
+            }
             detach_all_streams_for_shutdown(&mut session, &mut active_streams, state);
             cancel_all_stepwise(&mut session, &mut stepwise_permits, state);
             update_stream_gauges(state, &active_streams);
@@ -1345,6 +1649,9 @@ fn run_worker_loop(
         } else {
             maintain_streams(&mut session, &mut active_streams, state);
         }
+        if saw_worker_activity || engine_advanced {
+            idle.note_activity();
+        }
         update_stream_gauges(state, &active_streams);
     }
 }
@@ -1393,6 +1700,22 @@ struct ActiveStream {
 /// and stays competitive with mlxcel (~11 ms) under the flip gap-ratio gate
 /// (≤0.90× and absolute ≤50 ms). Engine burst below keeps GPU fed.
 const STREAM_TOKEN_EMIT_BATCH: usize = 1;
+
+/// Whether a native stream step should enqueue its pending tokens now.
+///
+/// The first non-empty output flushes immediately (`first_output_emitted`
+/// is still false). Later tokens flush when the pending batch reaches
+/// [`STREAM_TOKEN_EMIT_BATCH`] (currently 1, so every token flushes) or the
+/// step is terminal. Speculative drafting happens inside the engine `step`
+/// that produced the token; this predicate only decides the enqueue that
+/// follows that step. The server does not flush the HTTP socket here.
+pub(crate) fn stream_step_should_flush(
+    first_output_emitted: bool,
+    pending_delta_tokens: usize,
+    step_terminal: bool,
+) -> bool {
+    step_terminal || !first_output_emitted || pending_delta_tokens >= STREAM_TOKEN_EMIT_BATCH
+}
 
 /// Single-stream engine steps per worker tick after the first token.
 /// Larger than the SSE emit batch so the Metal double-buffer stays fed even
@@ -1996,9 +2319,11 @@ fn apply_step_to_streams(
                         .extend(step.delta_token_logprobs);
                     stream.pending_step = Some(step.step);
                     stream.pending_request = Some(step.request);
-                    let should_flush = step_terminal
-                        || !stream.first_output_emitted
-                        || stream.pending_delta_tokens.len() >= STREAM_TOKEN_EMIT_BATCH;
+                    let should_flush = stream_step_should_flush(
+                        stream.first_output_emitted,
+                        stream.pending_delta_tokens.len(),
+                        step_terminal,
+                    );
                     if !should_flush {
                         continue;
                     }
@@ -2432,6 +2757,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_step_flush_follows_first_output_batch_and_terminal() {
+        // The batch is 1, so `pending >= 1` hides the first-output clause.
+        // An empty pending before any output is the case that clause owns.
+        assert_eq!(STREAM_TOKEN_EMIT_BATCH, 1);
+        assert!(stream_step_should_flush(false, 0, false));
+        assert!(stream_step_should_flush(
+            false,
+            STREAM_TOKEN_EMIT_BATCH,
+            false
+        ));
+        assert!(!stream_step_should_flush(
+            true,
+            STREAM_TOKEN_EMIT_BATCH - 1,
+            false
+        ));
+        assert!(stream_step_should_flush(
+            true,
+            STREAM_TOKEN_EMIT_BATCH,
+            false
+        ));
+        assert!(stream_step_should_flush(true, 0, true));
+    }
+
+    #[test]
     fn sibling_engine_step_burst_default_is_sixteen() {
         // Exclusive multi-model: not 1 (arbiter thr tax) and not full HOL burst.
         assert_eq!(SIBLING_ENGINE_STEP_BURST_DEFAULT, 16);
@@ -2581,6 +2930,7 @@ mod tests {
             .start_stream(
                 9001,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
@@ -2674,6 +3024,7 @@ mod tests {
     fn cancelling_a_terminal_stepwise_request_returns_its_report() {
         let mut session = EngineSession::new_deterministic_native_for_tests();
         let request = ax_engine_sdk::GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -2718,6 +3069,7 @@ mod tests {
             .start_stream(
                 42,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
@@ -2764,6 +3116,7 @@ mod tests {
             },
             1,
             WorkerTuning::default(),
+            IdleTickSettings::disabled(),
         )
         .unwrap();
         let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
@@ -2771,6 +3124,7 @@ mod tests {
             .submit_stepwise(
                 42,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
@@ -3199,6 +3553,7 @@ mod tests {
             .start_stream(
                 4242,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3],
                     input_text: None,
@@ -3507,6 +3862,9 @@ mod tests {
             adaptive_prefill_tokens: AtomicU32::new(
                 ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
             ),
+            idle_residency_ticks: AtomicU64::new(0),
+            idle_residency_failures: AtomicU64::new(0),
+            idle_residency_noop: AtomicU64::new(0),
         };
 
         rollback_failed_enqueue(&state);
@@ -3557,5 +3915,36 @@ mod tests {
         second_entered_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("second bulk command should eventually run");
+    }
+
+    #[cfg(feature = "mlx-native-server")]
+    #[tokio::test]
+    async fn worker_idle_tick_stops_on_shutdown() {
+        let (service, _) = NativeGenerationService::spawn_with_recycle_threshold(
+            || Ok(EngineSession::new_deterministic_native_for_tests()),
+            0,
+            WorkerTuning::default(),
+            IdleTickSettings {
+                tick_interval: Duration::from_millis(30),
+                max_window: Duration::from_secs(30),
+            },
+        )
+        .expect("service should start");
+        let started = Instant::now();
+        while service.idle_residency_noop_count() == 0 {
+            if started.elapsed() > Duration::from_secs(2) {
+                panic!("idle keep-warm tick did not fire");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(service.idle_residency_tick_count(), 0);
+        assert_eq!(service.idle_residency_failure_count(), 0);
+        service.shutdown().await.expect("worker should shut down");
+        let noops = service.idle_residency_noop_count();
+        assert!(noops >= 1, "noops={noops}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(service.idle_residency_noop_count(), noops);
+        assert_eq!(service.idle_residency_failure_count(), 0);
+        assert_eq!(service.idle_residency_tick_count(), 0);
     }
 }

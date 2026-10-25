@@ -3153,7 +3153,8 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
             state.cache.set_seq_len(native_tokens);
             state.multimodal_prefill_complete = complete;
             runner.states.lock().insert(item.request_id, state);
-            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None, None);
+            let result =
+                runner.run_item(&item, None, "qwen3", 4, Some(media), None, None, None, None);
             assert_eq!(
                 result.update.error.as_deref(),
                 Some("multimodal decode requires a completed media prefill")
@@ -3190,7 +3191,17 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert!(state.multimodal_prefill_complete);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
+    let result = runner.run_item(
+        &item,
+        None,
+        "qwen3",
+        4,
+        Some(&inputs),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
 
@@ -3202,7 +3213,17 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert_eq!(prompt, [vec![7; 8], vec![9, 10]].concat());
     assert!(!state.multimodal_prefill_complete);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
+    let result = runner.run_item(
+        &item,
+        None,
+        "qwen3",
+        4,
+        Some(&inputs),
+        None,
+        None,
+        None,
+        None,
+    );
     assert_eq!(
         result.update.error.as_deref(),
         Some("multimodal decode requires a completed media prefill")
@@ -3222,7 +3243,17 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     state.cache.set_seq_len(8);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None, None);
+    let result = runner.run_item(
+        &item,
+        None,
+        "qwen3",
+        4,
+        Some(&empty),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
@@ -3929,6 +3960,145 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             );
         }
     }
+}
+
+/// One Prefill item whose scheduler claim is `claim` tokens and whose own
+/// input covers the next `item_len` positions, with token ids equal to their
+/// absolute positions so prefix bookkeeping is readable in assertions.
+fn prefill_item_with_claim(claim: usize, item_len: usize) -> ax_engine_core::ExecutionItem {
+    ax_engine_core::ExecutionItem {
+        request_id: RequestId(30),
+        mode: ExecutionMode::Prefill,
+        planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+        input_token_slice: (claim as u32..(claim + item_len) as u32).collect(),
+        reused_prefix_token_slice: (0..claim as u32).collect(),
+        position_range: PositionRange {
+            start: claim as u32,
+            end_exclusive: (claim + item_len) as u32,
+        },
+        scheduled_token_count: item_len as u32,
+        block_table_ref: RequestId(30),
+        prefix_tokens_reused: claim as u32,
+        prefix_blocks_reused: 1,
+    }
+}
+
+#[test]
+fn warm_restore_beyond_scheduler_claim_keeps_the_restored_prefix() {
+    // A value-priced restore may adopt a snapshot longer than the scheduler
+    // claim (a semantic cut beyond it). Truncating `prompt_prefix_tokens`
+    // back to the claim would leave it shorter than the cache, so the next
+    // snapshot key and the linear gap-replay guard would describe a prefix
+    // the cache does not hold.
+    let item = prefill_item_with_claim(8, 6);
+    let prompt: Vec<u32> = (0..14).collect();
+    let mut state = RequestState::new(2, 31, None);
+    state.prompt_prefix_tokens = prompt[..12].to_vec();
+
+    extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+
+    assert_eq!(
+        state.prompt_prefix_tokens, prompt,
+        "restored prefix (12) plus the uncovered item tail (2) is the full 14 tokens"
+    );
+}
+
+#[test]
+fn warm_restore_at_the_scheduler_claim_appends_the_whole_item() {
+    // Regression guard for the ordinary case: a restore exactly at the claim
+    // covers none of the item, so every item token must be appended.
+    let item = prefill_item_with_claim(8, 6);
+    let prompt: Vec<u32> = (0..14).collect();
+    let mut state = RequestState::new(2, 32, None);
+    state.prompt_prefix_tokens = prompt[..8].to_vec();
+
+    extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+
+    assert_eq!(state.prompt_prefix_tokens, prompt);
+}
+
+#[test]
+fn cold_prefill_step_restarts_the_prefix_from_the_scheduler_claim() {
+    // A later cold chunk runs with a claim but no restored cache prefix;
+    // `prompt_prefix_tokens` must be rebuilt from the claim, not from part 0.
+    let item = prefill_item_with_claim(8, 6);
+    let prompt: Vec<u32> = (0..14).collect();
+    let mut state = RequestState::new(2, 33, None);
+
+    extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+
+    assert_eq!(state.prompt_prefix_tokens, prompt);
+}
+
+#[test]
+fn planned_cut_is_not_refloored_onto_the_prefill_grid() {
+    // The terminal anchor is block-aligned by construction but is not
+    // necessarily a multiple of the prefill chunk. The cold-grid floor would
+    // move it (or reject it when the floor lands under the claim), which
+    // discards an exact in-place cut snapshot and breaks cold/warm partition
+    // agreement.
+    let plan = snapshot_cut_plan(1000, 256, &[700], true, "sig");
+    assert_eq!(
+        plan.cuts,
+        vec![700, 768],
+        "anchor at 768, semantic cut at 700"
+    );
+    assert_eq!(
+        planned_cut_restore_len(Some(&plan), 768),
+        Some(768),
+        "a planned cut pins its own length"
+    );
+    assert_eq!(
+        planned_cut_restore_len(Some(&plan), 512),
+        None,
+        "a length that is not a planned cut still goes through the grid floor"
+    );
+    assert_eq!(planned_cut_restore_len(None, 768), None);
+
+    // 700 claimed tokens, 300 more in this item, chunk 512: the grid floor
+    // would move 768 down to 512 and then reject it as shorter than the
+    // claim. This is the regression the planned-cut check prevents.
+    let item = prefill_item_with_claim(700, 300);
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 768, 512, false),
+        None
+    );
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 768, 512, true),
+        Some(512)
+    );
+}
+
+#[test]
+fn grid_rung_snapshot_must_be_captured_before_semantic_cuts_advance_the_cache() {
+    // Regression (WP07): a 1930-token linear-attention prompt with block 32
+    // and a 1024-token prefill chunk. The prefix a warm request claims, and
+    // therefore the entry it looks up, is the grid rung at 1024.
+    assert_eq!(
+        MlxRunner::linear_grid_rung_head_len(32, 1024, 1024, 0, 1930),
+        Some(1024),
+        "a whole-item prefill splits at the rung a warm request restores"
+    );
+    // Capturing the semantic cuts first advances the cache to 1898 (the last
+    // assistant-turn start below the terminal anchor). From there the same
+    // rung sits *inside* prior context, so the head is `None` and the claim
+    // snapshot is never captured: the warm request then looks up a 1024 entry
+    // that does not exist and recomputes the whole prompt. Cut snapshots must
+    // therefore be stored in addition to the block-aligned ones, never
+    // instead of them.
+    assert_eq!(
+        MlxRunner::linear_grid_rung_head_len(32, 1024, 1024, 1898, 32),
+        None,
+        "cut capture must not precede the grid-rung capture"
+    );
+    // The rung is exactly the length the warm restore is floored onto, so a
+    // missing capture is a missing restore (hits 0 / reused 0 in the
+    // regression run).
+    let item = prefill_item_with_claim(1920, 10);
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 1920, 1024, true),
+        Some(1024)
+    );
 }
 
 #[test]
@@ -8677,6 +8847,107 @@ fn block_aligned_prefix_hashes_match_full_rehash_per_boundary() {
 }
 
 #[test]
+fn restore_candidate_lengths_hashes_each_candidate_and_skips_a_missing_claim() {
+    // Prompt of 1024 tokens, block 32, scheduler claim 512, one semantic cut
+    // at 600. Only the cut and the longest aligned entry exist, so the claim
+    // must not become a candidate and every presence check must carry the
+    // *candidate's* hash — looking candidates up under the whole bound's hash
+    // made every length except the bound look absent.
+    let tokens: Vec<u32> = (0..1024).map(|i| i * 3 + 1).collect();
+    let bound_hash = hash_prefix_tokens(&tokens);
+    let cuts = [600usize];
+    let mut checks: Vec<(usize, u64)> = Vec::new();
+    let lengths = restore_candidate_lengths(
+        512,
+        tokens.len(),
+        32,
+        &cuts,
+        |len, hash| {
+            checks.push((len, hash));
+            matches!(len, 600 | 1024)
+        },
+        |len| hash_prefix_tokens(&tokens[..len]),
+    );
+    assert_eq!(lengths, vec![600, 1024]);
+    assert!(
+        !lengths.contains(&512),
+        "a claim without a snapshot must not be offered as a candidate"
+    );
+    for (len, hash) in &checks {
+        if *len != tokens.len() {
+            assert_ne!(
+                *hash, bound_hash,
+                "candidate {len} must not be looked up under the whole-bound hash"
+            );
+        }
+        assert_eq!(*hash, hash_prefix_tokens(&tokens[..*len]));
+    }
+}
+
+#[test]
+fn restore_candidate_lengths_takes_only_the_longest_aligned_entry() {
+    // Bound 352, claim 320 (present), block 32: the aligned scan starts at
+    // 352 and stops at the first hit. It must never walk below the claim,
+    // which was the old `aligned > claim` blind spot that left the claim's own
+    // aligned snapshot undiscovered.
+    let mut checks = Vec::new();
+    let lengths = restore_candidate_lengths(
+        320,
+        352,
+        32,
+        &[],
+        |len, _hash| {
+            checks.push(len);
+            matches!(len, 256 | 320)
+        },
+        |len| len as u64,
+    );
+    assert_eq!(lengths, vec![320]);
+    assert_eq!(
+        checks,
+        vec![320, 352],
+        "claim presence then the aligned scan, starting at the bound"
+    );
+}
+
+#[test]
+fn restore_candidate_lengths_ignores_cuts_at_or_below_the_claim() {
+    let lengths = restore_candidate_lengths(
+        320,
+        400,
+        32,
+        &[100, 320, 321, 400, 401],
+        |_, _| false,
+        |len| len as u64,
+    );
+    assert_eq!(
+        lengths,
+        vec![321],
+        "only cuts strictly inside (claim, bound) are candidates"
+    );
+}
+
+#[test]
+fn restore_probe_applies_to_warm_decode_items() {
+    // A warm request whose whole prompt is resident is scheduled as a single
+    // Decode item with an empty cache. The probe answers a cache question, so
+    // it must run there too; gating it on Prefill is what reported probed=0
+    // for requests that then hit the cache through `get`.
+    assert!(restore_probe_applies(0, &[1, 2, 3]));
+    assert!(!restore_probe_applies(32, &[1, 2, 3]));
+    assert!(!restore_probe_applies(0, &[]));
+}
+
+#[test]
+fn probe_exact_bound_covers_unaligned_bounds() {
+    // A semantic cut or unaligned claim only matches at the bound itself; an
+    // aligned bound is already the first step of the aligned walk.
+    assert!(probe_exact_bound_needed(35, 32));
+    assert!(!probe_exact_bound_needed(32, 32));
+    assert!(!probe_exact_bound_needed(0, 32));
+}
+
+#[test]
 fn presence_penalty_history_holds_generated_tokens_only() {
     let mut state = RequestState::new(2, 1, None);
     state.prompt_prefix_tokens = vec![10, 11, 12];
@@ -8722,4 +8993,420 @@ fn penalized_mtp_rows_see_the_drafts_before_them() {
     assert_eq!(rows[1], vec![0.0, 0.0, 3.0, 2.0]);
     // Row 2 (bonus): drafts 2 and 1.
     assert_eq!(rows[2], vec![0.0, -2.0, 3.0, 2.0]);
+}
+
+#[test]
+fn mlx_checkpoint_stores_through_prefix_cache() {
+    let tokens = vec![1u32, 2, 3, 4];
+    let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1024 * 1024,
+        max_entries: 8,
+    });
+    let key = MlxPrefixCacheKey {
+        model_id: "model".to_string(),
+        route_policy: "route".to_string(),
+        layer_layout: "layers".to_string(),
+        block_size_tokens: 16,
+        token_count: u32::try_from(tokens.len()).expect("len"),
+        token_hash: hash_prefix_tokens(&tokens),
+        media_key: String::new(),
+    };
+    let snapshot = MlxPrefixSnapshot::from_shared_payload(
+        Arc::<[u8]>::from(vec![7u8, 8, 9]),
+        tokens.clone(),
+        tokens.len(),
+        None,
+        None,
+    );
+    assert!(cache.insert(key.clone(), snapshot).stored);
+    assert!(cache.contains_exact_tokens(&key, &tokens));
+
+    let disk_key = crate::disk_prefix_cache::canonical_key_bytes(
+        &crate::disk_prefix_cache::DiskPrefixKeyFields {
+            model_id: &key.model_id,
+            artifact_fingerprint_sha256: "fingerprint",
+            route_policy: &key.route_policy,
+            layer_layout: &key.layer_layout,
+            kv_payload_version: 4,
+            kv_quantization: "f16",
+            kv_dtype: "float16",
+            execution_signature: "route=test",
+            block_size_tokens: key.block_size_tokens,
+            token_count: key.token_count,
+            tokens: &tokens,
+        },
+    );
+    let domain = b"ax.mlx.disk_prefix_key.v4";
+    assert!(
+        disk_key
+            .windows(domain.len())
+            .any(|window| window == domain),
+        "disk tier key must use the v4 prefix domain"
+    );
+
+    let stored = MlxPrefixCacheTelemetry {
+        stores: 1,
+        disk_store_commit_failed: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    assert_eq!(prefix_checkpoint_write_error_count(&stored), 1);
+    let receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &stored, true);
+    assert!(receipt.committed);
+    assert!(receipt.device_capture);
+    assert!(
+        !receipt.ssd_hit,
+        "an L1 store with a failed disk commit is not a durable hit"
+    );
+    assert!(
+        receipt.adopts_cursor(4),
+        "an L1 prefix-cache accept is adoptable on resubmit"
+    );
+    let l1_only = checkpoint_receipt_from_prefix_store(
+        RequestId(7),
+        4,
+        &MlxPrefixCacheTelemetry::default(),
+        true,
+    );
+    assert!(l1_only.committed);
+    assert!(!l1_only.ssd_hit);
+    assert!(l1_only.adopts_cursor(4));
+    let enqueued = MlxPrefixCacheTelemetry {
+        disk_store_enqueued: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    let enqueued_receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &enqueued, false);
+    assert!(enqueued_receipt.ssd_hit);
+    assert!(enqueued_receipt.adopts_cursor(4));
+    let durable = MlxPrefixCacheTelemetry {
+        stores: 1,
+        disk_store_committed: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    let durable_receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &durable, true);
+    assert!(durable_receipt.ssd_hit);
+    assert!(durable_receipt.adopts_cursor(4));
+
+    let dropped = MlxPrefixCacheTelemetry {
+        disk_store_dropped: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    assert_eq!(prefix_checkpoint_write_error_count(&dropped), 1);
+    let miss = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &dropped, false);
+    assert!(!miss.adopts_cursor(4));
+}
+
+#[test]
+fn checkpoint_refuses_trimmed_linear_state() {
+    let mut manifest = dense_manifest();
+    manifest.model_family = "qwen3".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    shared_weights.publish(Arc::new(runner_test_weights(vec![runner_test_layer()])));
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .expect("runner");
+    *runner.last_prefix_model_id.lock() = "qwen3".to_string();
+    runner
+        .last_block_size_tokens
+        .store(4, std::sync::atomic::Ordering::Relaxed);
+
+    let mut state = RequestState::new(1, 1, None);
+    state.prompt_prefix_tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    state.cache.set_seq_len(8);
+    state.cache.set_linear_state(
+        0,
+        mlx_sys::zeros(&[1, 3, 14], mlx_sys::MlxDtype::Float32, None),
+        mlx_sys::zeros(&[1, 4, 8, 6], mlx_sys::MlxDtype::Float32, None),
+    );
+    runner.states.lock().insert(RequestId(7), state);
+
+    let receipt = ax_engine_core::ExecutionRunner::checkpoint_request(
+        &runner,
+        RequestId(7),
+        ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+        4,
+    );
+    assert!(!receipt.committed);
+    assert!(receipt.unsupported_layout);
+    assert!(!receipt.ssd_hit);
+    assert!(!receipt.adopts_cursor(4));
+    assert_eq!(
+        runner
+            .checkpoint_unsupported
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(runner.prefix_cache.lock().stats().entries, 0);
+    assert_eq!(
+        runner
+            .states
+            .lock()
+            .get(&RequestId(7))
+            .expect("state")
+            .cache
+            .seq_len(),
+        8
+    );
+
+    let mut exact = RequestState::new(1, 2, None);
+    exact.prompt_prefix_tokens = vec![1, 2, 3, 4];
+    exact.cache.set_seq_len(4);
+    exact.cache.set_linear_state(
+        0,
+        mlx_sys::zeros(&[1, 3, 14], mlx_sys::MlxDtype::Float32, None),
+        mlx_sys::zeros(&[1, 4, 8, 6], mlx_sys::MlxDtype::Float32, None),
+    );
+    runner.states.lock().insert(RequestId(8), exact);
+    let exact_receipt = ax_engine_core::ExecutionRunner::checkpoint_request(
+        &runner,
+        RequestId(8),
+        ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+        4,
+    );
+    assert_eq!(
+        runner
+            .checkpoint_unsupported
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "an exact-position linear capture is allowed"
+    );
+    assert_ne!(
+        (exact_receipt.unsupported_layout, exact_receipt.committed),
+        (true, true)
+    );
+    fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
+}
+
+#[test]
+fn cuts_only_restore_is_not_recorded_as_priced_restore() {
+    assert_eq!(
+        restore_value_decision(Some(512), true, false),
+        RestoreValueDecision::SemanticCut,
+        "a cuts-only longest candidate that lands on a cut is a semantic cut"
+    );
+    assert_eq!(
+        restore_value_decision(Some(384), false, false),
+        RestoreValueDecision::RamBaseline,
+        "a cuts-only longest candidate that is not a cut is the RAM baseline"
+    );
+    assert_eq!(
+        restore_value_decision(None, false, false),
+        RestoreValueDecision::RamBaseline
+    );
+    assert_eq!(
+        restore_value_decision(Some(512), false, true),
+        RestoreValueDecision::PricedRestore
+    );
+    assert_eq!(
+        restore_value_decision(Some(256), true, true),
+        RestoreValueDecision::SemanticCut,
+        "a priced choice that is a cut stays a semantic cut"
+    );
+    assert_eq!(
+        restore_value_decision(None, false, true),
+        RestoreValueDecision::RamBaseline
+    );
+}
+
+fn f32_zeros(shape: &[i32]) -> mlx_sys::MlxArray {
+    mlx_sys::zeros(shape, mlx_sys::MlxDtype::Float32, None)
+}
+
+fn f32_ones(len: i32) -> mlx_sys::MlxArray {
+    let data = vec![1.0f32; len as usize];
+    mlx_sys::MlxArray::from_raw_data(
+        data.as_ptr() as *const u8,
+        std::mem::size_of_val(data.as_slice()),
+        &[len],
+        mlx_sys::MlxDtype::Float32,
+    )
+}
+
+fn dense_qw(shape: &[i32]) -> QuantizedWeight {
+    QuantizedWeight::new(f32_zeros(shape), None, None)
+}
+
+/// One Qwen3.5 linear layer whose shapes match `dflash2_tiny_fixture` (hidden 8,
+/// vocab 16) so a linear verify round can reach the fence.
+fn tiny_linear_dflash_weights() -> ModelWeights {
+    let hidden = 8;
+    let mut layer = runner_test_layer();
+    layer.attn_norm = f32_ones(hidden);
+    layer.ffn_norm = f32_ones(hidden);
+    layer.gate_proj = Some(dense_qw(&[hidden, hidden]));
+    layer.up_proj = Some(dense_qw(&[hidden, hidden]));
+    layer.down_proj = Some(dense_qw(&[hidden, hidden]));
+    layer.linear_attn = Some(crate::weights::LinearAttentionWeights {
+        in_proj_qkv: Some(dense_qw(&[68, hidden])),
+        in_proj_z: Some(dense_qw(&[4, hidden])),
+        in_proj_a: Some(dense_qw(&[1, hidden])),
+        in_proj_b: Some(dense_qw(&[1, hidden])),
+        in_proj_qkvz: None,
+        in_proj_ba: None,
+        fused_qkvz_ba: None,
+        prefill_q2_qkvz: None,
+        prefill_q2_ba: None,
+        conv1d_bias: None,
+        d: None,
+        conv1d_dense: f32_zeros(&[68, 4, 1]),
+        dt_bias: f32_zeros(&[1]),
+        a_log: f32_zeros(&[1]),
+        norm: f32_ones(4),
+        out_proj: dense_qw(&[hidden, 4]),
+    });
+    let mut weights = runner_test_weights(vec![layer]);
+    let embedding = dense_qw(&[16, hidden]);
+    weights.token_embedding = embedding.clone();
+    weights.lm_head = embedding;
+    weights.final_norm = Some(f32_ones(hidden));
+    weights
+}
+
+fn decode_claim(id: u64, token: u32) -> ax_engine_core::ExecutionItem {
+    ax_engine_core::ExecutionItem {
+        request_id: RequestId(id),
+        mode: ExecutionMode::Decode,
+        planned_work_unit: ax_engine_core::WorkUnitKind::TokenDecode,
+        input_token_slice: vec![token],
+        reused_prefix_token_slice: Vec::new(),
+        position_range: PositionRange {
+            start: 4,
+            end_exclusive: 5,
+        },
+        scheduled_token_count: 1,
+        block_table_ref: RequestId(id),
+        prefix_tokens_reused: 0,
+        prefix_blocks_reused: 0,
+    }
+}
+
+#[test]
+fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
+    assert!(
+        !crate::fastpath::tree_verify_enabled(),
+        "the linear fence is not on the tree-verify route"
+    );
+    assert!(
+        crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled(),
+        "linear verify is off, so this request never reaches the fence"
+    );
+
+    let mut manifest = qwen35_linear_manifest();
+    manifest.hidden_size = 8;
+    manifest.intermediate_size = 8;
+    manifest.rms_norm_eps = Some(1e-6);
+    for tensor in &mut manifest.tensors {
+        tensor.shape = match tensor.role {
+            NativeTensorRole::TokenEmbedding | NativeTensorRole::LmHead => vec![16, 8],
+            NativeTensorRole::FinalNorm
+            | NativeTensorRole::AttentionNorm
+            | NativeTensorRole::FfnNorm => vec![8],
+            NativeTensorRole::FfnGate | NativeTensorRole::FfnUp | NativeTensorRole::FfnDown => {
+                vec![8, 8]
+            }
+            NativeTensorRole::LinearAttentionInProjQkv => vec![68, 8],
+            NativeTensorRole::LinearAttentionInProjZ => vec![4, 8],
+            NativeTensorRole::LinearAttentionInProjA | NativeTensorRole::LinearAttentionInProjB => {
+                vec![1, 8]
+            }
+            NativeTensorRole::LinearAttentionOutProj => vec![8, 4],
+            _ => tensor.shape.clone(),
+        };
+    }
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    shared_weights.publish(Arc::new(tiny_linear_dflash_weights()));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .expect("runner");
+
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    let width = drafter.config().target_hidden_width();
+    assert_eq!(width, runner.cfg.hidden_size as i32);
+    let hidden = mlx_sys::zeros(&[1, 2, width], mlx_sys::MlxDtype::Bfloat16, None);
+    mlx_sys::eval(&[&hidden]);
+    let mut dflash = dflash2_decode::Dflash2RequestState::new(drafter.clone());
+    dflash.stage_pending_hidden_for_test(hidden, 0);
+    let mut state = RequestState::new(1, 41, None);
+    state.next_model_last_token = Some(3);
+    state.dflash2 = Some(dflash);
+    runner.dflash2 = Some(drafter);
+    runner.states.lock().insert(RequestId(41), state);
+
+    let mut failed_ctx = ctx_with_argmax(true);
+    failed_ctx.request_id = RequestId(41);
+    failed_ctx.prompt_len = 4;
+    failed_ctx.generated_len = 1;
+    failed_ctx.max_output_tokens = 8;
+    // Drop a leftover injection if the forward never reaches the fence.
+    struct ClearFenceHook;
+    impl Drop for ClearFenceHook {
+        fn drop(&mut self) {
+            let _ = crate::dflash2::take_dflash2_capture_verify_eval_error();
+        }
+    }
+    let _clear_hook = ClearFenceHook;
+    crate::dflash2::fail_next_dflash2_capture_verify_eval_for_test(
+        "injected linear verify fence failure",
+    );
+    let failed = runner.run_item(
+        &decode_claim(41, 3),
+        Some(&failed_ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        failed.update.error.as_deref(),
+        Some("DFlash2 linear verify fence failed: injected linear verify fence failure")
+    );
+    assert_eq!(failed.update.tokens_executed, 0);
+    assert_eq!(failed.update.output_token, None);
+    assert!(failed.update.output_tokens.is_empty());
+    assert!(!runner.states.lock().contains_key(&RequestId(41)));
+
+    let mut followed_ctx = ctx_with_argmax(true);
+    followed_ctx.request_id = RequestId(42);
+    followed_ctx.prompt_len = 4;
+    followed_ctx.generated_len = 0;
+    followed_ctx.max_output_tokens = 8;
+    let mut followed_state = RequestState::new(1, 42, None);
+    followed_state.cached_prefill_output_token = Some(11);
+    runner.states.lock().insert(RequestId(42), followed_state);
+    let followed = runner.run_item(
+        &decode_claim(42, 3),
+        Some(&followed_ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(
+        followed.update.error.is_none(),
+        "{:?}",
+        followed.update.error
+    );
+    assert_eq!(followed.update.output_token, Some(11));
+    assert!(runner.states.lock().contains_key(&RequestId(42)));
+    fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
 }

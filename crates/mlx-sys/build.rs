@@ -238,22 +238,15 @@ fn pinned_mlx_version() -> String {
     pinned_mlx().expected_header_version().to_string()
 }
 
-/// Parse `MLX_VERSION_MAJOR/MINOR/PATCH` out of `mlx/version.h`.
-fn resolved_mlx_version(include_dir: &str) -> Option<String> {
+fn read_version_header(include_dir: &str) -> String {
     let header = PathBuf::from(include_dir).join("mlx/version.h");
-    let text = std::fs::read_to_string(header).ok()?;
-    let field = |name: &str| -> Option<u32> {
-        text.lines()
-            .find(|line| line.contains(name))
-            .and_then(|line| line.split_whitespace().last())
-            .and_then(|value| value.trim().parse::<u32>().ok())
-    };
-    Some(format!(
-        "{}.{}.{}",
-        field("MLX_VERSION_MAJOR")?,
-        field("MLX_VERSION_MINOR")?,
-        field("MLX_VERSION_PATCH")?
-    ))
+    match std::fs::read_to_string(&header) {
+        Ok(text) => text,
+        Err(error) => panic!(
+            "cannot read MLX version identity from {}: {error}; refusing to link an unidentified runtime",
+            header.display()
+        ),
+    }
 }
 
 fn env_flag(name: &str) -> bool {
@@ -266,11 +259,68 @@ fn env_flag(name: &str) -> bool {
 /// source or version the repo has not admitted. Deployment correctness
 /// depends on this: a Homebrew fallback or a version drift changes kernels
 /// silently and invalidates every certified benchmark and bit-exactness gate.
+fn library_bytes(lib_dir: &str) -> Option<Vec<u8>> {
+    std::fs::read(PathBuf::from(lib_dir).join("libmlx.dylib")).ok()
+}
+
+/// True when this MLX header declares `scaled_dot_product_attention(..., int window_size, ...)`.
+///
+/// The probe is syntax-only and is not linked. A compile failure means the
+/// pinned signature does not take the window argument, so the windowed
+/// wrapper stays out of the build. A failure to launch the compiler is
+/// warned: a dev machine without `c++` on `PATH` must not lose the
+/// capability silently when `cc` can still find a compiler.
+fn sdpa_window_argument_available(include_dir: &str) -> bool {
+    let mut build = cc::Build::new();
+    build.cpp(true).std("c++20");
+    let compiler = match build.try_get_compiler() {
+        Ok(compiler) => compiler,
+        Err(error) => {
+            println!(
+                "cargo:warning=mlx-sys: SDPA window capability probe could not resolve a C++ compiler ({error}); windowed SDPA stays out of this build"
+            );
+            return false;
+        }
+    };
+    let mut command = compiler.to_command();
+    let status = command
+        .arg("-fsyntax-only")
+        .arg("-Inative")
+        .arg(format!("-I{include_dir}"))
+        .arg("native/ax_sdpa_window_probe.cpp")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => true,
+        Ok(_) => false,
+        Err(error) => {
+            println!(
+                "cargo:warning=mlx-sys: SDPA window capability probe failed to run {} ({error}); windowed SDPA stays out of this build",
+                compiler.path().display()
+            );
+            false
+        }
+    }
+}
+
 fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance) {
     let pin = pinned_mlx();
-    let version = resolved_mlx_version(&dirs.mlx_include_dir).unwrap_or_else(|| {
-        panic!("cannot read MLX version identity from {}/mlx/version.h; refusing to link an unidentified runtime", dirs.mlx_include_dir)
+    let header = read_version_header(&dirs.mlx_include_dir);
+    let version = build_pin::header_numeric_version(&header).unwrap_or_else(|| {
+        panic!(
+            "cannot read MLX version identity from {}/mlx/version.h; refusing to link an unidentified runtime",
+            dirs.mlx_include_dir
+        )
     });
+    let dev = match build_pin::classify_dev_header(header.as_bytes()) {
+        build_pin::DevHeader::Absent => None,
+        build_pin::DevHeader::One(dev) => Some(dev),
+        build_pin::DevHeader::Conflict => panic!(
+            "mlx-sys: {}/mlx/version.h contains conflicting dev version strings; refusing to link",
+            dirs.mlx_include_dir
+        ),
+    };
     println!(
         "cargo:warning=mlx-sys: linking MLX {} from {} ({:?})",
         version, dirs.mlx_lib_dir, provenance
@@ -296,7 +346,39 @@ fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance)
         }
     }
 
-    if version != pin.expected_header_version() {
+    let experiment_commit = if dev.is_some() {
+        std::env::var("AX_MLX_EXPERIMENT_COMMIT").ok()
+    } else {
+        None
+    };
+    let library = if dev.is_some() {
+        library_bytes(&dirs.mlx_lib_dir)
+    } else {
+        None
+    };
+    let admit_experiment = match build_pin::mlx_link_gate(
+        pin.expected_header_version(),
+        &version,
+        dev.as_ref(),
+        library.as_deref(),
+        experiment_commit.as_deref(),
+    ) {
+        Ok(build_pin::MlxLinkGate::Experiment) => true,
+        Ok(build_pin::MlxLinkGate::PinnedRelease | build_pin::MlxLinkGate::NumericMismatch) => {
+            false
+        }
+        Err(message) => panic!("mlx-sys: {message}"),
+    };
+    if let Some(dev) = dev.as_ref().filter(|_| admit_experiment) {
+        println!(
+            "cargo:warning=mlx-sys: AX_MLX_EXPERIMENT_COMMIT={} — linking dev MLX {} which is not the admitted pin {}",
+            dev.commit,
+            dev.token(),
+            pin.describe()
+        );
+    }
+
+    if !admit_experiment && version != pin.expected_header_version() {
         let expected = pin.describe();
         let hint = pin.install_hint();
         if env_flag("AX_MLX_VERSION_OVERRIDE") {
@@ -319,6 +401,9 @@ fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance)
 }
 
 fn main() {
+    // Declared on every build, including the pinned 0.32.4 wheel, so
+    // `cfg(ax_mlx_sdpa_window)` is a known condition when the wrapper is absent.
+    println!("cargo:rustc-check-cfg=cfg(ax_mlx_sdpa_window)");
     let (dirs, provenance) = find_mlx_dirs();
     enforce_mlx_provenance_and_version(&dirs, provenance);
     let native_dir = PathBuf::from("native");
@@ -327,15 +412,22 @@ fn main() {
     // Both files include MLX C++ headers and call mlx::core directly.
     // ax_shim.cpp provides the C ABI entry points; activation.cpp provides
     // fused multi-op shims for performance-critical paths.
-    cc::Build::new()
-        .cpp(true)
+    let sdpa_window = sdpa_window_argument_available(&dirs.mlx_include_dir);
+    if sdpa_window {
+        println!("cargo:rustc-cfg=ax_mlx_sdpa_window");
+    }
+    let mut shim = cc::Build::new();
+    shim.cpp(true)
         .std("c++20")
         .warnings(false)
         .include(&native_dir)
         .include(&dirs.mlx_include_dir)
         .file("native/ax_shim.cpp")
-        .file("native/activation.cpp")
-        .compile("ax_shim");
+        .file("native/activation.cpp");
+    if sdpa_window {
+        shim.define("AX_MLX_HAS_SDPA_WINDOW", "1");
+    }
+    shim.compile("ax_shim");
 
     // --- Link MLX C++ library ---
     println!("cargo:rustc-link-lib=mlx");
@@ -372,6 +464,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PYTHON_SYS_EXECUTABLE");
     println!("cargo:rerun-if-env-changed=AX_MLX_ALLOW_HOMEBREW");
     println!("cargo:rerun-if-env-changed=AX_MLX_VERSION_OVERRIDE");
+    println!("cargo:rerun-if-env-changed=AX_MLX_EXPERIMENT_COMMIT");
+    println!("cargo:rerun-if-changed=native/ax_sdpa_window_probe.cpp");
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let pin = PathBuf::from(manifest_dir).join("../../mlx.version");
         println!("cargo:rerun-if-changed={}", pin.display());
@@ -388,10 +482,14 @@ fn main() {
     }
 
     // --- Generate bindgen FFI bindings from ax_shim.h ---
-    let bindings = bindgen::Builder::default()
+    let mut bindings = bindgen::Builder::default()
         .header("native/ax_shim.h")
         .clang_arg(format!("-I{}", native_dir.display()))
-        .allowlist_file(r".*native/ax_shim\.h")
+        .allowlist_file(r".*native/ax_shim\.h");
+    if sdpa_window {
+        bindings = bindings.clang_arg("-DAX_MLX_HAS_SDPA_WINDOW=1");
+    }
+    let bindings = bindings
         // Represent C enums as Rust enums
         .rustified_enum("mlx_dtype_")
         // Don't derive Default for opaque types that need explicit init

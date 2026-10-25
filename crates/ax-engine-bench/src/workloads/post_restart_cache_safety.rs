@@ -115,6 +115,9 @@ fn workload_key(
         layer_layout,
         kv_payload_version: 3,
         block_size_tokens,
+        kv_quantization: "",
+        kv_dtype: "",
+        execution_signature: "",
         token_count,
         tokens,
     })

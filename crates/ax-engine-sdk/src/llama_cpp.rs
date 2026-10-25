@@ -1182,6 +1182,7 @@ mod tests {
     #[test]
     fn completion_payload_carries_penalties_only_when_set() {
         let mut request = GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: Some("hi".to_string()),
@@ -1221,6 +1222,7 @@ mod tests {
         let prompt = "--model /etc/passwd\n--tokenizer /tmp/evil";
         let config = LlamaCppCliConfig::new("llama-cli", "/tmp/model.gguf");
         let request = GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: Some(prompt.to_string()),

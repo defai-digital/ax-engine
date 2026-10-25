@@ -291,6 +291,70 @@ pub fn try_scaled_dot_product_attention(
     }
 }
 
+/// Whether this build linked an MLX that accepts SDPA `window_size`.
+///
+/// The pinned 0.32.4 wheel reports `unsupported`. `fast_sdpa_windowed` is
+/// compiled only when this report is `supported`.
+pub fn sdpa_window_capability_report() -> &'static str {
+    if cfg!(ax_mlx_sdpa_window) {
+        "supported"
+    } else {
+        "unsupported"
+    }
+}
+
+/// Scaled dot-product attention with an explicit sliding window.
+///
+/// `window_size == -1` is MLX's full-attention sentinel. Present only when the
+/// linked MLX header accepts the positional `window_size` argument.
+#[cfg(ax_mlx_sdpa_window)]
+#[allow(clippy::too_many_arguments)]
+pub fn fast_sdpa_windowed(
+    queries: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    scale: f32,
+    window_size: i32,
+    mask: ScaledDotProductAttentionMask<'_>,
+    sinks: Option<&MlxArray>,
+    force_fused: bool,
+    s: Option<&MlxStream>,
+) -> Result<MlxArray, String> {
+    crate::op_count::bump_named("fast_sdpa_windowed");
+    ensure_error_handler();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mask_mode = match mask {
+            ScaledDotProductAttentionMask::Causal => &*MASK_CAUSAL,
+            ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Array(_) => {
+                &*MASK_EMPTY
+            }
+        };
+        let null_arr = null_ffi_array();
+        let mask_arr = match mask {
+            ScaledDotProductAttentionMask::Array(mask) => mask.inner,
+            ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Causal => null_arr,
+        };
+        let sinks_arr = sinks.map(|sinks| sinks.inner).unwrap_or(null_arr);
+        let mut res = MlxArray::empty();
+        let rc = ffi::mlx_fast_scaled_dot_product_attention_windowed(
+            &mut res.inner,
+            queries.inner,
+            keys.inner,
+            values.inner,
+            scale,
+            window_size,
+            mask_mode.as_ptr(),
+            mask_arr,
+            sinks_arr,
+            force_fused,
+            stream,
+        );
+        status_to_result("mlx_fast_scaled_dot_product_attention_windowed", rc)?;
+        Ok(res)
+    }
+}
+
 #[cfg(test)]
 mod gated_delta_tests {
     use super::*;
@@ -458,5 +522,11 @@ mod sdpa_binding_tests {
         eval(&[&forced, &selected]);
         assert!(forced.data_f32().iter().all(|value| value.is_finite()));
         assert!(max_abs(&forced, &selected) <= 1e-5);
+    }
+
+    #[cfg(not(ax_mlx_sdpa_window))]
+    #[test]
+    fn window_capability_fails_closed() {
+        assert_eq!(sdpa_window_capability_report(), "unsupported");
     }
 }

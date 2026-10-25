@@ -30,6 +30,11 @@ pub enum EngineTokenizerError {
     Decode(String),
 }
 
+/// One full tokenization paired with per-token byte offsets into the same
+/// text: `(token ids, [(start, end), ...])`. The offsets are what maps
+/// rendered-prompt byte positions to token indices for semantic cut points.
+pub type EncodedTokenByteOffsets = (Vec<u32>, Vec<(usize, usize)>);
+
 /// Thin wrapper over `tokenizers::Tokenizer`. Cloned cheaply (the
 /// inner tokenizer is `Arc`-shared internally by the upstream crate).
 #[derive(Clone)]
@@ -251,6 +256,35 @@ impl EngineTokenizer {
         Ok(ids)
     }
 
+    /// Encode `text` once and return token byte offsets into `text`.
+    ///
+    /// Callers that need prompt positions (semantic snapshot cut points)
+    /// must map through this full tokenization instead of summing
+    /// per-message encode lengths: template headers, special tokens and
+    /// whitespace merges make per-message lengths non-additive.
+    ///
+    /// `Tokenizer::encode` already returns **byte** offsets; the char-index
+    /// variant is the separate `encode_char_offsets` API. Re-deriving byte
+    /// offsets from a char table here would shift every span in multi-byte
+    /// text and place the cut on the wrong token (or drop the hint).
+    pub fn encode_with_byte_offsets(
+        &self,
+        text: &str,
+    ) -> Result<EncodedTokenByteOffsets, EngineTokenizerError> {
+        let encoding = self
+            .inner
+            .encode(text, false)
+            .map_err(|e| EngineTokenizerError::Encode(e.to_string()))?;
+        let ids = encoding.get_ids().to_vec();
+        let text_len = text.len();
+        let byte_offsets = encoding
+            .get_offsets()
+            .iter()
+            .map(|(start, end)| ((*start).min(text_len), (*end).min(text_len)))
+            .collect();
+        Ok((ids, byte_offsets))
+    }
+
     /// Encode a single string using the tokenizer's own special-token handling.
     /// This mirrors compatibility endpoints such as llama.cpp's `/tokenize`,
     /// where `add_special` is not the same as appending the model EOS token.
@@ -417,6 +451,75 @@ mod tests {
         assert!(restore_qwen3_pretokenizer(&other).is_none());
         let already = tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT);
         assert!(restore_qwen3_pretokenizer(&already).is_none());
+    }
+
+    #[test]
+    fn byte_offsets_stay_bytes_for_cjk_and_emoji_before_the_assistant_turn() {
+        // A CJK/emoji history turn before the assistant marker is the case
+        // that broke when byte offsets were remapped through a char table:
+        // every span shifted forward, so the cut landed on an earlier token.
+        let json = tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT);
+        let raw = Tokenizer::from_bytes(json.as_bytes()).expect("tokenizer");
+        let tokenizer = EngineTokenizer {
+            inner: raw.clone(),
+            eos_token_id: None,
+        };
+        let text = "用户：请用三句话解释哈希表。🙂\n<|im_start|>assistant\n好的。<|im_end|>\n<|im_start|>user\n再来一个例子。<|im_start|>assistant\n";
+        assert!(
+            text.len() > text.chars().count() + 8,
+            "the fixture must carry multi-byte characters"
+        );
+
+        let (ids, offsets) = tokenizer
+            .encode_with_byte_offsets(text)
+            .expect("byte offsets");
+        assert_eq!(ids, tokenizer.encode(text, false).expect("plain encode"));
+        for (start, end) in &offsets {
+            assert!(start <= end, "descending offset {start}..{end}");
+            assert!(
+                text.get(*start..*end).is_some(),
+                "offset {start}..{end} is not a byte range of the text"
+            );
+        }
+
+        // Oracle: converting the tokenizer's own *char* offsets once gives
+        // the same spans as using its byte offsets directly.
+        let char_encoded = raw
+            .encode_char_offsets(text, false)
+            .expect("char-offset encode");
+        let mut char_to_byte: Vec<usize> = text.char_indices().map(|(byte, _)| byte).collect();
+        char_to_byte.push(text.len());
+        let expected: Vec<(usize, usize)> = char_encoded
+            .get_offsets()
+            .iter()
+            .map(|(start, end)| (char_to_byte[*start], char_to_byte[*end]))
+            .collect();
+        assert_eq!(offsets, expected);
+
+        // The assistant turn's first byte maps to the token consuming it.
+        // Which token that is depends on the vocabulary: the small test
+        // fixture keeps `<|im_start|>` whole, while a real vocabulary splits
+        // it into `<|`, `im_start`, `|>`. Both are correct cuts, so assert
+        // the invariant the caller relies on (the header starts the chosen
+        // token) instead of one vocabulary's segmentation.
+        let turn_start = text.find("<|im_start|>assistant").expect("assistant turn");
+        let cut = offsets
+            .iter()
+            .position(|(_, end)| *end > turn_start)
+            .expect("a token covers the turn start");
+        assert!(offsets[cut].0 <= turn_start);
+        assert!(offsets[cut].1 > turn_start);
+        assert_eq!(
+            offsets[cut].0,
+            turn_start,
+            "the cut token must start at the assistant header, got {:?}",
+            &text[offsets[cut].0..offsets[cut].1]
+        );
+        assert!(
+            text[offsets[cut].0..].starts_with("<|"),
+            "the cut token must open the assistant header, got {:?}",
+            &text[offsets[cut].0..offsets[cut].1]
+        );
     }
 
     #[test]

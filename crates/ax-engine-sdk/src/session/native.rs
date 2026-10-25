@@ -140,6 +140,12 @@ fn build_mlx_core(
         prefix_cache_store,
         shared_weights,
         u64::from(config.kv_config.block_size_tokens) * u64::from(config.kv_config.total_blocks),
+        // The priced memory plan charges per-request hybrid/QSA state once per
+        // live decode sequence, so it must see the concurrency the server was
+        // started with rather than the runner's generic cohort capacity.
+        config
+            .max_concurrent_requests
+            .map(|limit| limit.max(1) as u32),
     )
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
@@ -148,6 +154,10 @@ fn build_mlx_core(
         config.mlx_mtp_policy,
         runner.mtp_certified_default_on(),
     ));
+    // Latch the session policy itself, not just the requested bit: the Flash
+    // Next measured cost machine must see `required` so it reports
+    // `would_park` instead of parking (the force-MTP harness contract).
+    runner.set_mtp_session_policy(mtp_session_policy(config.mlx_mtp_policy));
     // DFlash2 block speculation (ADR-045) is on by default for greedy text
     // requests on the Qwen 3.8 27B target when a drafter checkpoint can be
     // found; an explicit `disabled` MTP policy keeps every model drafter off.
@@ -204,6 +214,19 @@ fn mtp_requested_for_policy(policy: MlxMtpPolicy, certified_default_on: bool) ->
         MlxMtpPolicy::Disabled => false,
         MlxMtpPolicy::Required => true,
         MlxMtpPolicy::Auto => certified_default_on,
+    }
+}
+
+/// Map the SDK's tri-state policy onto the runner's session latch.
+///
+/// This is the input the Flash Next cost machine uses to qualify its park
+/// decision: `required` never parks, `disabled` never measures.
+#[cfg(feature = "mlx-native")]
+fn mtp_session_policy(policy: MlxMtpPolicy) -> ax_engine_mlx::MtpSessionPolicy {
+    match policy {
+        MlxMtpPolicy::Disabled => ax_engine_mlx::MtpSessionPolicy::Disabled,
+        MlxMtpPolicy::Required => ax_engine_mlx::MtpSessionPolicy::Required,
+        MlxMtpPolicy::Auto => ax_engine_mlx::MtpSessionPolicy::Auto,
     }
 }
 

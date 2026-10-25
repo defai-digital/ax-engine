@@ -124,9 +124,13 @@ pub(crate) async fn anthropic_messages(
         )
     })?;
     let live = select_openai_model(&state, request.model.as_deref())?;
-    let openai_request = request.into_openai_chat_request()?;
+    let mut openai_request = request.into_openai_chat_request()?;
+    openai_request.api_polish = crate::openai::schema::ApiPolish(state.env.api_polish);
+    let api_polish = state.env.api_polish;
     let (request_id, response, stop_sequence) =
-        run_anthropic_messages_generation(state, live, openai_request).await?;
+        run_anthropic_messages_generation(state, live, openai_request)
+            .await
+            .map_err(|error| map_anthropic_generation_error(error, api_polish))?;
     Ok(Json(anthropic_message_response(
         request_id,
         &response,
@@ -242,6 +246,7 @@ impl AnthropicMessagesRequest {
             tool_choice: None,
             parallel_tool_calls: None,
             fit_max_tokens_to_context: false,
+            api_polish: crate::openai::schema::ApiPolish::default(),
         })
     }
 }
@@ -359,10 +364,17 @@ async fn run_anthropic_messages_generation(
     )?;
     // Native client stops are enforced server-side (ADR-040 D2); the matched
     // sequence surfaces as the Anthropic `stop_sequence` field.
-    let stop_sequence = crate::openai::stop::apply_client_stops_to_generate_response(
-        &mut response,
-        &response_options.client_stop_sequences,
-    );
+    let stop_sequence = if response_options.api_polish.0 {
+        crate::openai::stop::apply_client_stops_to_answer_only(
+            &mut response,
+            &response_options.client_stop_sequences,
+        )
+    } else {
+        crate::openai::stop::apply_client_stops_to_generate_response(
+            &mut response,
+            &response_options.client_stop_sequences,
+        )
+    };
     Ok((request_id, response, stop_sequence))
 }
 
@@ -445,10 +457,49 @@ fn invalid_request(message: impl Into<String>) -> (StatusCode, Json<ErrorRespons
     error_response(StatusCode::BAD_REQUEST, "invalid_request", message.into())
 }
 
+/// Anthropic clients expect `invalid_request_error`, not the OpenAI
+/// `context_length_exceeded` code. Other errors pass through. Gated on
+/// `AX_API_POLISH`.
+pub(crate) fn map_anthropic_generation_error(
+    error: (StatusCode, Json<ErrorResponse>),
+    api_polish: bool,
+) -> (StatusCode, Json<ErrorResponse>) {
+    if api_polish && error.1.0.error.code.as_deref() == Some("context_length_exceeded") {
+        return invalid_request(
+            "context length exceeded: the prompt does not fit the model context window",
+        );
+    }
+    error
+}
+
 #[cfg(test)]
 mod feature_gate_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn context_length_exceeded_is_remapped_to_anthropic_invalid_request() {
+        let overflow = crate::errors::error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            "prompt has 99 tokens but the model context length is 8".to_string(),
+        );
+        let mapped = map_anthropic_generation_error(overflow, true);
+        assert_eq!(mapped.0, StatusCode::BAD_REQUEST);
+        assert_eq!(mapped.1.0.error.code.as_deref(), Some("invalid_request"));
+        assert_eq!(mapped.1.0.error.error_type, "invalid_request_error");
+        assert!(mapped.1.0.error.message.contains("context length exceeded"));
+        let overflow = crate::errors::error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            "prompt has 99 tokens but the model context length is 8".to_string(),
+        );
+        let kept = map_anthropic_generation_error(overflow, false);
+        assert_eq!(
+            kept.1.0.error.code.as_deref(),
+            Some("context_length_exceeded")
+        );
+    }
 
     #[test]
     fn feature_requested_truth_table() {

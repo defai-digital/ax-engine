@@ -819,6 +819,17 @@ struct EngineStepStats {
     mlx_prefix_cache_reused_tokens_total: u64,
     mlx_prefix_cache_warmup_tokens_total: u64,
     mlx_prefix_cache_blocked_entry_too_large_total: u64,
+    /// In-place prefix snapshots stored at a semantic (assistant-turn) cut.
+    mlx_prefix_cache_semantic_cut_snapshots_total: u64,
+    /// Prefix checkpoints refused because linear, GDN, or QSA state was not
+    /// already at the requested cut. Per-step deltas of the runner counter.
+    mlx_checkpoint_unsupported_total: u64,
+    /// Prefix checkpoint disk writes that failed or were dropped. Per-step
+    /// deltas of the runner counter.
+    mlx_checkpoint_write_errors_total: u64,
+    /// Value-priced restore decisions in
+    /// `RESTORE_VALUE_DECISION_LABELS` order.
+    mlx_prefix_cache_restore_value_decisions_total: [u64; 3],
     mlx_prefill_wall_us_total: u64,
     mlx_prefill_wall_us_last: u64,
     mlx_prefill_forward_wall_us_total: u64,
@@ -894,6 +905,12 @@ impl EngineStepStats {
             mlx_prefix_cache_warmup_tokens_total: self.mlx_prefix_cache_warmup_tokens_total,
             mlx_prefix_cache_blocked_entry_too_large_total: self
                 .mlx_prefix_cache_blocked_entry_too_large_total,
+            mlx_prefix_cache_semantic_cut_snapshots_total: self
+                .mlx_prefix_cache_semantic_cut_snapshots_total,
+            mlx_checkpoint_unsupported_total: self.mlx_checkpoint_unsupported_total,
+            mlx_checkpoint_write_errors_total: self.mlx_checkpoint_write_errors_total,
+            mlx_prefix_cache_restore_value_decisions_total: self
+                .mlx_prefix_cache_restore_value_decisions_total,
             mlx_prefill_wall_us_total: self.mlx_prefill_wall_us_total,
             mlx_prefill_forward_wall_us_total: self.mlx_prefill_forward_wall_us_total,
             mlx_prefill_prefix_cache_wall_us_total: self.mlx_prefill_prefix_cache_wall_us_total,
@@ -961,6 +978,10 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mlx_prefix_cache_reused_tokens_total: u64,
     pub(crate) mlx_prefix_cache_warmup_tokens_total: u64,
     pub(crate) mlx_prefix_cache_blocked_entry_too_large_total: u64,
+    pub(crate) mlx_prefix_cache_semantic_cut_snapshots_total: u64,
+    pub(crate) mlx_checkpoint_unsupported_total: u64,
+    pub(crate) mlx_checkpoint_write_errors_total: u64,
+    pub(crate) mlx_prefix_cache_restore_value_decisions_total: [u64; 3],
     pub(crate) mlx_prefill_wall_us_total: u64,
     pub(crate) mlx_prefill_forward_wall_us_total: u64,
     pub(crate) mlx_prefill_prefix_cache_wall_us_total: u64,
@@ -1289,8 +1310,31 @@ impl ServerMetrics {
                     &mut entry.mlx_prefix_cache_blocked_entry_too_large_total,
                     "ax_mlx_prefix_cache_blocked_entry_too_large",
                 ),
+                (
+                    &mut entry.mlx_prefix_cache_semantic_cut_snapshots_total,
+                    "ax_mlx_prefix_cache_semantic_cut_snapshots",
+                ),
+                (
+                    &mut entry.mlx_checkpoint_unsupported_total,
+                    "ax_mlx_checkpoint_unsupported",
+                ),
+                (
+                    &mut entry.mlx_checkpoint_write_errors_total,
+                    "ax_mlx_checkpoint_write_errors",
+                ),
             ] {
                 *target = target.saturating_add(u64::from(route.decision(key).unwrap_or(0)));
+            }
+            for (slot, key) in entry
+                .mlx_prefix_cache_restore_value_decisions_total
+                .iter_mut()
+                .zip([
+                    "ax_mlx_prefix_cache_restore_value_semantic_cut",
+                    "ax_mlx_prefix_cache_restore_value_priced_restore",
+                    "ax_mlx_prefix_cache_restore_value_ram_baseline",
+                ])
+            {
+                *slot = slot.saturating_add(u64::from(route.decision(key).unwrap_or(0)));
             }
             // DecodeTelemetry re-emits the request's running prefill wall
             // times on every chunk and decode step. Adding those snapshots
@@ -1507,6 +1551,22 @@ impl ServerMetrics {
         process.mlx_prefix_cache_blocked_entry_too_large_total = process
             .mlx_prefix_cache_blocked_entry_too_large_total
             .saturating_add(entry.mlx_prefix_cache_blocked_entry_too_large_total);
+        process.mlx_prefix_cache_semantic_cut_snapshots_total = process
+            .mlx_prefix_cache_semantic_cut_snapshots_total
+            .saturating_add(entry.mlx_prefix_cache_semantic_cut_snapshots_total);
+        process.mlx_checkpoint_unsupported_total = process
+            .mlx_checkpoint_unsupported_total
+            .saturating_add(entry.mlx_checkpoint_unsupported_total);
+        process.mlx_checkpoint_write_errors_total = process
+            .mlx_checkpoint_write_errors_total
+            .saturating_add(entry.mlx_checkpoint_write_errors_total);
+        for (total, decision) in process
+            .mlx_prefix_cache_restore_value_decisions_total
+            .iter_mut()
+            .zip(entry.mlx_prefix_cache_restore_value_decisions_total.iter())
+        {
+            *total = total.saturating_add(*decision);
+        }
         process.mlx_prefill_wall_us_total = process
             .mlx_prefill_wall_us_total
             .saturating_add(entry.mlx_prefill_wall_us_total);
@@ -1811,6 +1871,7 @@ fn run_warmup_generate_request(
     if generation_service
         .submit(move |session| {
             let request = GenerateRequest {
+                prefill_hints: Default::default(),
                 model_id,
                 input_tokens,
                 // Cleared after tokenize (parity with OpenAI native MLX path).

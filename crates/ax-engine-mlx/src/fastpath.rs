@@ -160,6 +160,25 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
     std::env::var(name).map_or(true, |raw| parse_bool_value(&raw))
 }
 
+/// Opt-in value-priced prefix restore (`AX_MLX_PREFIX_RESTORE_VALUE`) and
+/// semantic snapshot cut points (`AX_MLX_PREFIX_SEMANTIC_CUTS`) are resolved
+/// in `ax-engine-core` so the request edge and the runner agree on them (the
+/// edge skips hint construction when they are off).
+///
+/// The two switches carry different contracts. Restore value only chooses
+/// among snapshots that already exist, so it must never change the text.
+/// Semantic cuts change the prefill chunk partition — cut capture splits the
+/// cold prefill, and the plan is part of the execution signature — so their
+/// output equals a cold run under the same setting, not necessarily the
+/// switch-off output.
+pub(crate) fn prefix_restore_value_enabled() -> bool {
+    ax_engine_core::prefix_features::restore_value_enabled()
+}
+
+pub(crate) fn prefix_semantic_cuts_enabled() -> bool {
+    ax_engine_core::prefix_features::semantic_cuts_enabled()
+}
+
 /// Activation dtype policy for the Qwen hybrid (`qwen3_5`) runtime,
 /// `AX_MLX_ACTIVATION_DTYPE`:
 ///
@@ -502,8 +521,9 @@ pub(crate) fn batched_prefill_max_rows() -> u32 {
 
 env_flag_default_on!(
     /// `AX_MLX_LOAD_KERNEL_WARMUP` — at model load, compile the custom
-    /// Metal kernel specializations the decode path will hit (currently
-    /// the linear-attention gated-delta + conv1d family) so the lazy
+    /// Metal kernel specializations the first request would otherwise
+    /// hit (the linear-attention gated-delta + conv1d family, and the
+    /// Flash Next QSA prefill block-key kernel) so the lazy
     /// MSL→pipeline compile does not land inside the first request's
     /// latency. Best-effort: warm-up failure logs a warning and the
     /// model still loads.
@@ -1671,6 +1691,16 @@ env_flag!(
     /// round, about 25% slower drafting). **Default: OFF** (MXFP4).
     dflash2_bf16_enabled,
     "AX_MLX_DFLASH2_BF16"
+);
+
+env_flag!(
+    /// `AX_MLX_TREE_VERIFY` - verify a DFlash2 draft as a tree of at most four
+    /// nodes (top-2 tokens at the first two draft positions) instead of one
+    /// linear chain. Each branch runs the canonical greedy verify on its own
+    /// cache clone. **Default: OFF.** Unset, `0`, or any other non-truthy
+    /// value keeps today's linear DFlash2 path.
+    tree_verify_enabled,
+    "AX_MLX_TREE_VERIFY"
 );
 
 env_flag_default_on!(
@@ -5575,19 +5605,57 @@ env_flag_default_on!(
 );
 
 /// Short multi-query verifier windows (at most this many rows) may select on
-/// the device when `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` is on; longer
-/// chunks (prefill) always select on the host.
+/// the device when `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` is on. Longer
+/// prefill chunks select on the device when
+/// `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` is on (the default).
 pub(crate) const QSA_DEVICE_SELECT_MULTI_MAX_QUERIES: i32 = 4;
 
 env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` — choose QSA blocks on the
     /// device for short multi-query verifier windows (the block/batched MTP
     /// verifier), removing the per-layer score read-back stall. Selection order
-    /// is the same stable score-descending, lower-block-index-on-ties order as
-    /// the host path and the singleton device path. Default ON; set `=0` to
-    /// restore host selection for multi-query chunks.
+    /// is score descending, then the lower block id. The default negated-score
+    /// argsort depends on MLX tie and NaN order. `=1` on
+    /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY` orders a unique block key
+    /// instead, so that result does not depend on argsort stability. Default
+    /// ON; set `=0` to restore host selection for multi-query chunks.
     flash_next_qsa_device_select_multi_enabled,
     "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI"
+);
+
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY` — opt single-query decode and
+    /// short verifier windows into a unique device block key instead of the
+    /// negated-score argsort. The key is the prefill finite-score encoding
+    /// (score descending, lower block id, signed zero collapsed), with a causal
+    /// NaN rewritten to the -inf class and a future block keyed above every
+    /// causal key. Keys in one row are unique, so the partition and argsort do
+    /// not depend on sort stability. **Default: OFF**. Unset does not launch
+    /// or compile this kernel on the decode path. Set `=1` to opt in. The
+    /// ordered tokens match the host sort for finite scores, and the selection
+    /// graph does not read the key back. A missing block-key kernel uses the
+    /// argsort too. Enable it when an MLX bump breaks the tie and NaN order
+    /// the default argsort relies on. This does not change prefill
+    /// (`AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT`) and does not by itself
+    /// move a step off the device: single-query selection still follows
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`, and short windows still follow
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`.
+    flash_next_qsa_decode_block_key_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` — choose QSA blocks for a
+    /// prefill chunk on the device. Scores stay on the device: a total order
+    /// key (score descending, lower block id first, signed zero collapsed)
+    /// is partitioned and sorted there, then the existing attend path gathers
+    /// those indices. Default ON; the ordered indices and the logits match
+    /// the host sort. Set `=0` to restore that host sort exactly.
+    /// Single-query decode stays on `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT`.
+    /// Short verifier windows stay on
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI`.
+    flash_next_qsa_prefill_device_select_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT"
 );
 
 env_flag_default_on!(
@@ -5610,6 +5678,92 @@ env_flag_default_on!(
     flash_next_qsa_batched_attention_enabled,
     "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
 );
+
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
+    /// chunks by reading each query's selected K/V rows straight out of the
+    /// sealed/tail history in a custom Metal kernel, instead of gathering a
+    /// padded `[queries, selected, kv_heads, head_dim]` tile and running masked
+    /// `scaled_dot_product_attention` over it.
+    ///
+    /// **Default OFF**. Selection order, causal membership, scale, the GQA
+    /// mapping and the dtype transition are preserved, so this attends to the
+    /// same values as the gathered path, but the reduction order and online
+    /// softmax rescaling differ: it is not bit-identical to MLX's fused SDPA.
+    /// Decode, verifier windows, multi-batch calls and unsupported geometries
+    /// keep the gathered path. Set `=1` to opt in; `=0` restores today's path.
+    flash_next_qsa_indexed_prefill_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL"
+);
+
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` — score Flash Next QSA blocks in
+    /// query tiles so a long prefill chunk is not rejected by the monolithic
+    /// 256 MiB score workspace. Default OFF. Tiling runs only for the MLX
+    /// 0.32.4 GEMM shapes whose tests match the monolithic score bits; every
+    /// other shape keeps the monolithic scores and the 256 MiB check. Set
+    /// `=1` to opt in. This does not by itself change the outer prefill chunk.
+    flash_next_qsa_tiled_scores_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES"
+);
+
+/// Outer prefill chunks a tiled-score measurement may request. 8192 is one
+/// of the measured sizes, not the default chunk.
+pub(crate) const FLASH_NEXT_QSA_TILED_OUTER_CHUNKS: [usize; 3] = [2048, 4096, 8192];
+
+/// `requested` is honored only while tiled scores are on, the runtime gate
+/// (GPU architecture, MLX version, and the production score contract) passes,
+/// and the value is one of [`FLASH_NEXT_QSA_TILED_OUTER_CHUNKS`]. Any other
+/// request keeps the existing chunk. A gate-failing runtime with the knobs
+/// set behaves as if the knobs were off. A chunk the monolithic 256 MiB check
+/// would reject is a measurement configuration, not a baseline comparison.
+pub(crate) fn flash_next_tiled_outer_chunk_override(
+    tiled_scores: bool,
+    requested: Option<usize>,
+) -> Option<usize> {
+    flash_next_tiled_outer_chunk_override_gated(
+        tiled_scores,
+        requested,
+        crate::qwen4_exp_qsa::flash_next_qsa_tiled_score_gate_open(),
+    )
+}
+
+/// Pure form of [`flash_next_tiled_outer_chunk_override`]. `gate_open` is the
+/// arch, MLX version, and production-contract check.
+pub(crate) fn flash_next_tiled_outer_chunk_override_gated(
+    tiled_scores: bool,
+    requested: Option<usize>,
+    gate_open: bool,
+) -> Option<usize> {
+    if !tiled_scores || !gate_open {
+        return None;
+    }
+    requested.filter(|chunk| FLASH_NEXT_QSA_TILED_OUTER_CHUNKS.contains(chunk))
+}
+
+/// `AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK` — when tiled scores are on,
+/// run Flash Next outer prefill at 2048, 4096, or 8192 instead of the
+/// long-prompt clamp. Unset, or set while tiled scores are off, keeps the
+/// current chunk. 8192 is not the default.
+///
+/// Measure TTFT as the serving bench does: request to the first content or
+/// reasoning chunk. Same-chunk A/B isolates this change. Then sweep 512,
+/// 2048, 4096, and 8192. A chunk the monolithic score check rejects is not a
+/// baseline. Fixtures are 8192, 32768, and 39936 tokens; 39936 is past the
+/// 32k standard and is listed separately when it does not fit in 128 GiB.
+/// One resident request, MTP off, prefix hits disabled, greedy 32 tokens.
+/// Two warm-ups and ten interleaved runs: median, p95, peak memory, QSA
+/// time, and ordered indices. Whole-model qualification of the larger
+/// chunks is a later increment.
+pub(crate) fn flash_next_qsa_tiled_outer_prefill_chunk() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        flash_next_tiled_outer_chunk_override(
+            flash_next_qsa_tiled_scores_enabled(),
+            parse_positive_usize_env("AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK"),
+        )
+    })
+}
 
 env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT` — gather routed experts in
@@ -6370,6 +6524,16 @@ pub(crate) fn scale_prefill_chunk_for_remaining_in_family(
     remaining_tokens: usize,
     model_family: &str,
 ) -> usize {
+    // Measurement mode only. The default chunk is unchanged unless
+    // `AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK` names 2048, 4096, or 8192
+    // while tiled scores are on. Whole-model qualification of those chunks
+    // is a later increment. Do not treat a chunk the monolithic score check
+    // would reject as a successful baseline comparison.
+    if model_family.eq_ignore_ascii_case("qwen4_exp")
+        && let Some(chunk) = flash_next_qsa_tiled_outer_prefill_chunk()
+    {
+        return chunk;
+    }
     let base = base_chunk.max(1);
     if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD
         && long_prompt_prefill_clamp_applies(model_family)
@@ -6653,6 +6817,27 @@ env_flag_default_on!(
     "AX_MLX_BATCHED_SHARED_PROJ"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_BATCHED_STATE_MATERIALIZE` — schedule the batched gated-delta
+    /// conv/recurrent state for evaluation at the end of every batched decode
+    /// step.
+    ///
+    /// **Default: ON** (kill switch via `AX_MLX_BATCHED_STATE_MATERIALIZE=0`,
+    /// which restores the purely lazy state update).
+    ///
+    /// Each step's state is a fresh kernel output consumed by the *next* step's
+    /// kernel; nothing on the logits path reads it, so without an explicit
+    /// materialization the state node stays pending and the next step's kernel
+    /// graph is built on top of it. A long-running cohort therefore keeps one
+    /// suspended graph per step alive for the whole session — the failure mode
+    /// that drove another engine into Metal's resource limit after ~40 minutes.
+    /// The commit uses `async_eval`, not a blocking `eval`: the decode step
+    /// already blocks once on argmax, and scheduling alone releases the
+    /// intermediate nodes. State bytes are unchanged.
+    batched_state_materialize_enabled,
+    "AX_MLX_BATCHED_STATE_MATERIALIZE"
+);
+
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
 pub(crate) fn diffusion_entropy_threshold() -> Option<f32> {
@@ -6886,6 +7071,40 @@ pub(crate) fn gemma4_loop_detection_mode_for(raw: Option<&str>) -> Gemma4LoopDet
         "force" => Gemma4LoopDetectionMode::Force,
         _ => Gemma4LoopDetectionMode::Default,
     }
+}
+
+/// `AX_MLX_PRICED_MEMORY` — kill switch for the priced expert-stream memory
+/// plan. Unset means on; only an explicit false-y value restores the legacy
+/// fixed-headroom Auto formula. Read once: the plan is resolved at admission,
+/// never per decode step.
+pub(crate) fn priced_memory_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| std::env::var("AX_MLX_PRICED_MEMORY").ok())
+        .clone()
+}
+
+/// `AX_STREAM_EXPERT_CACHE_BYTES` — explicit byte budget for resident expert
+/// layer stacks. Unset means "no operator byte cap". Read once: the loader
+/// resolves the budget when it builds the expert layer stacks.
+pub(crate) fn stream_expert_cache_bytes_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| std::env::var("AX_STREAM_EXPERT_CACHE_BYTES").ok())
+        .clone()
+}
+
+/// `AX_MLX_MEMORY_CEILING_BYTES` — explicit load-admission ceiling in bytes.
+/// Unset means "derive it from host RAM". The priced plan still keeps the last
+/// 4 GiB for the system, so an override can never page the kernel out. Read
+/// once: the ceiling is resolved at admission, never per decode step.
+pub(crate) fn memory_ceiling_override_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var(ax_engine_core::memory_budget::MEMORY_PLAN_CEILING_OVERRIDE_ENV).ok()
+        })
+        .clone()
 }
 
 #[cfg(test)]

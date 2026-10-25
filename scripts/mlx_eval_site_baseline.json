@@ -8,11 +8,15 @@
   "crates/ax-engine-mlx/src/batched_kv_cache.rs": {
     "eval": 2
   },
+  "crates/ax-engine-mlx/src/batched_linear_state.rs": {
+    "async_eval": 1
+  },
   "crates/ax-engine-mlx/src/batched_sampling.rs": {
     "eval": 2
   },
   "crates/ax-engine-mlx/src/dflash2.rs": {
-    "eval": 3
+    "eval": 1,
+    "try_eval": 4
   },
   "crates/ax-engine-mlx/src/diffusion.rs": {
     "eval": 8
@@ -23,6 +27,9 @@
   "crates/ax-engine-mlx/src/generate.rs": {
     "async_eval": 3,
     "eval": 11
+  },
+  "crates/ax-engine-mlx/src/idle_residency.rs": {
+    "try_eval": 1
   },
   "crates/ax-engine-mlx/src/kv_cache.rs": {
     "eval": 2
@@ -44,7 +51,7 @@
     "try_eval": 2
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": {
-    "eval": 21,
+    "eval": 23,
     "try_eval": 3
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": {
@@ -72,6 +79,9 @@
     "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention.rs": {
+    "try_eval": 1
+  },
+  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention_indexed.rs": {
     "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_fused.rs": {
@@ -111,10 +121,10 @@
   },
   "crates/ax-engine-mlx/src/qwen4_exp_qsa.rs": {
     "eval": 1,
-    "try_eval": 3
+    "try_eval": 6
   },
   "crates/ax-engine-mlx/src/runner/dflash2_decode.rs": {
-    "eval": 3
+    "try_eval": 6
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,

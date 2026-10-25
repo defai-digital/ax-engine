@@ -7,6 +7,7 @@ mod generation;
 mod grpc;
 mod lifecycle;
 mod limits;
+mod memory_route;
 mod metadata;
 mod metrics;
 mod model_load;

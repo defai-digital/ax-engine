@@ -473,6 +473,7 @@ pub(crate) struct SyntheticRequestSpec {
 impl SyntheticRequestSpec {
     pub(crate) fn into_submission(self) -> RequestSubmission {
         RequestSubmission {
+            prefill_hints: Default::default(),
             request_id: self.request_id,
             model_id: ax_engine_core::ModelId(self.model_family),
             input_tokens: self.input_tokens,

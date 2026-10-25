@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use ax_engine_core::RequestSnapshot;
 use ax_engine_core::{
-    RequestMultimodalInputs, RequestState, RouteMetadata, SamplingParams, StopReason,
+    PrefillHints, RequestMultimodalInputs, RequestState, RouteMetadata, SamplingParams, StopReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,10 @@ pub struct GenerateRequest {
     pub stop_sequences: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
+    /// Typed prefill hints (semantic snapshot cut points) derived from the
+    /// rendered prompt's full tokenization. Not part of `metadata`.
+    #[serde(default, skip_serializing_if = "PrefillHints::is_empty")]
+    pub prefill_hints: PrefillHints,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -900,6 +904,7 @@ mod tests {
 
         let record = RequestRecord::new(
             RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(1),
                 model_id: ModelId("qwen3".to_string()),
                 input_tokens: vec![1, 2],

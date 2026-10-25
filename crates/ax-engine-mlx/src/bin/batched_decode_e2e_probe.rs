@@ -210,6 +210,7 @@ fn runner_input(
 ) -> RunnerInput {
     let total: u32 = items.iter().map(|i| i.scheduled_token_count).sum();
     RunnerInput {
+        request_prefill_hints: Vec::new(),
         block_size_tokens: 16,
         memory_pressure: None,
         execution_batch: ExecutionBatch {

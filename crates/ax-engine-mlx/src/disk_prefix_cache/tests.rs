@@ -49,6 +49,9 @@ fn test_key(
         route_policy,
         layer_layout,
         kv_payload_version: 3,
+        kv_quantization: "",
+        kv_dtype: "",
+        execution_signature: "",
         block_size_tokens,
         token_count,
         tokens,
@@ -1092,6 +1095,9 @@ fn canonical_key_v3_changes_for_every_identity_field() {
         layer_layout: "l",
         kv_payload_version: 3,
         block_size_tokens: 16,
+        kv_quantization: "",
+        kv_dtype: "",
+        execution_signature: "",
         token_count: 4,
         tokens: &[1, 2, 3, 4],
     };
@@ -1139,6 +1145,45 @@ fn canonical_key_v3_changes_for_every_identity_field() {
         ..base
     });
     assert_ne!(reference, shifted, "string boundaries must be unambiguous");
+}
+
+#[test]
+fn disk_key_changes_with_kv_quant() {
+    let base = DiskPrefixKeyFields {
+        model_id: "m",
+        artifact_fingerprint_sha256: "aa",
+        route_policy: "p",
+        layer_layout: "l",
+        kv_payload_version: 3,
+        kv_quantization: "f16",
+        kv_dtype: "float16",
+        execution_signature: "route=direct",
+        block_size_tokens: 16,
+        token_count: 4,
+        tokens: &[1, 2, 3, 4],
+    };
+    let reference = canonical_key_bytes(&base);
+    for variant in [
+        DiskPrefixKeyFields {
+            kv_quantization: "4b/g64",
+            ..base
+        },
+        DiskPrefixKeyFields {
+            kv_dtype: "bfloat16",
+            ..base
+        },
+        DiskPrefixKeyFields {
+            execution_signature: "route=ngram",
+            ..base
+        },
+    ] {
+        assert_ne!(
+            reference,
+            canonical_key_bytes(&variant),
+            "resolved KV quant/dtype and execution signature must change the key"
+        );
+    }
+    assert_eq!(reference, canonical_key_bytes(&base));
 }
 
 #[test]
@@ -1536,6 +1581,46 @@ fn page_manifest_round_trip_survives_restart_with_flag_disabled() {
     let hit = reopened.get(&key).expect("reopen get").expect("reopen hit");
     assert_eq!(hit.payload, payload);
     assert_eq!(hit.producer_cold_prefill_us, 42_000);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn probe_metadata_reports_logical_payload_for_page_manifests() {
+    let dir = unique_tempdir("page-probe");
+    let key = test_key("m", "p", "standard-fa", 4, 4, 0x9a, &[5, 6, 7, 8]);
+    // Two identical 8-byte pages: one blob on disk, 16 logical bytes.
+    let payload = b"abcdefghabcdefgh".to_vec();
+    let cache = DiskPrefixCache::with_policy(
+        &dir,
+        DiskPrefixCachePolicy {
+            page_store: true,
+            page_bytes: 8,
+            page_gc_grace_ms: 0,
+            ..DiskPrefixCachePolicy::default()
+        },
+    )
+    .expect("open page store");
+    cache
+        .insert_parts(&key, &payload, None, 0, 0)
+        .expect("insert page manifest");
+
+    let raw = fs::read(cache.path_for(&key)).expect("manifest file");
+    let manifest_len = u64::from_le_bytes(raw[20..28].try_into().expect("manifest length"));
+    let metadata = cache.probe_metadata(&key).expect("metadata probe");
+    // Capacity guards and restore pricing use the logical payload the pages
+    // reassemble into, never the framing/manifest size that names them (with
+    // a 16-byte payload the manifest is the larger of the two).
+    assert_eq!(metadata.materialized_bytes, payload.len() as u64);
+    assert_eq!(metadata.materialized_bytes, 16);
+    assert!(
+        metadata.materialized_bytes < metadata.payload_bytes,
+        "read cost is the manifest plus the deduplicated page blob, so it \
+         exceeds the logical payload: materialized={} read={}",
+        metadata.materialized_bytes,
+        metadata.payload_bytes
+    );
+    // Read cost counts the manifest plus the deduplicated page blob once.
+    assert_eq!(metadata.payload_bytes, manifest_len + 8);
     let _ = fs::remove_dir_all(&dir);
 }
 

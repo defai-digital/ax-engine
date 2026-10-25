@@ -10,6 +10,12 @@ use crate::ids::{RequestId, StepId};
 use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
+use crate::prefill_handoff::{
+    CheckpointReason, CommittedPrefix, MAX_PRESSURE_SPILLS, MODEL_PREFILL_SAFETY_CAP,
+    MemoryPressureSample, NON_REUSABLE_CHUNK_HISTORY_MARK, PrefillChunkPolicy, SpillVictimProfile,
+    chunk_history_is_miss, env_switch_enabled, planned_chunk_history, prefix_adoption_allowed,
+    published_adaptive_prefill_quantum, spill_victim_eligible,
+};
 use crate::request::RequestRecord;
 use crate::request::RequestState;
 use crate::request::RequestSubmission;
@@ -19,7 +25,7 @@ use crate::runner::RequestLogitsOutput;
 use crate::runner::{
     DeterministicRunner, ExecutionRunner, ResolvedBlockTable, RunnerInput, RunnerOutput,
     RunnerRequestContext, RunnerRequestJsonGrammar, RunnerRequestLogitBias,
-    RunnerRequestMultimodalInput,
+    RunnerRequestMultimodalInput, RunnerRequestPrefillHints,
 };
 use crate::sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
@@ -27,6 +33,7 @@ use crate::sampling::{
 };
 use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
+    chunk_history_marked_non_reusable,
 };
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
@@ -112,6 +119,10 @@ pub struct EngineCore {
     prefill_stall: crate::prefill_stall::PrefillStallPolicy,
     /// Default generation paradigm applied to new submissions (ADR-038).
     generation_kind: GenerationKind,
+    /// Live decode sequences the loaded model may run concurrently, resolved by
+    /// the runner's load-time priced plan. `None` keeps the historical
+    /// admit-every-waiting-request behaviour.
+    live_sequence_cap: Option<usize>,
     next_step_id: u64,
     /// Consecutive runner/sampler panics contained at the step boundary.
     /// Reset on every successful dispatch; at `RUNNER_PANIC_RETIREMENT_THRESHOLD`
@@ -130,6 +141,28 @@ pub struct EngineCore {
     scratch_logits_index: HashMap<RequestId, usize>,
     scratch_logits_handles: HashSet<RequestId>,
     scratch_item_index: HashMap<RequestId, usize>,
+    adaptive_prefill: bool,
+    prefill_chunk_policy: PrefillChunkPolicy,
+    pressure_requeue: bool,
+    cancel_keep_prefix: bool,
+    committed_prefixes: BTreeMap<RequestId, CommittedPrefix>,
+    chunk_histories: BTreeMap<RequestId, Vec<u32>>,
+    spill_attempts: BTreeMap<RequestId, u8>,
+    spill_excluded: BTreeSet<RequestId>,
+    spill_reservations: BTreeMap<RequestId, u64>,
+    spill_budget_bytes: u64,
+    spill_reserved_bytes: u64,
+    ssd_spill_hits: u32,
+    spill_preemption: PreemptionMetrics,
+    cancel_checkpoint_ids: BTreeSet<RequestId>,
+    cancel_checkpoints: Vec<CommittedPrefix>,
+    cancel_checkpoint_attempts: u32,
+    /// First committed chunk size for chunk-sensitive models. Kept for the
+    /// life of the request so a later step does not change that quantum.
+    frozen_prefill_quantums: BTreeMap<RequestId, u32>,
+    /// Committed prompt tokens to attach when a spilled or cancelled prefix
+    /// resumes. The runner restores from this slice, not from a temp file.
+    restore_prefix_tokens: BTreeMap<RequestId, Vec<u32>>,
 }
 
 impl EngineCore {
@@ -161,6 +194,10 @@ impl EngineCore {
         R: ExecutionRunner + 'static,
         S: TokenSampler + 'static,
     {
+        let live_sequence_cap = runner
+            .native_live_sequence_cap()
+            .and_then(|cap| usize::try_from(cap).ok())
+            .filter(|cap| *cap > 0);
         Self {
             request_manager: RequestManager::new(kv_config.cache_group_id),
             kv_manager: KvManager::new(kv_config),
@@ -174,6 +211,7 @@ impl EngineCore {
             max_inflight_prefill_requests: 0,
             prefill_stall: crate::prefill_stall::PrefillStallPolicy::default(),
             generation_kind: GenerationKind::Autoregressive,
+            live_sequence_cap,
             next_step_id: 0,
             consecutive_runner_panics: 0,
             pending_evictions: 0,
@@ -182,7 +220,84 @@ impl EngineCore {
             scratch_logits_index: HashMap::with_capacity(32),
             scratch_logits_handles: HashSet::with_capacity(32),
             scratch_item_index: HashMap::with_capacity(32),
+            adaptive_prefill: env_switch_enabled("AX_ENGINE_ADAPTIVE_PREFILL"),
+            prefill_chunk_policy: PrefillChunkPolicy::default(),
+            pressure_requeue: env_switch_enabled("AX_MLX_PRESSURE_REQUEUE"),
+            cancel_keep_prefix: env_switch_enabled("AX_MLX_CANCEL_KEEP_PREFIX"),
+            committed_prefixes: BTreeMap::new(),
+            chunk_histories: BTreeMap::new(),
+            spill_attempts: BTreeMap::new(),
+            spill_excluded: BTreeSet::new(),
+            spill_reservations: BTreeMap::new(),
+            spill_budget_bytes: 64 * 1024 * 1024,
+            spill_reserved_bytes: 0,
+            ssd_spill_hits: 0,
+            spill_preemption: PreemptionMetrics::default(),
+            cancel_checkpoint_ids: BTreeSet::new(),
+            cancel_checkpoints: Vec::new(),
+            cancel_checkpoint_attempts: 0,
+            frozen_prefill_quantums: BTreeMap::new(),
+            restore_prefix_tokens: BTreeMap::new(),
         }
+    }
+
+    /// `AX_ENGINE_ADAPTIVE_PREFILL`. The historical chunk choice stays in
+    /// place while this is off.
+    pub fn set_adaptive_prefill(&mut self, enabled: bool) {
+        self.adaptive_prefill = enabled;
+    }
+
+    /// `AX_MLX_PRESSURE_REQUEUE`.
+    pub fn set_pressure_requeue(&mut self, enabled: bool) {
+        self.pressure_requeue = enabled;
+    }
+
+    /// `AX_MLX_CANCEL_KEEP_PREFIX`.
+    pub fn set_cancel_keep_prefix(&mut self, enabled: bool) {
+        self.cancel_keep_prefix = enabled;
+    }
+
+    pub fn set_prefill_chunk_policy(&mut self, policy: PrefillChunkPolicy) {
+        self.prefill_chunk_policy = policy;
+    }
+
+    pub fn set_spill_budget_bytes(&mut self, bytes: u64) {
+        self.spill_budget_bytes = bytes;
+    }
+
+    pub fn ssd_spill_hits(&self) -> u32 {
+        self.ssd_spill_hits
+    }
+
+    pub fn spill_attempts_for(&self, request_id: RequestId) -> u8 {
+        self.spill_attempts.get(&request_id).copied().unwrap_or(0)
+    }
+
+    pub fn cancel_checkpoints(&self) -> &[CommittedPrefix] {
+        &self.cancel_checkpoints
+    }
+
+    pub fn cancel_checkpoint_attempts(&self) -> u32 {
+        self.cancel_checkpoint_attempts
+    }
+
+    pub fn spill_reserved_bytes(&self) -> u64 {
+        self.spill_reserved_bytes
+    }
+
+    pub fn handoff_prefix_count(&self) -> usize {
+        self.committed_prefixes.len()
+    }
+
+    pub fn chunk_history_len(&self, request_id: RequestId) -> usize {
+        self.chunk_histories
+            .get(&request_id)
+            .map(|history| history.len())
+            .unwrap_or(0)
+    }
+
+    pub fn cancel_checkpoint_tracked(&self, request_id: RequestId) -> bool {
+        self.cancel_checkpoint_ids.contains(&request_id)
     }
 
     pub fn request_manager(&self) -> &RequestManager {
@@ -228,6 +343,21 @@ impl EngineCore {
         self.generation_kind = generation_kind;
     }
 
+    /// Live decode sequences this core admits at once.
+    ///
+    /// Resolved at construction from
+    /// [`ExecutionRunner::native_live_sequence_cap`]; callers that build a core
+    /// without a capped runner may also set it explicitly. `None` admits every
+    /// waiting request, which is the historical behaviour.
+    pub fn set_live_sequence_cap(&mut self, cap: Option<usize>) {
+        self.live_sequence_cap = cap.filter(|cap| *cap > 0);
+    }
+
+    /// Live decode sequences this core admits at once, if a cap is in force.
+    pub fn live_sequence_cap(&self) -> Option<usize> {
+        self.live_sequence_cap
+    }
+
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
         self.runner.metal_dispatch_trace()
     }
@@ -244,6 +374,12 @@ impl EngineCore {
 
     pub fn native_expert_streaming_active(&self) -> bool {
         self.runner.native_expert_streaming_active()
+    }
+
+    /// One keep-warm GPU copy on this session's runner. False when the runner
+    /// has nothing to touch. Does not change the wired limit.
+    pub fn touch_idle_residency(&self) -> bool {
+        self.runner.touch_idle_residency()
     }
 
     pub fn embed(
@@ -291,6 +427,9 @@ impl EngineCore {
         )?;
         // Bind generation kind atomically with insert (ADR-038) so a failed
         // post-submit set cannot leave a request with the wrong strategy.
+        let restore_tokens = self
+            .cancel_keep_prefix
+            .then(|| submission.input_tokens.clone());
         if let Err(error) = self
             .request_manager
             .submit_with_generation_kind(submission, self.generation_kind)
@@ -298,10 +437,20 @@ impl EngineCore {
             let _ = self.kv_manager.free(request_id);
             return Err(error.into());
         }
+        if let Some(tokens) = restore_tokens.as_deref()
+            && let Err(error) = self.try_restore_cancelled_prefix(request_id, tokens)
+        {
+            let _ = self.request_manager.cancel(request_id);
+            let _ = self.drain_terminal_cleanup();
+            return Err(error);
+        }
         Ok(request_id)
     }
 
     pub fn cancel(&mut self, request_id: RequestId) -> Result<(), EngineCoreError> {
+        if self.cancel_keep_prefix && self.request_manager.record(request_id).is_some() {
+            self.enqueue_cancel_checkpoint(request_id);
+        }
         self.request_manager.cancel(request_id)?;
         let _ = self.drain_terminal_cleanup()?;
         Ok(())
@@ -331,8 +480,24 @@ impl EngineCore {
         // must not admit or retry requests for a step that then fails.
         let step_id = self.allocate_step_id()?;
         let mut cleanup_results = self.drain_terminal_cleanup()?;
-        let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
-        let admitted_requests = self.request_manager.admit_waiting()?;
+        self.spill_excluded.clear();
+        self.spill_preemption = PreemptionMetrics::default();
+        let pressure_sample = if self.pressure_requeue {
+            self.pressure_sample_after_reclaim()
+        } else {
+            None
+        };
+        let retried_memory_blocked = if let Some(sample) = pressure_sample {
+            self.retry_pressure_blocked(sample)?
+        } else {
+            self.request_manager.retry_memory_blocked()?
+        };
+        if pressure_sample.is_some_and(MemoryPressureSample::over_hard) {
+            self.spill_one_victim()?;
+        }
+        let admitted_requests = self
+            .request_manager
+            .admit_waiting_up_to(self.live_sequence_cap)?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -356,6 +521,21 @@ impl EngineCore {
         );
         let (mut schedule_plan, prefix_hits, preemption_metrics) =
             self.resolve_kv_schedule_plan(schedule_plan, global_token_budget)?;
+        // A failed spill already recomputed the victim. Keep it Runnable and
+        // out of this step's batch; the progress invariant still requires
+        // every Runnable request to appear on the plan.
+        for request_id in self.spill_excluded.iter().copied() {
+            let runnable = self
+                .request_manager
+                .record(request_id)
+                .is_some_and(|record| record.state == RequestState::Runnable);
+            let already_planned = schedule_plan.selected_requests.contains(&request_id)
+                || schedule_plan.deferred_requests.contains(&request_id)
+                || schedule_plan.memory_blocked_requests.contains(&request_id);
+            if runnable && !already_planned {
+                schedule_plan.deferred_requests.push(request_id);
+            }
+        }
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
             deferred_requests = schedule_plan.deferred_requests.len(),
@@ -458,8 +638,12 @@ impl EngineCore {
                     .count())
             .min(u32::MAX as usize) as u32,
             evictions,
-            preempted_requests: preemption_metrics.preempted_requests,
-            preempted_tokens: preemption_metrics.preempted_tokens,
+            preempted_requests: preemption_metrics
+                .preempted_requests
+                .saturating_add(self.spill_preemption.preempted_requests),
+            preempted_tokens: preemption_metrics
+                .preempted_tokens
+                .saturating_add(self.spill_preemption.preempted_tokens),
             cpu_time_us,
             runner_time_us,
         };
@@ -637,7 +821,7 @@ impl EngineCore {
                 request_id = candidate.0,
                 "preempting a partial prefill stalled by an exhausted pool"
             );
-            self.preempt_request(candidate, &mut preemption_metrics)?;
+            self.preempt_request(candidate, &mut preemption_metrics, true)?;
             // Keep the preempted request out of this step's candidate set.
             // Its retained prefix can otherwise be re-adopted immediately and
             // recreate the same full-pool state before the older prefill gets
@@ -724,7 +908,7 @@ impl EngineCore {
                 let Some(candidate) = self.find_preemption_candidate(rid, &preempted) else {
                     break;
                 };
-                self.preempt_request(candidate, &mut preemption_metrics)?;
+                self.preempt_request(candidate, &mut preemption_metrics, true)?;
                 preempted.insert(candidate);
                 if let Some(pos) = selected_requests.iter().position(|r| *r == candidate) {
                     selected_requests.remove(pos);
@@ -753,11 +937,13 @@ impl EngineCore {
                     // Borrow the record instead of snapshotting: `snapshot()`
                     // deep-clones the full prompt/output history per item per
                     // step just to source the warmup slice below.
+                    let restore_prefix = self.restore_prefix_tokens.get(&rid).cloned();
                     let record = self.request_manager.record(rid);
                     allocated_items.push(Self::annotate_prefix_reuse(
                         item,
                         prefix_reuse.get(&rid),
                         record,
+                        restore_prefix.as_deref(),
                     ));
                 }
                 AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred => {
@@ -896,6 +1082,7 @@ impl EngineCore {
         &mut self,
         request_id: RequestId,
         metrics: &mut PreemptionMetrics,
+        capture: bool,
     ) -> Result<(), EngineCoreError> {
         let (prompt_tokens, prefix_reuse_enabled) = self
             .request_manager
@@ -909,6 +1096,19 @@ impl EngineCore {
             .ok_or(EngineCoreError::RequestManager(
                 RequestManagerError::UnknownRequest(request_id),
             ))?;
+        if capture && (self.pressure_requeue || self.cancel_keep_prefix) {
+            let committed_limit = self
+                .committed_prefixes
+                .get(&request_id)
+                .map(|prefix| prefix.cut)
+                .unwrap_or(0);
+            let _receipt = self.runner.checkpoint_request(
+                request_id,
+                CheckpointReason::Preempt,
+                committed_limit,
+            );
+        }
+        self.release_reservation(request_id);
         self.runner.release_request_state(request_id);
         self.kv_manager.free(request_id)?;
         self.kv_manager.register_request_with_prefix_reuse(
@@ -1057,6 +1257,21 @@ impl EngineCore {
         input.available_kv_blocks = allocatable_blocks;
         input.total_kv_blocks = kv_config.total_blocks;
         input.prefill_cap_while_decoding = self.prefill_stall.cap();
+        input.adaptive_prefill = self.adaptive_prefill;
+        input.prefill_chunk_policy = self.prefill_chunk_policy;
+        input.model_prefill_safety_cap = if self.adaptive_prefill {
+            MODEL_PREFILL_SAFETY_CAP
+        } else {
+            0
+        };
+        if self.adaptive_prefill {
+            input.frozen_prefill_quantums = self.frozen_prefill_quantums.clone();
+        }
+        if !self.spill_excluded.is_empty() {
+            input
+                .request_snapshots
+                .retain(|snapshot| !self.spill_excluded.contains(&snapshot.request_id));
+        }
         input
     }
 
@@ -1210,6 +1425,8 @@ impl EngineCore {
             }
         };
         self.reconcile_runner_appended_kv(&execution_batch)?;
+        self.latch_frozen_prefill_quantums(&execution_batch);
+        self.publish_committed_prefixes(&execution_batch);
 
         execution_batch.route_metadata = runner_output.route_metadata.clone();
         schedule_plan.execution_batch = Some(execution_batch);
@@ -1240,6 +1457,7 @@ impl EngineCore {
         let mut request_multimodal_inputs = Vec::new();
         let mut request_logit_biases = Vec::new();
         let mut request_json_grammars = Vec::new();
+        let mut request_prefill_hints = Vec::new();
 
         for item in &execution_batch.items {
             block_tables.push(ResolvedBlockTable {
@@ -1267,6 +1485,12 @@ impl EngineCore {
                     request_json_grammars.push(RunnerRequestJsonGrammar {
                         request_id: item.request_id,
                         grammar: grammar.clone(),
+                    });
+                }
+                if !record.prefill_hints.is_empty() {
+                    request_prefill_hints.push(RunnerRequestPrefillHints {
+                        request_id: item.request_id,
+                        hints: record.prefill_hints.clone(),
                     });
                 }
                 request_contexts.push(RunnerRequestContext {
@@ -1311,6 +1535,7 @@ impl EngineCore {
             request_multimodal_inputs,
             request_logit_biases,
             request_json_grammars,
+            request_prefill_hints,
         })
     }
 
@@ -1809,9 +2034,17 @@ impl EngineCore {
         mut item: ExecutionItem,
         lookup: Option<&PrefixLookupResult>,
         record: Option<&RequestRecord>,
+        restore_prefix: Option<&[u32]>,
     ) -> ExecutionItem {
         item.reused_prefix_token_slice =
             Self::native_prefix_warmup_token_slice(&item, lookup, record);
+        if item.reused_prefix_token_slice.is_empty()
+            && item.mode == ExecutionMode::Prefill
+            && let Some(tokens) = restore_prefix
+            && u32::try_from(tokens.len()).ok() == Some(item.position_range.start)
+        {
+            item.reused_prefix_token_slice = tokens.to_vec();
+        }
         if let Some(lookup) = lookup {
             item.prefix_tokens_reused = lookup.matched_token_count;
             item.prefix_blocks_reused = lookup.matched_blocks.len() as u32;
@@ -1968,6 +2201,360 @@ impl EngineCore {
         Some(execution_batch)
     }
 
+    fn handoff_enabled(&self) -> bool {
+        self.pressure_requeue || self.cancel_keep_prefix
+    }
+
+    /// Keep the first published text-prefill quantum for chunk-sensitive
+    /// models. Later steps must not adopt a decode or pressure shrink.
+    fn latch_frozen_prefill_quantums(&mut self, batch: &ExecutionBatch) {
+        if !self.adaptive_prefill || !self.runner.chunk_sensitive_prefill() {
+            return;
+        }
+        for item in &batch.items {
+            if item.mode != ExecutionMode::Prefill {
+                continue;
+            }
+            if self.frozen_prefill_quantums.contains_key(&item.request_id) {
+                continue;
+            }
+            let Some(record) = self.request_manager.record(item.request_id) else {
+                continue;
+            };
+            if record.state.is_terminal() {
+                continue;
+            }
+            // A step after the first chunk has already moved the cursor past
+            // this item. Do not latch a later, smaller quantum.
+            if record.processed_prompt_tokens > item.scheduled_token_count {
+                continue;
+            }
+            let Some(quantum) = published_adaptive_prefill_quantum(
+                &batch.route_metadata.crossover_decisions,
+                item.request_id.0,
+            ) else {
+                continue;
+            };
+            self.frozen_prefill_quantums
+                .insert(item.request_id, quantum);
+        }
+    }
+
+    fn publish_committed_prefixes(&mut self, batch: &ExecutionBatch) {
+        if !self.handoff_enabled() {
+            return;
+        }
+        for item in &batch.items {
+            if item.mode != ExecutionMode::Prefill {
+                continue;
+            }
+            let Some(record) = self.request_manager.record(item.request_id) else {
+                continue;
+            };
+            if record.state.is_terminal() {
+                continue;
+            }
+            let cut = record.processed_prompt_tokens;
+            let Ok(cut_index) = usize::try_from(cut) else {
+                continue;
+            };
+            if cut == 0 || cut_index > record.prompt_tokens.len() {
+                continue;
+            }
+            let previous = self
+                .committed_prefixes
+                .get(&item.request_id)
+                .map(|prefix| prefix.cut)
+                .unwrap_or(0);
+            if cut <= previous {
+                continue;
+            }
+            let tokens = record.prompt_tokens[..cut_index].to_vec();
+            let delta = cut - previous;
+            let history_snapshot = {
+                let history = self.chunk_histories.entry(item.request_id).or_default();
+                history.push(delta);
+                if chunk_history_marked_non_reusable(
+                    &batch.route_metadata.crossover_decisions,
+                    item.request_id.0,
+                ) {
+                    history.push(NON_REUSABLE_CHUNK_HISTORY_MARK);
+                }
+                history.clone()
+            };
+            let prefix = CommittedPrefix::from_committed_tokens(tokens, history_snapshot, false);
+            self.committed_prefixes.insert(item.request_id, prefix);
+        }
+    }
+
+    fn enqueue_cancel_checkpoint(&mut self, request_id: RequestId) {
+        if !self.cancel_checkpoint_ids.insert(request_id) {
+            return;
+        }
+        let Some(mut prefix) = self.committed_prefixes.get(&request_id).cloned() else {
+            return;
+        };
+        if chunk_history_is_miss(&prefix, &prefix.chunk_history) {
+            warn!(
+                request_id = request_id.0,
+                "committed prefix chunk history does not match its signature"
+            );
+            return;
+        }
+        self.cancel_checkpoint_attempts = self.cancel_checkpoint_attempts.saturating_add(1);
+        let receipt =
+            self.runner
+                .checkpoint_request(request_id, CheckpointReason::Cancel, prefix.cut);
+        if receipt.adopts_cursor(prefix.cut) {
+            prefix.device_capture = true;
+        } else {
+            warn!(
+                request_id = request_id.0,
+                cut = prefix.cut,
+                "prefix checkpoint was not stored"
+            );
+        }
+        self.cancel_checkpoints.push(prefix);
+    }
+
+    fn pressure_sample_after_reclaim(&mut self) -> Option<MemoryPressureSample> {
+        if !self.pressure_requeue {
+            return None;
+        }
+        let sample = self.runner.memory_pressure_sample()?;
+        if sample.limit_bytes == 0 {
+            return None;
+        }
+        let pressure_high = sample
+            .hard_bytes()
+            .is_some_and(|hard| sample.active_bytes >= hard)
+            || sample.over_hard();
+        if !pressure_high || sample.idle_cache_bytes == 0 {
+            return Some(sample);
+        }
+        self.runner.reclaim_idle_cache();
+        let Some(after) = self.runner.memory_pressure_sample() else {
+            return Some(MemoryPressureSample {
+                idle_cache_bytes: 0,
+                ..sample
+            });
+        };
+        if after.limit_bytes == 0 {
+            return None;
+        }
+        Some(MemoryPressureSample {
+            active_bytes: after.active_bytes,
+            limit_bytes: after.limit_bytes,
+            idle_cache_bytes: 0,
+            next_chunk_workspace_bytes: after.next_chunk_workspace_bytes,
+        })
+    }
+
+    fn retry_pressure_blocked(
+        &mut self,
+        sample: MemoryPressureSample,
+    ) -> Result<Vec<RequestId>, EngineCoreError> {
+        let blocked = self.request_manager.memory_blocked_ids();
+        let mut retried = Vec::new();
+        for request_id in blocked {
+            if sample.ready_to_resume() {
+                if self.resume_spilled_prefix(request_id)? {
+                    self.request_manager.unblock_memory_request(request_id)?;
+                    retried.push(request_id);
+                }
+            } else {
+                self.request_manager.sustain_memory_block(request_id)?;
+            }
+        }
+        Ok(retried)
+    }
+
+    /// `true` when the caller should unblock a request that kept its cursor.
+    /// A miss recomputes and leaves the request runnable.
+    fn resume_spilled_prefix(&mut self, request_id: RequestId) -> Result<bool, EngineCoreError> {
+        let Some(prefix) = self.committed_prefixes.get(&request_id).cloned() else {
+            self.recompute_for_spill(request_id)?;
+            return Ok(false);
+        };
+        let planned = planned_chunk_history(prefix.cut, self.adoption_quantum(request_id, &prefix));
+        if prefix_adoption_allowed(&prefix, &planned) {
+            self.restore_prefix_tokens.insert(request_id, prefix.tokens);
+            return Ok(true);
+        }
+        self.recompute_for_spill(request_id)?;
+        Ok(false)
+    }
+
+    fn spill_one_victim(&mut self) -> Result<(), EngineCoreError> {
+        let Some(victim) = self.select_spill_victim() else {
+            return Ok(());
+        };
+        let attempts = self.spill_attempts.get(&victim).copied().unwrap_or(0);
+        if attempts >= MAX_PRESSURE_SPILLS {
+            return Ok(());
+        }
+        self.spill_attempts
+            .insert(victim, attempts.saturating_add(1));
+        self.spill_excluded.insert(victim);
+        let Some(prefix) = self.committed_prefixes.get(&victim).cloned() else {
+            return self.recompute_for_spill(victim);
+        };
+        let bytes = u64::try_from(prefix.snapshot.len())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        if !self.try_reserve_spill(victim, bytes) {
+            return self.recompute_for_spill(victim);
+        }
+        let receipt =
+            self.runner
+                .checkpoint_request(victim, CheckpointReason::PressureSpill, prefix.cut);
+        let planned = planned_chunk_history(prefix.cut, self.adoption_quantum(victim, &prefix));
+        if receipt.adopts_cursor(prefix.cut) && !chunk_history_is_miss(&prefix, &planned) {
+            self.runner.release_restorable_state(victim);
+            self.request_manager.block_on_memory(victim)?;
+            // Disk-tier metric. Cursor adoption is `adopts_cursor`.
+            if receipt.ssd_hit {
+                self.ssd_spill_hits = self.ssd_spill_hits.saturating_add(1);
+            }
+            if let Some(stored) = self.committed_prefixes.get_mut(&victim) {
+                stored.device_capture = true;
+            }
+            self.restore_prefix_tokens.insert(victim, prefix.tokens);
+            self.release_reservation(victim);
+            return Ok(());
+        }
+        self.release_reservation(victim);
+        self.recompute_for_spill(victim)
+    }
+
+    fn select_spill_victim(&self) -> Option<RequestId> {
+        let mtp_active = self.runner.mtp_active();
+        let mut best: Option<(crate::ids::SequenceNo, RequestId)> = None;
+        for record in self.request_manager.records_iter() {
+            let profile = SpillVictimProfile {
+                text: record.multimodal_inputs.is_empty()
+                    && record.generation_kind == GenerationKind::Autoregressive,
+                mtp_active,
+                generated_tokens: u32::try_from(record.generated_tokens.len()).unwrap_or(u32::MAX),
+                processed_prompt_tokens: record.processed_prompt_tokens,
+                prompt_len: u32::try_from(record.prompt_tokens.len()).unwrap_or(u32::MAX),
+                runnable: record.state == RequestState::Runnable,
+                spill_attempts: self
+                    .spill_attempts
+                    .get(&record.request_id)
+                    .copied()
+                    .unwrap_or(0),
+            };
+            if !spill_victim_eligible(profile) {
+                continue;
+            }
+            let candidate = (record.arrival_sequence, record.request_id);
+            if best.is_none_or(|current| candidate > current) {
+                best = Some(candidate);
+            }
+        }
+        best.map(|(_, request_id)| request_id)
+    }
+
+    fn recompute_for_spill(&mut self, request_id: RequestId) -> Result<(), EngineCoreError> {
+        self.restore_prefix_tokens.remove(&request_id);
+        let mut metrics = PreemptionMetrics::default();
+        self.preempt_request(request_id, &mut metrics, false)?;
+        self.spill_preemption = self.spill_preemption.merge(metrics);
+        Ok(())
+    }
+
+    /// Quantum a later adopter would use for `prefix`. A latched quantum wins
+    /// so a chunk-sensitive request is not compared against a shrunk policy.
+    fn adoption_quantum(&self, request_id: RequestId, prefix: &CommittedPrefix) -> u32 {
+        if let Some(frozen) = self
+            .frozen_prefill_quantums
+            .get(&request_id)
+            .copied()
+            .filter(|quantum| *quantum > 0)
+        {
+            return frozen;
+        }
+        let policy = self.prefill_chunk_policy.quantum(false);
+        if policy > 0 {
+            return policy;
+        }
+        prefix
+            .chunk_history
+            .first()
+            .copied()
+            .filter(|quantum| *quantum > 0)
+            .unwrap_or(1)
+    }
+
+    fn try_restore_cancelled_prefix(
+        &mut self,
+        request_id: RequestId,
+        tokens: &[u32],
+    ) -> Result<(), EngineCoreError> {
+        if !self.cancel_keep_prefix {
+            return Ok(());
+        }
+        let quantum = self.prefill_chunk_policy.quantum(false).max(1);
+        let Some(prefix) = self
+            .cancel_checkpoints
+            .iter()
+            .rev()
+            .find(|prefix| {
+                prefix.cut > 0
+                    && usize::try_from(prefix.cut).ok() == Some(prefix.tokens.len())
+                    && tokens.starts_with(&prefix.tokens)
+                    && prefix_adoption_allowed(prefix, &planned_chunk_history(prefix.cut, quantum))
+            })
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.request_manager
+            .apply_prefix_reuse(request_id, prefix.cut)?;
+        if self.runner.chunk_sensitive_prefill()
+            && let Some(first) = prefix
+                .chunk_history
+                .first()
+                .copied()
+                .filter(|quantum| *quantum > 0)
+        {
+            self.frozen_prefill_quantums.insert(request_id, first);
+        }
+        self.chunk_histories
+            .insert(request_id, prefix.chunk_history.clone());
+        self.restore_prefix_tokens
+            .insert(request_id, prefix.tokens.clone());
+        self.committed_prefixes.insert(request_id, prefix);
+        Ok(())
+    }
+
+    fn drop_handoff_state(&mut self, request_id: RequestId) {
+        self.committed_prefixes.remove(&request_id);
+        self.chunk_histories.remove(&request_id);
+        self.spill_attempts.remove(&request_id);
+        self.spill_excluded.remove(&request_id);
+        self.frozen_prefill_quantums.remove(&request_id);
+        self.restore_prefix_tokens.remove(&request_id);
+        self.cancel_checkpoint_ids.remove(&request_id);
+        self.release_reservation(request_id);
+    }
+
+    fn try_reserve_spill(&mut self, request_id: RequestId, bytes: u64) -> bool {
+        if self.spill_reserved_bytes.saturating_add(bytes) > self.spill_budget_bytes {
+            return false;
+        }
+        self.spill_reserved_bytes = self.spill_reserved_bytes.saturating_add(bytes);
+        self.spill_reservations.insert(request_id, bytes);
+        true
+    }
+
+    fn release_reservation(&mut self, request_id: RequestId) {
+        if let Some(bytes) = self.spill_reservations.remove(&request_id) {
+            self.spill_reserved_bytes = self.spill_reserved_bytes.saturating_sub(bytes);
+        }
+    }
+
     fn drain_terminal_cleanup(&mut self) -> Result<Vec<FreeResult>, EngineCoreError> {
         let pending = self.request_manager.collect_terminal_cleanup();
         let mut free_results = Vec::with_capacity(pending.len());
@@ -1975,6 +2562,7 @@ impl EngineCore {
             // Release runner-side GPU resources first so a later free() error
             // cannot skip cleanup and leak per-request state for the process
             // lifetime (MTP buffers, n-gram tables, sampling workspace).
+            self.drop_handoff_state(request_id);
             self.runner.release_request_state(request_id);
             let free_result = self.kv_manager.free(request_id)?;
             self.request_manager.mark_terminal_cleaned(request_id)?;
@@ -2646,6 +3234,7 @@ mod tests {
         max_output_tokens: u32,
     ) -> RequestSubmission {
         RequestSubmission {
+            prefill_hints: Default::default(),
             request_id: RequestId(request_id),
             model_id: ModelId("qwen3".into()),
             input_tokens,
@@ -2798,6 +3387,63 @@ mod tests {
                 .and_then(|batch| batch.route_metadata.attention_route.as_deref()),
             Some("qwen3_prefill")
         );
+    }
+
+    /// A model whose priced plan proved residency at fewer live sequences than
+    /// the caller submitted must queue the rest, not admit them and cross the
+    /// ceiling. This is the 6-bit Flash Next case on a 128 GiB host: the plan
+    /// publishes a cap of one row, and the engine must serve one request at a
+    /// time instead of paging 91 GiB of experts.
+    #[test]
+    fn live_sequence_cap_queues_waiting_requests_until_a_slot_frees() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 8, 8));
+        assert_eq!(engine.live_sequence_cap(), None);
+        engine.set_live_sequence_cap(Some(1));
+        assert_eq!(engine.live_sequence_cap(), Some(1));
+
+        engine.submit(make_submission(1, 1, 2)).unwrap();
+        engine.submit(make_submission(2, 2, 2)).unwrap();
+
+        let outcome = engine.step(3, true).unwrap();
+        // Only one row is live; the second waits for its turn.
+        assert_eq!(outcome.admitted_requests, vec![RequestId(1)]);
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .state,
+            RequestState::Waiting
+        );
+        // The queued request is real backlog, not a rejected or dropped row.
+        assert_eq!(outcome.metrics.waiting_requests, 1);
+
+        // Freeing the live row admits exactly the next queued request.
+        engine.cancel(RequestId(1)).unwrap();
+        let outcome = engine.step(3, true).unwrap();
+        assert_eq!(outcome.admitted_requests, vec![RequestId(2)]);
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .state,
+            RequestState::Runnable
+        );
+        // Exactly one live row: the queue drained into the freed slot.
+        assert_eq!(engine.request_manager().live_request_count(), 1);
+
+        // No cap restores the historical admit-everything behaviour.
+        let mut uncapped =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 8, 8));
+        uncapped.set_live_sequence_cap(None);
+        assert_eq!(uncapped.live_sequence_cap(), None);
+        uncapped.submit(make_submission(1, 1, 2)).unwrap();
+        uncapped.submit(make_submission(2, 2, 2)).unwrap();
+        let outcome = uncapped.step(3, true).unwrap();
+        assert_eq!(outcome.admitted_requests, vec![RequestId(1), RequestId(2)]);
+        assert_eq!(uncapped.request_manager().live_request_count(), 2);
     }
 
     #[test]
@@ -4739,7 +5385,7 @@ mod tests {
             .unwrap();
         engine.step(8, true).unwrap();
         engine
-            .preempt_request(RequestId(1), &mut PreemptionMetrics::default())
+            .preempt_request(RequestId(1), &mut PreemptionMetrics::default(), true)
             .unwrap();
         let outcome = engine.step(8, true).unwrap();
         let item = &outcome
@@ -5024,6 +5670,7 @@ mod tests {
 
         engine
             .submit(RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(1),
                 model_id: ModelId("gemma-4-27b-it".into()),
                 input_tokens: vec![1, 2, 3, 4],
@@ -5156,6 +5803,7 @@ mod tests {
 
         engine
             .submit(RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(1),
                 model_id: ModelId("qwen3".into()),
                 input_tokens: vec![1, 2, 3, 4],
@@ -5168,6 +5816,7 @@ mod tests {
             .unwrap();
         engine
             .submit(RequestSubmission {
+                prefill_hints: Default::default(),
                 request_id: RequestId(2),
                 model_id: ModelId("gemma".into()),
                 input_tokens: vec![5, 6, 7, 8],

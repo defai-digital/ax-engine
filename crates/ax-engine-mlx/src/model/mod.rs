@@ -636,6 +636,19 @@ pub fn decode_batched_forward(
     }
     cache.advance_all(1);
 
+    // Commit boundary for the hybrid gated-delta state. Each layer's state is a
+    // kernel output that only the next step reads, so it is not an ancestor of
+    // this step's logits and would otherwise stay pending; scheduling it here
+    // keeps the graph one step wide for a long-running cohort
+    // (`AX_MLX_BATCHED_STATE_MATERIALIZE=0` restores the lazy update). Values do
+    // not change, and the commit is asynchronous: this step already blocks on
+    // `argmax_batched`, so a second blocking eval would add a per-step barrier.
+    if crate::fastpath::batched_state_materialize_enabled()
+        && let Some(linear) = lin_state.as_deref()
+    {
+        linear.materialize();
+    }
+
     let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     // The lm_head (`[B, hidden] × [hidden, vocab]`, vocab up to ~262 MB at
     // 4-bit) is the largest single projection and, like the layer projections,

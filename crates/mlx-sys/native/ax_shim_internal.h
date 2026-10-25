@@ -208,6 +208,14 @@ inline std::string safe_str(const char* s) {
   return s ? std::string(s) : std::string();
 }
 
+// MLX main inserts a positional window_size before the mask string.
+// On 0.32.4 the macro is empty, so existing calls keep that signature.
+#ifdef AX_MLX_HAS_SDPA_WINDOW
+#define AX_SDPA_WINDOW_ARG -1,
+#else
+#define AX_SDPA_WINDOW_ARG
+#endif
+
 /// Build an mx::Shape from a raw int pointer + count.  For shapes with ≤ 8
 /// dimensions (the overwhelming majority of LLM ops: scalars, vectors,
 /// matrices, [B,S,H,D] tensors, grouped-attention [B,G,H,S,D]) a stack-

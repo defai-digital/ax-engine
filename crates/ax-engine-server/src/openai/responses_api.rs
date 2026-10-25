@@ -694,6 +694,12 @@ fn responses_usage(usage: Option<&Value>) -> Value {
         .get("prompt_tokens_details")
         .and_then(|details| details.get("cached_tokens"))
         .and_then(Value::as_u64);
+    let reasoning_tokens = usage
+        .get("completion_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens"))
+        .filter(|value| value.is_u64() || value.is_i64())
+        .cloned()
+        .unwrap_or(Value::Null);
     // Sum of the known parts; null when nothing is known.
     let total_tokens = match (prompt_tokens, completion_tokens) {
         (Some(prompt), Some(completion)) => Some(prompt.saturating_add(completion)),
@@ -704,7 +710,7 @@ fn responses_usage(usage: Option<&Value>) -> Value {
         "input_tokens": prompt_tokens,
         "input_tokens_details": {"cached_tokens": cached_tokens},
         "output_tokens": completion_tokens,
-        "output_tokens_details": {"reasoning_tokens": null},
+        "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
         "total_tokens": total_tokens
     })
 }
@@ -1038,6 +1044,32 @@ mod tests {
             "reasoning_tokens must be null when unknown: {}",
             response["usage"]
         );
+
+        let response = build_responses_output(
+            &request,
+            &json!({
+                "id": "chatcmpl-reasoning",
+                "created": 123,
+                "model": "qwen3",
+                "choices": [{
+                    "message": {"content": "answer"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 6,
+                    "total_tokens": 10,
+                    "completion_tokens_details": {"reasoning_tokens": 2}
+                }
+            }),
+        )
+        .expect("reasoning usage should map");
+        assert_eq!(
+            response["usage"]["output_tokens_details"]["reasoning_tokens"],
+            2
+        );
+        assert_eq!(response["usage"]["output_tokens"], 6);
+        assert_eq!(response["usage"]["total_tokens"], 10);
 
         // Nothing known at all: emit null, matching /v1/chat/completions.
         let response = build_responses_output(

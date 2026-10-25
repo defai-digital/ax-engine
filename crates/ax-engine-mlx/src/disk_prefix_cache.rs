@@ -1,7 +1,7 @@
 //! Durable L2 disk prefix cache over `MlxKVCache::serialize_to_bytes`.
 //!
 //! Contract: ADR-002 and TECH-SPEC-DURABLE-TIERED-PREFIX-CACHE (internal
-//! design package). Outer file format v3, canonical key schema v3, payload
+//! design package). Outer file format v3, canonical key schema v4, payload
 //! wire v4. Mutating operations take a directory-level advisory lock so
 //! concurrent local processes serialize `insert -> atomic rename -> eviction`
 //! while readers remain lock-free.
@@ -462,30 +462,36 @@ impl std::fmt::Display for DiskPrefixCacheError {
 
 impl std::error::Error for DiskPrefixCacheError {}
 
-/// Inputs to the canonical disk-cache key (schema v3, spec §6).
+/// Inputs to the canonical disk-cache key (schema v4, spec §6).
 ///
-/// Compared with v2, the durable identity now commits to a
-/// **content-derived artifact fingerprint** (an in-place checkpoint
-/// replacement changes the fingerprint, so stale entries miss instead of
-/// restoring wrong-model KV) and the **KV payload wire version** (a
-/// payload format bump cleanly invalidates every older entry). The
-/// process-local 64-bit FNV `token_hash` is no longer part of the durable
-/// identity; token content is committed by SHA-256.
+/// Compared with v3, the durable identity also commits to the **resolved
+/// KV quantization / dtype** and the **execution signature** (arithmetic
+/// route, prefill split strategy, MLX/GPU identity). A v3 key can never
+/// alias a v4 key, so upgrading is a natural miss rather than a restore of
+/// state produced under a different execution contract.
 pub struct DiskPrefixKeyFields<'a> {
     pub model_id: &'a str,
     pub artifact_fingerprint_sha256: &'a str,
     pub route_policy: &'a str,
     pub layer_layout: &'a str,
     pub kv_payload_version: u32,
+    /// Resolved per-layer KV quantization identity (e.g. `f16` or
+    /// `4b/g64,...`), never the raw request option.
+    pub kv_quantization: &'a str,
+    /// Resolved KV storage dtype identity (e.g. `float16`).
+    pub kv_dtype: &'a str,
+    /// Execution contract identity: arithmetic route, split strategy and
+    /// the MLX/GPU identity that selects kernels.
+    pub execution_signature: &'a str,
     pub block_size_tokens: u32,
     pub token_count: u32,
     pub tokens: &'a [u32],
 }
 
 /// Versioned domain prefix for canonical key bytes.
-const CANONICAL_KEY_DOMAIN: &str = "ax.mlx.disk_prefix_key.v3";
+const CANONICAL_KEY_DOMAIN: &str = "ax.mlx.disk_prefix_key.v4";
 
-/// Canonical byte representation of the disk-cache key (schema v3).
+/// Canonical byte representation of the disk-cache key (schema v4).
 ///
 /// All strings are length-prefixed UTF-8 so the canonical bytes have no
 /// ambiguity around boundary tokens; the token content is committed via
@@ -508,6 +514,12 @@ pub fn canonical_key_bytes(fields: &DiskPrefixKeyFields<'_>) -> Vec<u8> {
             + 4
             + fields.layer_layout.len()
             + 4
+            + fields.kv_quantization.len()
+            + 4
+            + fields.kv_dtype.len()
+            + 4
+            + fields.execution_signature.len()
+            + 4
             + 4
             + 4
             + 32,
@@ -517,6 +529,9 @@ pub fn canonical_key_bytes(fields: &DiskPrefixKeyFields<'_>) -> Vec<u8> {
     push_lp_string(&mut out, fields.artifact_fingerprint_sha256);
     push_lp_string(&mut out, fields.route_policy);
     push_lp_string(&mut out, fields.layer_layout);
+    push_lp_string(&mut out, fields.kv_quantization);
+    push_lp_string(&mut out, fields.kv_dtype);
+    push_lp_string(&mut out, fields.execution_signature);
     out.extend_from_slice(&fields.kv_payload_version.to_le_bytes());
     out.extend_from_slice(&fields.block_size_tokens.to_le_bytes());
     out.extend_from_slice(&fields.token_count.to_le_bytes());
@@ -630,6 +645,43 @@ pub struct DiskPrefixCacheRestored {
     pub producer_cold_prefill_us: u64,
     /// Producing request's snapshot serialization wall time.
     pub producer_serialize_us: u64,
+}
+
+/// Header-only cost facts for one durable entry. Produced by
+/// [`DiskPrefixCache::probe_metadata`] for restore value comparisons; the
+/// caller must still run the full checksum/identity/layout validation
+/// before adopting any state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiskEntryMetadata {
+    /// Bytes the restore would actually read: the manifest when the payload
+    /// is paged, plus every *referenced* page blob (deduplicated) — never
+    /// an estimate from the manifest size alone.
+    pub payload_bytes: u64,
+    /// Logical payload bytes materialized into tensors (paged or not).
+    pub materialized_bytes: u64,
+    /// Producing request's measured cold-prefill wall time, when recorded.
+    pub producer_cold_prefill_us: u64,
+}
+
+/// One restore candidate priced against the best resident RAM prefix.
+///
+/// `estimated_prefill_us` is the fresh prefill cost of `token_count` on the
+/// same artifact/execution path; `restore_us` is derived from the durable
+/// throughput model plus the candidate's read/materialization bytes.
+///
+/// `resident_in_l1` marks a candidate that is already in the host-RAM prefix
+/// cache, so a restore costs only rehydration (no durable read). Semantic
+/// cut points are stored in L1 even when no disk layer is open, and they must
+/// still be priceable there for `AX_MLX_PREFIX_SEMANTIC_CUTS` to have any
+/// effect without a durable cache.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RestoreCandidate {
+    pub token_count: u32,
+    pub payload_bytes: u64,
+    pub materialized_bytes: u64,
+    pub estimated_prefill_us: u64,
+    pub key: Vec<u8>,
+    pub resident_in_l1: bool,
 }
 
 impl DiskPrefixCache {
@@ -768,6 +820,80 @@ impl DiskPrefixCache {
     /// disk_miss + cold-prefill warmup.
     pub fn contains(&self, key_bytes: &[u8]) -> bool {
         self.path_for(key_bytes).is_file()
+    }
+
+    /// Length-capped metadata probe: reads only the fixed header, the
+    /// embedded key and (for paged payloads) the small manifest. It never
+    /// hashes or materializes the payload, so the checksum/identity checks
+    /// that authorize an adoption still run in
+    /// [`Self::get_restored_timed`].
+    ///
+    /// Returns `None` for a missing file or a header that does not match
+    /// the requested key. A paged entry charges the referenced page blobs,
+    /// not the manifest length.
+    pub fn probe_metadata(&self, key_bytes: &[u8]) -> Option<DiskEntryMetadata> {
+        let path = self.path_for(key_bytes);
+        let mut file = fs::File::open(path).ok()?;
+        let mut header = [0u8; FIXED_HEADER_LEN];
+        use std::io::Read as _;
+        file.read_exact(&mut header).ok()?;
+        if &header[0..4] != FILE_MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(header[4..8].try_into().ok()?);
+        let header_len = u32::from_le_bytes(header[8..12].try_into().ok()?) as usize;
+        let flags = u32::from_le_bytes(header[12..16].try_into().ok()?);
+        let key_len = u32::from_le_bytes(header[16..20].try_into().ok()?) as usize;
+        let payload_len = u64::from_le_bytes(header[20..28].try_into().ok()?);
+        let producer_cold_prefill_us = u64::from_le_bytes(header[64..72].try_into().ok()?);
+        if version != FILE_VERSION
+            || header_len != FIXED_HEADER_LEN
+            || !matches!(flags, 0 | PAGE_MANIFEST_FLAG)
+            || key_len != key_bytes.len()
+        {
+            return None;
+        }
+        let mut stored_key = vec![0u8; key_len];
+        file.read_exact(&mut stored_key).ok()?;
+        if stored_key != key_bytes {
+            return None;
+        }
+        let (payload_bytes, materialized_bytes) = if flags == PAGE_MANIFEST_FLAG {
+            let manifest_len = usize::try_from(payload_len).ok()?;
+            if manifest_len > MAX_PAGE_MANIFEST_BYTES {
+                return None;
+            }
+            let mut manifest_bytes = vec![0u8; manifest_len];
+            file.read_exact(&mut manifest_bytes).ok()?;
+            let manifest = PageManifest::decode(
+                &manifest_bytes,
+                Some(key_bytes),
+                self.policy.max_entry_bytes,
+            )
+            .ok()?;
+            // Read cost: the manifest plus every referenced page blob, which
+            // are content-addressed and therefore deduplicated across the
+            // entry. Materialization cost is the *logical* payload the pages
+            // reassemble into — never the manifest length.
+            let mut seen = std::collections::HashSet::new();
+            let page_bytes = manifest
+                .pages
+                .iter()
+                .filter(|page| seen.insert(page.hash))
+                .map(|page| u64::from(page.len))
+                .fold(0u64, u64::saturating_add);
+            (
+                (manifest_len as u64).saturating_add(page_bytes),
+                manifest.payload_len,
+            )
+        } else {
+            (payload_len, payload_len)
+        };
+        Some(DiskEntryMetadata {
+            payload_bytes,
+            materialized_bytes,
+            producer_cold_prefill_us,
+        })
     }
 
     /// Look up the entry for `key_bytes`. Returns:

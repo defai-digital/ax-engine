@@ -166,6 +166,44 @@ pub(crate) fn chat_single_tool_call_delta_chunk(
     }
 }
 
+/// One incremental tool-call fragment. The first piece carries `id`, `type`,
+/// and `function.name`; later pieces carry only `function.arguments`.
+pub(crate) fn chat_tool_call_arguments_delta_chunk(
+    request_id: u64,
+    model: String,
+    role: Option<&'static str>,
+    index: u32,
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+) -> OpenAiChatCompletionChunk {
+    OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model,
+        system_fingerprint: None,
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta {
+                role,
+                content: None,
+                reasoning_content: None,
+                tool_calls: Some(vec![OpenAiToolCallDelta {
+                    index,
+                    id,
+                    tool_type: name.as_ref().map(|_| "function"),
+                    function: Some(OpenAiFunctionCallDelta {
+                        name,
+                        arguments: Some(arguments),
+                    }),
+                }]),
+            },
+            finish_reason: None,
+        }],
+    }
+}
+
 /// Streaming reasoning fragment (`delta.reasoning_content`), emitted for
 /// thinking models when the caller opted into reasoning output.
 pub(crate) fn chat_reasoning_delta_chunk(

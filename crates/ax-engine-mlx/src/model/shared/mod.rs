@@ -7,6 +7,7 @@ pub(super) mod mla;
 pub(super) mod mlp;
 pub(super) mod norm;
 pub(crate) mod qwen4_exp_attention;
+pub(crate) mod qwen4_exp_attention_indexed;
 pub(crate) mod qwen4_exp_fused;
 pub(crate) mod qwen4_exp_gdn;
 pub(crate) mod qwen4_exp_gdn_metal;

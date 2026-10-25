@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut manager = RequestManager::new(CacheGroupId(0));
             for id in 0..requests {
                 manager.submit(RequestSubmission {
+                    prefill_hints: Default::default(),
                     request_id: RequestId(id),
                     model_id: ModelId("qwen3".into()),
                     input_tokens: vec![7; context],

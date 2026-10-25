@@ -1131,6 +1131,7 @@ mod tests {
 
     fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: input_tokens.to_vec(),
             input_text: None,

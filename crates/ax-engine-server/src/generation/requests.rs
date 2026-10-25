@@ -65,6 +65,9 @@ pub(crate) fn build_generate_request(
             sampling: request.sampling.unwrap_or_default(),
             stop_sequences: Vec::new(),
             metadata: request.metadata,
+            // The raw generate endpoint takes caller-supplied token ids, so
+            // there is no rendered prompt to derive semantic cut points from.
+            prefill_hints: Default::default(),
         },
     )
 }
