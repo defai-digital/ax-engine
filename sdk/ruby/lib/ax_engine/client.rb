@@ -2,6 +2,11 @@ require "json"
 require "net/http"
 require "uri"
 
+# SseReader and the error types are only referenced at call time, so load them
+# here: `require "ax_engine/client"` on its own must be streamable.
+require_relative "errors"
+require_relative "sse_reader"
+
 module AxEngine
   # HTTP client for ax-engine-server.
   #

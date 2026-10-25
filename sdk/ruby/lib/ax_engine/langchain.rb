@@ -1,4 +1,4 @@
-require "json"
+# AxEngine::Client loads its own dependencies, so the adapter only needs it.
 require_relative "client"
 
 # LangChain integration for AX Engine.
@@ -22,10 +22,38 @@ module AxEngine
   module Langchain
     def self._require_langchain!
       require "langchain"
+      _define_text_completion_response!
     rescue LoadError
       raise LoadError,
         "ax_engine/langchain requires the langchainrb gem. " \
         "Install it with: gem install langchainrb"
+    end
+
+    # Response type for /v1/completions.
+    #
+    # The released langchainrb OpenAIResponse#completion reads
+    # choices[0].message.content, which a text completion never carries, so it
+    # returns nil. This subclass reads choices[0].text and inherits model,
+    # created_at and token usage unchanged.
+    #
+    # Built lazily because langchainrb is only loaded when a model is
+    # constructed; this file must be requirable without the gem.
+    def self._define_text_completion_response!
+      return if const_defined?(:TextCompletionResponse, false)
+
+      klass = Class.new(::Langchain::LLM::OpenAIResponse) do
+        def completion
+          completions&.dig(0, "text")
+        end
+      end
+      const_set(:TextCompletionResponse, klass)
+    end
+
+    def self.text_completion_response_class
+      return TextCompletionResponse if const_defined?(:TextCompletionResponse, false)
+
+      _require_langchain!
+      TextCompletionResponse
     end
 
     # Surfaces server `error` SSE events as exceptions instead of silently
@@ -42,19 +70,26 @@ module AxEngine
     module Params
       SAMPLING_KEYS = %i[
         max_tokens temperature top_p top_k min_p
-        repetition_penalty stop seed
+        repetition_penalty frequency_penalty presence_penalty stop seed
       ].freeze
+
+      # Request body options that must survive both the constructor and a
+      # single call. Kept explicit on purpose: arbitrary kwargs are never
+      # forwarded, and `stream` belongs to AxEngine::Client's transport, not
+      # to a request body.
+      REQUEST_KEYS = (SAMPLING_KEYS + %i[model response_format tools tool_choice]).freeze
 
       def initialize(base_url: AxEngine::Client::DEFAULT_BASE_URL,
                      headers: {}, timeout: 300, **defaults)
         @client   = AxEngine::Client.new(base_url: base_url, headers: headers, timeout: timeout)
-        @defaults = defaults.slice(*SAMPLING_KEYS)
+        @defaults = defaults.slice(*REQUEST_KEYS)
       end
 
       private
 
+      # Per-call options override constructor defaults.
       def build_params(overrides)
-        @defaults.merge(overrides.slice(*SAMPLING_KEYS))
+        @defaults.merge(overrides.slice(*REQUEST_KEYS))
       end
     end
 
@@ -85,11 +120,16 @@ module AxEngine
       #
       # @param messages [Array<Hash>]  e.g. [{role: "user", content: "Hi"}]
       # @param stream   [Boolean]      if true, yields delta strings and returns nil
-      # @param kwargs   [Hash]         sampling overrides (max_tokens, temperature, …)
+      # @param kwargs   [Hash]         request overrides (max_tokens, model,
+      #                                response_format, tools, tool_choice, …)
       def chat(messages:, stream: false, **kwargs, &block)
+        if stream && block.nil?
+          raise ArgumentError, "#{self.class}#chat requires a block when stream: true"
+        end
+
         params = build_params(kwargs).merge(messages: messages)
 
-        if stream && block_given?
+        if stream
           @client.stream_chat_completion(params) do |event|
             Langchain.raise_on_stream_error!(event)
             data = event["data"]
@@ -129,11 +169,15 @@ module AxEngine
       #
       # @param prompt  [String]
       # @param stream  [Boolean]  if true, yields delta strings and returns nil
-      # @param kwargs  [Hash]     sampling overrides
+      # @param kwargs  [Hash]     request overrides (max_tokens, model, …)
       def complete(prompt:, stream: false, **kwargs, &block)
+        if stream && block.nil?
+          raise ArgumentError, "#{self.class}#complete requires a block when stream: true"
+        end
+
         params = build_params(kwargs).merge(prompt: prompt)
 
-        if stream && block_given?
+        if stream
           @client.stream_completion(params) do |event|
             Langchain.raise_on_stream_error!(event)
             data = event["data"]
@@ -145,7 +189,7 @@ module AxEngine
           nil
         else
           raw = @client.completion(params)
-          ::Langchain::LLM::OpenAIResponse.new(raw, model: raw["model"])
+          AxEngine::Langchain.text_completion_response_class.new(raw, model: raw["model"])
         end
       end
     end

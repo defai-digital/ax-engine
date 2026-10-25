@@ -247,7 +247,9 @@ jobs:
 
       - name: Run Ruby SDK tests
         working-directory: sdk/ruby
-        run: ruby -Ilib -Itest test/test_sse_reader.rb test/test_client.rb
+        run: |
+          gem install langchainrb -v 0.19.5 --no-document
+          rake test
 
       - name: Run Swift SDK tests
         working-directory: sdk/swift
