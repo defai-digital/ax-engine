@@ -39,6 +39,37 @@ tokens, greedy text identical at every length):
 | 8,976 | 13.64 s | 11.56 s | 658 -> 776 |
 | 39,225 | 75.37 s | 57.76 s | 521 -> 679 |
 
+## Shipped default: fused QSA prefill gather (bit-exact)
+
+The batched prefill attention gathered the selected K/V and then made a second
+full-tile copy through reshape/transpose/contiguous. One `take` with a
+`[width, kv_heads, padded]` index tile now yields the contiguous layout SDPA
+consumes; elements, order, dtype and padding are unchanged, so SDPA dispatch and
+output are identical (`AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER=0` restores the copy).
+Real-pack final logits and state are bit-identical; the layout copy went from
+1.45 s to 0.02 s of an 8,192-token stage profile. Server TTFT on M5 Max 128 GB,
+greedy text identical to the previous default at every length:
+
+| Prompt tokens | Before | Fused gather |
+|---|---:|---:|
+| 2,207 | 2.34 s | 2.29 s |
+| 8,976 | 11.52 s | 9.96 s |
+| 39,225 | 60.18 s | 48.84 s |
+
+## Numerics presets
+
+`ax-engine-server --mlx-numerics exact` (default) keeps every bit-exact path;
+`--mlx-numerics fast` turns on the relaxed indexed prompt attention below unless
+the env sets it. Prefix snapshots carry a numerics-tier suffix in the execution
+signature and v4 disk key, so snapshots never cross tiers (empty at shipped
+defaults). Final main on M5 Max 128 GB:
+
+| Prompt tokens | `exact` | `fast` |
+|---|---:|---:|
+| 2,207 | 2.31 s | 2.27 s |
+| 8,976 | 9.95 s | 8.87 s |
+| 39,225 | 50.03 s | 42.55 s |
+
 ## Shipped opt-in: relaxed indexed sparse prompt attention (default off)
 
 `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL=1` attends the selected tokens through a
@@ -80,6 +111,15 @@ so that would keep today's arithmetic. The ignored test
 MXFP4 prefill: 0 of 18.8 million query pairs qualify. Adjacent queries share
 about 68% of their blocks, but identical block sets occur in 0.07% of adjacent
 pairs and never with the same order and tail. Not pursued.
+
+## Bit-exact indexed kernel spike (not merged)
+
+A version of the indexed kernel that reproduces MLX 0.32.4's vector 2-pass SDPA
+schedule (block count from the padded key bucket, stride partition, fp32
+partials, the 32-lane reduction tree) is bit-identical to the gathered path
+(real-pack prefill logits, final logits and state; 256-token greedy). After the
+fused gather it is not faster: M5 Max 9k 9.98 -> 10.26 s, 39k 50.06 -> 50.68 s
+(M2-class +15.6%). Kept on a local branch only.
 
 ## What would move the number
 
