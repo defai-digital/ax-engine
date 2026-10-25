@@ -30,7 +30,7 @@ use artifacts::resolve_native_model_report;
 pub use config::{
     EngineSessionConfig, MlxMtpPolicy, MlxNumericsMode, MlxStreamExpertsMode,
     PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
-    install_mlx_numerics_mode,
+    install_mlx_numerics_mode, installed_mlx_numerics_name,
 };
 use delegated::{
     run_delegated_generate_prevalidated, run_delegated_generate_with_config,

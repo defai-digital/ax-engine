@@ -110,7 +110,12 @@ pub fn mlx_numerics_preset() -> MlxNumericsPreset {
 
 /// `exact` or `fast`, for logs and `/v1/memory`.
 pub fn mlx_numerics_preset_name() -> &'static str {
-    match mlx_numerics_preset() {
+    mlx_numerics_name_of(mlx_numerics_preset())
+}
+
+/// Spelling of one preset. `/v1/memory` reports the installed value.
+pub(crate) fn mlx_numerics_name_of(preset: MlxNumericsPreset) -> &'static str {
+    match preset {
         MlxNumericsPreset::Exact => "exact",
         MlxNumericsPreset::Fast => "fast",
     }
@@ -982,9 +987,11 @@ env_flag!(
     /// gated-delta cache tensor inputs/outputs. Exact target semantics are
     /// preserved; failure falls back to the ordinary verifier.
     ///
-    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
-    /// held and compile actually ran (774 hits / 12 fallbacks) but decode GM
-    /// 0.976 vs off (below ADR-003 D5 1.01; slower).
+    /// **Default: OFF.** No named bit-exact test covers this compile, so the
+    /// numerics tier records `mtp_whole_verify` when it is on. A false token
+    /// only misses a prefix snapshot. M5 Max 2026-09-15 depth-3 flappy A/B:
+    /// greedy identity held and compile actually ran (774 hits / 12 fallbacks)
+    /// but decode GM 0.976 vs off (below ADR-003 D5 1.01; slower).
     mtp_whole_verify_compile_enabled,
     "AX_MLX_MTP_WHOLE_VERIFY_COMPILE"
 );
@@ -6733,6 +6740,8 @@ env_flag!(
     /// warm_extend token-exact parity when a real snapshot hit occurs.
     /// This flag exists as a fail-closed escape hatch if a future workload
     /// exposes a residual drift vector those chunk-alignment rules miss.
+    /// Engaging it is a numerics-tier token (`mla_prefix_restore=0`): the
+    /// warm restore this gate refuses can drift from a cold prefill.
     mla_prefix_restore_disabled,
     "AX_DISABLE_MLA_PREFIX_RESTORE"
 );
@@ -7263,6 +7272,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 ///   linear-attention runner chunk cap not the shipped 1024
 /// - `moe_single_2048=0` — MoE hybrid prefill leaves the one-2048 chunk
 /// - `mla_chunk=N` / `mla_cold=N` — MLA prefill chunk overrides
+/// - `mla_prefix_restore=0` — MLA warm-snapshot restore killed; the warm path can drift
 /// - `gdn_prefill_mlx=0` — Flash Next GDN prefill leaves the MLX recurrence
 /// - `qwen_gdn_mlx` — Qwen GatedDelta prefill uses the MLX recurrence
 /// - `dequant_dense=off|cached|transient` — dense-GEMM prefill differs from auto
@@ -7291,6 +7301,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `gdn_tgy=N` — gated-delta verifier threadgroup not 4
 /// - `native_greedy_logits` — native greedy post-norm logits instead of sampled softmax
 /// - `reuse_rope` — one precomputed RoPE table instead of the fused QK-norm path
+/// - `mtp_whole_verify` — compiled whole verifier; no named bit-exact test
 /// - `mtp_packed_verify` — raw packed verifier FFN opt-in (throughput already covers its profile)
 /// - `mtp_exact_replay` — exact linear-MTP replay engaged
 /// - `mtp_projected_replay` / `mtp_refold` / `mtp_committed_fold` / `mtp_last_query` —
@@ -7362,6 +7373,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) moe_single_2048: bool,
     pub(crate) mla_prefill_chunk: Option<usize>,
     pub(crate) mla_cold_chunk: Option<usize>,
+    pub(crate) mla_prefix_restore_disabled: bool,
     pub(crate) flash_gdn_prefill_mlx: bool,
     pub(crate) qwen_gdn_prefill_mlx: bool,
     pub(crate) dequant_dense: Option<&'static str>,
@@ -7443,6 +7455,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) gdn_tgy: Option<i32>,
     pub(crate) native_greedy_logits: bool,
     pub(crate) reuse_rope: bool,
+    pub(crate) mtp_whole_verify_compile: bool,
     pub(crate) mtp_packed_verify: bool,
     pub(crate) mtp_exact_replay: bool,
     pub(crate) mtp_projected_replay: bool,
@@ -7507,6 +7520,7 @@ impl Default for NumericsTierSwitches {
             moe_single_2048: true,
             mla_prefill_chunk: None,
             mla_cold_chunk: None,
+            mla_prefix_restore_disabled: false,
             flash_gdn_prefill_mlx: true,
             qwen_gdn_prefill_mlx: false,
             dequant_dense: None,
@@ -7588,6 +7602,7 @@ impl Default for NumericsTierSwitches {
             gdn_tgy: None,
             native_greedy_logits: false,
             reuse_rope: false,
+            mtp_whole_verify_compile: false,
             mtp_packed_verify: false,
             mtp_exact_replay: false,
             mtp_projected_replay: false,
@@ -7658,6 +7673,7 @@ impl NumericsTierSwitches {
             moe_single_2048: qwen_moe_prefill_single_2048_enabled(),
             mla_prefill_chunk: mla_chunk_tier_deviation(mla_prefill_chunk_override()),
             mla_cold_chunk: mla_cold_prefill_chunk_override(),
+            mla_prefix_restore_disabled: mla_prefix_restore_disabled(),
             flash_gdn_prefill_mlx: flash_next_gdn_prefill_mlx_enabled(),
             qwen_gdn_prefill_mlx: qwen_gated_delta_prefill_mlx_enabled(),
             dequant_dense: dequant_dense_tier_token(
@@ -7760,6 +7776,7 @@ impl NumericsTierSwitches {
             },
             native_greedy_logits: mtp_native_greedy_verify_logits_enabled(),
             reuse_rope: qwen_prefill_reuse_rope_enabled(),
+            mtp_whole_verify_compile: mtp_whole_verify_compile_enabled(),
             mtp_packed_verify: mtp_packed_verify_ffn_env(),
             mtp_exact_replay: mtp_linear_exact_replay_enabled(),
             mtp_projected_replay: mtp_linear_projected_replay_env(),
@@ -7981,6 +7998,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if let Some(chunk) = switches.mla_cold_chunk {
         tokens.push(format!("mla_cold={chunk}"));
+    }
+    if switches.mla_prefix_restore_disabled {
+        tokens.push("mla_prefix_restore=0".to_string());
     }
     if !switches.flash_gdn_prefill_mlx {
         tokens.push("gdn_prefill_mlx=0".to_string());
@@ -8221,6 +8241,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if switches.reuse_rope {
         tokens.push("reuse_rope".to_string());
+    }
+    if switches.mtp_whole_verify_compile {
+        tokens.push("mtp_whole_verify".to_string());
     }
     if switches.mtp_packed_verify {
         tokens.push("mtp_packed_verify".to_string());

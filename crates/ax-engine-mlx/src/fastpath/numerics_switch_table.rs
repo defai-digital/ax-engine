@@ -54,7 +54,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_LINEAR_MTP_EXACT", shipped: "unset", class: SwitchClass::Token("qwen_exact=0") },
     SwitchRow { env: "AX_MLX_MTP_TARGET_LAYER_COMPILE", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_MTP_PACKED_VERIFY_FFN", shipped: "off", class: SwitchClass::Token("mtp_packed_verify") },
-    SwitchRow { env: "AX_MLX_MTP_WHOLE_VERIFY_COMPILE", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
+    SwitchRow { env: "AX_MLX_MTP_WHOLE_VERIFY_COMPILE", shipped: "off", class: SwitchClass::Token("mtp_whole_verify") },
     SwitchRow { env: "AX_MLX_MTP_PROFITABILITY_THROUGHPUT", shipped: "off", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_MTP_COST_MODEL_DEPTH", shipped: "off", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_STICKY_FALLBACK", shipped: "off", class: SwitchClass::NonNumeric("sampling") },
@@ -269,7 +269,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_PREFILL_LAZY_INTERMEDIATE", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_PREFIX_CACHE_DIR", shipped: "unset", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_PREFIX_CACHE_DISK_DISABLED", shipped: "off", class: SwitchClass::NonNumeric("cache") },
-    SwitchRow { env: "AX_DISABLE_MLA_PREFIX_RESTORE", shipped: "off", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_DISABLE_MLA_PREFIX_RESTORE", shipped: "off", class: SwitchClass::Token("mla_prefix_restore=0") },
     SwitchRow { env: "AX_MLX_GEMMA4_ASSISTANT_COMPILE", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF", shipped: "on", class: SwitchClass::NonNumeric("scheduling") },
@@ -860,6 +860,14 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_GEMMA4_MOE_LONG_MT" => {
             switches.gemma4_moe_long = true;
+            true
+        }
+        "AX_MLX_MTP_WHOLE_VERIFY_COMPILE" => {
+            switches.mtp_whole_verify_compile = true;
+            true
+        }
+        "AX_DISABLE_MLA_PREFIX_RESTORE" => {
+            switches.mla_prefix_restore_disabled = true;
             true
         }
         _ => false,

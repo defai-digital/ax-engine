@@ -2,7 +2,6 @@
 //! numbers, and, when the native MLX runtime is linked, MLX allocator gauges.
 //! No model is loaded.
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_core::memory_budget::WiredMemoryReport;
@@ -13,22 +12,10 @@ use serde_json::{Value, json};
 
 use crate::app_state::AppState;
 
-static REPORTED_MLX_NUMERICS: AtomicU8 = AtomicU8::new(0);
-
-/// Record the process numerics preset for `/v1/memory`.
-pub(crate) fn set_reported_mlx_numerics(mode: ax_engine_sdk::MlxNumericsMode) {
-    let code = match mode {
-        ax_engine_sdk::MlxNumericsMode::Exact => 0,
-        ax_engine_sdk::MlxNumericsMode::Fast => 1,
-    };
-    REPORTED_MLX_NUMERICS.store(code, Ordering::Relaxed);
-}
-
+/// Live installed numerics preset (`exact` or `fast`), not the CLI argument
+/// that requested it.
 fn reported_mlx_numerics() -> &'static str {
-    match REPORTED_MLX_NUMERICS.load(Ordering::Relaxed) {
-        1 => "fast",
-        _ => "exact",
-    }
+    ax_engine_sdk::installed_mlx_numerics_name()
 }
 
 pub(crate) async fn memory_sample(
@@ -176,7 +163,6 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     fn assert_paired_footprint(footprint: &Value, peak: &Value) {
         let paired = match (footprint, peak) {
@@ -290,12 +276,17 @@ mod tests {
     }
 
     #[test]
-    fn memory_report_names_the_mlx_numerics_preset() {
-        let previous = REPORTED_MLX_NUMERICS.load(Ordering::Relaxed);
-        set_reported_mlx_numerics(ax_engine_sdk::MlxNumericsMode::Fast);
-        assert_eq!(memory_report()["mlx_numerics"], "fast");
-        set_reported_mlx_numerics(ax_engine_sdk::MlxNumericsMode::Exact);
-        assert_eq!(memory_report()["mlx_numerics"], "exact");
-        REPORTED_MLX_NUMERICS.store(previous, Ordering::Relaxed);
+    fn memory_report_names_the_installed_mlx_numerics_preset() {
+        // The field is the live installed preset. Installing `fast` here would
+        // race other tests that construct a session, so both spellings are
+        // covered by `mlx_numerics_preset_name_follows_the_preset`.
+        assert_eq!(
+            memory_report()["mlx_numerics"],
+            ax_engine_sdk::installed_mlx_numerics_name()
+        );
+        assert!(matches!(
+            memory_report()["mlx_numerics"].as_str(),
+            Some("exact" | "fast")
+        ));
     }
 }

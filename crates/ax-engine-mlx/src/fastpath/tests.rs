@@ -3530,6 +3530,16 @@ fn activation_dtype_policy_is_scoped_to_qwen_hybrid_families() {
 }
 
 #[test]
+fn mlx_numerics_preset_name_follows_the_preset() {
+    assert_eq!(mlx_numerics_name_of(MlxNumericsPreset::Exact), "exact");
+    assert_eq!(mlx_numerics_name_of(MlxNumericsPreset::Fast), "fast");
+    assert_eq!(
+        mlx_numerics_preset_name(),
+        mlx_numerics_name_of(mlx_numerics_preset())
+    );
+}
+
+#[test]
 fn indexed_prefill_env_overrides_fast_preset() {
     assert!(!indexed_prefill_enabled_for(None, MlxNumericsPreset::Exact));
     assert!(indexed_prefill_enabled_for(None, MlxNumericsPreset::Fast));
@@ -3910,6 +3920,20 @@ fn numerics_tier_suffix_records_exact_order_for_combined_switches() {
         numerics_tier_suffix(&tail),
         ";numerics=geglu_mul=0,dense_swiglu_packed=0,pack_qkv=0,gemma_dual_gate_up,batched_prefill,qwen4_vision,act=bf16"
     );
+}
+
+#[test]
+fn numerics_tier_suffix_tokens_warm_restore_and_whole_verify() {
+    let base = NumericsTierSwitches::default();
+    let mut restore = base;
+    restore.mla_prefix_restore_disabled = true;
+    assert_eq!(
+        numerics_tier_suffix(&restore),
+        ";numerics=mla_prefix_restore=0"
+    );
+    let mut whole = base;
+    whole.mtp_whole_verify_compile = true;
+    assert_eq!(numerics_tier_suffix(&whole), ";numerics=mtp_whole_verify");
 }
 
 #[test]

@@ -105,6 +105,21 @@ pub fn install_mlx_numerics_mode(mode: MlxNumericsMode) {
     }
 }
 
+/// Name of the numerics preset installed in this process (`exact` or `fast`).
+///
+/// This is the live preset, not the CLI spelling that requested it. A
+/// delegated build has no native preset and reports `exact`.
+pub fn installed_mlx_numerics_name() -> &'static str {
+    #[cfg(feature = "mlx-native")]
+    {
+        ax_engine_mlx::mlx_numerics_preset_name()
+    }
+    #[cfg(not(feature = "mlx-native"))]
+    {
+        "exact"
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MlxMtpPolicy {
     /// Use MTP when the loaded artifacts contain a validated drafter, otherwise

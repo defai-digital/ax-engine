@@ -103,5 +103,5 @@ pub use session::{
     GenerateStreamPerformance, GenerateStreamState, MlxMtpPolicy, MlxNumericsMode,
     MlxStreamExpertsMode, PreviewSessionConfigError, PreviewSessionConfigRequest,
     ResolvedSessionConfigRequest, SpeechTranscription, StatelessGenerateContext,
-    install_mlx_numerics_mode,
+    install_mlx_numerics_mode, installed_mlx_numerics_name,
 };
