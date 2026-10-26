@@ -14,6 +14,33 @@ SPEC.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_runtime_stages_unwind_server_instead_of_stale_abort_server(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for profile in ('release', 'release-server'):
+                (root / 'target' / profile).mkdir(parents=True)
+            for name in ('ax-engine', 'ax-engine-bench', 'ax-engine-server'):
+                binary = root / 'target/release' / name
+                binary.write_bytes(b'abort')
+                binary.chmod(0o755)
+            server = root / 'target/release-server/ax-engine-server'
+            server.write_bytes(b'unwind')
+            server.chmod(0o755)
+            with patch.object(release, 'ROOT', root), patch.object(release, 'run') as run:
+                release.build_runtime_binaries(root / 'staged', 'test-pin')
+            self.assertEqual((root / 'staged/ax-engine-server').read_bytes(), b'unwind')
+            self.assertEqual((root / 'staged/ax-engine').read_bytes(), b'abort')
+            self.assertTrue((root / 'staged/ax-engine-server').stat().st_mode & 0o111)
+            commands = [call.args for call in run.call_args_list]
+            self.assertEqual(len(commands), 2)
+            self.assertIn('--release', commands[0])
+            self.assertNotIn('ax-engine-server', commands[0])
+            self.assertEqual(commands[1][-6:], ('--profile', 'release-server', '-p',
+                                              'ax-engine-server', '--bin', 'ax-engine-server'))
+            for command in commands:
+                self.assertEqual(command[:4], ('rustup', 'run', 'test-pin', 'cargo'))
+                self.assertIn(root / 'target', command)
+
     def test_tree_digest_binds_content_modes_links_and_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             app = Path(temp) / 'App.app'
