@@ -42,7 +42,14 @@ bash -n scripts/*.sh scripts/lib/*.sh scripts/check-qa.sh
 for entry_point in \
     scripts/qualify_qwen38_27b.py \
     scripts/qualify_qwen38_flash_next.py \
-    scripts/check_qwen38_primary_claims.py; do
+    scripts/check_qwen38_primary_claims.py \
+    scripts/bench_mlx_inference_stack.py \
+    scripts/bench_mtp_prefill_ttft_report.py \
+    scripts/probe_mlx_model_support.py \
+    scripts/qa_gemma4_multimodal.py \
+    scripts/render_mlx_prefill_breakdown_report.py \
+    scripts/run_flash_next_generate_matrix.py \
+    scripts/verify_embedding_models.py; do
     if [[ ! -x "$entry_point" ]]; then
         echo "documented entry point is not executable: $entry_point" >&2
         exit 1
