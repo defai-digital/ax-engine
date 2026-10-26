@@ -813,9 +813,9 @@ fn warn_qkv_self_check(dtype: MlxDtype) {
 /// Deterministic sample: every bf16/f16 special class plus ordinary magnitudes,
 /// so rounding boundaries and non-finite payloads are compared.
 ///
-/// `salt` rotates the special-value table and seeds the pseudo-random tail, so
-/// samples of different lengths still cover every class.
-fn self_check_values(count: usize, salt: u64) -> Vec<f32> {
+/// `rotation` rotates the special-value table and seeds the pseudo-random tail,
+/// so samples of different lengths still cover every class.
+fn self_check_values(count: usize, rotation: u64) -> Vec<f32> {
     const SPECIAL: [f32; 32] = [
         0.0,
         -0.0,
@@ -850,8 +850,8 @@ fn self_check_values(count: usize, salt: u64) -> Vec<f32> {
         3.0,
         -3.0,
     ];
-    let offset = (salt as usize) % SPECIAL.len();
-    let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ salt.wrapping_mul(0x2545_F491_4F6C_DD1D);
+    let offset = (rotation as usize) % SPECIAL.len();
+    let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ rotation.wrapping_mul(0x2545_F491_4F6C_DD1D);
     let mut values = Vec::with_capacity(count);
     for index in 0..count {
         if index < SPECIAL.len() {
@@ -886,7 +886,7 @@ fn decay_parameter_values(count: usize) -> Vec<f32> {
 
 /// Per-head inverse-sum sample: zero, subnormal, large, infinite and NaN values
 /// the `pow(x, -0.5)` path has to reproduce.
-fn inverse_sum_values(count: usize, salt: u64) -> Vec<f32> {
+fn inverse_sum_values(count: usize, rotation: u64) -> Vec<f32> {
     const SPECIAL: [f32; 17] = [
         0.0,
         -0.0,
@@ -906,7 +906,7 @@ fn inverse_sum_values(count: usize, salt: u64) -> Vec<f32> {
         -1.0,
         -3.0,
     ];
-    let offset = (salt as usize) % SPECIAL.len();
+    let offset = (rotation as usize) % SPECIAL.len();
     (0..count)
         .map(|index| SPECIAL[(offset + index) % SPECIAL.len()])
         .collect()
@@ -1121,13 +1121,17 @@ mod tests {
     }
 
     /// One decay/beta comparison at the given shape.
-    fn check_decay(projection: MlxDtype, bias: MlxDtype, heads: usize, rows: usize, salt: u64) {
+    fn check_decay(projection: MlxDtype, bias: MlxDtype, heads: usize, rows: usize, rotation: u64) {
         let elements = rows * heads;
         let shape = [1, rows as i32, heads as i32];
-        let projection_values = self_check_values(elements, salt);
+        let projection_values = self_check_values(elements, rotation);
         let decay_proj = array_from_f32(&projection_values, &shape, projection);
         let beta_proj = array_from_f32(&projection_values, &shape, projection);
-        let dt_bias = array_from_f32(&self_check_values(heads, salt + 1), &[heads as i32], bias);
+        let dt_bias = array_from_f32(
+            &self_check_values(heads, rotation + 1),
+            &[heads as i32],
+            bias,
+        );
         let exp_a_log = array_from_f32(
             &decay_parameter_values(heads),
             &[heads as i32],
@@ -1168,24 +1172,24 @@ mod tests {
     }
 
     /// One q/k/v comparison at the given geometry.
-    fn check_qkv(dtype: MlxDtype, geometry: QkvGeometry, rows: i32, salt: u64) {
+    fn check_qkv(dtype: MlxDtype, geometry: QkvGeometry, rows: i32, rotation: u64) {
         let conv_dim = 2 * geometry.key_dim + geometry.value_dim;
         let key_heads = geometry.key_dim / geometry.head_dim;
         let value_heads = geometry.value_dim / geometry.head_dim;
         let conv = array_from_f32(
-            &self_check_values((rows * conv_dim) as usize, salt),
+            &self_check_values((rows * conv_dim) as usize, rotation),
             &[1, rows, conv_dim],
             dtype,
         );
         let sum_shape = [1, rows, key_heads, 1];
         let sum_count = (rows * key_heads) as usize;
         let sum_q = array_from_f32(
-            &inverse_sum_values(sum_count, salt + 1),
+            &inverse_sum_values(sum_count, rotation + 1),
             &sum_shape,
             MlxDtype::Float32,
         );
         let sum_k = array_from_f32(
-            &inverse_sum_values(sum_count, salt + 2),
+            &inverse_sum_values(sum_count, rotation + 2),
             &sum_shape,
             MlxDtype::Float32,
         );

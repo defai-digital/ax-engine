@@ -7307,8 +7307,8 @@ mod tests {
         .unwrap()
     }
 
-    fn hidden_tensor(spec: &Geom, batch: usize, tokens: usize, salt: f32) -> MlxArray {
-        let mut data = wave(batch * tokens * spec.hidden, 0.41 + salt, 0.9, 0.12);
+    fn hidden_tensor(spec: &Geom, batch: usize, tokens: usize, phase: f32) -> MlxArray {
+        let mut data = wave(batch * tokens * spec.hidden, 0.41 + phase, 0.9, 0.12);
         for (index, value) in data.iter_mut().enumerate() {
             *value *= 0.6 + 0.15 * (index % spec.hidden) as f32;
         }
