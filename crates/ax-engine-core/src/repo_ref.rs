@@ -7,6 +7,9 @@
 //! - full URL: `https://huggingface.co/owner/repo` (also `http://`, `hf.co`,
 //!   scheme-less `huggingface.co/...`)
 //! - URL with revision: `https://huggingface.co/owner/repo/tree/<rev>`
+//! - bare repo id with tree suffix: `owner/repo/tree/<rev>`, a compatibility
+//!   alias for the URL form that also accepts slash-containing revisions such
+//!   as `owner/repo/tree/feature/download-flow`
 //! - trailing `/` and a `.git` suffix on the repo segment
 //!
 //! File links (`/blob/...`, `/resolve/...`) and non-Hugging-Face hosts are
@@ -298,6 +301,12 @@ mod tests {
             "https://huggingface.co/owner/repo/tree/v1",
             "owner/repo",
             Some("v1"),
+        );
+        ok("owner/repo/tree/v1", "owner/repo", Some("v1"));
+        ok(
+            "owner/repo/tree/feature/download-flow",
+            "owner/repo",
+            Some("feature/download-flow"),
         );
         ok(
             "https://hf.co/owner/repo/tree/main",

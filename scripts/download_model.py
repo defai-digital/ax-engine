@@ -159,7 +159,11 @@ def _validate_standalone_revision(revision: str, reference: str) -> str:
 
 
 def _standalone_parse_repo_ref(value: str) -> tuple[str, str | None]:
-    """Parser fallback for standalone release helpers without the Python package."""
+    """Parser fallback for standalone release helpers without the Python package.
+
+    Mirrors the packaged grammar, including the bare ``owner/repo/tree/<rev>``
+    compatibility alias for ``/tree/<revision>`` links.
+    """
     text = _trim_standalone_reference(value)
     if not text:
         raise ValueError("empty model reference; pass `owner/repo` or a Hugging Face URL")

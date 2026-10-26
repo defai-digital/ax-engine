@@ -615,6 +615,11 @@ class AxEngineCliTests(unittest.TestCase):
             ("huggingface.co/owner/repo/", ("owner/repo", None)),
             ("https://huggingface.co/owner/repo.git", ("owner/repo", None)),
             ("https://huggingface.co/owner/repo/tree/main", ("owner/repo", "main")),
+            ("owner/repo/tree/v1", ("owner/repo", "v1")),
+            (
+                "owner/repo/tree/feature/download-flow",
+                ("owner/repo", "feature/download-flow"),
+            ),
             ("owner/repo@feature/download-ui", ("owner/repo", "feature/download-ui")),
             ("owner/repo@refs%2Fpr%2F123", ("owner/repo", "refs/pr/123")),
             (

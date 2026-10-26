@@ -2,8 +2,11 @@
 
 Accepts bare `owner/repo`, `owner/repo@revision`, full
 `https://huggingface.co/owner/repo` links (also `hf.co`, scheme-less, `.git`,
-trailing slash), and `/tree/<revision>` URLs. Keep the accepted grammar in
-sync with the Rust parser; both are covered by parity-style unit tests.
+trailing slash), and `/tree/<revision>` URLs. The bare `owner/repo/tree/<rev>`
+form is accepted as a compatibility alias for the URL form, including
+slash-containing revisions such as `owner/repo/tree/feature/download-flow`.
+Keep the accepted grammar in sync with the Rust parser; both are covered by
+parity-style unit tests.
 """
 
 from __future__ import annotations

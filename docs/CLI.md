@@ -80,7 +80,8 @@ aliases cover the curated [AutomatosX catalog](https://huggingface.co/AutomatosX
 (MTP/assistant extras and `model-manifest.json` ship in the snapshot); legacy
 aliases such as `qwen36-35b` stay serve-only. Arbitrary models can be fetched
 with a bare `org/repo` id, a full Hugging Face link, or a pinned revision
-(`@rev` or `/tree/<rev>` in the link):
+(`@rev`, or `/tree/<rev>` either inside the link or appended to the bare id,
+including slash-containing branches):
 
 ```text
 ax-engine download --list
@@ -107,6 +108,7 @@ ax-engine download ax-embeddinggemma-300m
 ax-engine download ax-qwen3-embedding-4b
 ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
 ax-engine download AutomatosX/model@revision
+ax-engine download AutomatosX/model/tree/feature/download-flow
 ax-engine download ax-qwen3.6-35b --dest /path/to/explicit-copy
 ax-engine download qwen3.6-27b:axq --local-only
 ```

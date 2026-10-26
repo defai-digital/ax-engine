@@ -502,6 +502,11 @@ class DownloadModelScriptTest(unittest.TestCase):
     def test_standalone_repo_parser_fallback_matches_packaged_contract(self) -> None:
         cases = {
             "owner/repo": ("owner/repo", None),
+            "owner/repo/tree/v1": ("owner/repo", "v1"),
+            "owner/repo/tree/feature/download-flow": (
+                "owner/repo",
+                "feature/download-flow",
+            ),
             "owner/repo.git@feature/downloads": (
                 "owner/repo",
                 "feature/downloads",
