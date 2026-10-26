@@ -31,7 +31,7 @@ Or use the repository root example targets directly.
 ### Version
 
 The package version is kept in lockstep with `Cargo.toml` and the other SDKs
-by the CI "Verify version consistency" check. The current version is `7.9.0`.
+by the CI "Verify version consistency" check. The current version is `7.10.0`.
 
 ## Quick Start
 
@@ -58,7 +58,12 @@ let client = AxEngineClient(
     baseURL: URL(string: "http://127.0.0.1:31418")!,  // default
     session: .shared,                                 // default
     headers: ["Authorization": "Bearer token"],       // default: none
-    requestTimeout: 300                               // default: 300 s
+    requestTimeout: 300,                              // default: 300 s
+    streamLimits: .init(                              // defaults, in bytes
+        lineBytes: 1_048_576,
+        eventBytes: 4_194_304,
+        errorBodyBytes: 65_536
+    )
 )
 ```
 
@@ -179,6 +184,34 @@ for try await event in client.streamGenerate(.init(
     }
 }
 ```
+
+Streaming requests start when iteration starts. The SDK reads and decodes one
+SSE event per consumer demand, then pauses the URLSession task until the next
+read. It does not keep a producer-side queue of decoded events or silently drop
+tokens when the consumer is slow. Foundation may already have buffered bytes;
+these controls are not a hard cap on URLSession or process memory.
+
+The default per-line limit is 1 MiB, per-event limit is 4 MiB, and streaming HTTP
+error-body limit is 64 KiB. SSE limits count UTF-8 bytes including field names;
+the event budget includes comments, unknown fields, and line endings through
+the blank separator. CRLF counts as one line-ending byte. Limits reset per
+event, so a long sequence of small events is supported. Empty `data` lines use
+a single accumulated string rather than a growing array of line objects.
+
+Exceeding a limit throws `AxEngineStreamLimitError` and cancels the transport.
+An oversized HTTP error includes its status code in that error, without keeping
+the oversized payload. Ordinary bounded HTTP errors retain `AxEngineHTTPError`
+and the server's message. Increase `streamLimits` explicitly for trusted
+endpoints that emit larger individual events, such as a large native final
+response. Nonpositive limits fail before HTTP starts. These limits do not apply
+to successful non-streaming responses.
+
+Cancel the consuming task to interrupt an active read. Completion, parse/decode
+failure, and cancellation close the transport. When breaking out early, release
+both the stream and its iterator; retaining them intentionally retains a paused
+response that can be resumed. If cancellation occurs before iteration begins,
+`AsyncThrowingStream` may end without throwing; check `Task.isCancelled` when
+distinguishing cancellation from successful completion.
 
 ### Error handling
 

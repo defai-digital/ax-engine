@@ -774,6 +774,32 @@ pub(crate) fn clear_layer_gemma4_dual_path_prefill_cache() {
     }
 }
 
+/// Remove entries owned by a retiring worker, including after a caught panic.
+/// Other workers keep their compiled graphs and stream ownership.
+pub(crate) fn remove_worker_entries<K, V>(
+    store: &OnceLock<Mutex<HashMap<K, V>>>,
+    belongs_to_worker: impl Fn(&K) -> bool,
+) where
+    K: Eq + std::hash::Hash,
+{
+    if let Some(cache) = store.get() {
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.retain(|key, _| !belongs_to_worker(key));
+    }
+}
+
+pub(crate) fn clear_worker_layer_compile_caches(thread: ThreadId) {
+    remove_worker_entries(&LAYER_MOE_DECODE_CACHE, |key| key.2 == thread);
+    remove_worker_entries(&LAYER_DENSE_FFN_DECODE_CACHE, |key| key.2 == thread);
+    remove_worker_entries(&LAYER_DENSE_FFN_PREFILL_CACHE, |key| key.2 == thread);
+    remove_worker_entries(&PER_LAYER_INPUT_GATE_DECODE_CACHE, |key| key.1 == thread);
+    remove_worker_entries(&LAYER_GEMMA4_DUAL_PATH_CACHE, |key| key.2 == thread);
+    remove_worker_entries(&LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE, |key| key.2 == thread);
+    crate::model::clear_worker_verify_compile_caches(thread);
+}
+
 /// Clear every compiled per-layer decode closure before a drained model swap.
 pub(crate) fn clear_all_layer_decode_caches() {
     clear_layer_moe_decode_cache();
@@ -795,6 +821,85 @@ mod tests {
     /// another). Without this, a clear landing between a sibling test's
     /// apply and its `contains_key` assert fails the sibling intermittently.
     static GLOBAL_CACHE_TEST_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    #[test]
+    fn worker_cleanup_removes_only_retired_thread_entries() {
+        let _exclusive = GLOBAL_CACHE_TEST_LOCK.write().expect("cache test lock");
+        let retiring = std::thread::current().id();
+        let sibling = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .expect("thread id");
+        macro_rules! check_cache {
+            ($store:expr, $retired_key:expr, $sibling_key:expr, $value:expr) => {{
+                let cache = $store.get_or_init(|| Mutex::new(HashMap::new()));
+                {
+                    let mut entries = cache.lock().expect("cache lock");
+                    entries.insert($retired_key, $value);
+                    entries.insert($sibling_key, $value);
+                }
+                clear_worker_layer_compile_caches(retiring);
+                let mut entries = cache.lock().expect("cache lock");
+                assert!(!entries.contains_key(&$retired_key));
+                assert!(
+                    entries.remove(&$sibling_key).is_some(),
+                    "sibling graph must survive"
+                );
+            }};
+        }
+        check_cache!(
+            LAYER_MOE_DECODE_CACHE,
+            (u64::MAX, 0, retiring),
+            (u64::MAX, 0, sibling),
+            None
+        );
+        check_cache!(
+            LAYER_DENSE_FFN_DECODE_CACHE,
+            (u64::MAX, 0, retiring),
+            (u64::MAX, 0, sibling),
+            (None, 0)
+        );
+        check_cache!(
+            LAYER_DENSE_FFN_PREFILL_CACHE,
+            (u64::MAX, 0, retiring, 7),
+            (u64::MAX, 0, sibling, 7),
+            (None, 0)
+        );
+        check_cache!(
+            PER_LAYER_INPUT_GATE_DECODE_CACHE,
+            (u64::MAX, retiring),
+            (u64::MAX, sibling),
+            None
+        );
+        check_cache!(
+            LAYER_GEMMA4_DUAL_PATH_CACHE,
+            (u64::MAX, 0, retiring),
+            (u64::MAX, 0, sibling),
+            None
+        );
+        check_cache!(
+            LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE,
+            (u64::MAX, 0, retiring, 7),
+            (u64::MAX, 0, sibling, 7),
+            (None, 0)
+        );
+    }
+
+    #[test]
+    fn worker_cleanup_releases_owned_values_even_after_mutex_poison() {
+        let store = std::sync::Arc::new(OnceLock::new());
+        let owned = std::sync::Arc::new(());
+        let sibling = std::sync::Arc::new(());
+        store.get_or_init(|| Mutex::new(HashMap::from([(1, owned.clone()), (2, sibling.clone())])));
+        let poison_store = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _lock = poison_store.get().expect("cache").lock().expect("lock");
+            panic!("simulate worker panic");
+        })
+        .join();
+        remove_worker_entries(&store, |key| *key == 1);
+        assert_eq!(std::sync::Arc::strong_count(&owned), 1);
+        assert_eq!(std::sync::Arc::strong_count(&sibling), 2);
+    }
 
     #[test]
     fn test_clear_moe_cache_does_not_panic() {

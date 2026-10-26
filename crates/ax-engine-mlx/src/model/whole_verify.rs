@@ -472,6 +472,13 @@ pub(crate) fn try_whole_compiled_qwen_verify(
     install_outputs(cfg, weights, cache, outputs)
 }
 
+pub(crate) fn clear_worker_verify_compile_caches(thread: ThreadId) {
+    crate::per_layer_compile::remove_worker_entries(&WHOLE_VERIFY_CACHE, |key| key.2 == thread);
+    crate::per_layer_compile::remove_worker_entries(&LINEAR_LAYER_VERIFY_CACHE, |key| {
+        key.3 == thread
+    });
+}
+
 pub(crate) fn clear_whole_verify_compile_cache() {
     if let Some(cache) = WHOLE_VERIFY_CACHE.get()
         && let Ok(mut guard) = cache.lock()

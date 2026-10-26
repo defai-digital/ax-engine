@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -98,6 +99,21 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def build_runtime_binaries(output: Path, toolchain: str) -> None:
+    """Stage the server from its unwind profile, without reusing an abort binary."""
+    target = ROOT / "target"
+    cargo = ("rustup", "run", toolchain, "cargo", "build", "--locked", "--target-dir", target)
+    run(*cargo, "--release", "-p", "ax-engine-bench", "--bin", "ax-engine",
+        "--bin", "ax-engine-bench")
+    # Worker catch_unwind containment requires unwind even in the GUI bundle.
+    run(*cargo, "--profile", "release-server", "-p", "ax-engine-server",
+        "--bin", "ax-engine-server")
+    output.mkdir()
+    for name in ("ax-engine", "ax-engine-bench", "ax-engine-server"):
+        profile = "release-server" if name == "ax-engine-server" else "release"
+        shutil.copy2(target / profile / name, output / name)
+
+
 def build(output: Path, mlx: Path) -> None:
     require(not output.exists(), "Use a new output directory")
     require(not run("git", "status", "--porcelain", capture=True).strip(), "Build requires a clean checkout")
@@ -106,11 +122,9 @@ def build(output: Path, mlx: Path) -> None:
     require(re.fullmatch(r"\d+\.\d+\.\d+", version) is not None, "Expected a stable source version")
     toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     output.mkdir(parents=True)
-    run("rustup", "run", toolchain, "cargo", "build", "--locked", "--release",
-        "-p", "ax-engine-bench", "-p", "ax-engine-server", "--bin", "ax-engine",
-        "--bin", "ax-engine-bench", "--bin", "ax-engine-server")
+    build_runtime_binaries(output / "binaries", toolchain)
     run("bash", ROOT / "scripts/prepare-mlx-release-runtime.sh", mlx, output / "mlx")
-    run("bash", ROOT / "scripts/prepare-standalone-release.sh", ROOT / "target/release",
+    run("bash", ROOT / "scripts/prepare-standalone-release.sh", output / "binaries",
         output / "mlx", output / "runtime")
     run("bash", ROOT / "scripts/build-macos-app.sh", "--distribution", "--runtime-dir",
         output / "runtime", "--output", output / "app")

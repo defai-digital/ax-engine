@@ -273,72 +273,6 @@ pub(crate) async fn load_model(
     let state_clone = state.clone();
     let load_task = tokio::spawn(async move {
         let _loading_guard = loading_guard;
-        // Fast path: soft-parked same-id reload (flip S2). Republish without
-        // rebuild so sibling interactive decode is not GPU-stalled.
-        // Replace never republishes (its retire-the-outgoing swap semantics
-        // differ), but a same-id parked generation must not outlive the swap
-        // as a hidden second residency: retire it before the build.
-        let parked = match state_clone.take_parked_live(&model_id, &model_path) {
-            crate::app_state::ParkedLookup::Matched(parked) => {
-                if load_mode == LoadModelMode::Add {
-                    Some(parked)
-                } else {
-                    if let Err(error) = parked.retire().await {
-                        tracing::warn!(
-                            model_id = %model_id,
-                            %error,
-                            "failed to retire a parked generation superseded by a replace load"
-                        );
-                    }
-                    None
-                }
-            }
-            crate::app_state::ParkedLookup::Stale(stale) => {
-                // Same id, different artifacts: the parked worker cannot
-                // be republished and must not outlive this load as a
-                // hidden second residency.
-                if let Err(error) = stale.retire().await {
-                    tracing::warn!(
-                        model_id = %model_id,
-                        %error,
-                        "failed to retire a parked generation that no longer matches the requested path"
-                    );
-                }
-                None
-            }
-            crate::app_state::ParkedLookup::None => None,
-        };
-        if let Some(parked) = parked {
-            let ctx_len = crate::metadata::context_length(&parked);
-            let published_model_id = Arc::clone(&parked.model_id);
-            let previous = state_clone.publish_live(parked, make_default);
-            if enforce_prefill_isolation
-                && let Some(published) =
-                    state_clone.snapshot_for_model(Some(published_model_id.as_ref()))
-            {
-                published
-                    .generation_service
-                    .set_adaptive_prefill_isolation(true);
-            }
-            if multi_model_after_load {
-                rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
-            }
-            if let Some(previous) = previous
-                && let Err(error) = previous.retire().await
-            {
-                // Replacing a live same-id entry should still retire the
-                // outgoing generation; soft-park is only for unload→reload.
-                // The republish has already committed, so a retire failure
-                // (a panicked outgoing worker) is reported, not turned into
-                // a failed load the client would retry against a live model.
-                tracing::error!(
-                    model_id = %model_id,
-                    %error,
-                    "parked model republished but previous generation failed to retire"
-                );
-            }
-            return Ok(ctx_len);
-        }
         // MemoryConstrained retires the previous service before the build; a
         // failed build would otherwise leave the registry pointing at a dead
         // LiveState, so keep what a rollback respawn needs.
@@ -640,8 +574,9 @@ pub(crate) async fn perform_unload(
     let task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = loading_guard;
-        ensure_no_active_stepwise(&live.generation_service).await?;
-        wait_for_model_idle(&live).await?;
+        let preflight_live = live;
+        ensure_no_active_stepwise(&preflight_live.generation_service).await?;
+        wait_for_model_idle(&preflight_live).await?;
         let live = state_clone
             .remove_live(&unload_model_id)
             .map_err(|reason| match reason {
@@ -656,11 +591,18 @@ pub(crate) async fn perform_unload(
                     format!("model {unload_model_id} is not loaded"),
                 ),
             })?;
-        // Soft-park instead of hard retire: flip S2 reloads the same sibling
-        // within ~250 ms. Rebuilding weights stalls interactive decode gaps
-        // (~25–55 ms spikes). Parking keeps weights resident for instant
-        // republish while the model is absent from the live registry.
-        state_clone.park_live(live);
+        // Drop the preflight snapshot too: it owns the stateless prefix/weight
+        // context and the embedding sender independently of the registry entry.
+        drop(preflight_live);
+        live.retire().await.map_err(map_generation_service_error)?;
+        // The worker has joined, including its thread-local tensor destructors.
+        // Reclaim only unused buffers; sibling compiled graphs remain intact.
+        if let Err(error) =
+            tokio::task::spawn_blocking(ax_engine_sdk::EngineSession::trim_native_allocator_cache)
+                .await
+        {
+            tracing::warn!(%error, "model retired but unused allocator buffers could not be trimmed");
+        }
         Ok(())
     });
 
@@ -789,7 +731,7 @@ fn validate_load_preflight(
             }
         }
     }
-    validate_load_memory_preflight(state, model_id, model_path, load_mode, load_policy)?;
+    validate_load_memory_preflight(state, model_path, load_mode, load_policy)?;
     Ok(live)
 }
 
@@ -951,7 +893,6 @@ fn mlx_device_active_bytes() -> Option<u64> {
 /// unknowable, and can be disabled with `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`.
 fn validate_load_memory_preflight(
     state: &AppState,
-    model_id: &str,
     model_path: &std::path::Path,
     load_mode: LoadModelMode,
     load_policy: LoadModelPolicy,
@@ -972,25 +913,7 @@ fn validate_load_memory_preflight(
     let incoming_pool = kv_pool_tokens(&default_live.session_config.kv_config);
     let incoming_kv = manifest_kv_geometry(model_path)
         .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
-    // A parked generation with the same id+path already holds these weights as
-    // resident, and the preflight's measured/estimated resident total counts
-    // them: charging the incoming estimate again would double-count and
-    // false-reject the evict→reload cycle. This holds for Add (republish, which
-    // reuses the parked worker) and equally for Replace: the load task retires
-    // the parked generation before it builds the replacement from the same path,
-    // so the baseline's parked contribution is exchanged one-for-one for the new
-    // build instead of being added to it.
-    //
-    // That ordering is load-bearing, and so is the retirement succeeding: a
-    // failed `retire` only logs a warning and the load proceeds, in which case
-    // the parked weights stay resident alongside the new build and this must
-    // charge `incoming` again.
-    let parked_same_id_resident = state.parked_live_matches(model_id, model_path);
-    let incoming = if parked_same_id_resident {
-        0
-    } else {
-        estimated_footprint_bytes(incoming_weights, incoming_kv)
-    };
+    let incoming = estimated_footprint_bytes(incoming_weights, incoming_kv);
 
     let outgoing_model_id = default_live.model_id;
     let mut resident_total = 0u64;

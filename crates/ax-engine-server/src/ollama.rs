@@ -1142,9 +1142,8 @@ fn keep_alive_requests_unload(value: Option<&Value>) -> bool {
     }
 }
 
-/// Unload (soft-park) the model through the exact `/v1/model/unload` flow so
-/// Ollama `keep_alive: 0` actually frees the registry entry a later load
-/// depends on. Ollama clients send this before loading a different model and
+/// Retire the model through the exact `/v1/model/unload` flow, joining its
+/// worker before the unload completes. Ollama clients send this before loading a different model and
 /// expect the memory to be released; answering `done_reason: "unload"`
 /// without running the unload would leave the model resident.
 async fn unload_model_after_keep_alive(state: &AppState, model_id: &str) {

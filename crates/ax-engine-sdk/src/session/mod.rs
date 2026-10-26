@@ -280,6 +280,20 @@ impl EngineSession {
         ax_engine_mlx::clear_process_caches();
     }
 
+    /// Release only the calling worker's native compiled graphs after its
+    /// sessions have dropped. Safe to call for delegated workers as well.
+    pub fn clear_native_worker_compile_caches() {
+        #[cfg(feature = "mlx-native")]
+        ax_engine_mlx::clear_worker_compile_caches();
+    }
+
+    /// Return unused native allocator buffers after a drained worker has joined.
+    /// Live tensors and sibling compiled graphs remain owned by their sessions.
+    pub fn trim_native_allocator_cache() {
+        #[cfg(feature = "mlx-native")]
+        mlx_sys::clear_cache();
+    }
+
     /// Flag whether a sibling model's work is active in this process so
     /// multi-token prefill can use ring-rotated sliding KV (S1 dual-model
     /// contract win) while exclusive single-model sessions keep ordered

@@ -1,8 +1,9 @@
 # Distributing AX Engine for macOS
 
-Status: local tooling; the public GUI download channel is not activated.
+Status: signed GUI release tooling; public availability is verified separately
+from runtime publication using `verify-public` below.
 Scope: macOS 26.2 or later, Apple Silicon arm64.
-Last reviewed: 2026-10-24.
+Last reviewed: 2026-10-26.
 Owner: AX Engine maintainers.
 Related: [native app](MACOS-APP.md), [installation guide](GETTING-STARTED.md).
 
@@ -44,7 +45,7 @@ No notarization result is inferred from a successful local codesign operation.
 
 `verify` mounts the DMG read-only and checks the actual app, source identity,
 contents, notarization, signatures and bundled native-download capability.
-The next release must additionally qualify Finder launch and a quarantined
+Each release must additionally qualify Finder launch and a quarantined
 fresh install/upgrade on a supported Mac. Synthetic tests and local signing do
 not establish model performance, SKU qualification or a public release.
 
@@ -83,9 +84,10 @@ The installer never removes quarantine or disables Gatekeeper.
 
 ## Isolated Cloudflare channel
 
-The proposed public base is
-`https://download.automatosx.com/ax-engine-desktop`; it is not currently an
-installation endpoint. It uses its own `ax-engine-desktop-releases` bucket and
+The GUI channel base is
+`https://download.automatosx.com/ax-engine-desktop`. A version is available only
+after its signed metadata and public readback pass the publication steps below.
+It uses its own `ax-engine-desktop-releases` bucket and
 `ax-engine-desktop-downloads` Worker. It does not change AX Code/AX Code Desktop
 buckets, routes, installers, release objects or latest pointers.
 

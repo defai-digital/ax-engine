@@ -263,7 +263,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
       - name: Test native app contracts
-        run: swift test --package-path packaging/macos/AXEngineApp
+        # These tests launch real processes with bounded shutdown deadlines.
+        # Explicitly serialize Swift Testing cases on shared runners; otherwise
+        # unrelated process fixtures compete with the lifecycle under test.
+        run: swift test --package-path packaging/macos/AXEngineApp --no-parallel
       - name: Set up distribution test tooling
         uses: actions/setup-node@v6
         with:

@@ -136,7 +136,10 @@ pub(crate) use shared::{replay_linear_attention_mtp_prefix, scale_hidden_pub};
 mod families;
 mod whole_verify;
 
-pub(crate) use whole_verify::{clear_whole_verify_compile_cache, try_whole_compiled_qwen_verify};
+pub(crate) use whole_verify::{
+    clear_whole_verify_compile_cache, clear_worker_verify_compile_caches,
+    try_whole_compiled_qwen_verify,
+};
 
 pub(crate) use families::standard::layer_forward_bidirectional;
 // The MTP module drives the nextn block directly (`mtp.rs`); the family owns
