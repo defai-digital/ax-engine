@@ -10,19 +10,22 @@ struct SSEEvent: Sendable {
 ///
 /// Yields one ``SSEEvent`` per complete event block (blank-line terminated).
 /// Stops when the `[DONE]` sentinel is encountered or the byte stream ends.
-struct SSEParser: AsyncSequence {
+struct SSEParser<Bytes: AsyncSequence>: AsyncSequence where Bytes.Element == UInt8 {
     typealias Element = SSEEvent
 
-    let bytes: URLSession.AsyncBytes
+    let bytes: Bytes
+    var limits = AxEngineStreamLimits()
 
     func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(bytes: bytes.makeAsyncIterator())
+        AsyncIterator(bytes: bytes.makeAsyncIterator(), limits: limits)
     }
 
     struct AsyncIterator: AsyncIteratorProtocol {
-        var bytes: URLSession.AsyncBytes.AsyncIterator
+        var bytes: Bytes.AsyncIterator
+        let limits: AxEngineStreamLimits
         var eventName = "message"
-        var dataLines: [String] = []
+        var eventData = ""
+        var hasData = false
         var done = false
         /// True once the `[DONE]` sentinel has been consumed, so callers can
         /// tell a completed OpenAI stream from a connection cut at EOF.
@@ -30,16 +33,25 @@ struct SSEParser: AsyncSequence {
         var lineBuffer = [UInt8]()
         var skipLF = false
         var firstLine = true
+        var eventBytes = 0
 
         mutating func next() async throws -> SSEEvent? {
             guard !done else { return nil }
+            try limits.validate()
 
             while let byte = try await bytes.next() {
                 if skipLF {
                     skipLF = false
                     if byte == UInt8(ascii: "\n") { continue }
                 }
+                guard eventBytes < limits.eventBytes else {
+                    throw AxEngineStreamLimitError.eventTooLarge(limit: limits.eventBytes)
+                }
+                eventBytes += 1
                 if byte != UInt8(ascii: "\n") && byte != UInt8(ascii: "\r") {
+                    guard lineBuffer.count < limits.lineBytes else {
+                        throw AxEngineStreamLimitError.lineTooLarge(limit: limits.lineBytes)
+                    }
                     lineBuffer.append(byte)
                     continue
                 }
@@ -56,7 +68,8 @@ struct SSEParser: AsyncSequence {
             }
 
             // An event requires a blank-line terminator, even at EOF.
-            dataLines = []
+            eventData = ""
+            hasData = false
             lineBuffer = []
             done = true
             return nil
@@ -64,11 +77,13 @@ struct SSEParser: AsyncSequence {
 
         private mutating func processLine(_ line: String) -> SSEEvent? {
             if line.isEmpty {
+                eventBytes = 0
                 let name = eventName.isEmpty ? "message" : eventName
                 eventName = "message"
-                guard !dataLines.isEmpty else { return nil }
-                let data = dataLines.joined(separator: "\n")
-                dataLines = []
+                guard hasData else { return nil }
+                let data = eventData
+                eventData = ""
+                hasData = false
                 if name != "error" && data == "[DONE]" { done = true; sawDone = true; return nil }
                 return SSEEvent(event: name, data: data)
             }
@@ -80,9 +95,15 @@ struct SSEParser: AsyncSequence {
             if field == "event" {
                 eventName = value
             } else if field == "data" {
-                dataLines.append(value)
+                if hasData { eventData.append("\n") }
+                eventData.append(contentsOf: value)
+                hasData = true
             }
             return nil
         }
     }
 }
+
+// The network iterator is Sendable. Preserve that checked conformance when
+// moving parser state out of the reader actor for a single awaited read.
+extension SSEParser.AsyncIterator: Sendable where Bytes.AsyncIterator: Sendable {}

@@ -67,3 +67,14 @@ footprint, first-token latency, and decode throughput.
 The macOS Playground separately bounds conversation text, message count, and
 archive size. Export/clear a long conversation to release its visible history.
 Dashboard history is already bounded by age and sample count.
+
+## Swift streaming receive limits
+
+The Swift SDK used by Playground reads one SSE event per consumer demand and
+pauses its URLSession task between reads. It no longer maintains an unbounded
+decoded-event queue. SSE lines, event blocks, and streaming HTTP error bodies
+have separate byte limits, with explicit errors and transport cancellation on
+overflow. These complement Playground's retained-history limits; they do not
+cap Foundation's own buffering or successful non-streaming response bodies.
+See [Swift SDK streaming](sdk/swift.md#streaming) for defaults, overrides, and
+cancellation behavior.

@@ -24,6 +24,7 @@ public final class AxEngineClient: @unchecked Sendable {
     private let requestTimeout: TimeInterval
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let streamLimits: AxEngineStreamLimits
 
     /// - Parameters:
     ///   - baseURL: Server root URL.
@@ -33,16 +34,19 @@ public final class AxEngineClient: @unchecked Sendable {
     ///   - requestTimeout: Per-request idle timeout in seconds. URLSession's
     ///     60s default fails blocking generations that take longer; the Go and
     ///     Ruby clients default to 300s.
+    ///   - streamLimits: Byte limits for SSE framing and streaming HTTP errors.
     public init(
         baseURL: URL = URL(string: "http://127.0.0.1:31418")!,
         session: URLSession = .shared,
         headers: [String: String] = [:],
-        requestTimeout: TimeInterval = 300
+        requestTimeout: TimeInterval = 300,
+        streamLimits: AxEngineStreamLimits = .init()
     ) {
         self.baseURL = baseURL
         self.session = session
         self.headers = headers
         self.requestTimeout = requestTimeout
+        self.streamLimits = streamLimits
 
         encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -228,7 +232,7 @@ public final class AxEngineClient: @unchecked Sendable {
 
     private func execute<R: Decodable>(_ urlRequest: URLRequest) async throws -> R {
         let (data, response) = try await session.data(for: urlRequest)
-        try validate(response: response, data: data)
+        try Self.validate(response: response, data: data)
         return try decoder.decode(R.self, from: data)
     }
 
@@ -243,54 +247,15 @@ public final class AxEngineClient: @unchecked Sendable {
         requiresDoneSentinel: Bool = false,
         decode: @escaping @Sendable (SSEEvent) throws -> T
     ) -> AsyncThrowingStream<T, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task { [encoder, session] in
-                do {
-                    var urlRequest = self.buildRequest(method: "POST", path: path, body: try encoder.encode(body))
-                    urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    let (asyncBytes, response) = try await session.bytes(for: urlRequest)
-                    // Drain the body on non-2xx so callers get the server error message,
-                    // matching non-stream execute() behavior.
-                    if let http = response as? HTTPURLResponse,
-                       http.statusCode < 200 || http.statusCode >= 300 {
-                        var errorData = Data()
-                        for try await byte in asyncBytes {
-                            errorData.append(byte)
-                        }
-                        try self.validate(response: response, data: errorData)
-                        return
-                    }
-                    try self.validate(response: response, data: nil)
-                    var iterator = SSEParser(bytes: asyncBytes).makeAsyncIterator()
-                    var sawResponse = false
-                    while let event = try await iterator.next() {
-                        if event.event == "error" {
-                            throw Self.streamError(from: event.data)
-                        }
-                        let value = try decode(event)
-                        if event.event == "response" { sawResponse = true }
-                        continuation.yield(value)
-                    }
-                    if requiresDoneSentinel && !iterator.sawDone {
-                        throw AxEngineStreamError(
-                            message: "stream ended without [DONE]",
-                            payload: ""
-                        )
-                    }
-                    if !requiresDoneSentinel && !sawResponse {
-                        throw AxEngineStreamError(
-                            message: "stream ended without terminal response",
-                            payload: ""
-                        )
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        let request = Result {
+            var request = self.buildRequest(method: "POST", path: path, body: try encoder.encode(body))
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            return request
         }
+        let response = StreamingResponse(request: request, session: session, limits: streamLimits,
+            requiresDoneSentinel: requiresDoneSentinel, decode: decode)
+        return AsyncThrowingStream(unfolding: { try await response.next() })
     }
 
     private func buildRequest(method: String, path: String, body: Data?) -> URLRequest {
@@ -304,7 +269,7 @@ public final class AxEngineClient: @unchecked Sendable {
         return request
     }
 
-    private func validate(response: URLResponse, data: Data?) throws {
+    static func validate(response: URLResponse, data: Data?) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard http.statusCode >= 200, http.statusCode < 300 else {
             var message = "HTTP \(http.statusCode)"
@@ -315,7 +280,7 @@ public final class AxEngineClient: @unchecked Sendable {
         }
     }
 
-    private static func streamError(from data: String) -> AxEngineStreamError {
+    static func streamError(from data: String) -> AxEngineStreamError {
         let message: String
         if let body = try? JSONDecoder().decode(ErrorBody.self, from: Data(data.utf8)) {
             message = body.error.message
