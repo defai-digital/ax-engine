@@ -76,3 +76,11 @@ pub fn clear_process_caches() {
     mtp::clear_fixed_draft_compile_cache();
     mlx_sys::clear_cache();
 }
+
+/// Release compiled graphs owned by the calling worker after its sessions drop.
+/// Sibling workers retain their graphs; thread-local tensors drop on thread exit.
+pub fn clear_worker_compile_caches() {
+    let thread = std::thread::current().id();
+    per_layer_compile::clear_worker_layer_compile_caches(thread);
+    mtp::clear_worker_draft_compile_cache(thread);
+}

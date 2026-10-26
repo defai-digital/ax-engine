@@ -310,3 +310,97 @@ async fn model_load_rejects_swap_while_requests_are_in_flight() {
         .expect("llama.cpp server thread should finish");
     std::fs::remove_dir_all(temp_model_dir).expect("temp model dir should clean up");
 }
+
+#[tokio::test]
+async fn unloading_repeated_models_releases_workers_and_contexts() {
+    use crate::model_load::{UnloadWaitPolicy, perform_unload};
+    let state = llama_cpp_state();
+    let sibling = state.snapshot().generation_service;
+    for index in 0..12 {
+        let model_id = format!("temporary-{index}");
+        let live = crate::app_state::build_live_state(
+            model_id.clone(),
+            state.snapshot().session_config.as_ref().clone(),
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .expect("fixture model builds");
+        let service = live.generation_service.clone();
+        let context = std::sync::Arc::downgrade(&live.stateless_generate_context);
+        state.publish_live(live, false);
+        let policy = if index % 2 == 0 {
+            UnloadWaitPolicy::WaitForIdle
+        } else {
+            UnloadWaitPolicy::AbortIfBusy
+        };
+        perform_unload(&state, model_id.clone(), policy)
+            .await
+            .expect("unload succeeds");
+        assert!(
+            !service.is_ready(),
+            "unload must join the worker, not just hide the model"
+        );
+        assert!(
+            context.upgrade().is_none(),
+            "unload must release the stateless weight/prefix context"
+        );
+        assert!(state.snapshot_for_model(Some(&model_id)).is_none());
+        assert!(sibling.is_ready(), "sibling worker must remain available");
+        assert_eq!(state.model_ids().len(), 1);
+    }
+    sibling.shutdown().await.expect("fixture shutdown");
+}
+
+#[tokio::test]
+async fn unload_finishes_retirement_after_caller_disconnects() {
+    use crate::model_load::{UnloadWaitPolicy, perform_unload};
+    let state = llama_cpp_state();
+    let live = crate::app_state::build_live_state(
+        "temporary".to_string(),
+        state.snapshot().session_config.as_ref().clone(),
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("fixture model builds");
+    let service = live.generation_service.clone();
+    state.publish_live(live, false);
+    // Publication creates a generation-specific admission controller. Hold
+    // the published controller so this is a real in-flight registry request.
+    let admission = state
+        .snapshot_for_model(Some("temporary"))
+        .expect("published model")
+        .admission;
+    let permit = admission.try_admit().expect("hold one in-flight request");
+    let task_state = state.clone();
+    let caller = tokio::spawn(async move {
+        perform_unload(
+            &task_state,
+            "temporary".to_string(),
+            UnloadWaitPolicy::WaitForIdle,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !matches!(
+            admission.try_admit(),
+            Err(crate::admission::AdmissionError::Draining)
+        ) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("unload starts draining");
+    caller.abort();
+    let _ = caller.await;
+    drop(permit);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.loading.load(std::sync::atomic::Ordering::Acquire) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("detached retirement completes");
+    assert!(!service.is_ready());
+    assert!(state.snapshot_for_model(Some("temporary")).is_none());
+    let sibling = state.snapshot().generation_service;
+    assert!(sibling.is_ready());
+    sibling.shutdown().await.expect("fixture shutdown");
+}

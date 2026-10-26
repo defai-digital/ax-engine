@@ -517,6 +517,7 @@ async fn ollama_generate_keep_alive_zero_unloads_loaded_model() {
     // second model gets its memory back. The target model must not be the last
     // loaded model (the last-model guard refuses to leave the registry empty).
     let state = llama_cpp_state();
+    let retiring_service = state.snapshot().generation_service;
     let config = state.snapshot().session_config.as_ref().clone();
     let second = crate::app_state::build_live_state(
         "second".to_string(),
@@ -542,6 +543,10 @@ async fn ollama_generate_keep_alive_zero_unloads_loaded_model() {
     .await;
 
     assert_eq!(unload_status, StatusCode::OK);
+    assert!(
+        !retiring_service.is_ready(),
+        "keep_alive=0 must join the worker"
+    );
     assert_eq!(unload_json["response"], json!(""));
     assert_eq!(unload_json["done"], json!(true));
     assert_eq!(unload_json["done_reason"], json!("unload"));

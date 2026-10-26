@@ -81,6 +81,15 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    copy replies, retry or stop. Return or Command-Return sends; Shift-Return enters a new line.
    Streaming text is coalesced; settled replies receive basic Markdown/code-block
    rendering. Generated HTML and tool calls are never executed.
+   History is bounded to 200 messages and 4 MiB of combined prompt, answer, and
+   reasoning text. Each reply is also bounded to 2 MiB; the saved JSON remains
+   at most 8 MiB, including escaped text. Reaching a limit preserves the existing
+   conversation: use **Export**, then **Clear** to continue. **Export** writes
+   a local JSON archive. Oversized or unreadable saved files are preserved and
+   block new sends; **Reveal Saved Conversation** opens their location before
+   an explicit **Clear** replaces them. These are storage/display limits, not
+   a model token-context limit; the server still validates the model context.
+
 5. **Server metrics:** inspect live runtime counters. Missing measurements appear
    as unavailable. Counters are not a benchmark or a throughput certification.
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import AXEngineAppCore
 
 struct ChatView: View {
@@ -10,14 +11,21 @@ struct ChatView: View {
     @State private var clearConfirmation = false
     private var modelID: String { runtime.models.contains(where: { $0.id == chat.selectedModel }) ? chat.selectedModel : runtime.models.first?.id ?? "" }
     private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
-    private var canSend: Bool { !chat.generating && runtime.ready && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { !chat.generating && !chat.recoveryRequired && runtime.ready && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
                 Toggle("Follow output", isOn: $chat.followOutput).toggleStyle(.checkbox)
-                Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || chat.messages.isEmpty)
+                if chat.recoveryRequired {
+                    Button("Reveal Saved Conversation", systemImage: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([chat.storage])
+                    }
+                }
+                Button("Export", systemImage: "square.and.arrow.up") { exportConversation() }
+                    .disabled(chat.generating || chat.messages.isEmpty || chat.recoveryRequired)
+                Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || (chat.messages.isEmpty && !chat.recoveryRequired))
             }.padding(.horizontal, 26).padding(.vertical, 14)
             if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 26) }
             if !runtime.ready {
@@ -108,6 +116,14 @@ struct ChatView: View {
             Button("Clear", role: .destructive) { chat.clear() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("This removes the saved local conversation.") }
+    }
+    private func exportConversation() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "AX Engine Conversation.json"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        chat.export(to: destination)
     }
     private func send() {
         guard canSend, let connection = runtime.connection else { return }

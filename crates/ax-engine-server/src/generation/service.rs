@@ -725,9 +725,11 @@ impl NativeGenerationService {
         config: EngineSessionConfig,
         env: &crate::args::ServerEnvConfig,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
+        // The retired worker removes its own compiled graphs before joining.
+        // Clearing all process caches here would evict healthy sibling graphs.
         Self::spawn_with_factory(
             move || {
-                EngineSession::clear_native_model_compile_caches();
+                EngineSession::trim_native_allocator_cache();
                 EngineSession::new(config.clone())
             },
             env,
@@ -1432,6 +1434,16 @@ fn wait_for_command_or_idle_tick(
     }
 }
 
+/// Declared before the session so cleanup runs after every session/closure
+/// drops, including startup failure, receiver closure, and worker unwind.
+struct WorkerCompileCacheGuard;
+
+impl Drop for WorkerCompileCacheGuard {
+    fn drop(&mut self) {
+        EngineSession::clear_native_worker_compile_caches();
+    }
+}
+
 fn run_worker(
     factory: SessionFactory,
     receiver: std::sync::mpsc::Receiver<ServiceCommand>,
@@ -1441,6 +1453,7 @@ fn run_worker(
     idle_ticks: IdleTickSettings,
 ) {
     let _exit_guard = WorkerExitGuard(state);
+    let _compile_cache_guard = WorkerCompileCacheGuard;
     // Arms the per-thread engine_panic snapshot for this worker (load
     // included); sibling workers and non-engine threads stay unarmed.
     let _fatal_scope = crate::fatal::WorkerScope::enter();
@@ -1559,6 +1572,10 @@ fn run_worker_loop(
                 && stepwise_permits.is_empty()
                 && state.queued_commands.load(Ordering::Acquire) == 0
             {
+                // No work is active on this worker. Remove its old graphs
+                // before the rebuild; a failed rebuild may safely recompile
+                // on the retained session without touching sibling workers.
+                EngineSession::clear_native_worker_compile_caches();
                 match factory() {
                     Ok(new_session) => {
                         session = new_session;

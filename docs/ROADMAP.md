@@ -46,7 +46,7 @@ non-production surfaces until their evidence lands.
 |---|---|---|
 | CI | Required at publish | `main` green, including the scripts/bench smoke gates |
 | Multi-model | Ongoing claim gate | A CI or QA gate loads two real MLX models via `POST /v1/model/load` and serves both concurrently (today all co-residency tests use mock or delegated backends) |
-| Multi-model | Ongoing claim gate | Unload/idle eviction either frees parked weights (TTL / cap / sweeper) or the soft-park contract is promoted to a documented guarantee with memory-preflight awareness |
+| Multi-model | Implementation complete; real-model evidence pending | Unload/idle eviction retires workers and removes their compiled caches without a hidden parked-model cache. Repeated real-model load/unload still needs memory-footprint and sibling-latency soak evidence; see [Memory usage](MEMORY-USAGE.md). |
 | Multi-model | Ongoing claim gate | Soak/SLO matrix from `designs/multimodel-execution-priorities-2026-07-23.md` "Next phases": p95/p99 stream gaps, load/unload churn, memory-pressure behavior |
 | Multimodal | Ongoing claim gate | Numeric parity fixtures and at least one published benchmark for a P0 VLM family (Qwen3-VL or Qwen 3.6), beyond the existing Gemma 4 unified coverage |
 | Multimodal | Ongoing claim gate | Multimodal prefix reuse (`AX_MLX_MULTIMODAL_PREFIX_REUSE`) promoted via fixtures or descoped; serving docs match actual wiring |

@@ -1075,6 +1075,12 @@ type FixedDraftCompileKey = (u64, usize, u32, i32, ThreadId, usize, usize, usize
 type FixedDraftCompileCache = Mutex<HashMap<FixedDraftCompileKey, Option<MlxClosure>>>;
 static FIXED_DRAFT_COMPILE_CACHE: OnceLock<FixedDraftCompileCache> = OnceLock::new();
 
+pub(crate) fn clear_worker_draft_compile_cache(thread: ThreadId) {
+    crate::per_layer_compile::remove_worker_entries(&FIXED_DRAFT_COMPILE_CACHE, |key| {
+        key.4 == thread
+    });
+}
+
 /// Drop every cached fixed-KV draft closure. Called before a replacement
 /// model is built so no closure can outlive the weights it points at.
 pub(crate) fn clear_fixed_draft_compile_cache() {

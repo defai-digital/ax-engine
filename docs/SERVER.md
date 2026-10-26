@@ -1304,14 +1304,16 @@ Other rules:
   registry lock. Unload and replacement close admission and drain only the
   selected generation; sibling models continue accepting requests.
 - Concurrent load/unload while another is in progress → `409 model_loading`.
-- Unload (and idle eviction) removes the model from the live registry and
-  closes its admission, but **soft-parks** the generation instead of freeing
-  it: weights stay resident in unified memory so a same-id, same-path reload
-  republishes in ~250 ms instead of paying a multi-second weight rebuild that
-  stalls sibling decode gaps. A parked generation is retired only when a newer
-  generation of the same model id is parked, or on process exit; there is no
-  parking TTL or cap today. Restart the server to reclaim parked memory
-  deterministically.
+- Unload (and idle eviction) closes admission, drains the selected model,
+  removes its registry entry, and joins its worker before returning success.
+  There is no hidden parked-model cache. Worker-owned compiled graphs are
+  removed without clearing sibling workers' graphs; unused MLX allocator
+  buffers are trimmed after the worker exits. Live sibling tensors remain
+  allocated, so total process memory need not return to zero.
+- Reloading an unloaded model rebuilds its session and weights. Keep a model
+  loaded when fast reuse matters; use unload when reclaiming its memory matters.
+  The last-model guard still applies: stop the server to release the final model.
+  See [Memory usage](MEMORY-USAGE.md) for measurement and tuning.
 
 ### Execution model
 
@@ -1355,16 +1357,17 @@ geometry and a runtime floor) vs Metal `max_recommended_working_set_size`.
 Over budget → `422 insufficient_memory` with GiB numbers. Skips (does not
 block) when budget or weight layout is unknowable; disable with
 `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`. When the Metal device probe is
-available the preflight measures the actual process footprint, which includes
-parked (soft-unloaded) generations; the manifest-based fallback sums live
-registry models only and does not see parked weights.
+available the preflight uses measured MLX active allocations; the manifest-based
+fallback estimates the live registry models. Neither is a hard whole-process
+memory ceiling: host allocations and cached-but-free allocator buffers need
+separate observation through `/v1/memory`.
 
 ### Idle eviction and metrics
 
 Optional `--model-idle-timeout-secs` / `AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`
 evicts non-default models that have not admitted a request within the
-timeout (same drain path as unload, including the soft-park behavior above —
-eviction frees the live registry slot, not the parked weights). The default
+timeout (the same drain-and-retire path as explicit unload, including worker
+shutdown and cache cleanup). The default
 model is never evicted, and a non-default model with an in-flight admitted
 request is skipped until it goes idle.
 
