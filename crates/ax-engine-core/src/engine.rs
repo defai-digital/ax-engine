@@ -372,6 +372,10 @@ impl EngineCore {
         self.runner.native_model_artifacts_summary()
     }
 
+    pub fn drafter_identity(&self) -> Option<String> {
+        self.runner.drafter_identity()
+    }
+
     pub fn native_model_binding_summary(&self) -> Option<crate::runner::NativeModelBindingSummary> {
         self.runner.native_model_binding_summary()
     }

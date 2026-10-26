@@ -1,0 +1,78 @@
+{
+  "scope": "Functional validation on M2 Ultra 192 GB; not a throughput claim or SKU qualification",
+  "request": {
+    "input_recipe": "(\"This is a deterministic local engine test. Keep the prefix unchanged.\\n\" * 140) + \"Continue the sequence with numbers only: 1, 2, 3, 4, 5,\"",
+    "model_id": "qwen3.8-27b",
+    "max_output_tokens": 32,
+    "sampling": {
+      "temperature": 0,
+      "top_p": 1,
+      "top_k": 0,
+      "seed": 1,
+      "ignore_eos": true
+    },
+    "prefill_hints": {
+      "semantic_cut_tokens": [
+        700,
+        1400,
+        1800
+      ]
+    }
+  },
+  "server_options": {
+    "mlx": true,
+    "prefill_chunk": 1024,
+    "mlx_mtp_policy": "auto",
+    "max_concurrent_requests": 1
+  },
+  "checks": [
+    {
+      "semantic_cuts": 0,
+      "cold_warm_tokens_identical": true
+    },
+    {
+      "semantic_cuts": 1,
+      "cold_warm_tokens_identical": true
+    }
+  ],
+  "runs": [
+    {
+      "file": "0-cold.json",
+      "prompt_tokens": 1982,
+      "output_tokens": 32,
+      "runner_reused_tokens": 0,
+      "final_route_hits": 0,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    },
+    {
+      "file": "0-warm.json",
+      "prompt_tokens": 1982,
+      "output_tokens": 32,
+      "runner_reused_tokens": 1024,
+      "final_route_hits": 1,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    },
+    {
+      "file": "1-cold.json",
+      "prompt_tokens": 1982,
+      "output_tokens": 32,
+      "runner_reused_tokens": 0,
+      "final_route_hits": 0,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    },
+    {
+      "file": "1-warm.json",
+      "prompt_tokens": 1982,
+      "output_tokens": 32,
+      "runner_reused_tokens": 1024,
+      "final_route_hits": 0,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    }
+  ],
+  "curation": "Generation tokens, route and performance fields are preserved verbatim. Runtime paths/host fields are omitted; hardware-only provenance is in functional-environment.json. Full raw responses remain in the internal engineering record.",
+  "known_telemetry_limit": "With semantic cuts enabled, later decode steps emit a zeroed per-step prefix-cache hit/stat counter via the pre-existing restore-value decision path. Final hits is not a cumulative count. The runner reused-token field remains 1024; synthetic runner regression separately asserts the actual L1 hit and resumed DFlash2 round."
+}

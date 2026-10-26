@@ -308,6 +308,8 @@ impl NativeRuntimeReport {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NativeModelReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drafter_identity: Option<String>,
     pub artifacts_source: NativeModelArtifactsSource,
     pub model_family: String,
     pub tensor_format: NativeTensorFormat,
@@ -366,6 +368,7 @@ impl NativeModelReport {
     ) -> Self {
         let binding = binding.unwrap_or_default();
         Self {
+            drafter_identity: None,
             artifacts_source,
             model_family: summary.model_family,
             tensor_format: summary.tensor_format,

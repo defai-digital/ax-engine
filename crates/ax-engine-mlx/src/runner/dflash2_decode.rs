@@ -29,6 +29,97 @@ use super::*;
 use crate::dflash2::{Dflash2Drafter, Dflash2Weights};
 use crate::model::layer_capture;
 
+/// RAM-only, detached BF16 prompt tail. Never retains a live model or MLX graph.
+#[derive(Clone)]
+pub(crate) struct Dflash2PrefixSnapshot {
+    words: Arc<[u32]>,
+    offset: usize,
+    rows: usize,
+    width: usize,
+    target_identity: u64,
+    drafter_identity: String,
+}
+
+impl Dflash2PrefixSnapshot {
+    pub(crate) fn same_contract(&self, other: &Self) -> bool {
+        self.offset == other.offset
+            && self.target_identity == other.target_identity
+            && self.drafter_identity == other.drafter_identity
+    }
+    pub(crate) fn bytes(&self) -> u64 {
+        (self.words.len() as u64)
+            .saturating_mul(4)
+            .saturating_add(self.drafter_identity.len() as u64)
+            .saturating_add(std::mem::size_of::<Self>() as u64)
+    }
+
+    fn capture(
+        state: &Dflash2RequestState,
+        weights: &Dflash2Weights,
+        target_identity: u64,
+    ) -> Option<Self> {
+        if state.started || state.disabled {
+            return None;
+        }
+        let hidden = state.pending_hidden.as_ref()?;
+        let shape = hidden.shape();
+        let width = weights.config().target_hidden_width() as usize;
+        let rows = state
+            .captured_rows
+            .min((weights.config().sliding_window - 1) as usize);
+        if rows == 0
+            || !width.is_multiple_of(2)
+            || shape != [1, rows as i32, width as i32]
+            || hidden.dtype() != MlxDtype::Bfloat16
+        {
+            return None;
+        }
+        let packed = mlx_sys::view(&contiguous(hidden, None), MlxDtype::Uint32, None);
+        mlx_sys::try_eval(&[&packed]).ok()?;
+        Some(Self {
+            words: packed.data_u32().to_vec().into(),
+            offset: state.captured_rows,
+            rows,
+            width,
+            target_identity,
+            drafter_identity: weights.identity(),
+        })
+    }
+
+    fn restore(
+        &self,
+        weights: Arc<Dflash2Weights>,
+        target_identity: u64,
+        offset: usize,
+    ) -> Option<Dflash2RequestState> {
+        let cfg = weights.config();
+        if self.target_identity != target_identity
+            || self.drafter_identity != weights.identity()
+            || self.offset != offset
+            || self.rows == 0
+            || self.rows != offset.min((cfg.sliding_window - 1) as usize)
+            || self.width != cfg.target_hidden_width() as usize
+            || self.words.len().checked_mul(2)? != self.rows.checked_mul(self.width)?
+            || offset > i32::MAX as usize
+        {
+            return None;
+        }
+        let packed = MlxArray::from_raw_data(
+            self.words.as_ptr().cast(),
+            self.words.len() * 4,
+            &[1, self.rows as i32, (self.width / 2) as i32],
+            MlxDtype::Uint32,
+        );
+        let hidden = mlx_sys::view(&packed, MlxDtype::Bfloat16, None);
+        mlx_sys::try_eval(&[&hidden]).ok()?;
+        let mut state = Dflash2RequestState::new(weights);
+        state.pending_hidden = Some(hidden);
+        state.captured_rows = offset;
+        state.skipped_rows = offset - self.rows;
+        Some(state)
+    }
+}
+
 /// Per-request DFlash2 state.
 pub(super) struct Dflash2RequestState {
     drafter: Dflash2Drafter,
@@ -108,7 +199,6 @@ impl Dflash2RequestState {
         let shape = combined.shape();
         let rows = shape[1];
         self.pending_hidden = Some(if rows > window {
-            self.skipped_rows += (rows - window) as usize;
             contiguous(
                 &slice(
                     &combined,
@@ -123,6 +213,8 @@ impl Dflash2RequestState {
             combined
         });
         self.captured_rows += item_rows;
+        // The accumulating capture may already have discarded leading rows.
+        self.skipped_rows = self.captured_rows - rows.min(window) as usize;
     }
 }
 
@@ -423,6 +515,62 @@ impl RequestState {
 }
 
 impl MlxRunner {
+    pub(super) fn dflash2_prompt_ready(&self, state: &RequestState) -> bool {
+        state.dflash2.as_ref().is_some_and(|dflash| {
+            !dflash.disabled
+                && !dflash.started
+                && dflash.pending_hidden.is_some()
+                && dflash.captured_rows == state.cache.seq_len()
+        })
+    }
+
+    /// Capture at the exact trunk boundary, before later prompt forwards move it.
+    pub(super) fn capture_dflash2_prefix(&self, state: &mut RequestState) {
+        if !layer_capture::active() {
+            return;
+        }
+        self.dflash2_finish_prefill_capture(state);
+        if !self.prefix_cache.lock().enabled() {
+            return;
+        }
+        let Some((dflash, weights)) = state.dflash2.as_ref().zip(self.dflash2.as_deref()) else {
+            return;
+        };
+        if dflash.captured_rows != state.cache.seq_len() {
+            return;
+        }
+        let hidden_bytes = dflash
+            .pending_hidden
+            .as_ref()
+            .map_or(0, |hidden| hidden.nbytes() as u64);
+        if hidden_bytes > self.prefix_cache.lock().policy.max_bytes {
+            return;
+        }
+        if let Some(snapshot) =
+            Dflash2PrefixSnapshot::capture(dflash, weights, self.cfg.compile_cache_identity)
+        {
+            state
+                .dflash2_prefix_snapshots
+                .insert(snapshot.offset, Arc::new(snapshot));
+        }
+    }
+
+    pub(super) fn restore_dflash2_prefix(
+        &self,
+        state: &mut RequestState,
+        snapshot: Option<&Dflash2PrefixSnapshot>,
+    ) {
+        state.dflash2 = snapshot
+            .zip(self.dflash2.as_ref())
+            .and_then(|(snapshot, weights)| {
+                snapshot.restore(
+                    weights.clone(),
+                    self.cfg.compile_cache_identity,
+                    state.cache.seq_len(),
+                )
+            });
+    }
+
     /// Whether this request may use DFlash2: greedy, no logits processors, text
     /// only, and a drafter is loaded.
     pub(super) fn dflash2_request_eligible(
@@ -1206,6 +1354,110 @@ impl MlxRunner {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_sidecar_round_trips_a_truncated_tail_and_rejects_wrong_identity() {
+        let (weights, _) = crate::dflash2::dflash2_tiny_fixture();
+        let width = weights.config().target_hidden_width();
+        let rows = weights.config().sliding_window - 1;
+        let data: Vec<f32> = (0..rows * width).map(|n| n as f32 / 16.0).collect();
+        let hidden = astype(
+            &reshape(&MlxArray::from_f32_slice(&data), &[1, rows, width], None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let mut cold = Dflash2RequestState::new(weights.clone());
+        cold.append_prompt_rows(hidden.clone(), 19, rows);
+        assert_eq!(cold.skipped_rows, 19 - rows as usize);
+        let sidecar = Dflash2PrefixSnapshot::capture(&cold, &weights, 42).unwrap();
+        assert_eq!(sidecar.words.len() * 4, hidden.nbytes());
+        let mut warm = sidecar.restore(weights.clone(), 42, 19).unwrap();
+        assert_eq!(warm.skipped_rows, cold.skipped_rows);
+        let restored = astype(
+            warm.pending_hidden.as_ref().unwrap(),
+            MlxDtype::Float32,
+            None,
+        );
+        mlx_sys::eval(&[&restored]);
+        assert_eq!(restored.data_f32(), data.as_slice());
+        // A warm suffix must advance the same tail and absolute offset.
+        let suffix = mlx_sys::zeros(&[1, 3, width], MlxDtype::Bfloat16, None);
+        cold.append_prompt_rows(suffix.clone(), 3, rows);
+        warm.append_prompt_rows(suffix, 3, rows);
+        let a = Dflash2PrefixSnapshot::capture(&cold, &weights, 42).unwrap();
+        let b = Dflash2PrefixSnapshot::capture(&warm, &weights, 42).unwrap();
+        assert_eq!(a.words, b.words);
+        assert_eq!(warm.captured_rows, 22);
+        assert!(sidecar.restore(weights.clone(), 43, 19).is_none());
+        assert!(sidecar.restore(weights.clone(), 42, 18).is_none());
+        let mut invalid = sidecar.clone();
+        invalid.drafter_identity.push_str("-changed");
+        assert!(invalid.restore(weights.clone(), 42, 19).is_none());
+        invalid = sidecar.clone();
+        invalid.words = Arc::from(&invalid.words[..invalid.words.len() - 1]);
+        assert!(invalid.restore(weights.clone(), 42, 19).is_none());
+        cold.started = true;
+        assert!(Dflash2PrefixSnapshot::capture(&cold, &weights, 42).is_none());
+    }
+
+    #[test]
+    fn prompt_sidecar_is_charged_and_released_by_cache_eviction() {
+        let (weights, _) = crate::dflash2::dflash2_tiny_fixture();
+        let mut state = Dflash2RequestState::new(weights.clone());
+        state.append_prompt_rows(
+            mlx_sys::zeros(
+                &[1, 4, weights.config().target_hidden_width()],
+                MlxDtype::Bfloat16,
+                None,
+            ),
+            4,
+            7,
+        );
+        let sidecar = Arc::new(Dflash2PrefixSnapshot::capture(&state, &weights, 42).unwrap());
+        let weak = Arc::downgrade(&sidecar);
+        let bytes = sidecar.bytes();
+        let snapshot =
+            MlxPrefixSnapshot::from_shared_payload(Arc::from([0u8; 8]), vec![1; 4], 4, None, None)
+                .with_dflash2(Some(sidecar));
+        assert_eq!(snapshot.bytes, 8 + 16 + bytes);
+        let key = MlxPrefixCacheKey {
+            model_id: "test".into(),
+            route_policy: "test".into(),
+            layer_layout: "test".into(),
+            block_size_tokens: 4,
+            token_count: 4,
+            token_hash: 1,
+            media_key: String::new(),
+        };
+        let mut too_small = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: snapshot.bytes - 1,
+            max_entries: 1,
+        });
+        assert!(!too_small.insert(key.clone(), snapshot.clone()).stored);
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: snapshot.bytes,
+            max_entries: 1,
+        });
+        assert!(cache.insert(key.clone(), snapshot).stored);
+        assert_eq!(Arc::strong_count(&weak.upgrade().unwrap()), 2);
+        let mut other = key;
+        other.token_hash = 2;
+        assert!(
+            cache
+                .insert(
+                    other,
+                    MlxPrefixSnapshot::from_shared_payload(
+                        Arc::from([0u8; 8]),
+                        vec![2; 4],
+                        4,
+                        None,
+                        None
+                    )
+                )
+                .stored
+        );
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn window_follows_the_acceptance_of_the_request() {

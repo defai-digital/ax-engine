@@ -24,6 +24,7 @@ pub(crate) struct MlxPrefixCacheKey {
 
 #[derive(Clone)]
 pub(crate) struct MlxPrefixSnapshot {
+    pub(crate) dflash2: Option<Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
     pub(crate) kv_cache_payload: Arc<[u8]>,
     pub(crate) tokens: Vec<u32>,
     pub(crate) token_count: usize,
@@ -63,6 +64,7 @@ impl MlxPrefixSnapshot {
         let bytes = snapshot_charge_bytes(payload.len() as u64, tokens.len())
             .saturating_add(mtp_cursor_bytes);
         Self {
+            dflash2: None,
             kv_cache_payload: payload,
             tokens,
             token_count,
@@ -70,6 +72,17 @@ impl MlxPrefixSnapshot {
             greedy_prefill_output_token,
             mtp_cursor_payload,
         }
+    }
+
+    pub(crate) fn with_dflash2(
+        mut self,
+        snapshot: Option<Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
+    ) -> Self {
+        self.bytes = self
+            .bytes
+            .saturating_add(snapshot.as_ref().map_or(0, |s| s.bytes()));
+        self.dflash2 = snapshot;
+        self
     }
 
     pub(crate) fn rehydrate_cache(
@@ -320,6 +333,7 @@ impl MlxPrefixCache {
         tokens: &[u32],
         prefill_output_token: Option<u32>,
         has_mtp_cursor_payload: bool,
+        dflash2: Option<&dflash2_decode::Dflash2PrefixSnapshot>,
     ) -> bool {
         self.policy.enabled()
             && self.entries.get(key).is_some_and(|entry| {
@@ -327,6 +341,13 @@ impl MlxPrefixCache {
                     && (prefill_output_token.is_none()
                         || entry.snapshot.greedy_prefill_output_token.is_some())
                     && (!has_mtp_cursor_payload || entry.snapshot.mtp_cursor_payload.is_some())
+                    && dflash2.is_none_or(|required| {
+                        entry
+                            .snapshot
+                            .dflash2
+                            .as_ref()
+                            .is_some_and(|stored| stored.same_contract(required))
+                    })
             })
     }
 
@@ -388,6 +409,7 @@ impl MlxPrefixCache {
             &snapshot.tokens,
             snapshot.greedy_prefill_output_token,
             snapshot.mtp_cursor_payload.is_some(),
+            snapshot.dflash2.as_deref(),
         ) {
             return None;
         }

@@ -436,6 +436,11 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         None
     }
 
+    /// Content identity of an attached speculative model, when present.
+    fn drafter_identity(&self) -> Option<String> {
+        None
+    }
+
     fn native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
         None
     }

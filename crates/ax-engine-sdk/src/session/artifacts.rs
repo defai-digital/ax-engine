@@ -70,7 +70,9 @@ pub(super) fn resolve_native_model_report(
             .map(|artifacts| artifacts.summary())
     })?;
     let binding = core.native_model_binding_summary();
-    Some(NativeModelReport::from_summary(source, summary, binding))
+    let mut report = NativeModelReport::from_summary(source, summary, binding);
+    report.drafter_identity = core.drafter_identity();
+    Some(report)
 }
 
 #[cfg(test)]
@@ -585,6 +587,7 @@ mod tests {
         assert_eq!(
             report,
             NativeModelReport {
+                drafter_identity: None,
                 artifacts_source: NativeModelArtifactsSource::ExplicitConfig,
                 model_family: "qwen3".to_string(),
                 tensor_format: NativeTensorFormat::Safetensors,

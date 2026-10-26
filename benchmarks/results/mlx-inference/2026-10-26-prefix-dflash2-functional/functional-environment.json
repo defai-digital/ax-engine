@@ -1,0 +1,12 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "storage": "not measured (functional probe only)",
+  "os": "27.0.1",
+  "mlx": "0.32.4",
+  "model_revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
+  "axquant_manifest_sha256": "ee704531cca3bbe083f8acb3e65d34c972d24b95b076aa51b77f21b01cd62bb1",
+  "binary_sha256": "3c0a0eedd944e8b51674343d9d6af32006af945cb5ca93307960dd09e51681c7",
+  "build_profile": "release",
+  "rust": "1.99.1",
+  "purpose": "Functional cold/warm validation only; not a performance or qualification claim"
+}

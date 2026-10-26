@@ -3262,6 +3262,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
 fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
     let payload = MlxKVCache::new(2).serialize_to_bytes();
     MlxPrefixSnapshot {
+        dflash2: None,
         kv_cache_payload: Arc::from(payload.into_boxed_slice()),
         tokens: vec![token; token_count],
         token_count,
@@ -3411,6 +3412,7 @@ fn portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder() {
                 key.token_count = len as u32;
                 key.token_hash = len as u64;
                 let snapshot = MlxPrefixSnapshot {
+                    dflash2: None,
                     kv_cache_payload: Arc::from(Vec::<u8>::new().into_boxed_slice()),
                     tokens: vec![1; len],
                     token_count: len,
@@ -4070,7 +4072,7 @@ fn planned_cut_is_not_refloored_onto_the_prefill_grid() {
 }
 
 #[test]
-fn grid_rung_snapshot_must_be_captured_before_semantic_cuts_advance_the_cache() {
+fn legacy_grid_rung_requires_the_original_item_start() {
     // Regression (WP07): a 1930-token linear-attention prompt with block 32
     // and a 1024-token prefill chunk. The prefix a warm request claims, and
     // therefore the entry it looks up, is the grid rung at 1024.
@@ -4079,17 +4081,13 @@ fn grid_rung_snapshot_must_be_captured_before_semantic_cuts_advance_the_cache() 
         Some(1024),
         "a whole-item prefill splits at the rung a warm request restores"
     );
-    // Capturing the semantic cuts first advances the cache to 1898 (the last
-    // assistant-turn start below the terminal anchor). From there the same
-    // rung sits *inside* prior context, so the head is `None` and the claim
-    // snapshot is never captured: the warm request then looks up a 1024 entry
-    // that does not exist and recomputes the whole prompt. Cut snapshots must
-    // therefore be stored in addition to the block-aligned ones, never
-    // instead of them.
+    // This helper cannot capture a rung already inside prior context.
+    // The semantic path therefore walks grid and semantic boundaries together
+    // in chronological order; it does not call this helper after that walk.
     assert_eq!(
         MlxRunner::linear_grid_rung_head_len(32, 1024, 1024, 1898, 32),
         None,
-        "cut capture must not precede the grid-rung capture"
+        "the legacy helper cannot reconstruct an earlier rung"
     );
     // The rung is exactly the length the warm restore is floored onto, so a
     // missing capture is a missing restore (hits 0 / reused 0 in the
@@ -9305,18 +9303,7 @@ fn decode_claim(id: u64, token: u32) -> ax_engine_core::ExecutionItem {
     }
 }
 
-#[test]
-fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
-    assert!(
-        !crate::fastpath::tree_verify_enabled(),
-        "the linear fence is not on the tree-verify route"
-    );
-    assert!(
-        crate::fastpath::mtp_relaxed_target_verify_enabled()
-            && crate::fastpath::mtp_linear_projected_replay_enabled(),
-        "linear verify is off, so this request never reaches the fence"
-    );
-
+fn tiny_linear_dflash_runner(layer_count: u32) -> (MlxRunner, NativeModelArtifacts) {
     let mut manifest = qwen35_linear_manifest();
     manifest.hidden_size = 8;
     manifest.intermediate_size = 8;
@@ -9339,10 +9326,30 @@ fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
             _ => tensor.shape.clone(),
         };
     }
+    let layer_tensors: Vec<_> = manifest
+        .tensors
+        .iter()
+        .filter(|t| t.layer_index == Some(0))
+        .cloned()
+        .collect();
+    for index in 1..layer_count {
+        for mut tensor in layer_tensors.clone() {
+            tensor.layer_index = Some(index);
+            tensor.name = tensor
+                .name
+                .replace("layers.0.", &format!("layers.{index}."));
+            manifest.tensors.push(tensor);
+        }
+    }
+    manifest.layer_count = layer_count;
     let artifacts = write_artifacts(manifest);
     let shared_weights = MlxSharedWeightsCell::new();
-    shared_weights.publish(Arc::new(tiny_linear_dflash_weights()));
-    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+    let mut weights = tiny_linear_dflash_weights();
+    for _ in 1..layer_count {
+        weights.layers.extend(tiny_linear_dflash_weights().layers);
+    }
+    shared_weights.publish(Arc::new(weights));
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
         &artifacts,
         8,
         true,
@@ -9351,6 +9358,229 @@ fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
         Some(&shared_weights),
     )
     .expect("runner");
+
+    (runner, artifacts)
+}
+
+#[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
+fn semantic_runner_captures_early_cuts_and_binds_partition_identity() {
+    assert!(crate::fastpath::prefix_semantic_cuts_enabled());
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.prefill_chunk = 1024;
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![700, 1400, 1800],
+    };
+    let run = |id: u64, claim: usize, len: usize, hints: &ax_engine_core::PrefillHints| {
+        let mut item = prefill_item_with_claim(claim, len);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; len];
+        item.reused_prefix_token_slice = vec![3; claim];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = 1930;
+        ctx.processed_prompt_tokens = claim as u32;
+        ctx.max_output_tokens = 16;
+        ctx.ignore_eos = true;
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            4,
+            None,
+            Some(hints),
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        result
+    };
+    let cold = run(110, 0, 1930, &hints);
+    let entries: Vec<_> = runner
+        .prefix_cache
+        .lock()
+        .entries
+        .values()
+        .map(|e| e.snapshot.token_count)
+        .collect();
+    for cut in [700, 1024, 1400, 1800] {
+        assert!(entries.contains(&cut), "missing {cut}: {entries:?}");
+    }
+    let warm = run(111, 1800, 130, &hints);
+    assert!(warm.prefix_cache.hits > 0);
+    assert_eq!(cold.update.output_token, warm.update.output_token);
+    {
+        let states = runner.states.lock();
+        assert_eq!(
+            states[&RequestId(110)].cache.serialize_to_bytes(),
+            states[&RequestId(111)].cache.serialize_to_bytes()
+        );
+    }
+    let different = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![600, 1400, 1800],
+    };
+    let miss = run(112, 1800, 130, &different);
+    assert_eq!(
+        miss.prefix_cache.hits, 0,
+        "different preceding partition must miss"
+    );
+    runner.prefix_cache.lock().entries.clear();
+    // A non-canonical scheduler boundary may not publish later state.
+    run(113, 0, 900, &hints);
+    run(113, 900, 1030, &hints);
+    let entries: Vec<_> = runner
+        .prefix_cache
+        .lock()
+        .entries
+        .values()
+        .map(|e| e.snapshot.token_count)
+        .collect();
+    assert_eq!(entries, vec![700]);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn prefix_probe_restores_exact_bound_key_after_aligned_scan() {
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    let tokens = vec![3; 7];
+    for len in [4, 7] {
+        let mut key = runner.prefix_cache_key_with_media("qwen3_5", 4, &tokens[..len], "");
+        runner.bind_semantic_partition(&mut key, len, &[]);
+        runner.prefix_cache.lock().insert(
+            key,
+            MlxPrefixSnapshot::from_shared_payload(
+                Arc::from([]),
+                tokens[..len].to_vec(),
+                len,
+                None,
+                None,
+            ),
+        );
+    }
+    assert_eq!(
+        runner.probe_runner_snapshot_for_prefix("qwen3_5", 4, &tokens, "", &[]),
+        Some(tokens)
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn dflash2_prefix_hit_restores_prompt_capture_and_runs_the_next_round() {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.mtp_requested = true;
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    runner.dflash2 = Some(drafter);
+    let mut cold = prefill_item_with_claim(0, 29);
+    cold.request_id = RequestId(100);
+    cold.input_token_slice = vec![3; 29];
+    let mut ctx = ctx_with_argmax(true);
+    ctx.request_id = cold.request_id;
+    ctx.prompt_len = 29;
+    ctx.ignore_eos = true;
+    let first = runner.run_item(
+        &cold,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(first.update.error.is_none(), "{:?}", first.update.error);
+    assert!(first.prefix_cache.stores > 0);
+    assert!(
+        runner
+            .states
+            .lock()
+            .get(&cold.request_id)
+            .unwrap()
+            .dflash2
+            .is_some(),
+        "cold capture missing"
+    );
+    let mut warm = prefill_item_with_claim(24, 5);
+    warm.request_id = RequestId(101);
+    warm.reused_prefix_token_slice = vec![3; 24];
+    warm.input_token_slice = vec![3; 5];
+    ctx.request_id = warm.request_id;
+    ctx.processed_prompt_tokens = 24;
+    let repeated = runner.run_item(
+        &warm,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(
+        repeated.update.error.is_none(),
+        "{:?}",
+        repeated.update.error
+    );
+    assert!(repeated.prefix_cache.hits > 0);
+    assert_eq!(first.update.output_token, repeated.update.output_token);
+    assert!(
+        runner
+            .states
+            .lock()
+            .get(&warm.request_id)
+            .unwrap()
+            .dflash2
+            .is_some()
+    );
+    let mut decode = decode_claim(101, repeated.update.output_token.unwrap());
+    decode.position_range = PositionRange {
+        start: 29,
+        end_exclusive: 30,
+    };
+    ctx.generated_len = 1;
+    ctx.processed_prompt_tokens = 29;
+    let next = runner.run_item(
+        &decode,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(next.update.error.is_none(), "{:?}", next.update.error);
+    assert!(
+        runner
+            .states
+            .lock()
+            .get(&warm.request_id)
+            .unwrap()
+            .dflash2
+            .as_ref()
+            .unwrap()
+            .rounds
+            > 0
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
+    assert!(
+        !crate::fastpath::tree_verify_enabled(),
+        "the linear fence is not on the tree-verify route"
+    );
+    assert!(
+        crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled(),
+        "linear verify is off, so this request never reaches the fence"
+    );
+
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
 
     let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
     let width = drafter.config().target_hidden_width();

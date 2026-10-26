@@ -2402,6 +2402,7 @@ fn serialize_runtime_metadata_prefers_actual_runtime_report_over_config_side_met
             NativeRuntimeArtifactsSource::ExplicitConfig,
         )),
         mlx_model: Some(NativeModelReport {
+            drafter_identity: None,
             artifacts_source: NativeModelArtifactsSource::ExplicitEnv,
             model_family: "actual_bound_model".to_string(),
             tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,

@@ -403,6 +403,7 @@ pub(crate) struct Dflash2Weights {
     /// one matmul over the new context rows.
     context_kv: Projection,
     precision: DrafterPrecision,
+    artifact: DrafterArtifact,
 }
 
 fn take_tensor(
@@ -426,6 +427,7 @@ impl Dflash2Weights {
         let config_text = std::fs::read_to_string(dir.join("config.json"))
             .map_err(|error| format!("DFlash2 config.json: {error}"))?;
         let cfg = Dflash2Config::from_json(&config_text)?;
+        let artifact = DrafterArtifact::read(dir)?;
         let mut tensors = mlx_sys::load_safetensors(&dir.join("model.safetensors"), None)?;
         let projection = |tensors: &mut std::collections::HashMap<String, MlxArray>, name: &str| {
             Ok::<_, String>(Projection::new(&take_tensor(tensors, name)?, precision))
@@ -489,7 +491,20 @@ impl Dflash2Weights {
             context_kv,
             precision,
             cfg,
+            artifact,
         })
+    }
+
+    pub(crate) fn identity(&self) -> String {
+        format!(
+            "{};precision={:?}",
+            self.artifact.identity(),
+            self.precision
+        )
+    }
+
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.artifact.is_pinned()
     }
 
     pub(crate) fn config(&self) -> &Dflash2Config {
@@ -1298,6 +1313,56 @@ fn selector_runner_up(
 
 /// Directory name of the drafter's Hugging Face cache entry.
 const DRAFTER_HF_ENTRY: &str = "models--z-lab--Qwen3.8-27B-DFlash2";
+const DRAFTER_REVISION: &str = "50307d4c4cde6860d4eee73e2547cd786fe8e8a4";
+const DRAFTER_CONFIG_SHA256: &str =
+    "873e3556509b0da06e29654ba00d4944888d4b5e8a33afde25f7eb27d321e980";
+const DRAFTER_WEIGHTS_SHA256: &str =
+    "67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c";
+
+struct DrafterArtifact {
+    config_sha256: String,
+    weights_sha256: String,
+}
+
+impl DrafterArtifact {
+    fn read(dir: &Path) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let digest = |name: &str| -> Result<String, String> {
+            let mut file = std::fs::File::open(dir.join(name)).map_err(|e| e.to_string())?;
+            let mut hash = Sha256::new();
+            let mut buffer = vec![0u8; 1024 * 1024];
+            loop {
+                let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
+            Ok(crate::artifact_identity::hex_digest(&hash.finalize()))
+        };
+        Ok(Self {
+            config_sha256: digest("config.json")?,
+            weights_sha256: digest("model.safetensors")?,
+        })
+    }
+
+    fn is_pinned(&self) -> bool {
+        self.config_sha256 == DRAFTER_CONFIG_SHA256 && self.weights_sha256 == DRAFTER_WEIGHTS_SHA256
+    }
+
+    fn identity(&self) -> String {
+        let revision = if self.is_pinned() {
+            DRAFTER_REVISION
+        } else {
+            "explicit-local"
+        };
+        format!(
+            "z-lab/Qwen3.8-27B-DFlash2@{revision};config_sha256={};weights_sha256={}",
+            self.config_sha256, self.weights_sha256
+        )
+    }
+}
 
 /// Whether `dir` holds a drafter checkpoint.
 fn is_drafter_dir(dir: &Path) -> bool {
@@ -1335,7 +1400,7 @@ pub(crate) fn target_is_qwen38_27b(model_dir: &Path) -> bool {
 
 /// Finds the drafter checkpoint to load: the explicit directory (which is never
 /// substituted when it is wrong), else `dflash2/` inside the model directory,
-/// else the newest valid snapshot of `z-lab/Qwen3.8-27B-DFlash2` in the first
+/// else the pinned snapshot of `z-lab/Qwen3.8-27B-DFlash2` in the first
 /// Hugging Face cache root that has one.
 pub(crate) fn locate_drafter(
     explicit: Option<&Path>,
@@ -1350,22 +1415,12 @@ pub(crate) fn locate_drafter(
         return Some(bundled);
     }
     for root in hf_cache_roots {
-        let snapshots = root.join(DRAFTER_HF_ENTRY).join("snapshots");
-        let Ok(entries) = std::fs::read_dir(&snapshots) else {
-            continue;
-        };
-        let mut valid: Vec<std::path::PathBuf> = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| is_drafter_dir(path))
-            .collect();
-        valid.sort_by_key(|path| {
-            std::fs::metadata(path)
-                .and_then(|meta| meta.modified())
-                .ok()
-        });
-        if let Some(newest) = valid.pop() {
-            return Some(newest);
+        let snapshot = root
+            .join(DRAFTER_HF_ENTRY)
+            .join("snapshots")
+            .join(DRAFTER_REVISION);
+        if is_drafter_dir(&snapshot) {
+            return Some(snapshot);
         }
     }
     None
@@ -1473,6 +1528,10 @@ pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWe
         },
         context_kv,
         precision: DrafterPrecision::Bf16,
+        artifact: DrafterArtifact {
+            config_sha256: "fixture-config".into(),
+            weights_sha256: "fixture-weights".into(),
+        },
     });
     let embedding = QuantizedWeight::new(z(&[vocab, hidden]), None, None);
     let target = ModelWeights {
@@ -2079,6 +2138,31 @@ mod tests {
     }
 
     #[test]
+    fn artifact_identity_tracks_content_and_requires_both_pinned_digests() {
+        let root = scratch_dir("identity");
+        make_drafter(&root);
+        let original = DrafterArtifact::read(&root).unwrap();
+        assert!(!original.is_pinned());
+        assert!(original.identity().contains("@explicit-local;"));
+        std::fs::write(root.join("model.safetensors"), b"changed").unwrap();
+        let changed = DrafterArtifact::read(&root).unwrap();
+        assert_eq!(original.config_sha256, changed.config_sha256);
+        assert_ne!(original.weights_sha256, changed.weights_sha256);
+        assert_ne!(original.identity(), changed.identity());
+        let mut pinned = DrafterArtifact {
+            config_sha256: DRAFTER_CONFIG_SHA256.into(),
+            weights_sha256: DRAFTER_WEIGHTS_SHA256.into(),
+        };
+        assert!(pinned.is_pinned());
+        assert!(pinned.identity().contains(DRAFTER_REVISION));
+        pinned.config_sha256 = original.config_sha256;
+        assert!(!pinned.is_pinned());
+        std::fs::remove_file(root.join("model.safetensors")).unwrap();
+        assert!(DrafterArtifact::read(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn explicit_directory_is_used_or_nothing() {
         let root = scratch_dir("explicit");
         let model = root.join("model");
@@ -2121,10 +2205,15 @@ mod tests {
             locate_drafter(None, &model, std::slice::from_ref(&hub)),
             None
         );
-        make_drafter(&snapshots.join("complete"));
+        make_drafter(&snapshots.join("unrelated-newer"));
+        assert_eq!(
+            locate_drafter(None, &model, std::slice::from_ref(&hub)),
+            None
+        );
+        make_drafter(&snapshots.join(DRAFTER_REVISION));
         assert_eq!(
             locate_drafter(None, &model, &[root.join("missing"), hub]),
-            Some(snapshots.join("complete"))
+            Some(snapshots.join(DRAFTER_REVISION))
         );
         let _ = std::fs::remove_dir_all(&root);
     }

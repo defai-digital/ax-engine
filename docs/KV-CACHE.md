@@ -293,19 +293,26 @@ restores pay their own materialization. It only chooses among snapshots that
 already exist, so it **never changes the emitted text**; with the switch off,
 the historical longest-prefix decision is unchanged.
 
-`AX_MLX_PREFIX_SEMANTIC_CUTS` is partition-changing by design. Cut points are
-assistant-turn token starts taken from the prompt's single full tokenization,
-at least 256 tokens apart, with at most the three most recent kept below
-`prompt_len`; a terminal anchor aligned to `lcm(block_size_tokens, 256)` is
-always added as a fallback. Capturing a cut splits the cold prefill at that
-position, and the setting is part of the execution signature, so a snapshot is
-never adopted across a switch change. The exactness contract is therefore:
+`AX_MLX_PREFIX_SEMANTIC_CUTS` is partition-changing and remains opt-in.
+For linear-attention text prefill, accepted assistant-turn starts (at least
+256 tokens apart) and fixed prefill-grid boundaries execute in increasing
+order. Execution keeps earlier boundaries when a conversation grows; retention
+keeps the three most recent semantic cuts and the last grid checkpoint. A
+terminal anchor is a lookup candidate only when it was an execution boundary.
+The disabled path keeps its existing prefill schedule.
 
-- a semantic-cut run equals a cold run **under the same setting**, not
-  necessarily the switch-off output (that run used a different prefill chunk
-  partition);
-- restore-value never changes text at all, because it only picks among
-  existing snapshots.
+Cache identity includes the partition version, configured chunk sizes and the
+accepted boundaries through each checkpoint. Different turn hints therefore
+miss instead of restoring recurrent state produced under a different partition.
+Cold/warm comparisons must use the same execution settings; equality with a
+switch-off run is not implied. Restore-value only selects existing snapshots.
+
+Eligible DFlash2 requests also retain a detached BF16 prompt tail in RAM prefix
+snapshots. The tail is bound to the target instance, drafter content identity
+and exact token offset; its bytes count against the cache budget and eviction
+releases it with the trunk. A compatible RAM hit resumes prompt capture and
+DFlash2 decoding. Missing or incompatible tails, including disk-only restores,
+keep the existing direct fallback. This does not enable MTP by default.
 
 Both features ride the same durable identity. The disk key is canonical
 schema **v4** (`ax.mlx.disk_prefix_key.v4`), which additionally commits to the
