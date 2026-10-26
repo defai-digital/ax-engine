@@ -1041,7 +1041,7 @@ impl NativeGenerationService {
         self.state.idle_residency_failures.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "mlx-native-server"))]
     fn idle_residency_noop_count(&self) -> u64 {
         self.state.idle_residency_noop.load(Ordering::Acquire)
     }
