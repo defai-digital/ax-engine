@@ -4328,6 +4328,189 @@ fn dense_full_attention_layer(cfg: &ModelConfig, seed: u32) -> LayerWeights {
 }
 
 #[test]
+fn embeddinggemma_300m_mx_matches_dequantized_encoder_and_compiled_padding() {
+    use mlx_sys::{MlxQuantizationMode, dequantize_with_mode, quantize};
+
+    fn weights(
+        config: &ModelConfig,
+        mode: MlxQuantizationMode,
+        bits: i32,
+        name: &str,
+        unpack: bool,
+    ) -> ModelWeights {
+        let convert = |source: &MlxArray, quant_mode, quant_bits, quant_name: &str| {
+            let source = astype(source, MlxDtype::Bfloat16, None);
+            let parts = quantize(&source, Some(32), Some(quant_bits), quant_mode, None, None);
+            let bias = parts.get(2);
+            if unpack {
+                return QuantizedWeight::new(
+                    dequantize_with_mode(
+                        &parts[0],
+                        &parts[1],
+                        bias,
+                        Some(32),
+                        Some(quant_bits),
+                        quant_mode,
+                        None,
+                        Some(MlxDtype::Bfloat16),
+                        None,
+                    ),
+                    None,
+                    None,
+                );
+            }
+            let mut result =
+                QuantizedWeight::new(parts[0].clone(), Some(parts[1].clone()), bias.cloned());
+            result.group_size = 32;
+            result.bits = quant_bits;
+            result.mode = quant_name.into();
+            result
+        };
+        let mut result = empty_model_weights(None);
+        result.token_embedding = convert(
+            &array_f32(&patterned_signal(64 * 64, 15), &[64, 64]),
+            MlxQuantizationMode::Affine,
+            8,
+            "affine",
+        );
+        result.final_norm = Some(ones_norm(64));
+        result.embedding_dense_0 = Some(dense_weight_from_data(
+            &patterned_signal(256 * 64, 71),
+            &[256, 64],
+        ));
+        result.embedding_dense_1 = Some(dense_weight_from_data(
+            &patterned_signal(64 * 256, 73),
+            &[64, 256],
+        ));
+        for index in 0..2 {
+            let mut layer = dense_full_attention_layer(config, 19 + index);
+            layer.attn_post_norm = Some(ones_norm(64));
+            layer.ffn_post_norm = Some(ones_norm(64));
+            layer.q_norm = Some(ones_norm(32));
+            layer.k_norm = Some(ones_norm(32));
+            for weight in [
+                &mut layer.q_proj,
+                &mut layer.k_proj,
+                &mut layer.v_proj,
+                &mut layer.o_proj,
+                &mut layer.gate_proj,
+                &mut layer.up_proj,
+                &mut layer.down_proj,
+            ] {
+                *weight = Some(convert(&weight.as_ref().unwrap().weight, mode, bits, name));
+            }
+            if !unpack {
+                let pack = |projections: &[&QuantizedWeight]| {
+                    let tensors: Vec<_> = projections.iter().map(|w| &w.weight).collect();
+                    let scales: Vec<_> = projections
+                        .iter()
+                        .map(|w| w.scales.as_ref().unwrap())
+                        .collect();
+                    let mut packed = QuantizedWeight::new(
+                        concatenate(&tensors, 0, None),
+                        Some(concatenate(&scales, 0, None)),
+                        None,
+                    );
+                    packed.group_size = 32;
+                    packed.bits = bits;
+                    packed.mode = name.into();
+                    packed
+                };
+                layer.qkv_packed = Some(pack(&[
+                    layer.q_proj.as_ref().unwrap(),
+                    layer.k_proj.as_ref().unwrap(),
+                    layer.v_proj.as_ref().unwrap(),
+                ]));
+                layer.gate_up_packed = Some(pack(&[
+                    layer.gate_proj.as_ref().unwrap(),
+                    layer.up_proj.as_ref().unwrap(),
+                ]));
+            }
+            result.layers.push(layer);
+        }
+        result
+    }
+
+    fn pooled(config: &ModelConfig, weights: &ModelWeights, ids: &[u32]) -> Vec<f32> {
+        let (hidden, _) = forward_for_embedding_gemma3_batch(config, weights, &[ids.to_vec()]);
+        let hidden = astype(&hidden, MlxDtype::Float32, None);
+        let mean = divide(
+            &sum_axis(&hidden, 1, false, None),
+            &MlxArray::from_f32_slice(&[ids.len() as f32]),
+            None,
+        );
+        let output = apply_embedding_dense_head(weights, &mean);
+        eval(&[&output]);
+        output.data_f32().to_vec()
+    }
+
+    fn assert_direction(actual: &[f32], expected: &[f32]) -> f64 {
+        assert!(actual.iter().all(|x| x.is_finite()));
+        let dot: f64 = actual
+            .iter()
+            .zip(expected)
+            .map(|(&x, &y)| x as f64 * y as f64)
+            .sum();
+        let norm = |row: &[f32]| row.iter().map(|&x| (x as f64).powi(2)).sum::<f64>().sqrt();
+        let cosine = dot / (norm(actual) * norm(expected));
+        assert!(cosine >= 0.999, "encoder cosine {cosine}");
+        cosine
+    }
+
+    with_gpu_numeric_lock(|| {
+        let mut config = cfg(false);
+        config.model_family = "embeddinggemma".into();
+        config.generation_kind = ax_engine_core::GenerationKind::EncoderEmbed;
+        config.layer_count = 2;
+        config.hidden_size = 64;
+        config.vocab_size = 64;
+        config.intermediate_size = 128;
+        config.head_dim = 32;
+        config.rope_dims = 32;
+        config.query_scale = 1.0 / 32_f32.sqrt();
+        config.hidden_states_scale = Some(8.0);
+        config.uses_geglu = true;
+        for (mode, bits, name) in [
+            (MlxQuantizationMode::Mxfp4, 4, "mxfp4"),
+            (MlxQuantizationMode::Mxfp8, 8, "mxfp8"),
+        ] {
+            let quantized = Arc::new(weights(&config, mode, bits, name, false));
+            let reference = weights(&config, mode, bits, name, true);
+            let batch: Vec<Vec<u32>> = [1, 17, 33, 129]
+                .into_iter()
+                .map(|len| (0..len).map(|i| (i % 63 + 1) as u32).collect())
+                .collect();
+            let lengths: Vec<_> = batch.iter().map(Vec::len).collect();
+            let hidden = build_embedding_batch_hidden(&config, &quantized, &batch, 4, 160);
+            let padding = build_bidirectional_padding_mask(4, 160, &lengths, hidden.dtype());
+            let (mask, scale) = build_embedding_mean_pool_inputs(4, 160, &lengths);
+            let compiled = build_embedding_gemma3_pooled_batch_forward_closure(
+                Arc::new(config.clone()),
+                Arc::clone(&quantized),
+                padding,
+                mask,
+                scale,
+            )
+            .unwrap();
+            let output = compiled.apply(&[&hidden]);
+            eval(&[&output[0]]);
+            assert_eq!(output[0].shape(), vec![4, 64]);
+            let mut min_cosine = 1.0_f64;
+            for (row, ids) in batch.iter().enumerate() {
+                let expected = pooled(&config, &reference, ids);
+                let single = pooled(&config, &quantized, ids);
+                min_cosine = min_cosine.min(assert_direction(&single, &expected));
+                min_cosine = min_cosine.min(assert_direction(
+                    &output[0].data_f32()[row * 64..(row + 1) * 64],
+                    &single,
+                ));
+            }
+            println!("300M encoder miniature {name}: min_cosine={min_cosine:.9}");
+        }
+    });
+}
+
+#[test]
 fn short_mx_embedding_layers_preserve_single_sequence_reductions() {
     use mlx_sys::{MlxQuantizationMode, quantize};
 

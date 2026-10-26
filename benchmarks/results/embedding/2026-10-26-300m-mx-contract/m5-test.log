@@ -1,0 +1,11 @@
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.03s
+
+
+running 1 test
+300M encoder miniature mxfp4: min_cosine=1.000000000
+300M encoder miniature mxfp8: min_cosine=1.000000000
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2163 filtered out; finished in 0.09s

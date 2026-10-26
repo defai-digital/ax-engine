@@ -55,6 +55,20 @@ AX does not silently add them.
 | EmbeddingGemma 300M | Bidirectional Gemma 3 encoder, masked mean pooling, two Dense projections; single and batch APIs share the same pooling path | Pinned `mlx-community/embeddinggemma-300m-8bit` regression pack. The legacy AutomatosX 300M repository returned 404 during the 2026-10-25 inventory; its alias retains its original identity. No live 300M MX pack was available for qualification. |
 | EmbeddingGemma 2 | Dedicated `embedding_gemma2` encoder, projection-only per-layer inputs, local/full bidirectional attention, token-wise output projection then masked mean pooling | Explicit, revision-pinned AutomatosX MXFP4 and MXFP8 aliases; experimental text-only support. Image, audio and video inputs are unsupported; media sentinel token IDs are rejected. No chat generation. |
 
+The 300M runtime also accepts MXFP4 and MXFP8 linear weights in prepared
+`gemma3_text` / `embeddinggemma` MLX directories. Its format regression covers
+MX scales without affine biases, mixed affine token embeddings, protected Dense
+heads, packed QKV/FFN projections, and compiled masked pooling. Both formats
+were exercised with deterministic miniature encoder fixtures on MacBook Pro
+M5 Max 128 GB; this is software-path coverage, not a 300M checkpoint result.
+
+The requested `AutomatosX/AX-EmbeddingGemma-300M-MLX-AXQ-MXFP4` and
+`AutomatosX/AX-EmbeddingGemma-300M-MLX-AXQ-MXFP8` repositories still returned
+authenticated HTTP 404 on 2026-10-26. Immutable pack pins, managed format aliases,
+real-weight quality and performance validation remain pending. Full repository
+references and local MLX directories already use the native 300M route when
+their artifacts are available. [300M format regression evidence](../benchmarks/results/embedding/2026-10-26-300m-mx-contract/README.md).
+
 The 2026-10-25 review exercised all six Qwen MX packs, both Gemma 2 MX packs,
 and the upstream 300M pack on MacBook Pro M5 Max 128 GB. Coverage includes
 1–2048-token inputs, mixed-length batches, repeatability, input ordering,

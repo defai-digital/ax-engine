@@ -48,6 +48,107 @@ fn experimental_flash_next_auto_convert_preserves_quantization_failure() {
 }
 
 #[test]
+fn embeddinggemma_300m_mx_preserves_mixed_precision_and_both_dense_heads() {
+    for (mode, bits) in [("mxfp4", 4), ("mxfp8", 8)] {
+        let dir = unique_test_dir(&format!("embeddinggemma_300m_{mode}"));
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma3_text", "num_hidden_layers": 1,
+                "hidden_size": 64, "intermediate_size": 128,
+                "num_attention_heads": 2, "num_key_value_heads": 1,
+                "head_dim": 32, "vocab_size": 64,
+                "query_pre_attn_scalar": 32, "hidden_activation": "gelu_pytorch_tanh",
+                "quantization": {"bits": bits, "group_size": 32, "mode": mode,
+                    "model.embed_tokens": {"bits": 8, "group_size": 64, "mode": "affine"}}
+            }),
+        );
+        let mut tensors: Vec<(String, &str, Vec<u64>)> = vec![
+            ("model.embed_tokens.weight".into(), "U32", vec![64, 16]),
+            ("model.embed_tokens.scales".into(), "BF16", vec![64, 1]),
+            ("model.embed_tokens.biases".into(), "BF16", vec![64, 1]),
+            ("model.norm.weight".into(), "BF16", vec![64]),
+            ("dense.0.weight".into(), "F32", vec![256, 64]),
+            ("dense.1.weight".into(), "F32", vec![64, 256]),
+        ];
+        for (suffix, width) in [
+            ("input_layernorm.weight", 64),
+            ("post_attention_layernorm.weight", 64),
+            ("pre_feedforward_layernorm.weight", 64),
+            ("post_feedforward_layernorm.weight", 64),
+            ("self_attn.q_norm.weight", 32),
+            ("self_attn.k_norm.weight", 32),
+        ] {
+            tensors.push((format!("model.layers.0.{suffix}"), "BF16", vec![width]));
+        }
+        for (suffix, rows, cols) in [
+            ("self_attn.q_proj", 64, 64),
+            ("self_attn.k_proj", 32, 64),
+            ("self_attn.v_proj", 32, 64),
+            ("self_attn.o_proj", 64, 64),
+            ("mlp.gate_proj", 128, 64),
+            ("mlp.up_proj", 128, 64),
+            ("mlp.down_proj", 64, 128),
+        ] {
+            tensors.push((
+                format!("model.layers.0.{suffix}.weight"),
+                "U32",
+                vec![rows, cols * bits / 32],
+            ));
+            tensors.push((
+                format!("model.layers.0.{suffix}.scales"),
+                "U8",
+                vec![rows, cols / 32],
+            ));
+        }
+        let specs: Vec<_> = tensors
+            .iter()
+            .map(|(name, dtype, shape)| (name.as_str(), *dtype, shape.as_slice()))
+            .collect();
+        write_fake_safetensors(&dir, "model.safetensors", &specs);
+        let manifest = convert_hf_model_dir(&dir).unwrap();
+        assert_eq!(manifest.model_family, "embeddinggemma");
+        assert_eq!(
+            manifest.generation_kind(),
+            crate::GenerationKind::EncoderEmbed
+        );
+        for spec in &manifest.tensors {
+            if spec.role == NativeTensorRole::TokenEmbedding {
+                let quant = spec.quantization.as_ref().unwrap();
+                assert_eq!(
+                    (quant.mode.as_str(), quant.bits, quant.group_size),
+                    ("affine", 8, 64)
+                );
+            } else if let Some(quant) = &spec.quantization {
+                assert_eq!(
+                    (quant.mode.as_str(), quant.bits, quant.group_size),
+                    (mode, bits as u32, 32)
+                );
+            }
+        }
+        for role in [
+            NativeTensorRole::EmbeddingDense0,
+            NativeTensorRole::EmbeddingDense1,
+        ] {
+            let head = manifest
+                .tensors
+                .iter()
+                .find(|spec| spec.role == role)
+                .unwrap();
+            assert!(head.quantization.is_none());
+        }
+        crate::model::validate_native_model_manifest(&dir, &manifest).unwrap();
+        write_manifest(&dir, &manifest).unwrap();
+        let mut incomplete = manifest.clone();
+        incomplete
+            .tensors
+            .retain(|spec| spec.role != NativeTensorRole::EmbeddingDense1);
+        assert!(crate::model::validate_native_model_manifest(&dir, &incomplete).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn embedding_gemma2_mx_contract_preserves_projection_only_ple_and_per_layer_geometry() {
     for (mode, bits) in [("mxfp4", 4), ("mxfp8", 8)] {
         let dir = unique_test_dir(mode);

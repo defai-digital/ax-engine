@@ -1,0 +1,18 @@
+{
+  "observed_at": "2026-10-26T10:13:54.193562+00:00",
+  "authenticated_account": "AutomatosX",
+  "targets": [
+    {
+      "repo_id": "AutomatosX/AX-EmbeddingGemma-300M-MLX-AXQ-MXFP4",
+      "http_status": 404,
+      "error": "RepositoryNotFoundError"
+    },
+    {
+      "repo_id": "AutomatosX/AX-EmbeddingGemma-300M-MLX-AXQ-MXFP8",
+      "http_status": 404,
+      "error": "RepositoryNotFoundError"
+    }
+  ],
+  "real_weight_validation": false,
+  "reason": "No target snapshot is accessible to the authenticated account."
+}
