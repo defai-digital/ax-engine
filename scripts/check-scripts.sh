@@ -37,6 +37,18 @@ assert_exit_status 7 bash -c 'set -euo pipefail; source scripts/lib/common.sh; c
 assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; false'
 
 bash -n scripts/*.sh scripts/lib/*.sh scripts/check-qa.sh
+
+# Documented direct-execution entry points keep an executable mode bit.
+for entry_point in \
+    scripts/qualify_qwen38_27b.py \
+    scripts/qualify_qwen38_flash_next.py \
+    scripts/check_qwen38_primary_claims.py; do
+    if [[ ! -x "$entry_point" ]]; then
+        echo "documented entry point is not executable: $entry_point" >&2
+        exit 1
+    fi
+done
+
 # Dedicated offline QA harness gate (bank + unit tests + py_compile).
 bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
