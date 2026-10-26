@@ -14,6 +14,36 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[test]
+fn parsed_tool_calls_do_not_hide_interrupted_non_stream_responses() {
+    for tail in ["", "<tool_call>{\"name\":\"unfinished\",\"arguments\":{"] {
+        for (reason, expected) in [
+            (GenerateFinishReason::MaxOutputTokens, "length"),
+            (GenerateFinishReason::ContentFilter, "content_filter"),
+        ] {
+            let text =
+                format!("<tool_call>{{\"name\":\"lookup\",\"arguments\":{{}}}}</tool_call>{tail}");
+            let mut response = sample_generate_response(&text, Vec::new(), Vec::new());
+            response.finish_reason = Some(reason);
+            let chat = openai_chat_completion_response(
+                &response,
+                "chatcmpl-interrupted".into(),
+                OpenAiResponseOptions {
+                    parse_tool_calls: true,
+                    ..Default::default()
+                },
+                None,
+                None,
+            );
+            assert_eq!(chat.choices[0].finish_reason, Some(expected));
+            assert_eq!(
+                chat.choices[0].message.tool_calls.as_ref().unwrap().len(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
 fn finish_reason_maps_terminal_labels_without_hiding_cancellations() {
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Stop)),

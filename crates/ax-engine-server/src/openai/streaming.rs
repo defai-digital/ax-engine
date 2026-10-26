@@ -510,7 +510,10 @@ impl OpenAiStreamDriver {
                     .tool_scanner
                     .as_ref()
                     .map_or(0, ToolCallStreamScanner::parsed_calls);
-                let final_sent = if parsed_tool_calls > 0 {
+                let final_sent = if parsed_tool_calls > 0
+                    && crate::openai::responses::tool_call_finish_allowed(
+                        payload.response.finish_reason,
+                    ) {
                     let chunk = chat_tool_calls_final_chunk(request_id, model_id);
                     send_openai_stream_chunk(tx, &chunk)
                 } else {
@@ -2887,6 +2890,47 @@ mod openai_stream_driver_tests {
                 .any(|payload| payload.get("choices").is_some()),
             "failed generation must not emit a normal completion chunk, got {payloads:?}"
         );
+    }
+
+    #[test]
+    fn parsed_tool_calls_preserve_terminal_interruption_reason() {
+        for incremental in [false, true] {
+            for partial_tail in ["", "<tool_call>{\"name\":\"g\",\"arguments\":{"] {
+                for (reason, expected) in [
+                    (GenerateFinishReason::MaxOutputTokens, "length"),
+                    (GenerateFinishReason::ContentFilter, "content_filter"),
+                ] {
+                    let mut driver = chat_driver(&[]);
+                    driver.pipeline.tool_scanner =
+                        Some(ToolCallStreamScanner::with_incremental(None, incremental));
+                    let (tx, mut rx) = mpsc::channel(64);
+                    let text = format!(
+                        "<tool_call>{{\"name\":\"f\",\"arguments\":{{}}}}</tool_call>{partial_tail}"
+                    );
+                    assert!(driver.process_text(&tx, 1, "qwen3", text));
+                    let mut response = sample_response();
+                    response.finish_reason = Some(reason);
+                    if reason == GenerateFinishReason::ContentFilter {
+                        response.status = GenerateStatus::Failed;
+                    }
+                    assert!(driver.handle_event(
+                        &tx,
+                        GenerateStreamEvent::Response(GenerateStreamResponseEvent { response }),
+                    ));
+                    drop(tx);
+                    let payloads = collect_chunk_payloads(&mut rx);
+                    let actual: Vec<_> = payloads
+                        .iter()
+                        .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
+                        .collect();
+                    assert_eq!(
+                        actual,
+                        vec![expected],
+                        "incremental={incremental}, tail={partial_tail}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

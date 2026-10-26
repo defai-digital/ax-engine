@@ -155,7 +155,9 @@ pub(crate) fn openai_chat_completion_response(
     // call arguments can never truncate a call.
     let stop_hit = !has_tool_calls
         && crate::openai::stop::truncate_at_stop(&mut content, &options.client_stop_sequences);
-    let finish_reason = if has_tool_calls {
+    let finish_reason = if !tool_call_finish_allowed(response.finish_reason) {
+        openai_finish_reason(response.finish_reason)
+    } else if has_tool_calls {
         Some("tool_calls")
     } else if stop_hit {
         Some("stop")
@@ -1197,6 +1199,11 @@ pub(crate) fn served_prefix_reused_tokens(route: &GenerateRouteReport) -> Option
         return Some(0);
     }
     route.decision("prefix_reused_tokens")
+}
+
+/// Parsed calls cannot turn an interrupted generation into a successful call.
+pub(crate) fn tool_call_finish_allowed(reason: Option<GenerateFinishReason>) -> bool {
+    matches!(reason, None | Some(GenerateFinishReason::Stop))
 }
 
 pub(crate) fn openai_finish_reason(
