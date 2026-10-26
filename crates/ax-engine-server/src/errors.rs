@@ -77,6 +77,8 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
     match error {
         EngineSessionError::EmptyInputTokens
         | EngineSessionError::InvalidMaxOutputTokens
+        | EngineSessionError::InvalidJsonConstraint { .. }
+        | EngineSessionError::StrictJsonConstraintRequiresNativeMlx
         | EngineSessionError::InvalidNoRepeatNgram { .. }
         | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::MultimodalInputsRequireNativeMlx { .. }

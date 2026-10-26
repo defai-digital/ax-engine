@@ -19,6 +19,10 @@ pub enum EngineSessionError {
     EmptyInputTokens,
     #[error("generate request max_output_tokens must be greater than zero")]
     InvalidMaxOutputTokens,
+    #[error("invalid native JSON constraint: {message}")]
+    InvalidJsonConstraint { message: String },
+    #[error("strict JSON constraints require the native MLX backend")]
+    StrictJsonConstraintRequiresNativeMlx,
     #[error(
         "no_repeat_ngram_size={no_repeat_ngram_size} requires ngram_window to be positive and at least as large"
     )]

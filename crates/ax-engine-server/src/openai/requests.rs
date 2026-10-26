@@ -79,6 +79,7 @@ pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OpenAiResponseOptions {
+    pub(crate) prepared_json_constraint: Option<ax_engine_sdk::PreparedJsonConstraint>,
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
     pub(crate) include_stream_usage: bool,
@@ -243,6 +244,7 @@ impl OpenAiResponseOptions {
         reject_unsupported_top_logprobs(request.top_logprobs)?;
         reject_unsupported_completion_logprobs(request.logprobs)?;
         Ok(Self {
+            prepared_json_constraint: None,
             include_logprobs: request.logprobs.is_some(),
             include_reasoning: false,
             include_stream_usage: request.stream_options.include_usage,
@@ -287,6 +289,7 @@ impl OpenAiResponseOptions {
             ));
         }
         Ok(Self {
+            prepared_json_constraint: None,
             include_logprobs: request.logprobs,
             include_reasoning: openai_chat_thinking_is_enabled(request),
             include_stream_usage: request.stream_options.include_usage,
@@ -531,7 +534,7 @@ fn build_openai_chat_request_with_control(
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     // Masking constrains what the model may write, not what it plans: tell
     // it the format too, so it does not plan past the schema's limits.
-    if let Some(schema) = native_json_constraint(live, &response_options) {
+    if let Some(schema) = native_json_constraint(live, &mut response_options) {
         let instruction = if response_options.json_schema.is_some() {
             format!(
                 "Respond only with JSON that conforms to this JSON Schema, with no code fences \
@@ -958,7 +961,9 @@ fn build_openai_generate_request(
         max_output_tokens,
         response_options.fit_max_tokens_to_context,
     )?;
-    payload.sampling.json_schema = native_json_constraint(live, &response_options);
+    let mut response_options = response_options;
+    payload.sampling.json_schema = native_json_constraint(live, &mut response_options);
+    payload.sampling.prepared_json_constraint = response_options.prepared_json_constraint.clone();
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -1012,7 +1017,7 @@ fn add_system_instruction(messages: &mut Vec<OpenAiChatMessage>, instruction: &s
 /// grammar cannot enforce exactly also stay post-hoc only.
 fn native_json_constraint(
     live: &LiveState,
-    response_options: &OpenAiResponseOptions,
+    response_options: &mut OpenAiResponseOptions,
 ) -> Option<serde_json::Value> {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx
         || response_options.parse_tool_calls
@@ -1020,13 +1025,24 @@ fn native_json_constraint(
     {
         return None;
     }
+    if let Some(prepared) = response_options.prepared_json_constraint.as_ref() {
+        return prepared.has_grammar().then(|| prepared.schema().clone());
+    }
     let schema = match response_options.json_schema.as_ref() {
         Some(contract) => contract.schema.clone(),
         None if response_options.validate_json_object => serde_json::json!({"type": "object"}),
         None => return None,
     };
-    ax_engine_core::grammar::JsonGrammar::from_schema(&schema)
-        .is_ok()
+    let mut sampling = GenerateSampling {
+        json_schema: Some(schema.clone()),
+        ..Default::default()
+    };
+    sampling.prepare_json_constraint().ok()?;
+    response_options.prepared_json_constraint = sampling.prepared_json_constraint;
+    response_options
+        .prepared_json_constraint
+        .as_ref()?
+        .has_grammar()
         .then_some(schema)
 }
 
@@ -1317,6 +1333,8 @@ fn build_openai_sampling_with_default_repetition_penalty(
         ngram_window: 128,
         logit_bias: params.logit_bias,
         json_schema: None,
+        json_schema_strict: false,
+        prepared_json_constraint: None,
         seed,
         seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,

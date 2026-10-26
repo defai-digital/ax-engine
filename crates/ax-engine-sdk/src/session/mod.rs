@@ -394,6 +394,12 @@ impl EngineSession {
         request: &GenerateRequest,
     ) -> Result<(), EngineSessionError> {
         Self::validate_generate_request(request_id, request)?;
+        if request.sampling.json_schema_strict
+            && request.sampling.json_schema.is_some()
+            && !selected_backend.is_mlx()
+        {
+            return Err(EngineSessionError::StrictJsonConstraintRequiresNativeMlx);
+        }
         if !selected_backend.is_mlx() && !request.multimodal_inputs.is_empty() {
             return Err(EngineSessionError::MultimodalInputsRequireNativeMlx { selected_backend });
         }
@@ -1057,7 +1063,7 @@ impl EngineSession {
     pub fn submit_generate_with_request_id(
         &mut self,
         request_id: u64,
-        request: GenerateRequest,
+        mut request: GenerateRequest,
     ) -> Result<u64, EngineSessionError> {
         if self.core.generation_kind() == ax_engine_core::GenerationKind::EncoderEmbed {
             return Err(EngineSessionError::EncoderTextGenerationUnsupported);
@@ -1099,6 +1105,10 @@ impl EngineSession {
             );
         }
 
+        request
+            .sampling
+            .prepare_json_constraint()
+            .map_err(|message| EngineSessionError::InvalidJsonConstraint { message })?;
         let request_id = RequestId(request_id);
         self.advance_request_id(request_id.0);
         // Caller-chosen ids are not an arrival order: a recycled or
@@ -1113,7 +1123,10 @@ impl EngineSession {
             model_id: ModelId(request.model_id),
             input_tokens: request.input_tokens,
             multimodal_inputs: request.multimodal_inputs,
-            sampling_params: request.sampling.into_core(self.config.deterministic),
+            sampling_params: request
+                .sampling
+                .into_core(self.config.deterministic)
+                .map_err(|message| EngineSessionError::InvalidJsonConstraint { message })?,
             max_output_tokens: request.max_output_tokens,
             arrival_sequence,
             metadata: request.metadata,

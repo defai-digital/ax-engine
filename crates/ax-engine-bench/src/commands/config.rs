@@ -195,6 +195,8 @@ pub(crate) fn generate_request_from_spec(
             ngram_window: 128,
             logit_bias: Default::default(),
             json_schema: None,
+            json_schema_strict: false,
+            prepared_json_constraint: None,
             seed: manifest.sampling.seed,
             seed_explicit: manifest.sampling.seed != 0,
             deterministic: Some(manifest.runtime.deterministic),

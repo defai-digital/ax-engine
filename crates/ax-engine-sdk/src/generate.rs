@@ -387,6 +387,33 @@ pub(crate) fn finish_reason_from_openai_reason(
     }
 }
 
+/// Admission result for the requested native JSON constraint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JsonConstraintStatus {
+    Disabled,
+    Enforced,
+    PostHocValidationRequired,
+}
+
+/// Immutable compiled request contract. The source schema is retained to detect
+/// mutation of the public sampling fields after preparation.
+#[derive(Clone, Debug)]
+pub struct PreparedJsonConstraint {
+    schema: serde_json::Value,
+    strict: bool,
+    grammar: Option<std::sync::Arc<ax_engine_core::grammar::JsonGrammar>>,
+    status: JsonConstraintStatus,
+}
+
+impl PreparedJsonConstraint {
+    pub fn schema(&self) -> &serde_json::Value {
+        &self.schema
+    }
+    pub fn has_grammar(&self) -> bool {
+        self.grammar.is_some()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GenerateSampling {
     #[serde(default)]
@@ -428,6 +455,12 @@ pub struct GenerateSampling {
     /// cannot enforce exactly is left to the caller's post-hoc validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json_schema: Option<serde_json::Value>,
+    /// Reject constraints that cannot be fully enforced before enqueue.
+    /// False preserves the caller-owned post-hoc validation contract.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub json_schema_strict: bool,
+    #[serde(skip)]
+    pub prepared_json_constraint: Option<PreparedJsonConstraint>,
     #[serde(default)]
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
@@ -464,6 +497,8 @@ impl Default for GenerateSampling {
             ngram_window: 128,
             logit_bias: std::collections::BTreeMap::new(),
             json_schema: None,
+            json_schema_strict: false,
+            prepared_json_constraint: None,
             seed: 0,
             seed_explicit: false,
             deterministic: None,
@@ -473,6 +508,42 @@ impl Default for GenerateSampling {
 }
 
 impl GenerateSampling {
+    pub fn prepare_json_constraint(&mut self) -> Result<JsonConstraintStatus, String> {
+        let Some(schema) = self.json_schema.as_ref() else {
+            self.prepared_json_constraint = None;
+            return Ok(JsonConstraintStatus::Disabled);
+        };
+        if let Some(prepared) = self.prepared_json_constraint.as_ref()
+            && prepared.schema == *schema
+            && prepared.strict == self.json_schema_strict
+        {
+            return Ok(prepared.status);
+        }
+        self.prepared_json_constraint = None;
+        let strict = ax_engine_core::grammar::JsonGrammar::validate_strict_schema(schema);
+        if self.json_schema_strict {
+            strict.as_ref().map_err(ToString::to_string)?;
+        }
+        let compiled = ax_engine_core::grammar::JsonGrammar::from_schema(schema);
+        let status = if strict.is_ok() && compiled.is_ok() {
+            JsonConstraintStatus::Enforced
+        } else {
+            JsonConstraintStatus::PostHocValidationRequired
+        };
+        let grammar = match compiled {
+            Ok(grammar) => Some(std::sync::Arc::new(grammar)),
+            Err(error) if self.json_schema_strict => return Err(error.to_string()),
+            Err(_) => None,
+        };
+        self.prepared_json_constraint = Some(PreparedJsonConstraint {
+            schema: schema.clone(),
+            strict: self.json_schema_strict,
+            grammar,
+            status,
+        });
+        Ok(status)
+    }
+
     /// Set `seed` and mark it explicit, so `seed: 0` is reproducible.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
@@ -484,9 +555,18 @@ impl GenerateSampling {
         self.deterministic.unwrap_or(default_deterministic)
     }
 
-    pub(crate) fn into_core(self, default_deterministic: bool) -> SamplingParams {
+    pub(crate) fn into_core(
+        mut self,
+        default_deterministic: bool,
+    ) -> Result<SamplingParams, String> {
+        let status = self.prepare_json_constraint()?;
+        if status == JsonConstraintStatus::PostHocValidationRequired {
+            tracing::warn!(
+                "JSON constraint requires caller-owned post-hoc validation; use json_schema_strict to reject unsupported constraints"
+            );
+        }
         let deterministic = self.effective_deterministic(default_deterministic);
-        SamplingParams {
+        Ok(SamplingParams {
             temperature: self.temperature,
             top_p: self.top_p,
             top_k: self.top_k,
@@ -499,15 +579,13 @@ impl GenerateSampling {
             ngram_window: self.ngram_window,
             logit_bias: self.logit_bias.into_iter().collect(),
             json_grammar: self
-                .json_schema
-                .as_ref()
-                .and_then(|schema| ax_engine_core::grammar::JsonGrammar::from_schema(schema).ok())
-                .map(std::sync::Arc::new),
+                .prepared_json_constraint
+                .and_then(|prepared| prepared.grammar),
             seed: self.seed,
             seed_explicit: self.seed_explicit || self.seed != 0,
             deterministic,
             ignore_eos: self.ignore_eos,
-        }
+        })
     }
 }
 
@@ -724,6 +802,7 @@ fn is_false(value: &bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::backend::{CapabilityReport, ResolutionPolicy, SelectedBackend, SupportTier};
     use crate::request::{SessionRequestReport, SessionRequestState};
@@ -758,6 +837,63 @@ mod tests {
     }
 
     #[test]
+    fn strict_json_constraints_reject_unsupported_assertions_and_stale_preparation() {
+        for schema in [
+            serde_json::json!({"type":"number", "minimum": 3}),
+            serde_json::json!({"type":"string", "pattern":"^safe$"}),
+            serde_json::json!({"type":"object", "properties":{"x": {"type":"number", "minimum":0}}}),
+            serde_json::json!({"type":"object", "additionalProperties":{"type":"string"}}),
+            serde_json::json!({"type":"string", "const": 7}),
+            serde_json::json!({"type":"string", "maxLength": -1}),
+            serde_json::json!({"type":"object", "required":[7]}),
+            serde_json::json!({"type":"string", "minLength":4294967295_u64}),
+            serde_json::json!({"const":7, "enum":[8]}),
+        ] {
+            let mut sampling = GenerateSampling {
+                json_schema: Some(schema),
+                json_schema_strict: true,
+                ..Default::default()
+            };
+            assert!(sampling.prepare_json_constraint().is_err());
+            assert!(sampling.clone().into_core(false).is_err());
+            sampling.json_schema_strict = false;
+            assert_eq!(
+                sampling.prepare_json_constraint().unwrap(),
+                JsonConstraintStatus::PostHocValidationRequired
+            );
+        }
+        let mut sampling = GenerateSampling {
+            json_schema: Some(serde_json::json!({"type":"object"})),
+            json_schema_strict: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            sampling.prepare_json_constraint().unwrap(),
+            JsonConstraintStatus::Enforced
+        );
+        let first = sampling
+            .prepared_json_constraint
+            .as_ref()
+            .unwrap()
+            .grammar
+            .clone()
+            .unwrap();
+        let core = sampling.clone().into_core(false).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            core.json_grammar.as_ref().unwrap()
+        ));
+        sampling.json_schema = Some(serde_json::json!({"type":"string", "pattern":"x"}));
+        assert!(sampling.prepare_json_constraint().is_err());
+        assert!(sampling.prepared_json_constraint.is_none());
+        sampling.json_schema = None;
+        assert_eq!(
+            sampling.prepare_json_constraint().unwrap(),
+            JsonConstraintStatus::Disabled
+        );
+    }
+
+    #[test]
     fn sampling_effective_deterministic_inherits_session_default() {
         let sampling = GenerateSampling::default();
 
@@ -784,7 +920,7 @@ mod tests {
             deterministic: None,
             ..GenerateSampling::default()
         };
-        let core = sampling.clone().into_core(false);
+        let core = sampling.clone().into_core(false).unwrap();
 
         assert_eq!(core.seed, 42);
         assert!(!sampling.effective_deterministic(false));
@@ -796,7 +932,7 @@ mod tests {
         let sampling = GenerateSampling::default().with_seed(0);
         assert_eq!(sampling.seed, 0);
         assert!(sampling.seed_explicit);
-        let core = sampling.into_core(false);
+        let core = sampling.into_core(false).unwrap();
 
         assert_eq!(core.seed, 0);
         assert!(core.seed_explicit);
@@ -808,7 +944,7 @@ mod tests {
             seed: 7,
             ..GenerateSampling::default()
         };
-        let core = sampling.into_core(false);
+        let core = sampling.into_core(false).unwrap();
 
         assert_eq!(core.seed, 7);
         assert!(core.seed_explicit);
@@ -822,7 +958,7 @@ mod tests {
             ignore_eos: true,
             ..GenerateSampling::default()
         };
-        let core = sampling.into_core(false);
+        let core = sampling.into_core(false).unwrap();
 
         assert_eq!(core.seed, 42);
         assert!(core.deterministic);

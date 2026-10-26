@@ -81,6 +81,7 @@ pub use generate::{
     GenerateFinishReason, GenerateMtpReport, GeneratePerformanceReport, GenerateRequest,
     GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent,
     GenerateStreamRequestEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
+    JsonConstraintStatus, PreparedJsonConstraint,
 };
 pub use llama_cpp::{
     LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage, LlamaCppCliConfig,

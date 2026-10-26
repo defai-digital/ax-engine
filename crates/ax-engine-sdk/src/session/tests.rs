@@ -710,6 +710,48 @@ fn embedding_encoder_rejects_generation_before_admission() {
 }
 
 #[test]
+fn strict_json_failure_is_rejected_before_request_id_or_queue_mutation() {
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: GenerateSampling {
+            json_schema: Some(serde_json::json!({"type":"number", "minimum":3})),
+            json_schema_strict: true,
+            ..Default::default()
+        },
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let before = session.next_request_id;
+    assert!(matches!(
+        session.submit_generate_with_request_id(100, request.clone()),
+        Err(EngineSessionError::InvalidJsonConstraint { .. })
+    ));
+    assert_eq!(session.next_request_id, before);
+    assert!(
+        session
+            .core()
+            .request_manager()
+            .snapshot(RequestId(100))
+            .is_none()
+    );
+    assert!(matches!(
+        EngineSession::validate_generate_request_for_backend(
+            SelectedBackend::LlamaCpp,
+            2048,
+            100,
+            &request
+        ),
+        Err(EngineSessionError::StrictJsonConstraintRequiresNativeMlx)
+    ));
+}
+
+#[test]
 fn caller_chosen_request_ids_do_not_define_arrival_order() {
     // A recycled or deliberately small id must not look older than an
     // already-running request, and a large id must not preempt older ones.

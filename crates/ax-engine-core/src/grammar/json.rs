@@ -86,6 +86,87 @@ fn unsupported(path: &str, message: impl Into<String>) -> JsonGrammarError {
 }
 
 impl JsonGrammar {
+    /// Validate the subset whose constraints the matcher enforces without a
+    /// post-hoc validator. Metadata is ignored; unsupported assertions fail closed.
+    pub fn validate_strict_schema(schema: &Value) -> Result<(), JsonGrammarError> {
+        fn visit(schema: &Value, path: &str, depth: usize) -> Result<(), JsonGrammarError> {
+            if depth > MAX_SCHEMA_DEPTH {
+                return Err(unsupported(path, "schema nesting is too deep"));
+            }
+            if schema == &Value::Bool(true) {
+                return Ok(());
+            }
+            let object = schema
+                .as_object()
+                .ok_or_else(|| unsupported(path, "expected a schema object"))?;
+            let literal = object.contains_key("const") || object.contains_key("enum");
+            if object.contains_key("const") && object.contains_key("enum") {
+                return Err(unsupported(
+                    path,
+                    "const and enum cannot be combined in strict mode",
+                ));
+            }
+            for (key, value) in object {
+                let child = format!("{path}/{key}");
+                match key.as_str() {
+                    "title" | "description" | "$schema" => {}
+                    "const" | "enum" => {}
+                    _ if literal => {
+                        return Err(unsupported(
+                            &child,
+                            "literal constraints cannot be combined with other assertions in strict mode",
+                        ));
+                    }
+                    "type" => {
+                        if value.as_array().is_some_and(Vec::is_empty) {
+                            return Err(unsupported(&child, "type must not be empty"));
+                        }
+                    }
+                    "properties" => {
+                        let properties = value
+                            .as_object()
+                            .ok_or_else(|| unsupported(&child, "expected properties object"))?;
+                        for (name, nested) in properties {
+                            visit(nested, &format!("{child}/{name}"), depth + 1)?;
+                        }
+                    }
+                    "required" => {
+                        let names = value
+                            .as_array()
+                            .ok_or_else(|| unsupported(&child, "expected required array"))?;
+                        if names.iter().any(|name| !name.is_string()) {
+                            return Err(unsupported(&child, "required entries must be strings"));
+                        }
+                    }
+                    "additionalProperties" if value.is_boolean() => {}
+                    "items" => visit(value, &child, depth + 1)?,
+                    "minItems" | "maxItems" | "minLength" | "maxLength" => {
+                        if value
+                            .as_u64()
+                            .is_none_or(|bound| bound >= u64::from(u32::MAX))
+                        {
+                            return Err(unsupported(
+                                &child,
+                                "bound must be a nonnegative integer below 4294967295",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(unsupported(
+                            &child,
+                            "constraint is not enforced by strict decoding",
+                        ));
+                    }
+                }
+            }
+            if object.get("enum").is_some_and(|value| !value.is_array()) {
+                return Err(unsupported(path, "enum must be an array"));
+            }
+            Ok(())
+        }
+        visit(schema, "", 0)
+    }
+
     /// Any JSON object (`response_format: json_object`).
     pub fn any_object() -> Self {
         let mut grammar = Self::empty();

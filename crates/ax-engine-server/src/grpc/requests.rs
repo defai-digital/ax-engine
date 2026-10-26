@@ -129,6 +129,8 @@ pub(super) fn build_chat_generate_request(
         ngram_window: 128,
         logit_bias: Default::default(),
         json_schema: None,
+        json_schema_strict: false,
+        prepared_json_constraint: None,
         seed: req.seed,
         // proto3 has no presence bit; a non-zero value is the only explicit
         // seed the wire can represent. Explicit zero stays an OpenAI/HTTP
@@ -184,6 +186,8 @@ pub(super) fn build_completion_generate_request(
         ngram_window: 128,
         logit_bias: Default::default(),
         json_schema: None,
+        json_schema_strict: false,
+        prepared_json_constraint: None,
         seed: req.seed,
         // proto3 has no presence bit; a non-zero value is the only explicit
         // seed the wire can represent. Explicit zero stays an OpenAI/HTTP
