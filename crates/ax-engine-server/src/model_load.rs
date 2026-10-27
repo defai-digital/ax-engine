@@ -1544,8 +1544,12 @@ mod tests {
             .try_admit(&first)
             .expect("first model should hold an active job");
 
+        // A sibling-scoped wait would run to DRAIN_IDLE_TIMEOUT (120 s); 30 s
+        // tells the two apart while leaving room for a cold first unload
+        // (allocator trim, worker join), which made 250 ms flaky when the
+        // test ran alone.
         tokio::time::timeout(
-            Duration::from_millis(250),
+            Duration::from_secs(30),
             perform_unload(&state, "second".to_string(), UnloadWaitPolicy::WaitForIdle),
         )
         .await
