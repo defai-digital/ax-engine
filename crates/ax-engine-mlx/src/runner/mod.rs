@@ -4810,6 +4810,34 @@ fn step_request_set_signature(ids: impl Iterator<Item = u64>) -> u32 {
     hash.max(1)
 }
 
+/// Stack the full softmax rows kept for the min_p survivor mass, if any.
+fn stack_survivor_rows(rows: &[MlxArray], vocab: i32) -> Option<(MlxArray, i32)> {
+    if rows.is_empty() {
+        return None;
+    }
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    let stacked = stack(&refs, 0, None);
+    let flat = mlx_sys::reshape(&stacked, &[rows.len() as i32, vocab], None);
+    Some((flat, vocab))
+}
+
+/// Probability mass that survives `min_p` over one full softmax row: tokens
+/// with `p >= min_p * max(p)`. The primary sampler cuts top-p against it.
+fn min_p_survivor_mass(row: &[f32], min_p: f32) -> f32 {
+    let max_prob = row
+        .iter()
+        .copied()
+        .filter(|p| p.is_finite())
+        .fold(0.0_f32, f32::max);
+    let cutoff = min_p * max_prob;
+    let mass: f32 = row
+        .iter()
+        .copied()
+        .filter(|p| p.is_finite() && *p >= cutoff)
+        .sum();
+    if mass > 0.0 { mass } else { 1.0 }
+}
+
 fn checkpoint_receipt_from_prefix_store(
     request_id: RequestId,
     cut: u32,
@@ -16840,6 +16868,10 @@ enum LazyTargetProbs {
         k: u32,
         top_p: f32,
         min_p: Option<f32>,
+        /// Full softmax rows `[pending_len, vocab]`, present only with min_p.
+        /// The primary sampler cuts top-p at `top_p * mass surviving min_p`
+        /// over the whole vocabulary, which the gathered top-k cannot give.
+        survivor_rows: Option<(MlxArray, i32)>,
     },
 }
 
@@ -16848,9 +16880,17 @@ impl LazyTargetProbs {
         match self {
             LazyTargetProbs::Full(arr) => targets.push(arr),
             LazyTargetProbs::FullRows { probs, .. } => targets.push(probs),
-            LazyTargetProbs::TopK { indices, probs, .. } => {
+            LazyTargetProbs::TopK {
+                indices,
+                probs,
+                survivor_rows,
+                ..
+            } => {
                 targets.push(indices);
                 targets.push(probs);
+                if let Some((rows, _)) = survivor_rows {
+                    targets.push(rows);
+                }
             }
         }
     }
@@ -16888,10 +16928,14 @@ impl LazyTargetProbs {
                 k,
                 top_p,
                 min_p,
+                survivor_rows,
             } => {
                 let k_val = *k as usize;
                 let indices_data = indices.data_u32();
                 let probs_data = probs.data_f32();
+                let survivor_data = survivor_rows
+                    .as_ref()
+                    .map(|(rows, vocab)| (rows.data_f32(), *vocab as usize));
                 workspace.target_probs.reserve(pending.len());
                 for (i, &needle) in pending.iter().enumerate() {
                     let row_start = i * k_val;
@@ -16931,12 +16975,22 @@ impl LazyTargetProbs {
                         },
                     );
                     if top_p.is_finite() && *top_p > 0.0 && *top_p < 1.0 {
+                        // Same law as the primary sampler: the cutoff is
+                        // relative to the mass that survives min_p over the
+                        // whole vocabulary (1.0 without min_p).
+                        let survivor_mass = match (&survivor_data, *min_p) {
+                            (Some((data, vocab)), Some(min_p)) => data
+                                .get(i * vocab..(i + 1) * vocab)
+                                .map_or(1.0, |row| min_p_survivor_mass(row, min_p)),
+                            _ => 1.0,
+                        };
+                        let cutoff = *top_p * survivor_mass;
                         let mut cumulative = 0.0_f32;
                         let mut keep = 0_usize;
                         for (_, prob) in &workspace.target_candidates {
                             cumulative += *prob;
                             keep += 1;
-                            if cumulative >= *top_p {
+                            if cumulative >= cutoff {
                                 break;
                             }
                         }
@@ -16995,17 +17049,21 @@ fn filtered_target_token_probability(
             return 0.0;
         }
     }
+    // The primary sampler cuts top-p relative to the mass that survives
+    // min_p (`apply_top_k_top_p`), before the top-k truncation.
+    let survivor_mass: f32 = candidates.iter().map(|(_, p)| *p).sum();
     candidates.sort_by(|(lt, lp), (rt, rp)| rp.total_cmp(lp).then_with(|| lt.cmp(rt)));
     if top_k > 0 && (top_k as usize) < candidates.len() {
         candidates.truncate(top_k as usize);
     }
     if top_p.is_finite() && top_p > 0.0 && top_p < 1.0 {
+        let cutoff = top_p * survivor_mass;
         let mut cumulative = 0.0_f32;
         let mut keep = 0_usize;
         for (_, prob) in &candidates {
             cumulative += *prob;
             keep += 1;
-            if cumulative >= top_p {
+            if cumulative >= cutoff {
                 break;
             }
         }
@@ -17073,6 +17131,7 @@ fn compute_mtp_target_probs(
 
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
+        let mut all_full_probs = Vec::new();
         // logits_all shape: [1 + pending.len(), vocab].
         // verify_input = [last_token, pending[0], ..., pending[n-1]], so
         // logits_all[i] = prediction after position i = target for pending[i].
@@ -17085,6 +17144,9 @@ fn compute_mtp_target_probs(
             let top_p = take_along_axis(&full_probs, &top_idx, -1, None);
             all_top_indices.push(top_idx);
             all_top_probs.push(top_p);
+            if target_sampling.uses_min_p() {
+                all_full_probs.push(full_probs);
+            }
         }
         let idx_refs: Vec<&MlxArray> = all_top_indices.iter().collect();
         let prob_refs: Vec<&MlxArray> = all_top_probs.iter().collect();
@@ -17097,6 +17159,7 @@ fn compute_mtp_target_probs(
             k,
             top_p: target_sampling.top_p,
             min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
+            survivor_rows: stack_survivor_rows(&all_full_probs, vocab),
         })
     } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
         // Draft-path filter applied to target probs for rejection-sampling parity.
@@ -17108,6 +17171,7 @@ fn compute_mtp_target_probs(
         };
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
+        let mut all_full_probs = Vec::new();
         // logits_all shape: [1 + pending.len(), vocab].
         // verify_input = [last_token, pending[0], ..., pending[n-1]], so
         // logits_all[i] = prediction after position i = target for pending[i].
@@ -17118,9 +17182,15 @@ fn compute_mtp_target_probs(
                 let top_idx = slice(&part, &[0, vocab - dk_i32], &[1, vocab], &[1, 1], None);
                 let full_probs = softmax(&row_logits, -1, None);
                 let top_p = take_along_axis(&full_probs, &top_idx, -1, None);
+                if target_sampling.uses_min_p() {
+                    all_full_probs.push(full_probs);
+                }
                 (top_idx, top_p)
             } else {
                 let top_p = softmax(&row_logits, -1, None);
+                if target_sampling.uses_min_p() {
+                    all_full_probs.push(top_p.clone());
+                }
                 let idx = MlxArray::from_raw_data(
                     (0..vocab).map(|i| i as u32).collect::<Vec<u32>>().as_ptr() as *const u8,
                     vocab as usize * 4,
@@ -17143,6 +17213,7 @@ fn compute_mtp_target_probs(
             k: dk_i32 as u32,
             top_p: draft_filter.top_p,
             min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
+            survivor_rows: stack_survivor_rows(&all_full_probs, vocab),
         })
     } else if target_sampling.uses_min_p() {
         // DeepSeek thinking defaults min_p=0.05. Materialize draft-target

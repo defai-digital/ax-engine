@@ -10058,3 +10058,40 @@ fn step_request_set_signature_is_order_independent_and_changes_with_membership()
     assert_eq!(step_request_set_signature(std::iter::empty()), 0);
     assert_ne!(step_request_set_signature([0u64].into_iter()), 0);
 }
+
+#[test]
+fn mtp_accept_probability_cuts_top_p_against_the_min_p_survivor_mass() {
+    // min_p 0.2 removes 0.08 of the mass; the primary sampler then cuts top-p
+    // at 0.85 * 0.92 = 0.782 and keeps two tokens, so p(token 0) = 0.5 / 0.8.
+    // The accept path used an absolute 0.85 cut and kept three tokens.
+    let row = [0.5_f32, 0.3, 0.12, 0.05, 0.03];
+    let full = MlxArray::from_f32_slice(&row);
+    let full = mlx_sys::reshape(&full, &[1, 5], None);
+    let indices = MlxArray::from_raw_data(
+        [0u32, 1, 2, 3, 4].as_ptr() as *const u8,
+        5 * 4,
+        &[1, 5],
+        MlxDtype::Uint32,
+    );
+    let lazy = LazyTargetProbs::TopK {
+        indices,
+        probs: full.clone(),
+        k: 5,
+        top_p: 0.85,
+        min_p: Some(0.2),
+        survivor_rows: Some((full, 5)),
+    };
+    let mut targets = Vec::new();
+    lazy.push_eval_targets(&mut targets);
+    mlx_sys::eval(&targets);
+    let mut workspace = MtpTargetProbWorkspace::default();
+    let probability = lazy
+        .extract_cpu_into(&[0], &mut workspace)
+        .expect("probability")[0];
+    let sampler_law = filtered_target_token_probability(&row, 0, Some(0.2), 0.85, 0);
+    assert!(
+        (probability - sampler_law).abs() < 1e-6,
+        "{probability} vs {sampler_law}"
+    );
+    assert!((probability - 0.625).abs() < 1e-6, "{probability}");
+}
