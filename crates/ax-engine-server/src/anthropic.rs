@@ -261,17 +261,19 @@ impl AnthropicContent {
             {
                 Ok(String::new())
             }
-            Self::Blocks(blocks) => Self::Blocks(
-                blocks
-                    .into_iter()
-                    .filter(|block| {
-                        !block.text.as_deref().is_some_and(|text| {
-                            text.starts_with(crate::anthropic_bridge::BILLING_HEADER_PREFIX)
-                        })
+            // Join system blocks with a newline, as the bridge does, so
+            // count_tokens and the streaming and non-streaming paths all
+            // render the same prompt.
+            Self::Blocks(blocks) => blocks
+                .into_iter()
+                .filter(|block| {
+                    !block.text.as_deref().is_some_and(|text| {
+                        text.starts_with(crate::anthropic_bridge::BILLING_HEADER_PREFIX)
                     })
-                    .collect(),
-            )
-            .into_text("system"),
+                })
+                .map(|block| Self::Blocks(vec![block]).into_text("system"))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|parts| parts.join("\n")),
             other => other.into_text("system"),
         }
     }
@@ -476,6 +478,21 @@ pub(crate) fn map_anthropic_generation_error(
 mod feature_gate_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn plain_and_bridged_paths_render_multi_block_system_alike() {
+        let system = json!([
+            {"type": "text", "text": "You are terse."},
+            {"type": "text", "text": "Answer in English."}
+        ]);
+        let plain: AnthropicContent =
+            serde_json::from_value(system.clone()).expect("system blocks");
+        let plain = plain.into_system_text().expect("plain system text");
+        let bridged = crate::anthropic_bridge::system_text(&system).expect("bridged system text");
+        assert_eq!(plain, bridged);
+        assert_eq!(plain, "You are terse.\nAnswer in English.");
+    }
 
     #[test]
     fn context_length_exceeded_is_remapped_to_anthropic_invalid_request() {

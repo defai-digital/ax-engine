@@ -542,7 +542,8 @@ impl StreamTranslator {
         {
             let index = self.ensure_open(
                 OpenBlock::Thinking,
-                || json!({"type": "thinking", "thinking": ""}),
+                // Match the non-streaming block, which always carries a signature.
+                || json!({"type": "thinking", "thinking": "", "signature": ""}),
                 &mut out,
             );
             out.push_str(&event(
@@ -931,6 +932,11 @@ mod tests {
                 "message_delta",
                 "message_stop",
             ]
+        );
+        // Thinking blocks carry a signature field, as in the non-streaming body.
+        assert!(
+            events.contains(r#""content_block":{"signature":"","thinking":"","type":"thinking"}"#),
+            "{events}"
         );
         assert!(events.contains("\"stop_reason\":\"tool_use\""));
         assert!(events.contains("\"output_tokens\":7"));
