@@ -968,7 +968,10 @@ pub(crate) const PREFILL_FFN_Q3_GROUP_SIZE: i32 = 32;
 
 pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<QuantizedWeight> {
     let scales = src.scales.as_ref()?;
-    if src.bits <= PREFILL_LA_Q2_BITS || src.group_size <= 0 || src.mode != "affine" {
+    // `is_affine_quantized`, not the mode string: an "affine"-labelled
+    // scales-only 4-bit/g32 weight runs as MXFP4, and an affine dequantize
+    // without biases panics at load.
+    if src.bits <= PREFILL_LA_Q2_BITS || src.group_size <= 0 || !src.is_affine_quantized() {
         return None;
     }
     let dense = dequantize(
@@ -1020,7 +1023,7 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
     if src.bits <= 0
         || src.group_size <= 0
         || src.group_size == PREFILL_FFN_GS64_GROUP_SIZE
-        || src.mode != "affine"
+        || !src.is_affine_quantized()
     {
         return None;
     }
@@ -1071,7 +1074,7 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
 /// specialization. No-ops when the source is already ≤3-bit.
 pub(crate) fn requant_affine_to_prefill_q3(src: &QuantizedWeight) -> Option<QuantizedWeight> {
     let scales = src.scales.as_ref()?;
-    if src.bits <= PREFILL_FFN_Q3_BITS || src.group_size <= 0 || src.mode != "affine" {
+    if src.bits <= PREFILL_FFN_Q3_BITS || src.group_size <= 0 || !src.is_affine_quantized() {
         return None;
     }
     let dense = dequantize(
@@ -4731,6 +4734,9 @@ fn apply_rotated_checkpoint(
                 target.biases = Some(biases.clone());
                 target.bits = bits_calc as i32;
                 target.group_size = 64;
+                // The rotated tensors are affine-packed; a leftover mxfp4 /
+                // mxfp8 mode would read them as microscaled data.
+                target.mode = "affine".to_string();
             } else {
                 // f32 path: cast to bf16, drop scales/biases, forward picks
                 // the plain matmul branch.

@@ -3807,3 +3807,28 @@ fn weight_view_built_on_one_worker_thread_evaluates_on_another() {
     mlx_sys::transforms::try_eval(&[&y]).expect("evaluate the shared view on another thread");
     assert_eq!(y.data_f32(), &[6.0, 15.0]);
 }
+
+#[test]
+fn prefill_requants_skip_scales_only_affine_labelled_weights() {
+    // Scales-only 4-bit/g32 tensors labelled "affine" run as MXFP4; an
+    // affine dequantize without biases panics at load, so the prefill
+    // requant overlays must leave them alone.
+    let weight = mlx_sys::MlxArray::from_raw_data(
+        [0u32; 8].as_ptr() as *const u8,
+        8 * std::mem::size_of::<u32>(),
+        &[2, 4],
+        mlx_sys::MlxDtype::Uint32,
+    );
+    let scales =
+        mlx_sys::MlxArray::from_raw_data([127u8; 2].as_ptr(), 2, &[2, 1], mlx_sys::MlxDtype::Uint8);
+    let quantization = ax_engine_core::NativeTensorQuantization {
+        mode: "affine".to_string(),
+        group_size: 32,
+        bits: 4,
+    };
+    let src = QuantizedWeight::with_quantization(weight, Some(scales), None, Some(&quantization));
+    assert!(!src.is_affine_quantized());
+    assert!(crate::weights::requant_affine_to_prefill_q2(&src).is_none());
+    assert!(crate::weights::requant_affine_to_prefill_gs64(&src).is_none());
+    assert!(crate::weights::requant_affine_to_prefill_q3(&src).is_none());
+}
