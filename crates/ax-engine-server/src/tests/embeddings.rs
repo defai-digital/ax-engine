@@ -1,6 +1,8 @@
 use crate::app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use crate::embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
-use crate::openai::embeddings::{DEFAULT_EMBED_MAX_ITEMS, embedding_input_tokens};
+use crate::openai::embeddings::{
+    DEFAULT_EMBED_MAX_ITEMS, base64_embedding, embedding_input_tokens,
+};
 use crate::openai::schema::{EmbeddingInput, OpenAiEmbeddingRequest};
 use crate::routes::build_router;
 use ax_engine_sdk::EmbeddingPooling;
@@ -100,7 +102,7 @@ async fn openai_text_embedding_input_preserves_empty_input_validation() {
 async fn openai_embeddings_endpoint_rejects_unsupported_encoding_and_dimensions() {
     let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
     for body in [
-        json!({"input": [1, 2, 3], "encoding_format": "base64"}),
+        json!({"input": [1, 2, 3], "encoding_format": "binary"}),
         json!({"input": [1, 2, 3], "dimensions": 128}),
     ] {
         let (status, response) = json_response(
@@ -117,6 +119,22 @@ async fn openai_embeddings_endpoint_rejects_unsupported_encoding_and_dimensions(
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(response["error"]["code"], "unsupported_parameter");
     }
+}
+
+#[test]
+fn base64_embedding_is_little_endian_float32() {
+    use base64::Engine as _;
+    let encoded = base64_embedding(&[1.0, -2.5]);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("valid base64");
+    let (chunks, rest) = bytes.as_chunks::<4>();
+    assert!(rest.is_empty());
+    let decoded: Vec<f32> = chunks
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
+        .collect();
+    assert_eq!(decoded, vec![1.0, -2.5]);
 }
 
 #[test]

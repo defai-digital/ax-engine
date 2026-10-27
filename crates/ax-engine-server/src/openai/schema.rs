@@ -60,8 +60,17 @@ pub(crate) struct OpenAiEmbeddingResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct OpenAiEmbeddingObject {
     pub(crate) object: &'static str,
-    pub(crate) embedding: Vec<f32>,
+    pub(crate) embedding: OpenAiEmbeddingVector,
     pub(crate) index: u32,
+}
+
+/// `encoding_format: "float"` serves a JSON array; `"base64"` serves the
+/// little-endian float32 bytes base64-encoded, as OpenAI does.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum OpenAiEmbeddingVector {
+    Float(Vec<f32>),
+    Base64(String),
 }
 
 #[derive(Debug, Serialize)]
