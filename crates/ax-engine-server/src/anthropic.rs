@@ -322,7 +322,9 @@ async fn run_anthropic_messages_generation(
         let runtime = live.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
         let permit = state.try_admit(&live).map_err(admission_error_response)?;
-        let response = run_blocking_session_task(move || {
+        // The plain-text Messages path carries no thinking blocks (those
+        // requests take the bridge), so reasoning is not surfaced here.
+        let (response, _reasoning) = run_blocking_session_task(move || {
             let _permit = permit;
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })

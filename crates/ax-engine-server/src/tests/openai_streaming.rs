@@ -300,3 +300,44 @@ async fn mlx_lm_chat_stream_emits_requested_usage_only_chunk() {
     assert_eq!(usage["usage"]["total_tokens"], 5);
     assert!(body.contains("data: [DONE]"));
 }
+
+#[tokio::test]
+async fn mlx_lm_chat_stream_surfaces_delegated_reasoning_when_thinking_is_on() {
+    for enable_thinking in [true, false] {
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
+            1,
+            vec![
+                json!({"choices": [{"index": 0, "delta": {"reasoning": "think"}, "finish_reason": null}]}),
+                json!({"choices": [{"index": 0, "delta": {"content": "42"}, "finish_reason": "stop"}]}),
+            ],
+            |_payload| {},
+        );
+        let app = build_router(mlx_lm_delegated_state(server_url));
+        let request = json!({
+            "messages": [{"role": "user", "content": "sum"}],
+            "stream": true,
+            "chat_template_kwargs": {"enable_thinking": enable_thinking}
+        });
+        let (status, _content_type, body) = text_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&request)))
+                .expect("request should build"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
+
+        assert_eq!(
+            body.contains(r#""reasoning_content":"think""#),
+            enable_thinking,
+            "thinking={enable_thinking}: {body}"
+        );
+        assert!(body.contains(r#""content":"42""#), "{body}");
+    }
+}

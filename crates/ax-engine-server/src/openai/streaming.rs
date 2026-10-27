@@ -91,6 +91,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     live: LiveState,
     request: MlxLmChatGenerateRequest,
     include_usage: bool,
+    include_reasoning: bool,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let model_id = request.model_id.clone();
     stream_delegated_openai_chat(
@@ -100,7 +101,10 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
         include_usage,
         "openai mlx_lm chat stream",
         mlx_lm::config,
-        move |runtime, backend| mlx_lm::start_chat_stream(runtime, backend, &request),
+        move |runtime, backend| {
+            mlx_lm::start_chat_stream(runtime, backend, &request)
+                .map(|stream| (stream, include_reasoning))
+        },
         drive_openai_mlx_lm_chat_stream,
     )
     .await
@@ -1523,7 +1527,7 @@ fn drive_openai_mlx_lm_chat_stream(
     cancel: &AtomicBool,
     request_id: u64,
     model_id: String,
-    mut stream: MlxLmStreamHandle,
+    (mut stream, include_reasoning): (MlxLmStreamHandle, bool),
     include_usage: bool,
 ) {
     let mut chat_role_emitted = false;
@@ -1542,6 +1546,21 @@ fn drive_openai_mlx_lm_chat_stream(
             Ok(Some(chunk)) => {
                 prompt_token_count = chunk.prompt_token_count.or(prompt_token_count);
                 output_token_count = chunk.output_token_count.or(output_token_count);
+                // mlx-lm streams a thinking model's reasoning as
+                // delta.reasoning, never as content.
+                if include_reasoning
+                    && !final_emitted
+                    && !chunk.reasoning.is_empty()
+                    && !emit_reasoning_chunk(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        &mut chat_role_emitted,
+                        chunk.reasoning,
+                    )
+                {
+                    return;
+                }
                 if !final_emitted && !chunk.text.is_empty() {
                     let role = next_chat_delta_role(&mut chat_role_emitted);
                     let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.text);

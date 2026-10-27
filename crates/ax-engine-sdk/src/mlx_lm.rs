@@ -131,6 +131,9 @@ impl DelegatedAdapterError for MlxLmBackendError {
 #[derive(Debug)]
 pub struct MlxLmStreamChunkResult {
     pub text: String,
+    /// Reasoning text mlx-lm split out of a thinking model's output
+    /// (`delta.reasoning`); empty when the chunk carries none.
+    pub reasoning: String,
     pub finish_reason: Option<String>,
     pub prompt_token_count: Option<u32>,
     pub output_token_count: Option<u32>,
@@ -173,12 +176,14 @@ impl MlxLmStreamHandle {
             });
         }
         let choice = choice.unwrap_or_default();
+        let (content, reasoning) = match choice.delta {
+            Some(delta) => (delta.content, delta.reasoning.unwrap_or_default()),
+            None => (None, String::new()),
+        };
 
         Ok(Some(MlxLmStreamChunkResult {
-            text: choice
-                .delta
-                .and_then(|delta| delta.content)
-                .unwrap_or(choice.text),
+            text: content.unwrap_or(choice.text),
+            reasoning,
             finish_reason: choice.finish_reason,
             prompt_token_count: chunk.usage.as_ref().map(|u| u.prompt_tokens),
             output_token_count: chunk.usage.as_ref().map(|u| u.completion_tokens),
@@ -324,6 +329,19 @@ pub fn run_blocking_chat_generate(
     config: &MlxLmConfig,
     request: &MlxLmChatGenerateRequest,
 ) -> Result<GenerateResponse, MlxLmBackendError> {
+    run_blocking_chat_generate_with_reasoning(request_id, runtime, config, request)
+        .map(|(response, _reasoning)| response)
+}
+
+/// [`run_blocking_chat_generate`], also returning the reasoning text mlx-lm
+/// split out of a thinking model's answer (`message.reasoning`), which
+/// `output_text` never contains.
+pub fn run_blocking_chat_generate_with_reasoning(
+    request_id: u64,
+    runtime: &RuntimeReport,
+    config: &MlxLmConfig,
+    request: &MlxLmChatGenerateRequest,
+) -> Result<(GenerateResponse, Option<String>), MlxLmBackendError> {
     ensure_mlx_lm_backend(runtime)?;
 
     match config {
@@ -370,7 +388,7 @@ fn run_mlx_lm_server_chat_completion_generate(
     runtime: &RuntimeReport,
     config: &MlxLmServerCompletionConfig,
     request: &MlxLmChatGenerateRequest,
-) -> Result<GenerateResponse, MlxLmBackendError> {
+) -> Result<(GenerateResponse, Option<String>), MlxLmBackendError> {
     let endpoint = config.chat_completions_url();
     let payload = build_mlx_lm_chat_completion_request(request, false);
 
@@ -383,7 +401,8 @@ fn run_mlx_lm_server_chat_completion_generate(
     let response: MlxLmChatCompletionResponse = parse_adapter_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
-    Ok(build_mlx_lm_delegated_response(
+    let reasoning = choice.message.reasoning.filter(|text| !text.is_empty());
+    let response = build_mlx_lm_delegated_response(
         request_id,
         &request.model_id,
         runtime,
@@ -393,7 +412,8 @@ fn run_mlx_lm_server_chat_completion_generate(
         response.usage.as_ref().map(|usage| usage.completion_tokens),
         finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
         "mlx_lm_delegated.server_chat_completion",
-    ))
+    );
+    Ok((response, reasoning))
 }
 
 fn build_mlx_lm_delegated_response(
@@ -522,6 +542,9 @@ struct MlxLmStreamChoice {
 struct MlxLmStreamDelta {
     #[serde(default)]
     content: Option<String>,
+    /// mlx-lm sends a thinking model's reasoning here, not in `content`.
+    #[serde(default, alias = "reasoning_content")]
+    reasoning: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -631,6 +654,8 @@ struct MlxLmCompletionResponse {
 struct MlxLmChatCompletionMessage {
     #[serde(default)]
     content: String,
+    #[serde(default, alias = "reasoning_content")]
+    reasoning: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -876,6 +901,39 @@ mod tests {
         assert_eq!(second.output_token_count, Some(2));
 
         assert!(stream.next_chunk().expect("DONE should parse").is_none());
+    }
+
+    #[test]
+    fn chat_results_carry_the_reasoning_mlx_lm_splits_out() {
+        // mlx-lm (0.31) returns a thinking model's reasoning beside content.
+        let response_body = r#"{"choices":[{"message":{"content":"42","reasoning":"add them"},"finish_reason":"stop"}]}"#.to_string();
+        let (server_url, handle) = spawn_completion_server(response_body, |_payload| {});
+        let (response, reasoning) = run_blocking_chat_generate_with_reasoning(
+            1,
+            &runtime_report(),
+            &MlxLmConfig::server_completion(server_url),
+            &chat_request(),
+        )
+        .expect("mlx-lm chat should succeed");
+        assert_eq!(response.output_text.as_deref(), Some("42"));
+        assert_eq!(reasoning.as_deref(), Some("add them"));
+        handle.join().expect("server thread should finish");
+
+        let mut stream = mlx_lm_stream(
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"think\"},\"finish_reason\":null}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"42\"},\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
+        );
+        let thinking = stream.next_chunk().expect("parse").expect("chunk");
+        assert_eq!(
+            (thinking.text.as_str(), thinking.reasoning.as_str()),
+            ("", "think")
+        );
+        let answer = stream.next_chunk().expect("parse").expect("chunk");
+        assert_eq!(
+            (answer.text.as_str(), answer.reasoning.as_str()),
+            ("42", "")
+        );
     }
 
     #[test]

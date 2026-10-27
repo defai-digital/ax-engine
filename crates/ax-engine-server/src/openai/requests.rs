@@ -844,7 +844,9 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
     )?;
-    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
+    // mlx-lm streams reasoning as delta.reasoning, which the driver forwards as
+    // delta.reasoning_content.
+    response_options.reject_unsupported_streaming_contract(request.stream, true)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let user_stop = request
