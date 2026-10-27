@@ -1726,6 +1726,10 @@ pub(crate) fn build_layer_masks_for_forward(
 /// and `(causal AND sliding_window) OR block` on sliding-attention layers.
 /// The reference applies the overlay to both mask kinds and never filters a
 /// block against the window size.
+///
+/// Standard Gemma 4 (`gemma4` / `gemma4_vl`, the ViT route) differs: HF
+/// `create_masks_for_vision_model` keeps full-attention layers strictly
+/// causal and overlays the block on sliding layers only.
 pub(crate) fn build_layer_masks_with_media_ranges(
     cfg: &ModelConfig,
     n_layers: usize,
@@ -1747,6 +1751,7 @@ pub(crate) fn build_layer_masks_with_media_ranges(
         return vec![Some(mask); n_layers];
     }
 
+    let causal_full_layers = matches!(cfg.model_family.as_str(), "gemma4" | "gemma4_vl");
     // One mask per unique window size (Gemma4 alternates sliding/global), the
     // same memoization shape as `build_layer_masks`.
     let mut memo: std::collections::HashMap<Option<usize>, MlxArray> =
@@ -1754,10 +1759,16 @@ pub(crate) fn build_layer_masks_with_media_ranges(
     cfg.layer_configs
         .iter()
         .map(|lc| {
+            let layer_ranges: &[(usize, usize)] =
+                if causal_full_layers && lc.sliding_window.is_none() {
+                    &[]
+                } else {
+                    &ranges
+                };
             Some(
                 memo.entry(lc.sliding_window)
                     .or_insert_with(|| {
-                        media_prefix_mask_array(seq, key_len, lc.sliding_window, &ranges)
+                        media_prefix_mask_array(seq, key_len, lc.sliding_window, layer_ranges)
                     })
                     .clone(),
             )
@@ -2578,6 +2589,39 @@ mod tests {
                 1, 0, 0, 0, 0, 0, //
                 1, 1, 1, 1, 0, 0, //
                 1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 1, 1,
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_gemma4_keeps_full_attention_layers_causal_with_media() {
+        // HF gemma4 create_masks_for_vision_model: the block overlay lands on
+        // sliding layers only; full-attention layers stay strictly causal.
+        let mut cfg = interleaved_mask_test_config();
+        cfg.model_family = "gemma4".to_string();
+
+        let masks = build_layer_masks_with_media_ranges(&cfg, 2, 6, 6, &[(1, 3)]);
+
+        assert_eq!(
+            mask_data(masks[0].as_ref().expect("sliding layer mask")),
+            vec![
+                1, 0, 0, 0, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                0, 1, 1, 1, 0, 0, //
+                0, 1, 1, 1, 0, 0, //
+                0, 0, 0, 1, 1, 0, //
+                0, 0, 0, 0, 1, 1,
+            ]
+        );
+        assert_eq!(
+            mask_data(masks[1].as_ref().expect("full-attention layer mask")),
+            vec![
+                1, 0, 0, 0, 0, 0, //
+                1, 1, 0, 0, 0, 0, //
+                1, 1, 1, 0, 0, 0, //
                 1, 1, 1, 1, 0, 0, //
                 1, 1, 1, 1, 1, 0, //
                 1, 1, 1, 1, 1, 1,
