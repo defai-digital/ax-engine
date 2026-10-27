@@ -435,32 +435,47 @@ impl KvManager {
         // mid-loop would leave already-visited blocks decremented while the
         // request's table still lists them, corrupting the refcount ledger
         // on the error path (mirrors share_prefix's validate-first order).
-        for block_id in lookup.matched_blocks.iter() {
-            let ref_count =
-                self.block_ref_counts
-                    .get(block_id)
-                    .ok_or(KvManagerError::InvariantViolation(
-                        "shared prefix block missing refcount",
-                    ))?;
-            if *ref_count == 1 {
-                return Err(KvManagerError::InvariantViolation(
-                    "shared prefix rollback would release sole block owner",
-                ));
-            }
+        if lookup
+            .matched_blocks
+            .iter()
+            .any(|block_id| !self.block_ref_counts.contains_key(block_id))
+        {
+            return Err(KvManagerError::InvariantViolation(
+                "shared prefix block missing refcount",
+            ));
         }
 
         self.remove_live_prefix_index(request_id)?;
 
-        for block_id in lookup.matched_blocks.iter().rev() {
+        // The other owner may have been freed (preempted) since the share, and
+        // its promotion can keep a different physical block for the same key,
+        // leaving this request the sole owner. Release such a block exactly as
+        // `free` does instead of failing the whole step.
+        let mut released = 0u64;
+        for block_id in lookup.matched_blocks.iter().rev().copied() {
             let new_count = {
-                let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
+                let ref_count = self.block_ref_counts.get_mut(&block_id).ok_or(
                     KvManagerError::InvariantViolation("shared prefix block missing refcount"),
                 )?;
-                *ref_count -= 1;
-                *ref_count
+                if *ref_count == 1 {
+                    None
+                } else {
+                    *ref_count -= 1;
+                    Some(*ref_count)
+                }
             };
-            self.note_block_refcount_transition(*block_id, new_count + 1, new_count);
+            match new_count {
+                None => {
+                    self.block_ref_counts.remove(&block_id);
+                    self.free_block_ids.push(block_id);
+                    released += 1;
+                }
+                Some(new_count) => {
+                    self.note_block_refcount_transition(block_id, new_count + 1, new_count);
+                }
+            }
         }
+        self.released_blocks_total = self.released_blocks_total.saturating_add(released);
 
         let table = self
             .block_tables
@@ -1996,6 +2011,57 @@ mod tests {
                 .cloned(),
             Some(std::collections::BTreeSet::from([RequestId(1)]))
         );
+    }
+
+    #[test]
+    fn rollback_after_owner_preemption_releases_sole_owned_blocks() {
+        // Q caches block K first. R computes its own blocks for the same
+        // prefix and S shares R's live blocks. Preempting R touches Q's
+        // existing cache entry instead of caching R's block, so S becomes the
+        // sole owner of R's first block. Rolling back S's share must release
+        // it, not fail the step with an invariant violation.
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(3), vec![1, 2, 3, 4, 77])
+            .unwrap();
+        manager.allocate(RequestId(3), 5).unwrap();
+        manager.free(RequestId(3)).unwrap();
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+        let shared = lookup.matched_blocks.clone();
+        manager.free(RequestId(1)).unwrap();
+        let free_before = manager.free_block_ids.len();
+
+        manager
+            .rollback_prefix_share(RequestId(2), &lookup)
+            .expect("rollback must release a now sole-owned block");
+
+        assert!(
+            manager
+                .block_table(RequestId(2))
+                .unwrap()
+                .block_ids
+                .is_empty()
+        );
+        for block_id in &shared {
+            assert!(
+                manager
+                    .block_ref_counts
+                    .get(block_id)
+                    .is_none_or(|count| *count >= 1),
+                "no refcount may underflow"
+            );
+        }
+        assert!(manager.free_block_ids.len() > free_before);
     }
 
     #[test]
