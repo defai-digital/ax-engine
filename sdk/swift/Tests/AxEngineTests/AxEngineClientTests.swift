@@ -328,6 +328,20 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(resp.usage.totalTokens, 3)
     }
 
+    func testBase64EmbeddingsDecodeToTheSameVector() async throws {
+        // [1.0, -2.5] as little-endian float32.
+        MockURLProtocol.handler = { _ in
+            jsonResponse([
+                "object": "list",
+                "data": [["object": "embedding", "embedding": "AACAPwAAIMA=", "index": 0]],
+                "model": "qwen3_embedding",
+                "usage": ["prompt_tokens": 3, "total_tokens": 3],
+            ])
+        }
+        let resp = try await makeClient().embeddings(.init(input: [1, 2, 3], encodingFormat: "base64"))
+        XCTAssertEqual(resp.data.first?.embedding, [1.0, -2.5])
+    }
+
     func testHTTPErrorThrown() async throws {
         MockURLProtocol.handler = { _ in
             jsonResponse(["error": ["message": "bad request"]], statusCode: 400)

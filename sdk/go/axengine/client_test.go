@@ -856,3 +856,20 @@ func TestNegativeRequestIDsFailBeforeHTTP(t *testing.T) {
 		}
 	})
 }
+
+func TestEmbeddingObjectDecodesBase64AndFloatEncodings(t *testing.T) {
+	// [1.0, -2.5] as little-endian float32.
+	for _, body := range []string{
+		`{"object":"embedding","embedding":"AACAPwAAIMA=","index":3}`,
+		`{"object":"embedding","embedding":[1,-2.5],"index":3}`,
+	} {
+		var object OpenAiEmbeddingObject
+		if err := json.Unmarshal([]byte(body), &object); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		if object.Index != 3 || len(object.Embedding) != 2 ||
+			object.Embedding[0] != 1.0 || object.Embedding[1] != -2.5 {
+			t.Fatalf("decode %s: got %+v", body, object)
+		}
+	}
+}
