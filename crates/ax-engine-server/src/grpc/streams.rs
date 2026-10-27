@@ -15,6 +15,7 @@ use crate::admission::AdmissionPermit;
 use crate::app_state::{AppState, LiveState};
 use crate::generation::service::GenerationServiceError;
 use crate::generation::streaming::StreamStateSource;
+use crate::openai::reasoning_stream::DeepSeekThinkCutter;
 use crate::openai::stop::StopSequenceScanner;
 use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
 
@@ -381,6 +382,7 @@ pub(super) fn spawn_grpc_chat_stream(
     stream_context: StreamStateSource,
     tokenizer: Option<EngineTokenizer>,
     stop_sequences: Vec<String>,
+    deepseek_think_cut: bool,
 ) -> Result<(), GenerationServiceError> {
     spawn_grpc_stream_task(
         tx,
@@ -402,10 +404,18 @@ pub(super) fn spawn_grpc_chat_stream(
                 decoder.as_mut(),
                 channel_filter.as_mut(),
                 GrpcStops::new(stop_sequences),
+                deepseek_think_cut.then(DeepSeekThinkCutter::new),
                 next_event,
             )
         },
     )
+}
+
+fn cut_think(cutter: &mut Option<DeepSeekThinkCutter>, text: String) -> String {
+    match cutter.as_mut() {
+        Some(cutter) => cutter.push(&text),
+        None => text,
+    }
 }
 
 fn chat_delta_chunk_proto(
@@ -435,6 +445,10 @@ fn drive_grpc_chat_events<N>(
     mut decoder: Option<&mut IncrementalDecoder>,
     mut channel_filter: Option<&mut ChatChannelStreamFilter>,
     mut stops: GrpcStops,
+    // DeepSeek with thinking off (gRPC always renders it off): the prompt
+    // pre-fills `</think>`, so a re-emitted marker and everything after it is
+    // a leak, cut here as on the HTTP stream and the unary sanitize.
+    mut think_cutter: Option<DeepSeekThinkCutter>,
     mut next: N,
 ) -> Result<(), Status>
 where
@@ -493,7 +507,12 @@ where
                 if let Some(filter) = channel_filter.as_mut()
                     && let Some(decoder) = decoder.as_mut()
                     && let Some(body_text) = filter.take_fallback_text(decoder)
-                    && !emit(&mut stops, request_id, body_text, chat_role_emitted)
+                    && !emit(
+                        &mut stops,
+                        request_id,
+                        cut_think(&mut think_cutter, body_text),
+                        chat_role_emitted,
+                    )
                 {
                     return Ok(());
                 }
@@ -513,10 +532,22 @@ where
                         {
                             filter.mark_kept_output();
                         }
-                        if !emit(&mut stops, request_id, tail, chat_role_emitted) {
+                        if !emit(
+                            &mut stops,
+                            request_id,
+                            cut_think(&mut think_cutter, tail),
+                            chat_role_emitted,
+                        ) {
                             return Ok(());
                         }
                     }
+                }
+                // A held partial `</think>` that never completed is content.
+                if let Some(held) = think_cutter.as_mut().map(DeepSeekThinkCutter::finish)
+                    && !held.is_empty()
+                    && !emit(&mut stops, request_id, held, chat_role_emitted)
+                {
+                    return Ok(());
                 }
                 let withheld = stops.finish();
                 if !withheld.is_empty() {
@@ -571,6 +602,10 @@ where
                 }
                 if let Some(filter) = channel_filter.as_mut() {
                     filter.mark_kept_output();
+                }
+                let delta_text = cut_think(&mut think_cutter, delta_text);
+                if delta_text.is_empty() {
+                    continue;
                 }
                 if !emit(
                     &mut stops,
@@ -820,6 +855,46 @@ mod tests {
     }
 
     #[test]
+    fn drive_grpc_chat_events_cuts_a_leaked_deepseek_think_close() {
+        // Thinking-off DeepSeek pre-fills `</think>`; a re-emitted marker and
+        // everything after it must not reach content (unary sanitize parity).
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut role = false;
+        let events = [
+            Ok(Some(step_with_delta_text("ans"))),
+            Ok(Some(step_with_delta_text("wer</thi"))),
+            Ok(Some(step_with_delta_text("nk>next turn"))),
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            GrpcStops::new(Vec::new()),
+            Some(DeepSeekThinkCutter::new()),
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+        drop(tx);
+        let mut content = String::new();
+        while let Ok(chunk) = rx.try_recv() {
+            let chunk = chunk.expect("chunk ok");
+            if let Some(delta) = chunk.choices[0].delta.as_ref() {
+                content.push_str(&delta.content);
+            }
+        }
+        assert_eq!(content, "answer");
+    }
+
+    #[test]
     fn drive_grpc_chat_events_emits_finish_reason_on_response() {
         let (tx, mut rx) = mpsc::channel(8);
         let mut role = false;
@@ -840,6 +915,7 @@ mod tests {
             None,
             None,
             GrpcStops::new(Vec::new()),
+            None,
             || iter.next().unwrap_or(Ok(None)),
         )
         .expect("drive should succeed");
@@ -887,6 +963,7 @@ mod tests {
             None,
             None,
             GrpcStops::new(Vec::new()),
+            None,
             || iter.next().unwrap_or(Ok(None)),
         )
         .expect("drive should succeed");
@@ -976,9 +1053,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let mut role = false;
         let mut iter = events().into_iter();
-        drive_grpc_chat_events("test-model", &mut role, &tx, None, None, stops(), || {
-            iter.next().unwrap_or(Ok(None))
-        })
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            stops(),
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
         .expect("drive should succeed");
         let mut content = String::new();
         let mut finishes = Vec::new();
@@ -1036,6 +1120,7 @@ mod tests {
                 None,
                 None,
                 GrpcStops::new(Vec::new()),
+                None,
                 || iter.next().unwrap_or(Ok(None)),
             )
             .is_err()
@@ -1086,6 +1171,7 @@ mod tests {
             Some(&mut decoder),
             None,
             GrpcStops::new(Vec::new()),
+            None,
             || iter.next().unwrap_or(Ok(None)),
         )
         .expect("drive should succeed");

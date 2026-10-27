@@ -82,11 +82,25 @@ async fn run_grpc_generate_request(
             .map_err(generation_service_status);
     }
     let ctx = Arc::clone(&live.stateless_generate_context);
-    run_blocking(move || {
+    let generate = run_blocking(move || {
         let _permit = permit;
         ctx.generate_with_request_id(request_id, request)
-    })
-    .await
+    });
+    // Same hang backstop as HTTP: a stalled delegated upstream must not hold
+    // the call (and its admission permit) forever.
+    match state.limits.generate_max_duration {
+        Some(deadline) => tokio::time::timeout(deadline, generate)
+            .await
+            .unwrap_or_else(|_elapsed| {
+                Err(generation_service_status(
+                    GenerationServiceError::DeadlineExceeded {
+                        request_id,
+                        observed_event_count: 0,
+                    },
+                ))
+            }),
+        None => generate.await,
+    }
 }
 
 fn admission_status(error: AdmissionError) -> Status {
@@ -269,10 +283,27 @@ impl AxEngine for AxEngineGrpcService {
         validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_chat_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
+        // gRPC renders thinking off; DeepSeek then needs its `</think>` leak
+        // cut on the stream, as the unary path's sanitize does.
+        let deepseek_think_cut = live.runtime_report.selected_backend.is_mlx()
+            && matches!(
+                crate::chat::resolve_chat_template(
+                    live.model_id.as_ref(),
+                    crate::metadata::model_family_from_artifacts(&live).as_deref(),
+                ),
+                crate::chat::ChatPromptTemplate::DeepSeekChat
+            );
         let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_chat_stream(model_id, tx, stream, tokenizer, req.stop.clone())
-            .map_err(generation_service_status)?;
+        spawn_grpc_chat_stream(
+            model_id,
+            tx,
+            stream,
+            tokenizer,
+            req.stop.clone(),
+            deepseek_think_cut,
+        )
+        .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -401,31 +432,48 @@ impl AxEngine for AxEngineGrpcService {
         }
         let permit = self.state.try_admit(&live).map_err(admission_status)?;
         let prompt_tokens = grpc_embedding_prompt_tokens(&batch);
+        // Same bound as HTTP /v1/embeddings (AX_ENGINE_EMBED_TIMEOUT_MS).
+        let embed_timeout = self.state.env.embed_timeout_ms;
+        let timeout = std::time::Duration::from_millis(embed_timeout);
+        let timed_out = || {
+            Status::unavailable(format!(
+                "embedding request timed out after {embed_timeout}ms"
+            ))
+        };
         let embeddings = if batch.len() == 1 {
             let input = batch
                 .into_iter()
                 .next()
                 .ok_or_else(|| Status::invalid_argument("embedding input must not be empty"))?;
             vec![
-                live.embedding_batcher
-                    .embed(input, pooling, req.normalize, permit)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?,
+                tokio::time::timeout(
+                    timeout,
+                    live.embedding_batcher
+                        .embed(input, pooling, req.normalize, permit),
+                )
+                .await
+                .map_err(|_| timed_out())?
+                // Classified like HTTP and the batch branch (a bad token id
+                // is INVALID_ARGUMENT, not INTERNAL).
+                .map_err(streams::session_error_status)?,
             ]
         } else {
             let generation_service = live.generation_service.clone();
-            generation_service
-                .execute(move |session| {
+            tokio::time::timeout(
+                timeout,
+                generation_service.execute(move |session| {
                     let _permit = permit;
                     session.embed_batch_flat(&batch, pooling, req.normalize)
-                })
-                .await
-                .map_err(generation_service_status)
-                .map(|matrix| {
-                    (0..matrix.batch_size)
-                        .map(|index| matrix.row(index).to_vec())
-                        .collect::<Vec<_>>()
-                })?
+                }),
+            )
+            .await
+            .map_err(|_| timed_out())?
+            .map_err(generation_service_status)
+            .map(|matrix| {
+                (0..matrix.batch_size)
+                    .map(|index| matrix.row(index).to_vec())
+                    .collect::<Vec<_>>()
+            })?
         };
 
         Ok(Response::new(proto::EmbeddingsResponse {
