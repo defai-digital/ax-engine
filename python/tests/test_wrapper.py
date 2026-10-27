@@ -4526,6 +4526,29 @@ hello
             "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
 
+    def test_mlx_chat_template_follows_the_loaded_artifacts(self) -> None:
+        import tempfile
+
+        messages = [{"role": "user", "content": "hi"}]
+        with tempfile.TemporaryDirectory() as artifacts:
+            config = Path(artifacts) / "config.json"
+            config.write_text(json.dumps({"model_type": "llama"}))
+            # The model_id label keeps its Qwen default; the artifacts decide.
+            with self.ax_engine.Session(mlx=True, mlx_model_artifacts_dir=artifacts) as session:
+                session.chat(messages, max_output_tokens=2)
+            prompt = FakeNativeSession.instances[-1].generate_calls[-1][1]["input_text"]
+            self.assertIn("<|start_header_id|>user<|end_header_id|>", prompt)
+            self.assertNotIn("<|im_start|>", prompt)
+
+            # A family the SDK has no template for is refused, not rendered
+            # with Qwen framing.
+            config.write_text(json.dumps({"model_type": "gemma4"}))
+            with (
+                self.ax_engine.Session(mlx=True, mlx_model_artifacts_dir=artifacts) as session,
+                self.assertRaisesRegex(ValueError, "gemma4"),
+            ):
+                session.chat(messages, max_output_tokens=2)
+
     def test_chat_convenience_uses_llama3_template_for_llama3_models(self) -> None:
         with self.ax_engine.Session(
             model_id="Meta-Llama-3.1-8B-Instruct",
