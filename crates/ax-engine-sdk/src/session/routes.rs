@@ -21,6 +21,11 @@ const MONOTONIC_CROSSOVER_DECISION_KEYS: &[&str] = &[
     // Physical MLX restore is per-step delta telemetry. A later store-only
     // prefill chunk emits the key at 0; last-wins would drop cached_tokens.
     "ax_mlx_prefix_cache_reused_tokens",
+    // Restore hits must survive later store-only steps. Keep the observed
+    // high-water value, not a sum: route snapshots can be merged repeatedly.
+    "ax_mlx_prefix_cache_hits",
+    "ax_mlx_prefix_cache_native_hits",
+    "ax_mlx_prefix_cache_disk_hits",
     "blocked_prefix_reuse_requests",
     "blocked_prefix_reuse_blocks",
     "blocked_prefix_reuse_tokens",
@@ -104,7 +109,8 @@ pub(super) fn native_step_read_deltas(
 // informative stored value rather than being clobbered by the decode-step default
 // of "metadata_lookup". Crossover decisions keyed by `MONOTONIC_CROSSOVER_DECISION_KEYS`
 // are merged via max(); all others fall back to last-wins to preserve current
-// behaviour for non-prefix-reuse telemetry.
+// behaviour for non-prefix-reuse telemetry. Restore source retains the latest
+// nonzero observation; zero means that this step did not restore anything.
 pub(super) fn merge_native_route_into(stored: &mut GenerateRouteReport, new: GenerateRouteReport) {
     if new.execution_plan.is_some() {
         stored.execution_plan = new.execution_plan;
@@ -129,6 +135,10 @@ pub(super) fn merge_native_route_into(stored: &mut GenerateRouteReport, new: Gen
         _ => {}
     }
     for (key, new_val) in new.crossover_decisions {
+        if key == "ax_mlx_prefix_cache_restore_source" && new_val == 0 {
+            stored.crossover_decisions.entry(key).or_insert(0);
+            continue;
+        }
         if MONOTONIC_CROSSOVER_DECISION_KEYS.contains(&key.as_str()) {
             let slot = stored.crossover_decisions.entry(key).or_insert(0);
             *slot = (*slot).max(new_val);
@@ -250,6 +260,70 @@ mod tests {
             stored.crossover_decisions.get("ax_mlx_prefix_cache_stores"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn merge_native_route_retains_restore_hits_and_source_across_store_steps() {
+        for (source, tier_key) in [
+            (2, "ax_mlx_prefix_cache_native_hits"),
+            (2, "ax_mlx_prefix_cache_hits"),
+            (3, "ax_mlx_prefix_cache_disk_hits"),
+        ] {
+            let mut stored = GenerateRouteReport {
+                crossover_decisions: [
+                    (tier_key.to_string(), 1),
+                    ("ax_mlx_prefix_cache_restore_source".to_string(), source),
+                    ("ax_mlx_prefix_cache_entries".to_string(), 4),
+                    ("ax_mlx_prefix_cache_bytes_kib".to_string(), 100),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            };
+            let store_only = GenerateRouteReport {
+                crossover_decisions: [
+                    (tier_key.to_string(), 0),
+                    ("ax_mlx_prefix_cache_restore_source".to_string(), 0),
+                    ("ax_mlx_prefix_cache_stores".to_string(), 1),
+                    ("ax_mlx_prefix_cache_entries".to_string(), 2),
+                    ("ax_mlx_prefix_cache_bytes_kib".to_string(), 60),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            };
+            merge_native_route_into(&mut stored, store_only.clone());
+            merge_native_route_into(&mut stored, store_only);
+            assert_eq!(stored.decision(tier_key), Some(1));
+            assert_eq!(
+                stored.decision("ax_mlx_prefix_cache_restore_source"),
+                Some(source)
+            );
+            assert_eq!(stored.decision("ax_mlx_prefix_cache_entries"), Some(2));
+            assert_eq!(stored.decision("ax_mlx_prefix_cache_bytes_kib"), Some(60));
+            assert_eq!(stored.decision("ax_mlx_prefix_cache_stores"), Some(1));
+            let replayed = stored.clone();
+            merge_native_route_into(&mut stored, replayed);
+            assert_eq!(
+                stored.decision(tier_key),
+                Some(1),
+                "replay must not double count"
+            );
+            merge_native_route_into(
+                &mut stored,
+                GenerateRouteReport {
+                    crossover_decisions: [("ax_mlx_prefix_cache_restore_source".to_string(), 2)]
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                stored.decision("ax_mlx_prefix_cache_restore_source"),
+                Some(2),
+                "source is the latest observed nonzero tier, not the largest tier code"
+            );
+        }
     }
 
     #[test]

@@ -272,6 +272,13 @@ MLX runner route metadata keeps that distinction visible:
 | `ax_mlx_prefix_cache_demoted_bytes_kib` | Serialized bytes retained via demote-on-evict, rounded to KiB |
 | `ax_mlx_prefix_cache_demotion_skips` | Native removals that kept the drop behavior (kill switch off, portable policy disabled, oversized or unserializable snapshot, already-resident snapshot, or portable budget refusal) |
 
+Native SDK route retention preserves the maximum observed prefix-cache hit,
+native-hit and disk-hit counters across later steps, and keeps the latest
+nonzero restore source. Repeated route snapshots do not add hits. Cache entry
+and byte gauges retain the latest observation. Steps that already own request
+KV do not emit another restore/value-decision event. These retained route
+observations are not sums of batch-level deltas attributed to one request.
+
 ## Value-Priced Restore and Semantic Cuts (Opt-In)
 
 Two further prefix features are opt-in and both default off. They are resolved

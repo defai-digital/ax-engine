@@ -9158,6 +9158,11 @@ impl MlxRunner {
         prefill_hints: Option<&ax_engine_core::PrefillHints>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
+        // Live request KV needs no restore. In particular, opt-in value
+        // decisions must not emit an empty cache event on every decode step.
+        if state.cache.seq_len() != 0 {
+            return telemetry;
+        }
         // Media present but no digest: never touch the prefix-cache
         // keyspace (a text-only key would alias prompts with different
         // media). Runs before the probe so an unidentifiable request
@@ -9166,7 +9171,7 @@ impl MlxRunner {
         let Some(media_key) = media_identity else {
             telemetry.record_blocked_media_identity();
             let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
-            if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
+            if !reused_tokens.is_empty() {
                 let capture_prefill_output = item.mode == ExecutionMode::Decode
                     && ctx.is_some_and(|ctx| ctx.generated_len == 0);
                 if item.mode != ExecutionMode::Prefill {
@@ -9301,9 +9306,6 @@ impl MlxRunner {
         } else {
             &item.reused_prefix_token_slice
         };
-        if state.cache.seq_len() != 0 {
-            return telemetry;
-        }
         // Shape-exact warm extension: a multi-token extension chunk whose
         // (offset, len) is off the cold chunk grid dispatches different
         // SDPA kernels than the cold baseline at the same absolute

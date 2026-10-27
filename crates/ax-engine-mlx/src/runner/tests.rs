@@ -9363,6 +9363,49 @@ fn tiny_linear_dflash_runner(layer_count: u32) -> (MlxRunner, NativeModelArtifac
 }
 
 #[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1 or AX_MLX_PREFIX_RESTORE_VALUE=1"]
+fn populated_request_cache_does_not_emit_restore_events() {
+    assert!(
+        crate::fastpath::prefix_semantic_cuts_enabled()
+            || crate::fastpath::prefix_restore_value_enabled()
+    );
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    let mut state = RequestState::new(2, 1, None);
+    state.cache.advance(32);
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![16],
+    };
+    for mode in [ExecutionMode::Prefill, ExecutionMode::Decode] {
+        for media_identity in [Some(""), None] {
+            let mut item = decode_claim(1, 3);
+            item.mode = mode;
+            item.reused_prefix_token_slice = vec![3; 32];
+            let telemetry = runner.restore_reused_prefix_state(
+                &mut state,
+                &item,
+                Some(&ctx_with_argmax(true)),
+                "qwen3_5",
+                4,
+                MlxSamplingParams::greedy(),
+                false,
+                media_identity,
+                Some(&hints),
+            );
+            assert_eq!(
+                telemetry,
+                MlxPrefixCacheTelemetry::default(),
+                "live KV needs no restore event: {mode:?}, media={media_identity:?}"
+            );
+            let mut decisions = Vec::new();
+            telemetry.append_route_decisions(&mut decisions);
+            assert!(decisions.is_empty());
+            assert_eq!(state.cache.seq_len(), 32);
+        }
+    }
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
 #[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
 fn semantic_runner_captures_early_cuts_and_binds_partition_identity() {
     assert!(crate::fastpath::prefix_semantic_cuts_enabled());
