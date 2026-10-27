@@ -2071,6 +2071,71 @@ fn llama_cpp_premature_disconnect_does_not_poison_a_batch_sibling() {
 }
 
 #[test]
+fn llama_cpp_failed_lower_id_request_does_not_block_later_siblings() {
+    // Mirror of the test above: the FIRST request (lower id) disconnects
+    // before a stop marker. Its error must still surface, but the later
+    // request has to keep being polled and finish.
+    let (server_url, server_handle) =
+        spawn_llama_cpp_completion_stream_server_with_disconnects(2, |request_index, _payload| {
+            if request_index == 0 {
+                (vec![], false)
+            } else {
+                (
+                    vec![serde_json::json!({
+                        "content": "hello",
+                        "tokens": [4],
+                        "stop": true,
+                        "stop_type": "limit"
+                    })],
+                    true,
+                )
+            }
+        });
+    let mut session = llama_cpp_server_session(server_url);
+    let submit = |session: &mut EngineSession, tokens: Vec<u32>| {
+        session
+            .submit_generate(GenerateRequest {
+                prefill_hints: Default::default(),
+                model_id: "qwen3".to_string(),
+                input_tokens: tokens,
+                input_text: None,
+                multimodal_inputs: Default::default(),
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                stop_sequences: Vec::new(),
+                metadata: None,
+            })
+            .expect("llama.cpp submit should succeed")
+    };
+    let failing = submit(&mut session, vec![1, 2, 3]);
+    let healthy = submit(&mut session, vec![7, 8, 9]);
+    assert!(failing < healthy);
+
+    let step_result = session.step_report();
+    assert!(
+        matches!(
+            step_result,
+            Err(EngineSessionError::LlamaCppStreamEndedBeforeStop { request_id, .. })
+                if request_id == failing
+        ),
+        "the failing request's error must still surface: {step_result:?}"
+    );
+    let healthy_report = session
+        .request_report(healthy)
+        .expect("healthy llama.cpp request should exist");
+    assert_eq!(
+        healthy_report.state,
+        SessionRequestState::Finished,
+        "the later request must be polled despite the earlier failure"
+    );
+    assert_eq!(healthy_report.output_tokens, vec![4]);
+
+    server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+}
+
+#[test]
 fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
     let core = EngineCore::with_runtime_components(
         KvManagerConfig::validated(CacheGroupId(0), 16, 64),

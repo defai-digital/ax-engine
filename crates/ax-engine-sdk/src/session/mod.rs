@@ -847,6 +847,12 @@ impl EngineSession {
             let selected_backend = self.config.resolved_backend.selected_backend;
             let mut aggregate = EngineStepReport::default();
             let mut selected_request_ids = Vec::new();
+            // A failing request must not starve the ones after it: returning
+            // on the first error left every higher-id request unpolled, so a
+            // request whose stream already ended (re-erroring on every poll)
+            // blocked its siblings forever. Step everyone, then surface the
+            // first error.
+            let mut first_error = None;
 
             for request_id in active_request_ids {
                 // Persist a terminal transition immediately, in the same
@@ -867,7 +873,13 @@ impl EngineSession {
                     let LlamaCppLifecycleRequestSlot::Active(request) = slot else {
                         continue;
                     };
-                    let step = request.step_report(selected_backend)?;
+                    let step = match request.step_report(selected_backend) {
+                        Ok(step) => step,
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                            continue;
+                        }
+                    };
                     if step.scheduled_requests > 0 {
                         selected_request_ids.push(request_id);
                     }
@@ -884,6 +896,9 @@ impl EngineSession {
                 }
             }
 
+            if let Some(error) = first_error {
+                return Err(error);
+            }
             return Ok((aggregate, selected_request_ids));
         }
 
