@@ -10045,3 +10045,16 @@ fn cross_tier_prefix_probe_misses() {
     assert!(disk.get(&exact_disk).expect("disk get").is_none());
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn step_request_set_signature_is_order_independent_and_changes_with_membership() {
+    let a = step_request_set_signature([3u64, 7].into_iter());
+    assert_eq!(a, step_request_set_signature([7u64, 3].into_iter()));
+    assert_ne!(a, step_request_set_signature([3u64].into_iter()));
+    assert_ne!(
+        step_request_set_signature([1u64].into_iter()),
+        step_request_set_signature([2u64].into_iter())
+    );
+    assert_eq!(step_request_set_signature(std::iter::empty()), 0);
+    assert_ne!(step_request_set_signature([0u64].into_iter()), 0);
+}

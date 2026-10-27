@@ -4791,6 +4791,25 @@ fn warn_prefix_checkpoint_write_errors(
 /// A checkpoint is committed when L1 or the disk tier accepted the snapshot.
 /// `ssd_hit` is set only when the disk tier accepted. Write errors stay
 /// visible through the counter even when L1 succeeded.
+/// Order-independent signature of a step's request ids (FNV-1a over the
+/// sorted ids). Zero only for an empty step.
+fn step_request_set_signature(ids: impl Iterator<Item = u64>) -> u32 {
+    let mut ids: Vec<u64> = ids.collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    let mut hash: u32 = 0x811c_9dc5;
+    for id in ids {
+        for byte in id.to_le_bytes() {
+            hash ^= u32::from(byte);
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+    }
+    hash.max(1)
+}
+
 fn checkpoint_receipt_from_prefix_store(
     request_id: RequestId,
     cut: u32,
@@ -5683,6 +5702,19 @@ impl ExecutionRunner for MlxRunner {
             let mut route_decisions =
                 IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
             decode_telemetry.append_route_decisions(&mut route_decisions);
+            // Request-cumulative counters (prefill wall time, MTP totals) are
+            // re-emitted every step; the server needs to see which requests a
+            // step served to tell a new request from a continuation.
+            route_decisions.upsert_route_decision(
+                "ax_mlx_step_request_set",
+                step_request_set_signature(
+                    input
+                        .execution_batch
+                        .items
+                        .iter()
+                        .map(|item| item.request_id.0),
+                ),
+            );
             let selected_reads = crate::expert_stream::take_selected_expert_read_stats();
             route_decisions.upsert_route_decision(
                 "ax_mlx_flash_next_selected_expert_gathers",
