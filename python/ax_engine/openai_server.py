@@ -590,20 +590,62 @@ def openai_value_is_present(value: Any) -> bool:
     return True
 
 
+def tool_call_finish(native_finish: str | None) -> str | None:
+    """``tool_calls`` only for a clean end of turn, as in the Rust server.
+
+    A call cut off by ``max_tokens`` (``length``) or a cancelled generation
+    keeps its native reason, so a client never runs a truncated call as
+    though it had finished.
+    """
+    return "tool_calls" if native_finish in (None, "stop") else native_finish
+
+
+def resolve_tool_chat_stop(
+    text: str, stops: list[str], native_finish: str | None
+) -> tuple[str, str | None, bool]:
+    """Apply client stops to tool-enabled chat output.
+
+    Returns ``(text, finish_reason, stop_hit)``. A stop that occurs before any
+    ``<tool_call>`` opener ends the turn there, as it would have on the
+    stream: the call after it would never have been generated. A stop after
+    an opener (inside or past a call) loses to a call that parses. Without a
+    parsed call the stop applies as in plain chat.
+    """
+    truncated, stop_hit = truncate_at_stop(text.strip(), stops)
+    if stop_hit and ("<tool_call>" not in truncated or not extract_tool_calls(text)[1]):
+        return truncated, "stop", True
+    return text, native_finish, False
+
+
 def extract_tool_calls(content: str) -> tuple[str, list[dict[str, Any]] | None]:
+    """Pull ``<tool_call>`` spans out of ``content``, as the Rust server does.
+
+    Each opener tries every later ``</tool_call>`` in order (arguments may
+    contain the closing tag as text), falling back to the end of the text
+    only when no closing tag follows. An opener whose body never parses is
+    left as content and the scan moves on, so a tag mentioned in prose does
+    not hide a real call after it.
+    """
     remaining = content
     calls: list[dict[str, Any]] = []
+    search_from = 0
     while True:
-        start = remaining.find("<tool_call>")
+        start = remaining.find("<tool_call>", search_from)
         if start < 0:
             break
         body_start = start + len("<tool_call>")
+        function = None
+        suffix_start = len(remaining)
         end = remaining.find("</tool_call>", body_start)
-        suffix_start = len(remaining) if end < 0 else end + len("</tool_call>")
-        body_end = len(remaining) if end < 0 else end
-        function = parse_tool_call_body(remaining[body_start:body_end].strip())
+        if end < 0:
+            function = parse_tool_call_body(remaining[body_start:].strip())
+        while end >= 0 and function is None:
+            function = parse_tool_call_body(remaining[body_start:end].strip())
+            suffix_start = end + len("</tool_call>")
+            end = remaining.find("</tool_call>", end + 1)
         if function is None:
-            break
+            search_from = body_start
+            continue
         calls.append(
             {
                 "id": f"call_{len(calls)}",
@@ -612,6 +654,7 @@ def extract_tool_calls(content: str) -> tuple[str, list[dict[str, Any]] | None]:
             }
         )
         remaining = remaining[:start] + remaining[suffix_start:]
+        search_from = start
     return remaining.strip(), calls or None
 
 
@@ -933,6 +976,7 @@ def create_app(
                 or require_max_tokens(payload)
                 or validate_sampling_params(payload)
                 or validate_metadata(payload)
+                or validate_choice_params(payload, "completion")
             )
         if error is not None:
             return openai_error(*error)
@@ -997,6 +1041,7 @@ def create_app(
                 or require_max_tokens(payload)
                 or validate_sampling_params(payload)
                 or validate_metadata(payload)
+                or validate_choice_params(payload, "chat")
             )
         if error is not None:
             return openai_error(*error)
@@ -1029,11 +1074,11 @@ def create_app(
                 text = result_text(result, tokenizer)
                 # Client stops apply to visible content only; a parsed tool
                 # call is never truncated (same contract as the Rust server).
-                buffered_finish = finish_reason(result.finish_reason)
-                if not extract_tool_calls(text)[1]:
-                    text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
-                    if stop_hit:
-                        buffered_finish = "stop"
+                text, buffered_finish, _stop_hit = resolve_tool_chat_stop(
+                    text,
+                    client_stop_sequences(payload),
+                    finish_reason(result.finish_reason),
+                )
                 events = stream_buffered_tool_chat_chunks(
                     model_id,
                     result.request_id,
@@ -1066,11 +1111,15 @@ def create_app(
         # Client stops apply to visible content only; a parsed tool call is
         # never truncated (same order as the streaming tool-chat path above).
         tool_calls: list[dict[str, Any]] | None = None
-        if parse_tool_calls:
-            text, tool_calls = extract_tool_calls(text)
         response_finish_reason = finish_reason(result.finish_reason)
-        if tool_calls:
-            response_finish_reason = "tool_calls"
+        if parse_tool_calls:
+            text, response_finish_reason, stop_hit = resolve_tool_chat_stop(
+                text, client_stop_sequences(payload), response_finish_reason
+            )
+            if not stop_hit:
+                text, tool_calls = extract_tool_calls(text)
+                if tool_calls:
+                    response_finish_reason = tool_call_finish(response_finish_reason)
         else:
             text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
             if stop_hit:
@@ -1096,7 +1145,7 @@ def create_app(
     def openai_error(status: int, message: str, *, code: str = "invalid_request") -> Any:
         return JSONResponse(
             status_code=status,
-            content={"error": {"code": code, "message": message}},
+            content={"error": openai_error_body(message, code, client_error=status < 500)},
         )
 
     @app.exception_handler(Exception)
@@ -1240,6 +1289,57 @@ def default_repetition_penalty(model_id: str, temperature: float) -> float:
     if "qwen" in normalized or "gemma" in normalized:
         return 1.1
     return 1.0
+
+
+MAX_CLIENT_STOP_SEQUENCES = 4
+MAX_CLIENT_STOP_SEQUENCE_BYTES = 256
+
+
+def validate_choice_params(payload: dict[str, Any], endpoint: str) -> tuple[int, str] | None:
+    """Reject choice-count, logprob and stop options the shim cannot honor.
+
+    Mirrors the Rust server: one choice per request, and malformed ``stop``
+    fails closed. The shim returns no logprobs at all, so any logprob request
+    is refused instead of answering 200 without them.
+    """
+    for key in ("n", "best_of"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be a positive integer"
+        if value != 1:
+            return 400, f"{key} above 1 is not supported; AX generates one choice per request"
+    logprobs = payload.get("logprobs")
+    if endpoint == "chat":
+        requested = logprobs is True or bool(payload.get("top_logprobs"))
+    else:
+        requested = logprobs is not None and logprobs is not False
+    if requested:
+        return 400, "OpenAI-compatible MLX shim does not support logprobs"
+    stop = payload.get("stop")
+    if stop is None:
+        return None
+    if isinstance(stop, str):
+        stops = [stop]
+    elif isinstance(stop, list) and all(isinstance(item, str) for item in stop):
+        stops = stop
+    else:
+        return 400, "stop must be a string or an array of strings"
+    if len(stops) > MAX_CLIENT_STOP_SEQUENCES:
+        return (
+            400,
+            f"stop accepts at most {MAX_CLIENT_STOP_SEQUENCES} sequences (received {len(stops)})",
+        )
+    for sequence in stops:
+        if not sequence:
+            return 400, "stop sequences must not be empty"
+        if len(sequence.encode("utf-8")) > MAX_CLIENT_STOP_SEQUENCE_BYTES:
+            return (
+                400,
+                f"stop sequences must be at most {MAX_CLIENT_STOP_SEQUENCE_BYTES} bytes",
+            )
+    return None
 
 
 def validate_metadata(payload: dict[str, Any]) -> tuple[int, str] | None:
@@ -1517,8 +1617,18 @@ def sse_error_chunk(message: str, code: str = "internal_error") -> str:
     whose data is the OpenAI error envelope the language SDKs parse. The
     caller follows it with ``data: [DONE]``.
     """
-    payload = {"error": {"code": code, "message": message}}
+    payload = {"error": openai_error_body(message, code, client_error=False)}
     return f"event: error\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+def openai_error_body(message: str, code: str, *, client_error: bool) -> dict[str, Any]:
+    """OpenAI error object with the same fields as the Rust server's ``ErrorBody``."""
+    return {
+        "type": "invalid_request_error" if client_error else "server_error",
+        "code": code,
+        "param": None,
+        "message": message,
+    }
 
 
 def stream_buffered_tool_chat_chunks(
@@ -1560,7 +1670,7 @@ def stream_buffered_tool_chat_chunks(
         if not role_emitted:
             delta["role"] = "assistant"
         yield chat_sse_payload(stream_id, created, model_id, delta, None)
-        terminal_reason = "tool_calls"
+        terminal_reason = tool_call_finish(terminal_reason)
         role_emitted = True
     if not role_emitted:
         yield chat_sse_payload(
