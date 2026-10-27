@@ -367,6 +367,14 @@ impl AxEngine for AxEngineGrpcService {
                 "embedding input must not be empty",
             ));
         }
+        // Same item-count cap as the HTTP surface.
+        let max_items = crate::openai::embeddings::DEFAULT_EMBED_MAX_ITEMS;
+        if batch.len() > max_items {
+            return Err(Status::invalid_argument(format!(
+                "input has {} items, exceeding the maximum of {max_items}",
+                batch.len()
+            )));
+        }
         // Start-up-resolved AX_ENGINE_EMBED_MAX_TOKENS (default 8192;
         // see ServerEnvConfig for the accepted values). The cap is per item,
         // matching the HTTP surface: each input is embedded independently, so
