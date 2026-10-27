@@ -653,8 +653,6 @@ async fn stream_ollama_native(
     let stream_context = build_stream_state(&state, &live, generate_request).await?;
 
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(128);
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_monitor = Arc::clone(&cancel);
     // Mirror the SSE path: a client hangup must reach the generation worker
     // (not just the blocking adapter) so it cancels at the next scheduler
     // boundary instead of finishing the prefill for a dead connection.
@@ -662,18 +660,9 @@ async fn stream_ollama_native(
         StreamStateSource::Service(events) => Some(events.disconnect_flag()),
         StreamStateSource::Stateless { .. } | StreamStateSource::Stateful { .. } => None,
     };
-    let monitor_tx = tx.clone();
-    let error_tx = tx.clone();
-    tokio::spawn(async move {
-        monitor_tx.closed().await;
-        cancel_monitor.store(true, Ordering::Relaxed);
-        if let Some(disconnected) = service_disconnect {
-            disconnected.store(true, Ordering::Release);
-        }
-    });
-    let handle = match stream_context {
-        StreamStateSource::Service(mut events) => tokio::task::spawn_blocking(move || {
-            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+    let drive: OllamaStreamDriver = match stream_context {
+        StreamStateSource::Service(mut events) => Box::new(move |tx, cancel| {
+            drive_ollama_native_events(kind, tx, cancel, tokenizer, stop_scanner, || {
                 events.blocking_recv().transpose()
             });
         }),
@@ -681,9 +670,9 @@ async fn stream_ollama_native(
             mut state,
             context,
             permit,
-        } => tokio::task::spawn_blocking(move || {
+        } => Box::new(move |tx, cancel| {
             let _permit = permit;
-            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+            drive_ollama_native_events(kind, tx, cancel, tokenizer, stop_scanner, || {
                 context.next_stream_event(&mut state)
             });
         }),
@@ -691,17 +680,53 @@ async fn stream_ollama_native(
             mut state,
             mut session,
             permit,
-        } => tokio::task::spawn_blocking(move || {
+        } => Box::new(move |tx, cancel| {
             let _permit = permit;
-            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+            drive_ollama_native_events(kind, tx, cancel, tokenizer, stop_scanner, || {
                 session.next_stream_event(&mut state)
             });
         }),
     };
+    spawn_ollama_stream_driver(tx, service_disconnect, drive);
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response())
+}
+
+type OllamaStreamDriver =
+    Box<dyn FnOnce(&mpsc::Sender<Result<String, std::io::Error>>, &AtomicBool) + Send + 'static>;
+
+/// Run an NDJSON stream driver on the blocking pool with a disconnect
+/// monitor. The monitor holds a sender, so it is aborted once the driver
+/// returns: otherwise the receiver never reaches end-of-stream and the body
+/// stays open after the final `done:true` line until the client hangs up.
+fn spawn_ollama_stream_driver(
+    tx: mpsc::Sender<Result<String, std::io::Error>>,
+    service_disconnect: Option<Arc<AtomicBool>>,
+    drive: OllamaStreamDriver,
+) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_monitor = Arc::clone(&cancel);
+    let monitor_tx = tx.clone();
+    let error_tx = tx.clone();
+    let monitor_handle = tokio::spawn(async move {
+        monitor_tx.closed().await;
+        cancel_monitor.store(true, Ordering::Relaxed);
+        if let Some(disconnected) = service_disconnect {
+            disconnected.store(true, Ordering::Release);
+        }
+    });
+    let handle = tokio::task::spawn_blocking(move || drive(&tx, &cancel));
     // A panic in the drive task would otherwise drop the sender and end the
     // NDJSON body with a bare EOF that clients cannot tell from success.
     tokio::spawn(async move {
-        if let Err(error) = handle.await {
+        let result = handle.await;
+        monitor_handle.abort();
+        if let Err(error) = result {
             tracing::error!(%error, "Ollama stream task failed");
             let _ = error_tx
                 .send(Ok(format!(
@@ -711,13 +736,6 @@ async fn stream_ollama_native(
                 .await;
         }
     });
-
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/x-ndjson")],
-        Body::from_stream(ReceiverStream::new(rx)),
-    )
-        .into_response())
 }
 
 fn drive_ollama_native_events<N>(
@@ -2046,6 +2064,26 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
+
+    #[tokio::test]
+    async fn native_ndjson_body_ends_after_the_driver_returns() {
+        let (tx, mut rx) = mpsc::channel::<Result<String, std::io::Error>>(8);
+        spawn_ollama_stream_driver(
+            tx,
+            None,
+            Box::new(|tx, _cancel| {
+                let _ = tx.blocking_send(Ok("{\"done\":true}\n".to_string()));
+            }),
+        );
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("final line arrives");
+        assert!(first.is_some());
+        let end = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the body must end once the driver returns, not wait for a client hangup");
+        assert!(end.is_none());
+    }
     use super::*;
 
     #[test]
