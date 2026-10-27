@@ -353,6 +353,21 @@ fn rgb_triplet(value: Option<&Value>) -> Option<[f32; 3]> {
     Some(out)
 }
 
+/// Decode an image upright: apply its EXIF orientation the way HF
+/// `load_image` does (`PIL.ImageOps.exif_transpose`). `ImageReader::decode`
+/// alone ignores it, so a phone photo stored landscape with Orientation=6
+/// reached the vision tower sideways (and with a transposed patch grid).
+pub(crate) fn decode_with_orientation<R: std::io::BufRead + std::io::Seek>(
+    reader: image::ImageReader<R>,
+) -> image::ImageResult<image::DynamicImage> {
+    use image::ImageDecoder as _;
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut decoded = image::DynamicImage::from_decoder(decoder)?;
+    decoded.apply_orientation(orientation);
+    Ok(decoded)
+}
+
 /// Decode and patchify an image into the encoder-free vision connector's input.
 ///
 /// Mirrors `processing_gemma4_unified.py`: aspect-ratio-preserving resize so the
@@ -368,8 +383,7 @@ pub(crate) fn preprocess_image(
         .with_guessed_format()
         .map_err(|error| MediaError::Decode(format!("failed to probe image format: {error}")))?;
     reader.limits(image_decode_limits());
-    let decoded = reader
-        .decode()
+    let decoded = decode_with_orientation(reader)
         .map_err(|error| MediaError::Decode(format!("failed to decode image: {error}")))?
         .to_rgb8();
     let (width, height) = (decoded.width(), decoded.height());
@@ -1241,6 +1255,38 @@ fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+
+    #[test]
+    fn decoding_applies_exif_orientation_like_hf_load_image() {
+        use image::ImageEncoder as _;
+        // 4x2 JPEG with EXIF Orientation=6 (rotate 90 deg CW): HF's
+        // exif_transpose serves it as 2x4.
+        let pixels = vec![128u8; 4 * 2 * 3];
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(&pixels, 4, 2, image::ExtendedColorType::Rgb8)
+            .expect("encode jpeg");
+        let tiff: &[u8] = &[
+            b'M', b'M', 0, 42, 0, 0, 0, 8, // big-endian TIFF header, IFD at 8
+            0, 1, // one entry
+            0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, // Orientation = 6
+            0, 0, 0, 0, // no next IFD
+        ];
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend_from_slice(tiff);
+        let len = u16::try_from(app1.len() + 2).expect("segment length");
+        let mut oriented = jpeg[..2].to_vec(); // SOI
+        oriented.extend_from_slice(&[0xFF, 0xE1]);
+        oriented.extend_from_slice(&len.to_be_bytes());
+        oriented.extend_from_slice(&app1);
+        oriented.extend_from_slice(&jpeg[2..]);
+        let reader = image::ImageReader::new(std::io::Cursor::new(oriented))
+            .with_guessed_format()
+            .expect("probe");
+        let decoded = decode_with_orientation(reader).expect("decode");
+        assert_eq!((decoded.width(), decoded.height()), (2, 4));
+    }
+
     use super::*;
 
     fn vision() -> Gemma4UnifiedVisionProcessor {

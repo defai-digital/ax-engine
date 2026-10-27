@@ -3544,8 +3544,7 @@ fn probe_and_decode_rgb(bytes: &[u8], label: &str) -> Result<image::RgbImage, Ht
         limits.max_image_height = Some(8192);
         limits
     });
-    let rgb = reader
-        .decode()
+    let rgb = crate::multimodal::decode_with_orientation(reader)
         .map_err(|error| {
             error_response(
                 StatusCode::BAD_REQUEST,
@@ -3618,8 +3617,10 @@ fn nemotron_omni_target_patches(
             "Nemotron H Nano Omni image geometry must be positive".to_string(),
         ));
     }
-    let closest_h = (height as f64 / patch_size as f64 + 0.5).round() as u32;
-    let closest_w = (width as f64 / patch_size as f64 + 0.5).round() as u32;
+    // Reference `round(h / patch + 0.5)` is Python round (ties to even): a
+    // 512-pixel side at patch 16 is 32 patches, not 33.
+    let closest_h = (height as f64 / patch_size as f64 + 0.5).round_ties_even() as u32;
+    let closest_w = (width as f64 / patch_size as f64 + 0.5).round_ties_even() as u32;
     let patches = closest_h.saturating_mul(closest_w).max(1);
     let factor = (patch_budget as f64 / patches as f64).sqrt().min(1.0);
     let mut target_h = (factor * closest_h as f64).floor().max(1.0) as u32;
@@ -3862,14 +3863,13 @@ fn minicpm_v46_best_resize(
             "MiniCPM-V 4.6 image dimensions must be positive".to_string(),
         ));
     }
-    let max_area = u64::from(config.scale_resolution).pow(2);
-    let mut resized_w = width;
-    let mut resized_h = height;
-    if u64::from(width).saturating_mul(u64::from(height)) > max_area {
-        let ratio = width as f64 / height as f64;
-        resized_h = (config.scale_resolution as f64 / ratio.sqrt()).round() as u32;
-        resized_w = (resized_h as f64 * ratio).round() as u32;
-    }
+    // HF `find_best_resize(..., allow_upscale=(best_grid is None))`: AX
+    // serves only the source image (no slices), so it is always scaled to
+    // the `scale_resolution`² area, small images included, with `int()`
+    // truncation as in the processor.
+    let ratio = width as f64 / height as f64;
+    let resized_h = (config.scale_resolution as f64 / ratio.sqrt()) as u32;
+    let resized_w = (resized_h as f64 * ratio) as u32;
     let unit = config
         .patch_size
         .checked_mul(config.spatial_downsample_factor)
@@ -3880,8 +3880,10 @@ fn minicpm_v46_best_resize(
                 "MiniCPM-V 4.6 resize unit overflowed".to_string(),
             )
         })?;
+    // HF `ensure_divide`: max(round(length / unit) * unit, unit), Python
+    // round (ties to even).
     let ensure_divide =
-        |length: u32| ((length.max(config.patch_size) + unit / 2) / unit).max(1) * unit;
+        |length: u32| ((length as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
     Ok((ensure_divide(resized_w), ensure_divide(resized_h)))
 }
 
@@ -4100,8 +4102,9 @@ fn patchify_qwen3_vl_image(
     }
     // Hugging Face `smart_resize` uses Python `round` (ties to even): a
     // 336-pixel edge at a 32-pixel unit becomes 320, not 352.
-    let round_to_factor =
-        |value: u32| ((value as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
+    // No floor at one unit: HF lets a thin side round to 0, which sends the
+    // image into the min_pixels upscale branch below.
+    let round_to_factor = |value: u32| (value as f64 / unit as f64).round_ties_even() as u32 * unit;
     let mut th = round_to_factor(oh);
     let mut tw = round_to_factor(ow);
     let pixels = u64::from(th).saturating_mul(u64::from(tw));
@@ -4114,6 +4117,8 @@ fn patchify_qwen3_vl_image(
         th = ((oh as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
         tw = ((ow as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
     }
+    th = th.max(unit);
+    tw = tw.max(unit);
     let resized = if tw == ow && th == oh {
         rgb
     } else {
@@ -4227,8 +4232,9 @@ fn patchify_qwen3_vl_video(
     }
     // Hugging Face `smart_resize` uses Python `round` (ties to even): a
     // 336-pixel edge at a 32-pixel unit becomes 320, not 352.
-    let round_to_factor =
-        |value: u32| ((value as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
+    // No floor at one unit: HF lets a thin side round to 0, which sends the
+    // image into the min_pixels upscale branch below.
+    let round_to_factor = |value: u32| (value as f64 / unit as f64).round_ties_even() as u32 * unit;
     let mut th = round_to_factor(oh);
     let mut tw = round_to_factor(ow);
     let pixels = u64::from(th).saturating_mul(u64::from(tw));
@@ -4241,6 +4247,8 @@ fn patchify_qwen3_vl_video(
         th = ((oh as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
         tw = ((ow as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
     }
+    th = th.max(unit);
+    tw = tw.max(unit);
 
     let resized: Vec<image::RgbImage> = frames
         .iter()
@@ -5068,9 +5076,19 @@ mod media_tests {
             minicpm_v46_best_resize(500, 1000, &config).expect("portrait"),
             (336, 616)
         );
+        // AX serves the unsliced source image, so HF's allow_upscale applies:
+        // small images scale up to the scale_resolution area too.
         assert_eq!(
             minicpm_v46_best_resize(1, 1, &config).expect("minimum"),
-            (56, 56)
+            (448, 448)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(224, 224, &config).expect("small square"),
+            (448, 448)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(400, 300, &config).expect("small landscape"),
+            (504, 392)
         );
     }
 
@@ -5089,6 +5107,42 @@ mod media_tests {
         let needle = [9u32, 9];
         assert_eq!(find_subsequence_starts(&hay, &needle), vec![2, 5]);
         assert!(find_subsequence_starts(&hay, &[7]).is_empty());
+    }
+
+    #[test]
+    fn qwen_smart_resize_lets_a_thin_side_reach_the_min_pixels_branch() {
+        // HF smart_resize: a 15-pixel side rounds to 0 at factor 32, which
+        // forces the min_pixels upscale (32x3648); flooring it at one unit
+        // kept 32x3008 and skipped the upscale.
+        let png = {
+            use image::{ImageBuffer, ImageEncoder, Rgb};
+            let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+                ImageBuffer::from_pixel(3000, 15, Rgb([10, 20, 30]));
+            let mut buf = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut buf)
+                .write_image(img.as_raw(), 3000, 15, image::ExtendedColorType::Rgb8)
+                .expect("encode png");
+            buf
+        };
+        let processor = Qwen3VlProcessorConfig {
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            min_pixels: 65_536,
+            max_pixels: 16_777_216,
+            mean: [0.5; 3],
+            std: [0.5; 3],
+        };
+        let (_patches, geom) = patchify_qwen3_vl_image(&png, &processor).expect("patchify");
+        assert_eq!((geom.height, geom.width), (32, 3648));
+    }
+
+    #[test]
+    fn nemotron_patch_grid_rounds_ties_to_even() {
+        // Reference `round(512 / 16 + 0.5)` is 32 under Python round.
+        let (patch_w, patch_h) =
+            nemotron_omni_target_patches(512, 512, 4096, 16, 1, 1).expect("geometry");
+        assert_eq!((patch_w, patch_h), (32, 32));
     }
 
     #[test]
