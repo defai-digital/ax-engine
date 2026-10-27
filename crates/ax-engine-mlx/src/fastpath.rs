@@ -313,9 +313,17 @@ pub(crate) fn gpu_lacks_native_bf16(architecture: impl FnOnce() -> Option<String
 
 /// Parse the generation number out of an MLX GPU architecture string such
 /// as `applegpu_g14d` (`Some(14)`); `None` when it has no `g<digits>` tag.
+/// The trailing letter is the die size, and base dies end in `g` too
+/// (`applegpu_g13g` is M1), so take the first `g` followed by a digit.
 pub(crate) fn gpu_generation(architecture: &str) -> Option<u32> {
-    let (_, tail) = architecture.rsplit_once('g')?;
-    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    let start = architecture
+        .match_indices('g')
+        .map(|(index, _)| index + 1)
+        .find(|&index| architecture[index..].starts_with(|c: char| c.is_ascii_digit()))?;
+    let digits: String = architecture[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     digits.parse().ok()
 }
 
