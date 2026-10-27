@@ -252,9 +252,10 @@ impl PageStore {
         }
         fs::rename(&temp_path, &final_path)?;
         guard.disarm();
-        if let Ok(dir) = fs::File::open(&self.dir) {
-            let _ = dir.sync_all();
-        }
+        // The manifest that references this page is published only after this
+        // returns, so the rename must be durable first (the manifest's own
+        // directory fsync propagates its error the same way).
+        fs::File::open(&self.dir)?.sync_all()?;
         Ok(())
     }
 
