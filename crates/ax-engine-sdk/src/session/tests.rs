@@ -887,6 +887,58 @@ fn auto_allocation_wraps_past_a_used_max_id() {
 }
 
 #[test]
+fn native_stream_reports_a_request_the_engine_never_schedules() {
+    // Advancing steps consume tokens, so the step budget alone can never fire.
+    // A run of empty engine steps without progress must end the stream with
+    // RequestDidNotTerminate instead of spinning forever.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let state = session
+        .stream_generate_state(request)
+        .expect("stream state");
+    let GenerateStreamState::Native(mut native) = state else {
+        panic!("expected a native stream");
+    };
+    let empty = EngineStepReport::default();
+    let mut outcome = Ok(());
+    for _ in 0..NATIVE_STREAM_IDLE_STEP_LIMIT {
+        if let Err(error) = session.apply_native_stream_step(&mut native, empty.clone()) {
+            outcome = Err(error);
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            outcome,
+            Err(EngineSessionError::RequestDidNotTerminate { .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(native.idle_steps, NATIVE_STREAM_IDLE_STEP_LIMIT);
+
+    // A step that ran another request resets the run.
+    native.idle_steps = 5;
+    let busy = EngineStepReport {
+        scheduled_requests: 1,
+        ..EngineStepReport::default()
+    };
+    session
+        .apply_native_stream_step(&mut native, busy)
+        .expect("a busy step is not a hang");
+    assert_eq!(native.idle_steps, 0);
+}
+
+#[test]
 fn every_auto_entry_point_skips_a_retained_max_id() {
     // Only submit_generate used the wrapping allocator; the stream and
     // generate entry points reused next_request_id and collided with MAX.

@@ -59,6 +59,9 @@ const MAX_NATIVE_ROUTE_REPORTS: usize = 1024;
 // Native streaming advances through prompt prefill, decode, and occasional scheduler
 // bookkeeping steps; keep the guard explicit so it is not an unexplained literal.
 const NATIVE_STREAM_STEP_GUARD_BUFFER: u64 = 256;
+/// Consecutive empty engine steps a native stream tolerates while its request
+/// makes no progress before reporting `RequestDidNotTerminate`.
+const NATIVE_STREAM_IDLE_STEP_LIMIT: u64 = 4096;
 
 /// Text and detected/resolved language returned by a native speech model.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1498,12 +1501,29 @@ impl EngineSession {
             || progress.terminal;
         if advanced {
             state.step_count += 1;
+            state.idle_steps = 0;
             if state.step_count >= state.max_steps {
                 return Err(EngineSessionError::RequestDidNotTerminate {
                     request_id: state.request_id,
                     max_steps: state.max_steps,
                 });
             }
+        } else if step.scheduled_requests == 0 {
+            // Advancing steps consume prompt or output tokens, so they can never
+            // exceed `max_steps`. A request the engine never schedules again
+            // (nothing else running either) would spin here forever; bound the
+            // run of empty steps instead.
+            state.idle_steps += 1;
+            if state.idle_steps >= NATIVE_STREAM_IDLE_STEP_LIMIT {
+                return Err(EngineSessionError::RequestDidNotTerminate {
+                    request_id: state.request_id,
+                    max_steps: state.max_steps,
+                });
+            }
+        } else {
+            // Another request ran this step: waiting behind it is progress
+            // for the session, not a hang.
+            state.idle_steps = 0;
         }
 
         if state.ttft_step.is_none()
