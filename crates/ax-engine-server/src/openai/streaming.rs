@@ -364,31 +364,7 @@ impl OpenAiStreamDriver {
                 {
                     filter.mark_kept_output();
                 }
-                let content_text = match self.reasoning.as_mut() {
-                    Some(StreamReasoningMode::QwenThink(scanner)) => {
-                        let step = scanner.push(&delta_text);
-                        if !step.reasoning.is_empty()
-                            && !emit_reasoning_chunk(
-                                tx,
-                                request_id,
-                                &model_id,
-                                &mut self.chat_role_emitted,
-                                step.reasoning,
-                            )
-                        {
-                            return false;
-                        }
-                        step.content
-                    }
-                    // Thinking off: no reasoning stage, but content stops at a
-                    // re-emitted `</think>` (empty text is dropped below).
-                    Some(StreamReasoningMode::DeepSeekCut(cutter)) => cutter.push(&delta_text),
-                    _ => delta_text,
-                };
-                if content_text.is_empty() {
-                    return true;
-                }
-                self.process_text(tx, request_id, &model_id, content_text)
+                self.route_decoded_text(tx, request_id, &model_id, delta_text)
             }
             GenerateStreamEvent::Response(payload) => {
                 // A terminal Failed/Cancelled response is not a clean finish:
@@ -436,15 +412,24 @@ impl OpenAiStreamDriver {
                     return false;
                 }
                 // Text the incremental decoder was still holding for a
-                // trailing codepoint is content too; route it through the
-                // same scanners as any other delta.
+                // trailing codepoint is a delta like any other: it must pass
+                // the think scanner / `</think>` cutter before the content
+                // scanners, or a codepoint held inside an unclosed reasoning
+                // block leaks into `delta.content`.
                 if let Some(decoder) = self.decoder.as_mut() {
                     let tail = match map_stream_decode_result(decoder.finish(), tx) {
                         Ok(tail) => tail.unwrap_or_default(),
                         Err(()) => return false,
                     };
-                    if !tail.is_empty() && !self.process_text(tx, request_id, &model_id, tail) {
-                        return false;
+                    if !tail.is_empty() {
+                        if !tail.trim().is_empty()
+                            && let Some(filter) = self.channel_filter.as_mut()
+                        {
+                            filter.mark_kept_output();
+                        }
+                        if !self.route_decoded_text(tx, request_id, &model_id, tail) {
+                            return false;
+                        }
                     }
                 }
                 // Flush the think scanner before the tool/stop scanners so
@@ -643,6 +628,44 @@ impl OpenAiStreamDriver {
         };
         tail.is_empty()
             || emit_reasoning_chunk(tx, request_id, model_id, &mut self.chat_role_emitted, tail)
+    }
+
+    /// Pass decoded text through the reasoning stage (think scanner or the
+    /// thinking-off `</think>` cutter), emit any reasoning, and hand the
+    /// surviving content to [`Self::process_text`]. Returns false when the
+    /// stream must end.
+    fn route_decoded_text(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        text: String,
+    ) -> bool {
+        let content_text = match self.reasoning.as_mut() {
+            Some(StreamReasoningMode::QwenThink(scanner)) => {
+                let step = scanner.push(&text);
+                if !step.reasoning.is_empty()
+                    && !emit_reasoning_chunk(
+                        tx,
+                        request_id,
+                        model_id,
+                        &mut self.chat_role_emitted,
+                        step.reasoning,
+                    )
+                {
+                    return false;
+                }
+                step.content
+            }
+            // Thinking off: no reasoning stage, but content stops at a
+            // re-emitted `</think>` (empty text is dropped below).
+            Some(StreamReasoningMode::DeepSeekCut(cutter)) => cutter.push(&text),
+            _ => text,
+        };
+        if content_text.is_empty() {
+            return true;
+        }
+        self.process_text(tx, request_id, model_id, content_text)
     }
 
     /// Route decoded text through the tool scanner (chat only) and the stop
@@ -2967,6 +2990,70 @@ mod openai_stream_driver_tests {
             reasons.contains(&"content_filter"),
             "expected a content_filter finish, got {payloads:?}"
         );
+    }
+
+    #[test]
+    fn decoder_held_tail_inside_think_stays_reasoning_at_end_of_stream() {
+        // The content decoder holds the lead byte of `é` waiting for its
+        // continuation. The stream ends inside an unclosed think block, so the
+        // flushed tail is reasoning: it must pass the think scanner instead of
+        // leaking into `delta.content`.
+        let mut driver = OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: Some(IncrementalDecoder::new(byte_level_test_tokenizer(
+                "think-tail",
+            ))),
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: None,
+                include_usage: false,
+                count_reasoning_tokens: false,
+            },
+            reasoning: Some(StreamReasoningMode::QwenThink(
+                crate::openai::reasoning_stream::ThinkTagScanner::new_inside_think(),
+            )),
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+
+        let decoder = driver.decoder.as_mut().expect("decoder");
+        let delta = decoder.push(&[4]).expect("decode");
+        assert_eq!(delta, "ok");
+        let held = decoder.push(&[1]).expect("decode");
+        assert_eq!(held, "", "the incomplete codepoint is held back");
+        assert!(driver.route_decoded_text(&tx, 1, "qwen", delta));
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        let mut reasoning = String::new();
+        let mut content = String::new();
+        for delta in payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("delta"))
+        {
+            if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
+                reasoning.push_str(text);
+            }
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(text);
+            }
+        }
+        assert_eq!(reasoning, "ok\u{FFFD}");
+        assert_eq!(content, "", "no reasoning text may leak into content");
     }
 
     #[test]
