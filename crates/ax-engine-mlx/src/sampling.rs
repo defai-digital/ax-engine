@@ -488,11 +488,8 @@ pub(crate) fn sample_categorical_into(
                 return i as u32;
             }
         }
-        return probs_buf
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.total_cmp(b))
-            .map(|(i, _)| i as u32)
+        return most_probable(probs_buf.iter().copied().enumerate())
+            .map(|i| i as u32)
             .unwrap_or(0);
     }
 
@@ -534,11 +531,8 @@ pub(crate) fn sample_categorical_into(
             return *i as u32;
         }
     }
-    candidates_buf
-        .iter()
-        .copied()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(i, _)| i as u32)
+    most_probable(candidates_buf.iter().copied())
+        .map(|i| i as u32)
         .unwrap_or(0)
 }
 
@@ -734,11 +728,7 @@ pub(crate) fn sample_indexed_categorical(
             return Some(*idx as u32);
         }
     }
-    candidates
-        .iter()
-        .copied()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(idx, _)| idx as u32)
+    most_probable(candidates.iter().copied()).map(|idx| idx as u32)
 }
 
 #[cfg(test)]
@@ -960,12 +950,7 @@ pub(crate) fn sample_from_token_distribution(
             return Some(token);
         }
     }
-    distribution
-        .entries
-        .iter()
-        .copied()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(token, _)| token)
+    most_probable(distribution.entries.iter().copied())
 }
 
 pub(crate) fn sample_residual_token_distribution(
@@ -1077,10 +1062,7 @@ fn sample_indexed_full_probability_categorical(
             return Some(token);
         }
     }
-    candidates
-        .into_iter()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(token, _)| token)
+    most_probable(candidates)
 }
 
 fn logits_with_repetition_penalty_in_place(
@@ -1162,6 +1144,16 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32)
     }
 }
 
+/// Rounding fallback for the stochastic samplers: the most probable token,
+/// with ties going to the lowest token id as in greedy `argmax_f32`.
+/// (`max_by` alone keeps the last of equal maxima.)
+fn most_probable<T: Copy + Ord>(items: impl IntoIterator<Item = (T, f32)>) -> Option<T> {
+    items
+        .into_iter()
+        .max_by(|(token_a, a), (token_b, b)| a.total_cmp(b).then_with(|| token_b.cmp(token_a)))
+        .map(|(token, _)| token)
+}
+
 fn argmax_index_f32(logits: &[f32]) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (index, &logit) in logits.iter().enumerate() {
@@ -1231,6 +1223,22 @@ mod tests {
         assert_eq!(token, 1);
     }
     use super::*;
+
+    #[test]
+    fn sampler_rounding_fallback_breaks_ties_toward_the_lowest_token() {
+        assert_eq!(
+            most_probable([(7u32, 0.5f32), (3, 0.5), (5, 0.25)]),
+            Some(3)
+        );
+        assert_eq!(
+            most_probable([(0usize, 0.25f32), (1, 0.5), (2, 0.5)]),
+            Some(1)
+        );
+        assert_eq!(most_probable([(4u32, 0.1f32), (9, 0.9)]), Some(9));
+        assert_eq!(most_probable(Vec::<(u32, f32)>::new()), None);
+        // Same rule as greedy argmax over equal logits.
+        assert_eq!(argmax_f32(&[0.5, 2.0, 2.0]), 1);
+    }
 
     #[test]
     fn request_rng_marks_only_explicit_seed_as_seeded() {
