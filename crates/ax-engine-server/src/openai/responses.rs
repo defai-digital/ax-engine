@@ -127,7 +127,10 @@ pub(crate) fn openai_chat_completion_response(
     // Qwen thinking prompts pre-fill `<think>`, so a generation cut off before
     // `</think>` is entirely reasoning (the streaming scanner already routes it
     // that way). Other families may legitimately answer without any marker.
+    // Native MLX only: delegated servers (llama-server, mlx_lm.server) return
+    // the answer with their own reasoning already split out.
     let (mut content, reasoning_content) = if options.include_reasoning
+        && response.runtime.selected_backend == ax_engine_sdk::SelectedBackend::Mlx
         && reasoning_content.is_none()
         && !content.trim().is_empty()
         && !content.contains("<think>")

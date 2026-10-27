@@ -299,6 +299,24 @@ fn chat_response_routes_unclosed_qwen_think_block_to_reasoning() {
     );
     assert_eq!(kept.choices[0].message.content, "plain answer");
     assert!(kept.choices[0].message.reasoning_content.is_none());
+
+    // A delegated server already split its reasoning out: a marker-free Qwen
+    // answer from llama-server is the answer, not reasoning.
+    let mut delegated = sample_generate_response("4", Vec::new(), Vec::new());
+    delegated.model_id = "qwen3.6-35b-a3b".to_string();
+    delegated.runtime.selected_backend = SelectedBackend::LlamaCpp;
+    let delegated = openai_chat_completion_response(
+        &delegated,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    assert_eq!(delegated.choices[0].message.content, "4");
+    assert!(delegated.choices[0].message.reasoning_content.is_none());
 }
 
 #[test]
