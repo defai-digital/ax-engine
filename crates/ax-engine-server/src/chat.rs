@@ -144,8 +144,13 @@ impl ChatUnsupportedFamily {
 impl ChatPromptTemplate {
     pub(crate) fn for_model_id(model_id: &str) -> Self {
         let normalized = model_id.to_ascii_lowercase();
+        // DeepSeek R1 distills (`DeepSeek-R1-Distill-Qwen-*` / `-Llama-*`) ship
+        // DeepSeek's chat template, not their base model's, so the DeepSeek
+        // match must win over the qwen / llama substrings.
+        if normalized.contains("deepseek") {
+            Self::DeepSeekChat
         // Qwen3.5-class fine-tunes (Holo3 / Ornith) share ChatML + thinking markers.
-        if normalized.contains("qwen")
+        } else if normalized.contains("qwen")
             || normalized.contains("minicpm")
             || is_qwen35_class_named_finetune(model_id)
         {
@@ -183,8 +188,6 @@ impl ChatPromptTemplate {
             || normalized.contains("codestral")
         {
             Self::MistralInstruct
-        } else if normalized.contains("deepseek") {
-            Self::DeepSeekChat
         } else if normalized.contains("gpt-oss")
             || normalized.contains("gpt_oss")
             || normalized.contains("gptoss")
@@ -324,7 +327,9 @@ pub(crate) fn is_deepseek_thinking_model(model_id: &str) -> bool {
 /// (ds4 reference render rule): a payload containing the closing marker must
 /// not terminate the tool-result block early.
 fn escape_deepseek_tool_result(content: &str) -> String {
-    content.replace("</tool_result>", "&lt;/tool_result>")
+    // Tool output is often untrusted (fetched pages); it must not forge a
+    // turn either, so the turn tokens are escaped as in message content.
+    escape_deepseek_content(&content.replace("</tool_result>", "&lt;/tool_result>"))
 }
 
 /// Escape the literal ChatML turn-boundary tokens inside message content, so
@@ -340,7 +345,7 @@ fn escape_qwen_chatml_content(content: &str) -> String {
 
 /// Escape the literal Llama 3.x header/turn-boundary tokens inside message
 /// content, for the same reason as `escape_qwen_chatml_content`.
-fn escape_llama3_content(content: &str) -> String {
+pub(crate) fn escape_llama3_content(content: &str) -> String {
     content
         .replace("<|start_header_id|>", "&lt;|start_header_id|>")
         .replace("<|end_header_id|>", "&lt;|end_header_id|>")
@@ -349,7 +354,12 @@ fn escape_llama3_content(content: &str) -> String {
 
 /// Escape the literal Llama 4 header/turn-boundary tokens inside message
 /// content, for the same reason as `escape_qwen_chatml_content`.
-fn escape_llama4_content(content: &str) -> String {
+/// Llama 3 and Llama 4 turn tokens together, for renderers shared by both.
+pub(crate) fn escape_llama_content(content: &str) -> String {
+    escape_llama4_content(&escape_llama3_content(content))
+}
+
+pub(crate) fn escape_llama4_content(content: &str) -> String {
     content
         .replace("<|header_start|>", "&lt;|header_start|>")
         .replace("<|header_end|>", "&lt;|header_end|>")
@@ -358,10 +368,17 @@ fn escape_llama4_content(content: &str) -> String {
 
 /// Escape the literal Gemma 4 turn-boundary tokens inside message content, for
 /// the same reason as `escape_qwen_chatml_content`.
-fn escape_gemma4_content(content: &str) -> String {
+pub(crate) fn escape_gemma4_content(content: &str) -> String {
     content
         .replace("<|turn>", "&lt;|turn>")
         .replace(GEMMA4_TURN_TERMINATOR, "&lt;turn|>")
+        // Tool framing and the string delimiter: tool results are quoted with
+        // `<|"|>`, so a payload must not close the quote or the response.
+        .replace("<|tool_call>", "&lt;|tool_call>")
+        .replace("<tool_call|>", "&lt;tool_call|>")
+        .replace("<|tool_response>", "&lt;|tool_response>")
+        .replace("<tool_response|>", "&lt;tool_response|>")
+        .replace("<|\"|>", "&lt;|\"|>")
 }
 
 /// Escape the literal GLM 4.x role/turn-boundary tokens inside message
@@ -388,10 +405,16 @@ fn escape_mistral_content(content: &str) -> String {
 
 /// Escape the literal Ministral instruction-boundary tokens inside message
 /// content, for the same reason as `escape_qwen_chatml_content`.
-fn escape_ministral_content(content: &str) -> String {
+pub(crate) fn escape_ministral_content(content: &str) -> String {
     content
         .replace("[INST]", "&#91;INST]")
         .replace("[/INST]", "&#91;/INST]")
+        .replace("[TOOL_RESULTS]", "&#91;TOOL_RESULTS]")
+        .replace("[/TOOL_RESULTS]", "&#91;/TOOL_RESULTS]")
+        .replace("[TOOL_CALLS]", "&#91;TOOL_CALLS]")
+        .replace("[AVAILABLE_TOOLS]", "&#91;AVAILABLE_TOOLS]")
+        .replace("[/AVAILABLE_TOOLS]", "&#91;/AVAILABLE_TOOLS]")
+        .replace("</s>", "&lt;/s>")
 }
 
 /// Escape the literal gpt-oss Harmony turn-boundary tokens inside message
@@ -1029,7 +1052,12 @@ fn render_prompt_internal(
                         qwen_tool_response_open = true;
                     }
                     prompt.push_str("<tool_response>\n");
-                    prompt.push_str(&escape_qwen_chatml_content(content));
+                    // A payload must not close this response and forge another.
+                    prompt.push_str(
+                        &escape_qwen_chatml_content(content)
+                            .replace("<tool_response>", "&lt;tool_response>")
+                            .replace("</tool_response>", "&lt;/tool_response>"),
+                    );
                     prompt.push_str("\n</tool_response>\n");
                 } else {
                     if qwen_tool_response_open {
@@ -1222,7 +1250,10 @@ fn render_prompt_internal(
                 }
                 "tool" | "function" => {
                     prompt.push_str("<|start|>tool<|message|><tool_output>\n");
-                    prompt.push_str(&escape_muse_glimmer_content(content));
+                    prompt.push_str(
+                        &escape_muse_glimmer_content(content)
+                            .replace("</tool_output>", "&lt;/tool_output>"),
+                    );
                     prompt.push_str("\n</tool_output>");
                     prompt.push_str(MUSE_GLIMMER_EOT);
                 }
@@ -1855,6 +1886,25 @@ pub(crate) fn decode_glm_chat_output(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_r1_distills_use_the_deepseek_template() {
+        for model_id in [
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+            "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+            "deepseek-ai/DeepSeek-V3",
+        ] {
+            assert_eq!(
+                ChatPromptTemplate::for_model_id(model_id),
+                ChatPromptTemplate::DeepSeekChat,
+                "{model_id}"
+            );
+        }
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("Qwen/Qwen3-8B"),
+            ChatPromptTemplate::QwenChatMl
+        );
+    }
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

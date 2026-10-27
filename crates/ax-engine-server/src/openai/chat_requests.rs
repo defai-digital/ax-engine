@@ -624,16 +624,16 @@ fn render_ministral_openai_chat_prompt(
                 if index + 1 == messages.len()
                     && let Some(system_text) = system.take()
                 {
-                    prompt.push_str(&system_text);
+                    prompt.push_str(&chat::escape_ministral_content(&system_text));
                     prompt.push_str("\n\n");
                 }
-                prompt.push_str(&content);
+                prompt.push_str(&chat::escape_ministral_content(&content));
                 prompt.push_str("[/INST]");
             }
             "assistant" => {
                 let content = render_openai_chat_content(message.content.as_ref())?;
                 // Hub: message["content"] + eos_token (no inserted whitespace).
-                prompt.push_str(&content);
+                prompt.push_str(&chat::escape_ministral_content(&content));
                 prompt.push_str("</s>");
             }
             "tool" | "function" => {
@@ -652,7 +652,7 @@ fn render_ministral_openai_chat_prompt(
                         )
                     })?;
                 prompt.push_str("[TOOL_RESULTS]{\"content\": ");
-                prompt.push_str(&content);
+                prompt.push_str(&chat::escape_ministral_content(&content));
                 prompt.push_str(", \"call_id\": \"");
                 prompt.push_str(&call_id);
                 prompt.push_str("\"}[/TOOL_RESULTS]");
@@ -754,7 +754,7 @@ fn render_llama_family_tools_prompt(
         if tools.is_some() && environment_ipython {
             prompt.push_str("Environment: ipython\n");
         }
-        prompt.push_str(system_text.trim());
+        prompt.push_str(&chat::escape_llama_content(system_text.trim()));
         prompt.push_str(eot);
     } else if tools.is_some() && environment_ipython {
         // Llama 3 always emits a system block with Environment: ipython when tools are set.
@@ -781,6 +781,8 @@ fn render_llama_family_tools_prompt(
             prompt.push_str("ipython");
             prompt.push_str(header_close);
             // Jinja `content | tojson` for strings yields a quoted JSON string.
+            // JSON encoding leaves `<|eot_id|>` intact; escape turn tokens first.
+            let content = chat::escape_llama_content(&content);
             prompt.push_str(&serde_json::to_string(&content).unwrap_or_else(|_| {
                 format!("\"{}\"", content.replace('\\', "\\\\").replace('"', "\\\""))
             }));
@@ -807,7 +809,7 @@ fn render_llama_family_tools_prompt(
                 // <|python_start|>{content}<|python_end|>{"name":…,"parameters":…}<|eot|>
                 prompt.push_str("<|python_start|>");
                 if !content.trim().is_empty() {
-                    prompt.push_str(&content);
+                    prompt.push_str(&chat::escape_llama_content(&content));
                 }
                 prompt.push_str("<|python_end|>");
             }
@@ -836,7 +838,7 @@ fn render_llama_family_tools_prompt(
                     prompt.push_str("\n\n");
                 }
             }
-            prompt.push_str(content.trim());
+            prompt.push_str(&chat::escape_llama_content(content.trim()));
             prompt.push_str(eot);
             injected_tools = true;
             index += 1;
@@ -854,7 +856,7 @@ fn render_llama_family_tools_prompt(
         prompt.push_str(header_role);
         prompt.push_str(header_close);
         if !content.trim().is_empty() {
-            prompt.push_str(content.trim());
+            prompt.push_str(&chat::escape_llama_content(content.trim()));
         }
         prompt.push_str(eot);
         index += 1;
@@ -1470,7 +1472,7 @@ fn render_gemma4_openai_chat_prompt(
         }
         if matches!(first_role, "system" | "developer") {
             let content = render_openai_chat_content(messages[0].content.as_ref())?;
-            prompt.push_str(content.trim());
+            prompt.push_str(&chat::escape_gemma4_content(content.trim()));
             index = 1;
         }
         if has_tools && let Some(tools) = tools {
@@ -1553,11 +1555,12 @@ fn render_gemma4_openai_chat_prompt(
         // follow them, then the message text. Consecutive assistant messages
         // in one model turn are joined with no separator.
         let content = render_openai_chat_content(message.content.as_ref())?;
-        let content_for_prompt = if role == "assistant" {
+        // Escape turn and tool tokens so message text cannot forge a turn.
+        let content_for_prompt = chat::escape_gemma4_content(&if role == "assistant" {
             chat::strip_gemma4_thinking_from_history(&content)
         } else {
             content.trim().to_string()
-        };
+        });
         let has_content = !content_for_prompt.is_empty();
         prompt.push_str(&content_for_prompt);
 
@@ -1672,7 +1675,12 @@ fn render_following_gemma4_tool_responses(
         prompt.push_str("<|tool_response>response:");
         prompt.push_str(tool_name);
         prompt.push_str("{value:");
-        prompt.push_str(&format_gemma4_argument(&Value::String(content), false));
+        // Tool output is often untrusted; it must not close the quote or the
+        // response and forge a turn.
+        prompt.push_str(&format_gemma4_argument(
+            &Value::String(chat::escape_gemma4_content(&content)),
+            false,
+        ));
         prompt.push_str("}<tool_response|>");
         count += 1;
         index += 1;
