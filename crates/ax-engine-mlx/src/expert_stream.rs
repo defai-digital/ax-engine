@@ -973,9 +973,17 @@ pub fn price_session_residency(
     budget: SessionResidencyBudget,
     max_live_sequences: u32,
 ) -> PricedSessionResidency {
-    apply_priced_memory_switch(priced_memory_enabled(), || {
-        price_session_residency_priced(artifacts, budget, max_live_sequences)
-    })
+    apply_priced_memory_switch(
+        priced_memory_enabled() && residency_may_be_priced(stream_experts_mode_checked()),
+        || price_session_residency_priced(artifacts, budget, max_live_sequences),
+    )
+}
+
+/// Forced streaming never loads the full working set, so pricing it as
+/// resident would wire memory and cap concurrency for a plan that cannot run.
+/// An invalid mode fails load admission; it gets no priced plan either.
+fn residency_may_be_priced(mode: Result<StreamExpertsMode, ExpertStreamError>) -> bool {
+    matches!(mode, Ok(StreamExpertsMode::Auto | StreamExpertsMode::Off))
 }
 
 /// Gate a priced residency behind the `AX_MLX_PRICED_MEMORY` kill switch.
@@ -3955,6 +3963,17 @@ mod tests {
 
         // With the switch on the priced numbers pass through unchanged.
         assert_eq!(apply_priced_memory_switch(true, || priced), priced);
+    }
+
+    #[test]
+    fn forced_streaming_is_never_priced_as_resident() {
+        assert!(residency_may_be_priced(Ok(StreamExpertsMode::Auto)));
+        assert!(residency_may_be_priced(Ok(StreamExpertsMode::Off)));
+        assert!(!residency_may_be_priced(Ok(StreamExpertsMode::On)));
+        assert!(!residency_may_be_priced(
+            stream_experts_mode_from_env(Some("sometimes"))
+                .map(|mode| mode.unwrap_or(StreamExpertsMode::Auto))
+        ));
     }
 
     #[test]
