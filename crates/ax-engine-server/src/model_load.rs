@@ -859,12 +859,19 @@ fn default_iogpu_floor_mb(total_ram_mb: u64) -> u64 {
 /// sysctl process spawns are acceptable here.
 #[cfg(target_os = "macos")]
 fn iogpu_wired_limit_floor() -> Option<u64> {
+    // A launchd/service PATH may omit /usr/sbin; fall back to the absolute
+    // path as the runtime's own sysctl helper does.
     fn sysctl_value(name: &str) -> Option<u64> {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", name])
-            .output()
-            .ok()?;
-        String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+        ["sysctl", "/usr/sbin/sysctl"]
+            .into_iter()
+            .find_map(|program| {
+                let output = std::process::Command::new(program)
+                    .args(["-n", name])
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())?;
+                String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+            })
     }
     let total_ram_mb = sysctl_value("hw.memsize")? / (1024 * 1024);
     let floor_mb = match sysctl_value("iogpu.wired_limit_mb") {
