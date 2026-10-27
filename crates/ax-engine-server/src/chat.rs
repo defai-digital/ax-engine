@@ -977,7 +977,16 @@ fn render_prompt_internal(
             prompt.push('\n');
             prompt.push_str(MINIMAX_BOS);
             prompt.push_str("developer\n");
-            prompt.push_str(MINIMAX_DEFAULT_DEVELOPER);
+            // Hub jinja: a leading system/developer message *is* the
+            // developer SP; the default identity applies only without one.
+            match messages.first() {
+                Some((role, content))
+                    if normalize_role(role)? == "system" && !content.is_empty() =>
+                {
+                    prompt.push_str(&escape_minimax_content(content));
+                }
+                _ => prompt.push_str(MINIMAX_DEFAULT_DEVELOPER),
+            }
             prompt.push_str(MINIMAX_EOS);
             prompt.push('\n');
         }
@@ -1011,7 +1020,9 @@ fn render_prompt_internal(
         prompt.push_str(MUSE_GLIMMER_DEFAULT_SYSTEM);
         prompt.push_str(MUSE_GLIMMER_EOT);
     }
-    let mut mistral_system: Option<&str> = None;
+    // Every system message before a user turn, in order (hub jinja emits
+    // each [SYSTEM_PROMPT] block; keeping only the last dropped the rest).
+    let mut mistral_system: Vec<&str> = Vec::new();
     let mut ministral_system: Option<&str> = None;
     let mut gpt_oss_system: Option<&str> = None;
     let mut ministral_loop_start = 0usize;
@@ -1105,7 +1116,18 @@ fn render_prompt_internal(
             }
             ChatPromptTemplate::Glm47 => {
                 if matches!(role, "tool" | "function") {
-                    prompt.push_str("<|observation|><tool_response>");
+                    // Hub jinja: one <|observation|> opens a run of
+                    // consecutive tool results; it is also a GLM stop token.
+                    let follows_tool = msg_index
+                        .checked_sub(1)
+                        .and_then(|prev| messages.get(prev))
+                        .is_some_and(|(prev_role, _)| {
+                            matches!(prev_role.as_str(), "tool" | "function")
+                        });
+                    if !follows_tool {
+                        prompt.push_str("<|observation|>");
+                    }
+                    prompt.push_str("<tool_response>");
                     prompt.push_str(&escape_glm_content(content));
                     prompt.push_str("</tool_response>");
                 } else {
@@ -1128,10 +1150,10 @@ fn render_prompt_internal(
                 // assistant turns append eos_token (`</s>`).
                 match role {
                     "system" => {
-                        mistral_system = Some(content.as_str());
+                        mistral_system.push(content.as_str());
                     }
                     "user" => {
-                        if let Some(system) = mistral_system.take() {
+                        for system in mistral_system.drain(..) {
                             prompt.push_str("[SYSTEM_PROMPT]");
                             prompt.push_str(&escape_mistral_content(system));
                             prompt.push_str("[/SYSTEM_PROMPT]");
@@ -1199,14 +1221,15 @@ fn render_prompt_internal(
                             // Subsequent system lines are folded as developer append.
                             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
                             prompt.push_str(&escape_gpt_oss_harmony_content(content));
-                            prompt.push_str("<|end|>");
+                            prompt.push_str("\n\n<|end|>");
                         }
                     }
                     "user" => {
                         if let Some(system) = gpt_oss_system.take() {
                             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
                             prompt.push_str(&escape_gpt_oss_harmony_content(system));
-                            prompt.push_str("<|end|>");
+                            // Hub jinja closes the instructions with "\n\n".
+                            prompt.push_str("\n\n<|end|>");
                         }
                         prompt.push_str("<|start|>user<|message|>");
                         prompt.push_str(&escape_gpt_oss_harmony_content(content));
@@ -1343,11 +1366,10 @@ fn render_prompt_internal(
                 "assistant" => {
                     prompt.push_str(MINIMAX_BOS);
                     prompt.push_str("ai\n");
-                    prompt.push_str(if thinking_enabled {
-                        MINIMAX_THINK_OPEN
-                    } else {
-                        MINIMAX_THINK_CLOSE
-                    });
+                    // A past turn carries no reasoning here, so the hub
+                    // jinja prefixes the think-end token whatever the mode;
+                    // only the generation prompt opens `<mm:think>`.
+                    prompt.push_str(MINIMAX_THINK_CLOSE);
                     prompt.push_str(&escape_minimax_content(content));
                     prompt.push_str(MINIMAX_EOS);
                     prompt.push('\n');
@@ -1403,7 +1425,7 @@ fn render_prompt_internal(
     }
     // System-only chats still need the system block emitted before generation.
     if matches!(template, ChatPromptTemplate::MistralInstruct) {
-        if let Some(system) = mistral_system {
+        for system in mistral_system {
             prompt.push_str("[SYSTEM_PROMPT]");
             prompt.push_str(&escape_mistral_content(system));
             prompt.push_str("[/SYSTEM_PROMPT]");
@@ -1413,7 +1435,7 @@ fn render_prompt_internal(
         if let Some(system) = gpt_oss_system {
             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
             prompt.push_str(&escape_gpt_oss_harmony_content(system));
-            prompt.push_str("<|end|>");
+            prompt.push_str("\n\n<|end|>");
         }
     }
     // The generation prompt opens an assistant turn: record its start
@@ -2159,6 +2181,90 @@ mod tests {
         );
         let stops = default_stop_sequences(ChatPromptTemplate::MiniMaxM3);
         assert!(stops.iter().any(|s| s == "[e~["));
+    }
+
+    fn owned(messages: &[(&str, &str)]) -> Vec<(String, String)> {
+        messages
+            .iter()
+            .map(|(role, content)| ((*role).to_string(), (*content).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn minimax_m3_system_message_becomes_the_developer_prompt() {
+        // MiniMax-M3.jinja: a leading system/developer message is the
+        // developer SP; past assistant turns without reasoning get the
+        // think-end token in both thinking modes.
+        for thinking in [false, true] {
+            let prompt = render_prompt_with_template(
+                ChatPromptTemplate::MiniMaxM3,
+                &owned(&[
+                    ("system", "S"),
+                    ("user", "hi"),
+                    ("assistant", "yo"),
+                    ("user", "x"),
+                ]),
+                thinking,
+            )
+            .expect("minimax render");
+            assert!(prompt.contains("]~b]developer\nS[e~[\n"), "{prompt}");
+            assert!(!prompt.contains("You are a helpful assistant."), "{prompt}");
+            assert!(prompt.contains("]~b]ai\n</mm:think>yo[e~["), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn glm_opens_one_observation_per_run_of_tool_results() {
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::Glm47,
+            &owned(&[
+                ("user", "q"),
+                ("tool", "r1"),
+                ("tool", "r2"),
+                ("user", "more"),
+                ("tool", "r3"),
+            ]),
+            false,
+        )
+        .expect("glm render");
+        assert!(
+            prompt.contains(
+                "<|observation|><tool_response>r1</tool_response><tool_response>r2</tool_response>"
+            ),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("<|observation|>").count(), 2, "{prompt}");
+    }
+
+    #[test]
+    fn mistral_keeps_every_system_message_in_order() {
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::MistralInstruct,
+            &owned(&[("system", "A"), ("system", "B"), ("user", "hi")]),
+            false,
+        )
+        .expect("mistral render");
+        assert!(
+            prompt.contains(
+                "[SYSTEM_PROMPT]A[/SYSTEM_PROMPT][SYSTEM_PROMPT]B[/SYSTEM_PROMPT][INST]hi[/INST]"
+            ),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn gpt_oss_developer_instructions_end_with_a_blank_line() {
+        // openai-gpt-oss-120b.jinja: "# Instructions\n\n" + message + "\n\n".
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::GptOssHarmony,
+            &owned(&[("system", "S"), ("user", "hi")]),
+            false,
+        )
+        .expect("gpt-oss render");
+        assert!(
+            prompt.contains("<|start|>developer<|message|># Instructions\n\nS\n\n<|end|>"),
+            "{prompt}"
+        );
     }
 
     /// Goldens below were rendered from the Hy-MT2-30B-A3B hub
