@@ -76,7 +76,7 @@ fn base_args() -> ServerArgs {
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
-        stream_experts: ax_engine_sdk::MlxStreamExpertsMode::Auto,
+        stream_experts: None,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -1668,18 +1668,36 @@ fn stream_experts_flag_parses_and_threads_into_session_config() {
 
     let args = ServerArgs::try_parse_from(["ax-engine-server", "--stream-experts"])
         .expect("--stream-experts should parse");
-    assert_eq!(args.stream_experts, MlxStreamExpertsMode::On);
+    assert_eq!(args.stream_experts, Some(MlxStreamExpertsMode::On));
     let config = args
         .session_config()
         .expect("session config should build with --stream-experts");
     assert_eq!(config.mlx_stream_experts, MlxStreamExpertsMode::On);
 
     let default = ServerArgs::try_parse_from(["ax-engine-server"]).expect("defaults parse");
-    assert_eq!(default.stream_experts, MlxStreamExpertsMode::Auto);
+    assert_eq!(default.stream_experts, None);
 
     let off = ServerArgs::try_parse_from(["ax-engine-server", "--stream-experts", "off"])
         .expect("--stream-experts off should parse");
-    assert_eq!(off.stream_experts, MlxStreamExpertsMode::Off);
+    assert_eq!(off.stream_experts, Some(MlxStreamExpertsMode::Off));
+}
+
+#[test]
+fn stream_experts_flag_wins_then_env_then_auto() {
+    use super::effective_stream_experts_mode as effective;
+    use ax_engine_sdk::MlxStreamExpertsMode::{Auto, Off, On};
+
+    // The Python package and doctor honor AX_STREAM_EXPERTS; the server
+    // used to always pass Auto when the flag was absent.
+    assert_eq!(effective(None, Some("off")), Ok(Off));
+    assert_eq!(effective(None, Some(" on ")), Ok(On));
+    assert_eq!(effective(None, Some("")), Ok(Auto), "blank counts as unset");
+    assert_eq!(effective(None, None), Ok(Auto));
+    assert_eq!(effective(Some(On), Some("off")), Ok(On), "the flag wins");
+    assert!(
+        effective(None, Some("sometimes")).is_err(),
+        "invalid env fails closed"
+    );
 }
 
 #[test]
