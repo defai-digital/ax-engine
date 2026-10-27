@@ -688,6 +688,7 @@ async fn stream_ollama_native(
         }),
     };
     spawn_ollama_stream_driver(tx, service_disconnect, drive);
+    let rx = spawn_ndjson_deadline_relay(rx, state.limits.stream_deadlines);
 
     Ok((
         StatusCode::OK,
@@ -695,6 +696,63 @@ async fn stream_ollama_native(
         Body::from_stream(ReceiverStream::new(rx)),
     )
         .into_response())
+}
+
+/// Apply --stream-idle-timeout-secs / --stream-max-duration-secs to an
+/// NDJSON body, as the SSE paths do. Empty chunks are progress markers from
+/// the driver: they reset the idle timer and are not forwarded. On expiry
+/// the client gets an NDJSON error line and the producer is dropped (which
+/// cancels the request through the disconnect monitor).
+fn spawn_ndjson_deadline_relay(
+    mut rx: mpsc::Receiver<Result<String, std::io::Error>>,
+    deadlines: crate::generation::streaming::StreamDeadlines,
+) -> mpsc::Receiver<Result<String, std::io::Error>> {
+    if deadlines.idle_timeout.is_none() && deadlines.max_duration.is_none() {
+        return rx;
+    }
+    let (relay_tx, relay_rx) = mpsc::channel(128);
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        loop {
+            let remaining = deadlines
+                .max_duration
+                .map(|max| max.saturating_sub(start.elapsed()));
+            let wait = match (deadlines.idle_timeout, remaining) {
+                (Some(idle), Some(remaining)) => idle.min(remaining),
+                (Some(idle), None) => idle,
+                (None, Some(remaining)) => remaining,
+                (None, None) => return,
+            };
+            let received = tokio::select! {
+                _ = relay_tx.closed() => return,
+                result = tokio::time::timeout(wait, rx.recv()) => result,
+            };
+            match received {
+                Ok(Some(Ok(line))) if line.is_empty() => {}
+                Ok(Some(item)) => {
+                    if relay_tx.send(item).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => return,
+                Err(_elapsed) => {
+                    let message = if deadlines
+                        .max_duration
+                        .is_some_and(|max| start.elapsed() >= max)
+                    {
+                        "stream exceeded the configured maximum duration"
+                    } else {
+                        "stream exceeded the configured idle timeout"
+                    };
+                    let _ = relay_tx
+                        .send(Ok(format!("{}\n", json!({ "error": message }))))
+                        .await;
+                    return;
+                }
+            }
+        }
+    });
+    relay_rx
 }
 
 type OllamaStreamDriver =
@@ -760,10 +818,21 @@ fn drive_ollama_native_events<N>(
     // throughput as eval_count / eval_duration, and a zero duration would
     // divide by zero. Mirrors the buffered Ollama paths.
     let started = std::time::Instant::now();
+    let mut last_progress = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("Ollama stream cancelled: client disconnected");
             return;
+        }
+        // NDJSON has no comment frame: an empty chunk marks engine progress
+        // for the deadline relay (which drops it), so a long prefill does
+        // not read as an idle stream. Without a relay it is a zero-byte
+        // chunk the client never sees.
+        if last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+            if tx.blocking_send(Ok(String::new())).is_err() {
+                return;
+            }
+            last_progress = std::time::Instant::now();
         }
         match next() {
             Ok(None) => {
@@ -2064,6 +2133,37 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
+
+    #[tokio::test]
+    async fn ndjson_deadline_relay_honors_progress_and_idle_timeout() {
+        let deadlines = crate::generation::streaming::StreamDeadlines {
+            idle_timeout: Some(std::time::Duration::from_millis(150)),
+            max_duration: None,
+        };
+        // Progress markers keep a quiet stream alive and are not forwarded.
+        let (tx, rx) = mpsc::channel(16);
+        let mut out = spawn_ndjson_deadline_relay(rx, deadlines);
+        tokio::spawn(async move {
+            tx.send(Ok("a\n".to_string())).await.expect("send");
+            for _ in 0..6 {
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                tx.send(Ok(String::new())).await.expect("progress");
+            }
+            tx.send(Ok("b\n".to_string())).await.expect("send");
+        });
+        let mut lines = Vec::new();
+        while let Some(item) = out.recv().await {
+            lines.push(item.expect("line"));
+        }
+        assert_eq!(lines, vec!["a\n".to_string(), "b\n".to_string()]);
+
+        // A silent producer hits the idle timeout with an NDJSON error line.
+        let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(16);
+        let mut out = spawn_ndjson_deadline_relay(rx, deadlines);
+        let last = out.recv().await.expect("error line").expect("line");
+        assert!(last.contains("idle timeout"), "{last}");
+        drop(tx);
+    }
 
     #[tokio::test]
     async fn native_ndjson_body_ends_after_the_driver_returns() {
