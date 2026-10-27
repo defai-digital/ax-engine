@@ -876,6 +876,42 @@ mod tests {
     }
 
     #[test]
+    fn restored_cancel_prefix_off_the_block_grid_does_not_wedge_the_step() {
+        // The checkpoint cut (20) is past the last whole 16-token block the KV
+        // cache keeps (16). That prefix-cache hit did not advance the restored
+        // request, and validating it failed every later step with "prefix
+        // reuse moved processed prompt tokens backwards".
+        let mut engine = scripted_engine(Script::success());
+        engine.set_cancel_keep_prefix(true);
+        engine.set_adaptive_prefill(true);
+        let prompt: Vec<u32> = (1..=40).collect();
+        engine
+            .submit(submission(7, 1, prompt.clone(), 2))
+            .expect("submit");
+        engine.step(20, true).expect("partial");
+        let processed = engine
+            .request_manager()
+            .snapshot(RequestId(7))
+            .expect("partial request")
+            .processed_prompt_tokens;
+        assert_eq!(processed % 16, 4, "the cut must sit off the block grid");
+        engine.cancel(RequestId(7)).expect("cancel");
+        engine
+            .submit(submission(8, 2, prompt, 2))
+            .expect("resubmit");
+        let restored = engine
+            .request_manager()
+            .snapshot(RequestId(8))
+            .expect("restored")
+            .processed_prompt_tokens;
+        assert_eq!(restored, processed);
+        engine
+            .step(64, true)
+            .expect("the resumed step must not fail");
+        engine.step(64, true).expect("and neither may the next");
+    }
+
+    #[test]
     fn l1_checkpoint_restores_on_resubmit_without_ssd_hit() {
         let mut engine = scripted_engine(Script::l1());
         engine.set_cancel_keep_prefix(true);
