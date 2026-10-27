@@ -3506,6 +3506,19 @@ fn nemotron_omni_per_image_patch_budget(
     // request was then rejected by the context gate only after every image had
     // been decoded and normalized.
     let image_count = image_count.max(1);
+    // The minimum patch floor applies per image, so the floors alone can exceed
+    // the pool. Reject such a request before any image is decoded.
+    let min_tokens_per_image = config.min_num_patches.div_ceil(factor_sq.max(1));
+    if u64::from(min_tokens_per_image) * u64::from(image_count) > u64::from(tokens_available) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            format!(
+                "{image_count} Nemotron H Nano Omni images need at least \
+                 {min_tokens_per_image} tokens each, more than the {tokens_available}-token context"
+            ),
+        ));
+    }
     let budget = (tokens_available / image_count).saturating_mul(factor_sq);
     Ok(budget
         .max(config.min_num_patches)
@@ -4859,6 +4872,16 @@ mod media_tests {
         // A zero-image call must not divide by zero (the caller may render an
         // audio-only prompt through the same path).
         assert!(nemotron_omni_per_image_patch_budget(&config, 0).is_ok());
+        // The per-image minimum (1024 patches = 256 tokens) caps the count:
+        // 16380 / 256 = 63 images fit, 64 must fail before decoding.
+        assert!(nemotron_omni_per_image_patch_budget(&config, 63).is_ok());
+        let (status, body) = nemotron_omni_per_image_patch_budget(&config, 64)
+            .expect_err("per-image floors exceed the context");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body.0.error.code.as_deref(),
+            Some("context_length_exceeded")
+        );
     }
 
     fn processor_config() -> Gemma4UnifiedProcessorConfig {
