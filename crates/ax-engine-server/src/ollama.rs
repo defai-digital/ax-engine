@@ -2516,6 +2516,7 @@ mod tests {
                 },
                 logprobs: None,
                 finish_reason: Some("tool_calls"),
+                stop_reason: None,
             }],
             usage: Some(OpenAiUsage {
                 prompt_tokens: 3,

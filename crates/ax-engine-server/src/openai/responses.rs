@@ -175,8 +175,12 @@ pub(crate) fn openai_chat_completion_response(
     // Client stops match visible assistant content only (ADR-040 D2): tool
     // calls were already extracted above, so a stop string occurring inside
     // call arguments can never truncate a call.
-    let stop_hit = !has_tool_calls
-        && crate::openai::stop::truncate_at_stop(&mut content, &options.client_stop_sequences);
+    let stop_match = if has_tool_calls {
+        None
+    } else {
+        crate::openai::stop::truncate_at_stop_matched(&mut content, &options.client_stop_sequences)
+    };
+    let stop_hit = stop_match.is_some();
     let finish_reason = if !tool_call_finish_allowed(response.finish_reason) {
         openai_finish_reason(response.finish_reason)
     } else if has_tool_calls {
@@ -207,6 +211,7 @@ pub(crate) fn openai_chat_completion_response(
             } else {
                 openai_chat_logprobs(response, &options, tokenizer)
             },
+            stop_reason: stop_match.filter(|_| finish_reason == Some("stop")),
             finish_reason,
         }],
         usage: chat_usage(response, &options, tokenizer),

@@ -386,6 +386,11 @@ pub(crate) struct OpenAiChatCompletionChoice {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) logprobs: Option<OpenAiChatLogprobs>,
     pub(crate) finish_reason: Option<&'static str>,
+    /// vLLM-compatible: the client stop string that ended the turn. Present
+    /// only on a client stop match; the Anthropic bridge maps it to
+    /// `stop_reason: "stop_sequence"` and `stop_sequence`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -472,6 +477,9 @@ pub(crate) struct OpenAiChatCompletionChunkChoice {
     pub(crate) index: u32,
     pub(crate) delta: OpenAiChatDelta,
     pub(crate) finish_reason: Option<&'static str>,
+    /// See [`OpenAiChatCompletionChoice::stop_reason`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

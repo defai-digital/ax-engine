@@ -383,8 +383,11 @@ pub(crate) fn to_openai_chat_body(body: &Value) -> Result<Value, HttpError> {
     Ok(Value::Object(out))
 }
 
-fn stop_reason(finish_reason: Option<&str>) -> &'static str {
+/// Anthropic `stop_reason`. A client stop string that ended the turn comes
+/// back from the chat handler as the choice's `stop_reason` (`stop_sequence`).
+fn stop_reason(finish_reason: Option<&str>, stop_sequence: Option<&str>) -> &'static str {
     match finish_reason {
+        Some("stop") if stop_sequence.is_some() => "stop_sequence",
         Some("length") => "max_tokens",
         Some("tool_calls") => "tool_use",
         Some("content_filter") => "refusal",
@@ -436,8 +439,14 @@ pub(crate) fn from_openai_chat_response(id: &str, chat: &Value) -> Value {
         "role": "assistant",
         "content": content,
         "model": chat.get("model").cloned().unwrap_or(json!("")),
-        "stop_reason": stop_reason(choice.get("finish_reason").and_then(Value::as_str)),
-        "stop_sequence": Value::Null,
+        "stop_reason": stop_reason(
+            choice.get("finish_reason").and_then(Value::as_str),
+            choice.get("stop_reason").and_then(Value::as_str),
+        ),
+        "stop_sequence": choice
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .map_or(Value::Null, |text| json!(text)),
         "usage": {
             "input_tokens": chat.pointer("/usage/prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
             "output_tokens": chat.pointer("/usage/completion_tokens").and_then(Value::as_u64).unwrap_or(0),
@@ -454,6 +463,8 @@ pub(crate) struct StreamTranslator {
     open: Option<(usize, OpenBlock)>,
     next_index: usize,
     finish_reason: Option<String>,
+    /// Client stop string that ended the turn (the chunk's `stop_reason`).
+    stop_sequence: Option<String>,
     input_tokens: u64,
     output_tokens: u64,
 }
@@ -601,6 +612,10 @@ impl StreamTranslator {
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             self.finish_reason = Some(reason.to_string());
+            self.stop_sequence = choice
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string);
         }
         out
     }
@@ -613,8 +628,11 @@ impl StreamTranslator {
             "message_delta",
             &json!({
                 "type": "message_delta",
-                "delta": {"stop_reason": stop_reason(self.finish_reason.as_deref()),
-                          "stop_sequence": Value::Null},
+                "delta": {"stop_reason": stop_reason(
+                              self.finish_reason.as_deref(),
+                              self.stop_sequence.as_deref(),
+                          ),
+                          "stop_sequence": self.stop_sequence},
                 "usage": {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens},
             }),
         ));
@@ -889,6 +907,38 @@ mod tests {
         assert_eq!(
             message["usage"],
             json!({"input_tokens": 9, "output_tokens": 4})
+        );
+    }
+
+    #[test]
+    fn client_stop_reports_stop_sequence_streamed_and_not() {
+        let chat = json!({
+            "model": "m",
+            "choices": [{"finish_reason": "stop", "stop_reason": "DONE",
+                         "message": {"content": "partial"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2}
+        });
+        let message = from_openai_chat_response("msg-s", &chat);
+        assert_eq!(message["stop_reason"], json!("stop_sequence"));
+        assert_eq!(message["stop_sequence"], json!("DONE"));
+
+        // A plain end of turn (EOS) carries no stop string.
+        let chat = json!({"choices": [{"finish_reason": "stop", "message": {"content": "x"}}]});
+        let message = from_openai_chat_response("msg-e", &chat);
+        assert_eq!(message["stop_reason"], json!("end_turn"));
+        assert_eq!(message["stop_sequence"], Value::Null);
+
+        let mut translator = StreamTranslator::default();
+        let mut events = translator.start("msg-t", "m");
+        events
+            .push_str(&translator.chunk(&json!({"choices": [{"delta": {"content": "partial"}}]})));
+        events.push_str(&translator.chunk(&json!({"choices": [
+            {"delta": {}, "finish_reason": "stop", "stop_reason": "DONE"}
+        ]})));
+        events.push_str(&translator.finish());
+        assert!(
+            events.contains(r#""stop_reason":"stop_sequence","stop_sequence":"DONE""#),
+            "{events}"
         );
     }
 

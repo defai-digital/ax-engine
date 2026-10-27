@@ -84,6 +84,7 @@ pub(crate) fn chat_delta_chunk(
                 tool_calls: None,
             },
             finish_reason: None,
+            stop_reason: None,
         }],
     }
 }
@@ -123,6 +124,7 @@ pub(crate) fn chat_tool_calls_delta_chunk(
                 ),
             },
             finish_reason: None,
+            stop_reason: None,
         }],
     }
 }
@@ -162,6 +164,7 @@ pub(crate) fn chat_single_tool_call_delta_chunk(
                 }]),
             },
             finish_reason: None,
+            stop_reason: None,
         }],
     }
 }
@@ -200,6 +203,7 @@ pub(crate) fn chat_tool_call_arguments_delta_chunk(
                 }]),
             },
             finish_reason: None,
+            stop_reason: None,
         }],
     }
 }
@@ -227,6 +231,7 @@ pub(crate) fn chat_reasoning_delta_chunk(
                 tool_calls: None,
             },
             finish_reason: None,
+            stop_reason: None,
         }],
     }
 }
@@ -245,7 +250,12 @@ pub(crate) fn chat_final_chunk(
     model: String,
     finish_reason: Option<GenerateFinishReason>,
 ) -> OpenAiChatCompletionChunk {
-    chat_final_chunk_with_finish_reason(request_id, model, openai_finish_reason(finish_reason))
+    chat_final_chunk_with_finish_reason(
+        request_id,
+        model,
+        openai_finish_reason(finish_reason),
+        None,
+    )
 }
 
 /// Terminal chunk carrying an already-resolved OpenAI finish reason (for
@@ -254,6 +264,7 @@ pub(crate) fn chat_final_chunk_with_finish_reason(
     request_id: u64,
     model: String,
     finish_reason: Option<&'static str>,
+    stop_reason: Option<String>,
 ) -> OpenAiChatCompletionChunk {
     OpenAiChatCompletionChunk {
         id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
@@ -265,6 +276,7 @@ pub(crate) fn chat_final_chunk_with_finish_reason(
             index: 0,
             delta: OpenAiChatDelta::default(),
             finish_reason,
+            stop_reason,
         }],
     }
 }
@@ -283,6 +295,7 @@ pub(crate) fn chat_tool_calls_final_chunk(
             index: 0,
             delta: OpenAiChatDelta::default(),
             finish_reason: Some("tool_calls"),
+            stop_reason: None,
         }],
     }
 }

@@ -1369,6 +1369,9 @@ fn chat_response_truncates_at_client_stop_and_reports_stop_finish() {
     let choice = &openai.choices[0];
     assert_eq!(choice.message.content, "hello ");
     assert_eq!(choice.finish_reason, Some("stop"));
+    // The matched stop string rides along (vLLM `stop_reason`); the Anthropic
+    // bridge reports it as `stop_sequence`.
+    assert_eq!(choice.stop_reason.as_deref(), Some("STOP"));
     // Sampled logprobs cover the full generation and would misalign with the
     // truncated content, so they are omitted on a stop truncation.
     assert!(choice.logprobs.is_none());

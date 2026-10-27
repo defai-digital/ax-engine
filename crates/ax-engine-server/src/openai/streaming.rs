@@ -813,7 +813,16 @@ impl OpenAiStreamDriver {
                     send_openai_stream_chunk(tx, &chunk)
                 }
                 OpenAiStreamKind::ChatCompletion => {
-                    let chunk = chat_final_chunk(request_id, model_id.to_string(), finish);
+                    let mut chunk = chat_final_chunk(request_id, model_id.to_string(), finish);
+                    let matched_text = self
+                        .pipeline
+                        .stop_scanner
+                        .as_ref()
+                        .and_then(StopSequenceScanner::matched_text)
+                        .map(str::to_string);
+                    if let Some(choice) = chunk.choices.first_mut() {
+                        choice.stop_reason = matched_text;
+                    }
                     send_openai_stream_chunk(tx, &chunk)
                 }
             };
@@ -2990,6 +2999,49 @@ mod openai_stream_driver_tests {
             reasons.contains(&"content_filter"),
             "expected a content_filter finish, got {payloads:?}"
         );
+    }
+
+    #[test]
+    fn client_stop_final_chunk_carries_the_matched_stop_text() {
+        let mut driver = OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: None,
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: StopSequenceScanner::new(vec!["DONE".to_string()]),
+                include_usage: false,
+                count_reasoning_tokens: false,
+            },
+            reasoning: None,
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+        assert!(
+            !driver.emit_content(&tx, 1, "m", "partial DONE rest".to_string()),
+            "a stop match ends the stream"
+        );
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let finals: Vec<&Value> = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+            .collect();
+        assert_eq!(finals.len(), 1, "{payloads:?}");
+        assert_eq!(finals[0]["finish_reason"], "stop");
+        assert_eq!(finals[0]["stop_reason"], "DONE");
     }
 
     #[test]

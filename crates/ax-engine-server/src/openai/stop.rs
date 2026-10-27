@@ -92,16 +92,18 @@ fn consider_stop_match(best: &mut Option<(usize, usize)>, index: usize, len: usi
 /// Truncate at the earliest stop match. Returns true when a match fired
 /// (callers set `finish_reason: "stop"`).
 pub(crate) fn truncate_at_stop(text: &mut String, sequences: &[String]) -> bool {
+    truncate_at_stop_matched(text, sequences).is_some()
+}
+
+/// [`truncate_at_stop`], returning the stop text that fired.
+pub(crate) fn truncate_at_stop_matched(text: &mut String, sequences: &[String]) -> Option<String> {
     if sequences.is_empty() {
-        return false;
+        return None;
     }
-    match find_earliest_stop(text, sequences) {
-        Some((index, _)) => {
-            text.truncate(index);
-            true
-        }
-        None => false,
-    }
+    let (index, len) = find_earliest_stop(text, sequences)?;
+    let matched = text[index..index + len].to_string();
+    text.truncate(index);
+    Some(matched)
 }
 
 /// Truncate a native `GenerateResponse`'s output text at the earliest client
@@ -223,6 +225,8 @@ pub(crate) struct StopSequenceScanner {
     sequences: Vec<String>,
     pending: String,
     matched: bool,
+    /// The stop text of the match, reported as the choice's `stop_reason`.
+    matched_text: Option<String>,
 }
 
 pub(crate) struct StopScanStep {
@@ -239,6 +243,7 @@ impl StopSequenceScanner {
             sequences,
             pending: String::new(),
             matched: false,
+            matched_text: None,
         })
     }
 
@@ -253,8 +258,9 @@ impl StopSequenceScanner {
             };
         }
         self.pending.push_str(text);
-        if let Some((index, _)) = find_earliest_stop(&self.pending, &self.sequences) {
+        if let Some((index, len)) = find_earliest_stop(&self.pending, &self.sequences) {
             self.matched = true;
+            self.matched_text = Some(self.pending[index..index + len].to_string());
             let emit = self.pending.drain(..index).collect();
             return StopScanStep {
                 emit,
@@ -269,6 +275,11 @@ impl StopSequenceScanner {
             emit,
             matched: false,
         }
+    }
+
+    /// The stop text that fired, once a match has been found.
+    pub(crate) fn matched_text(&self) -> Option<&str> {
+        self.matched_text.as_deref()
     }
 
     /// End of stream with no match: release everything withheld.

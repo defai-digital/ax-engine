@@ -278,7 +278,12 @@ async fn stream_buffered_openai_tool_chat_response(
     } else {
         // The buffered choice already applied client stop sequences, so its
         // finish_reason is the same contract the non-stream response reports.
-        chat_final_chunk_with_finish_reason(request_id, chat_response.model, choice.finish_reason)
+        chat_final_chunk_with_finish_reason(
+            request_id,
+            chat_response.model,
+            choice.finish_reason,
+            choice.stop_reason,
+        )
     };
     send_openai_chunk_async(&tx, &final_chunk).await;
     if include_stream_usage && let Some(usage) = chat_response.usage.clone() {
