@@ -100,6 +100,9 @@ impl PreemptionMetrics {
     }
 }
 
+/// Cancel checkpoints kept for `AX_MLX_CANCEL_KEEP_PREFIX` restores.
+pub(crate) const MAX_CANCEL_CHECKPOINTS: usize = 32;
+
 #[derive(Debug)]
 pub struct EngineCore {
     request_manager: RequestManager,
@@ -2349,6 +2352,11 @@ impl EngineCore {
                 "prefix checkpoint was not stored"
             );
         }
+        // Bounded: each entry holds a prompt prefix and its encoded
+        // snapshot, and every submit scans the list. Keep the newest.
+        if self.cancel_checkpoints.len() >= MAX_CANCEL_CHECKPOINTS {
+            self.cancel_checkpoints.remove(0);
+        }
         self.cancel_checkpoints.push(prefix);
     }
 
@@ -2392,6 +2400,16 @@ impl EngineCore {
         let blocked = self.request_manager.memory_blocked_ids();
         let mut retried = Vec::new();
         for request_id in blocked {
+            // Only a pressure spill has a prefix to resume. A request blocked
+            // on KV capacity alone was never spilled: treating it as one
+            // preempted it (a decode-stage request then failed every step
+            // with PreemptDecodeStage and jammed the engine) or left it
+            // blocked after blocks freed. Retry it like the default path.
+            if !self.spill_attempts.contains_key(&request_id) {
+                self.request_manager.unblock_memory_request(request_id)?;
+                retried.push(request_id);
+                continue;
+            }
             if sample.ready_to_resume() {
                 if self.resume_spilled_prefix(request_id)? {
                     self.request_manager.unblock_memory_request(request_id)?;
@@ -2545,6 +2563,15 @@ impl EngineCore {
         else {
             return Ok(());
         };
+        // The restored tokens occupy KV like any processed prompt; charge
+        // them now. Leaving the ledger empty let newer requests take the
+        // capacity, and the post-step reconcile then failed the restored
+        // request. Without room the request simply prefills from zero.
+        let plan = self.kv_manager.allocate(request_id, prefix.cut)?;
+        if !matches!(plan.allocation_status, AllocationStatus::Allocated) {
+            return Ok(());
+        }
+        self.sync_request_block_table(request_id)?;
         self.request_manager
             .apply_prefix_reuse(request_id, prefix.cut)?;
         if self.runner.chunk_sensitive_prefill()
