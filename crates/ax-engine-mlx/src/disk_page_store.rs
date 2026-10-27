@@ -28,6 +28,9 @@ const KEY_HASH_DOMAIN: &[u8] = b"ax.mlx.disk_prefix_page_key.v1\0";
 pub(crate) enum PageStoreError {
     Io(std::io::Error),
     Invalid,
+    /// An intact manifest whose payload exceeds this reader's entry limit.
+    /// The limit is local, so a larger-limit sibling can still serve it.
+    TooLarge,
 }
 
 impl From<std::io::Error> for PageStoreError {
@@ -85,10 +88,12 @@ impl PageManifest {
             || page_bytes == 0
             || page_count == 0
             || payload_len == 0
-            || payload_len > max_payload_bytes
             || descriptor_bytes != bytes.len()
         {
             return Err(PageStoreError::Invalid);
+        }
+        if payload_len > max_payload_bytes {
+            return Err(PageStoreError::TooLarge);
         }
         if let Some(key) = expected_key
             && key_hash != key_hash_bytes(key)

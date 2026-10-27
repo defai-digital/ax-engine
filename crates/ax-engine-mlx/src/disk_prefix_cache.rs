@@ -2074,6 +2074,10 @@ fn page_store_error(error: PageStoreError) -> DiskPrefixCacheError {
             std::io::ErrorKind::InvalidData,
             "invalid durable KV page-store operation",
         )),
+        PageStoreError::TooLarge => DiskPrefixCacheError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "durable KV page-store payload exceeds the entry limit",
+        )),
     }
 }
 
@@ -2091,6 +2095,9 @@ fn page_read_error(error: PageStoreError) -> ReadEntryError {
         }
         PageStoreError::Io(error) => ReadEntryError::Io(error),
         PageStoreError::Invalid => ReadEntryError::Invalid,
+        // Intact but above this process's local limit: a miss, not corruption
+        // (removing it would delete a larger-limit sibling's entry).
+        PageStoreError::TooLarge => ReadEntryError::Unsupported,
     }
 }
 
