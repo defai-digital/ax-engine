@@ -45,6 +45,7 @@ pub(crate) use linear_attention::{
     set_qwen_la_exact_attn_norm, set_qwen_la_norm_qkvz_fuse_weights,
 };
 pub(crate) use mla::glm_mla_attention_forward;
+pub(crate) use mlp::clear_worker_mlp_compile_caches;
 pub(crate) use mlp::moe_router_deepseek_v4;
 #[cfg(test)]
 pub(crate) use mlp::per_layer_input_gate;
