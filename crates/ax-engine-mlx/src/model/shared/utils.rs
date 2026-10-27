@@ -1012,8 +1012,8 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         // sees the same strided operand, so the result bits are unchanged.
         let wt = qw
             .weight_t_view
-            .get_or_init(|| transpose(&qw.weight, &[1, 0], None));
-        matmul(x, wt, None)
+            .get_or_build(|| transpose(&qw.weight, &[1, 0], None));
+        matmul(x, &wt, None)
     };
     if let Some(bias) = &qw.linear_bias {
         add(&y, bias, None)
@@ -1363,8 +1363,8 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         // strided operand, so the result bits are unchanged.
         let wt = qw
             .weight_t_view
-            .get_or_init(|| transpose(&qw.weight, &[1, 0], None));
-        matmul(x, wt, None)
+            .get_or_build(|| transpose(&qw.weight, &[1, 0], None));
+        matmul(x, &wt, None)
     };
     if let Some(bias) = &qw.linear_bias {
         add(&y, bias, None)

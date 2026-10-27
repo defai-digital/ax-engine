@@ -3775,3 +3775,35 @@ fn vision_sidecar_returns_none_when_no_sidecar_or_manifest() {
     assert!(name_map.is_empty());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn weight_view_built_on_one_worker_thread_evaluates_on_another() {
+    // Shared weights serve several worker threads. A view cached unevaluated
+    // stays bound to its creating thread's stream.
+    let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let weight = std::sync::Arc::new(QuantizedWeight::new(
+        mlx_sys::reshape(&MlxArray::from_f32_slice(&data), &[2, 3], None),
+        None,
+        None,
+    ));
+    // Loaded weights are materialized; only the derived view is lazy.
+    mlx_sys::transforms::try_eval(&[&weight.weight]).expect("materialize weight");
+    let builder = std::sync::Arc::clone(&weight);
+    std::thread::spawn(move || {
+        // Like a model worker, this thread owns its own default GPU stream.
+        let stream = mlx_sys::MlxStream::new_gpu();
+        stream.set_as_default();
+        builder
+            .weight_t_view
+            .get_or_build(|| mlx_sys::transpose(&builder.weight, &[1, 0], None));
+    })
+    .join()
+    .expect("builder thread");
+    let view = weight
+        .weight_t_view
+        .get_or_build(|| unreachable!("the view is cached by the builder thread"));
+    let x = mlx_sys::reshape(&MlxArray::from_f32_slice(&[1.0, 1.0, 1.0]), &[1, 3], None);
+    let y = mlx_sys::matmul(&x, &view, None);
+    mlx_sys::transforms::try_eval(&[&y]).expect("evaluate the shared view on another thread");
+    assert_eq!(y.data_f32(), &[6.0, 15.0]);
+}

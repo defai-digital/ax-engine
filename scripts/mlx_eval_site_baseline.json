@@ -142,7 +142,7 @@
   },
   "crates/ax-engine-mlx/src/weights.rs": {
     "eval": 22,
-    "try_eval": 1
+    "try_eval": 2
   },
   "crates/ax-engine-mlx/src/weights/qwen4_exp.rs": {
     "try_eval": 4
