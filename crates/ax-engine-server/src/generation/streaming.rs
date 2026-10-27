@@ -254,6 +254,9 @@ where
     );
 }
 
+/// Minimum spacing of the progress comments `drive_stream_events` sends.
+const STREAM_PROGRESS_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub(crate) fn drive_stream_events<N, E, D>(
     tx: &StreamEventSender,
     cancel: &AtomicBool,
@@ -265,6 +268,11 @@ pub(crate) fn drive_stream_events<N, E, D>(
     E: FnMut(GenerateStreamEvent) -> bool,
     D: FnMut(),
 {
+    // Engine events that produce no client frame (prefill quanta, a hidden
+    // reasoning/analysis channel) are still progress. The idle-timeout relay
+    // only sees frames, so it cut such healthy streams; a throttled SSE
+    // comment keeps them alive, while a stalled engine still times out.
+    let mut last_heartbeat = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("stream cancelled: client disconnected");
@@ -274,6 +282,15 @@ pub(crate) fn drive_stream_events<N, E, D>(
             Ok(Some(event)) => {
                 if !emit_event(event) {
                     return;
+                }
+                if last_heartbeat.elapsed() >= STREAM_PROGRESS_HEARTBEAT {
+                    if tx
+                        .blocking_send(Ok(Event::default().comment("progress")))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    last_heartbeat = std::time::Instant::now();
                 }
             }
             Ok(None) => {

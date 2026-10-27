@@ -3271,6 +3271,39 @@ mod openai_stream_driver_tests {
         })
     }
 
+    #[test]
+    fn silent_engine_progress_still_emits_heartbeat_comments() {
+        // Steps that produce no client frame (prefill quanta, hidden
+        // reasoning) must still look like activity to the idle-timeout relay.
+        let (tx, mut rx) = mpsc::channel(64);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut steps = 0;
+        crate::generation::streaming::drive_stream_events(
+            &tx,
+            &cancel,
+            || {
+                steps += 1;
+                if steps > 3 {
+                    return Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                Ok(Some(step_with_delta_text("")))
+            },
+            |_event| true, // the driver emits nothing for these steps
+            || {},
+        );
+        drop(tx);
+        let mut frames = 0;
+        while let Ok(frame) = rx.try_recv() {
+            let _event = frame.expect("frame");
+            frames += 1;
+        }
+        assert!(
+            frames >= 1,
+            "1.8 s of silent progress must yield a heartbeat"
+        );
+    }
+
     fn step_with_delta_text(text: &str) -> GenerateStreamEvent {
         GenerateStreamEvent::Step(GenerateStreamStepEvent {
             request: SessionRequestReport {
