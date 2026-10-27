@@ -643,7 +643,10 @@ class Session:
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
-        for value in self._inner.stream_generate(
+        # Start the native stream now, not on the first ``next()``: argument
+        # and session-state errors (closed session, active stream) must raise
+        # at the call site, where callers wrap the call in ``try``.
+        native = self._inner.stream_generate(
             input_tokens,
             input_text=input_text,
             multimodal_inputs=multimodal_inputs,
@@ -661,8 +664,8 @@ class Session:
             ignore_eos=ignore_eos,
             stop_sequences=stop_sequences,
             metadata=metadata,
-        ):
-            yield _stream_event_from_dict(value)
+        )
+        return (_stream_event_from_dict(value) for value in native)
 
     def generate_text(
         self,

@@ -4810,6 +4810,16 @@ hello
         ):
             list(session.stream_generate([9], max_output_tokens=1))
 
+    def test_stream_generate_raises_at_the_call_site(self) -> None:
+        # Native start-up errors surface from the call, not the first next():
+        # callers wrap the call itself in try/except.
+        with (
+            patch.object(self.ax_engine, "_Session", HungNativeSession),
+            self.ax_engine.Session(model_id="qwen3_dense") as session,
+            self.assertRaisesRegex(RuntimeError, r"did not terminate"),
+        ):
+            session.stream_generate([9], max_output_tokens=1)
+
     def test_stream_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",

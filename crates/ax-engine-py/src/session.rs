@@ -162,21 +162,28 @@ impl Session {
         self.model_id.clone()
     }
 
+    // Every wait on the session mutex happens without the GIL: a long
+    // embed/generate holds the mutex with the GIL released, and waiting for
+    // it with the GIL held froze every other Python thread meanwhile.
     #[getter]
-    fn closed(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|slot| matches!(*slot, SessionSlot::Closed))
-            .unwrap_or(true)
+    fn closed(&self, py: Python<'_>) -> bool {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            inner
+                .lock()
+                .map(|slot| matches!(*slot, SessionSlot::Closed))
+                .unwrap_or(true)
+        })
     }
 
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let previous = {
-            let mut slot = self.inner.lock().map_err(|_| {
+        let inner = Arc::clone(&self.inner);
+        let previous = py.detach(move || {
+            let mut slot = inner.lock().map_err(|_| {
                 py_engine_state_error("session mutex poisoned; session state is unrecoverable")
             })?;
-            std::mem::replace(&mut *slot, SessionSlot::Closed)
-        };
+            Ok::<_, PyErr>(std::mem::replace(&mut *slot, SessionSlot::Closed))
+        })?;
         // Tearing down a loaded EngineSession releases Metal buffers and KV
         // state, which can take a while for large models; do it without the
         // GIL so other Python threads and signal handlers keep running.
@@ -185,7 +192,8 @@ impl Session {
     }
 
     fn runtime<'py>(&self, py: Python<'py>) -> PyResult<Py<PyDict>> {
-        self.with_session_ref(|session| runtime_dict(py, &session.runtime_report()))
+        let report = self.with_session_ref(py, |session| session.runtime_report())?;
+        runtime_dict(py, &report)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -305,12 +313,9 @@ impl Session {
     }
 
     fn snapshot<'py>(&self, py: Python<'py>, request_id: u64) -> PyResult<Option<Py<PyDict>>> {
-        self.with_session_ref(|session| {
-            session
-                .request_report(request_id)
-                .map(|report| request_report_dict(py, &report))
-                .transpose()
-        })
+        self.with_session_ref(py, |session| session.request_report(request_id))?
+            .map(|report| request_report_dict(py, &report))
+            .transpose()
     }
 
     fn cancel(&mut self, py: Python<'_>, request_id: u64) -> PyResult<()> {
@@ -544,16 +549,26 @@ impl Session {
 }
 
 impl Session {
-    fn with_session_ref<T>(&self, f: impl FnOnce(&EngineSession) -> PyResult<T>) -> PyResult<T> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-        match &*inner {
-            SessionSlot::Ready(session) => f(session.as_ref()),
-            SessionSlot::Streaming => Err(py_engine_state_error("session has an active stream")),
-            SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-        }
+    /// Read from the ready session without the GIL; build Python objects
+    /// from the returned owned value afterwards.
+    fn with_session_ref<T: Send>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&EngineSession) -> T + Send,
+    ) -> PyResult<T> {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let slot = inner
+                .lock()
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
+            match &*slot {
+                SessionSlot::Ready(session) => Ok(f(session.as_ref())),
+                SessionSlot::Streaming => {
+                    Err(py_engine_state_error("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
+            }
+        })
     }
 
     fn with_ready_session<T>(
@@ -772,7 +787,7 @@ mod tests {
         init_python();
         let mut session = llama_cpp_session();
         Python::attach(|py| session.close(py)).expect("close should succeed");
-        assert!(session.closed());
+        assert!(Python::attach(|py| session.closed(py)));
 
         Python::attach(|py| {
             let error = session
@@ -803,7 +818,7 @@ mod tests {
             );
         });
         assert!(
-            session.closed(),
+            Python::attach(|py| session.closed(py)),
             "closed session must remain Closed after a rejected stream_generate"
         );
         // Follow-up generate must still report closed, not "active stream".
