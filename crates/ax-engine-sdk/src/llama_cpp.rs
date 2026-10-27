@@ -505,7 +505,13 @@ impl TempPromptFile {
                     path: path.display().to_string(),
                     source,
                 })?;
-        if let Err(source) = file.write_all(prompt.as_bytes()) {
+        // llama.cpp `-f/--file` drops one trailing newline from the file
+        // (common/arg.cpp). Write one extra so the model sees `prompt` exactly,
+        // including the `\n` that ends a ChatML generation prompt.
+        if let Err(source) = file
+            .write_all(prompt.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+        {
             drop(file);
             let _ = fs::remove_file(&path);
             return Err(LlamaCppBackendError::PromptFileWrite {
@@ -1251,10 +1257,24 @@ mod tests {
                 .any(|arg| arg.contains("/etc/passwd") || arg.contains("/tmp/evil")),
             "prompt text leaked onto argv: {args:?}"
         );
-        assert_eq!(
-            fs::read_to_string(prompt_file.path()).expect("prompt file should be readable"),
-            prompt
-        );
+        // One extra newline: llama.cpp `--file` strips exactly one.
+        let staged =
+            fs::read_to_string(prompt_file.path()).expect("prompt file should be readable");
+        assert_eq!(staged.strip_suffix('\n'), Some(prompt));
+    }
+
+    #[test]
+    fn staged_prompt_survives_llama_file_trailing_newline_strip() {
+        for prompt in ["<|im_start|>assistant\n", "no newline", ""] {
+            let prompt_file = TempPromptFile::create(prompt).expect("prompt file should be staged");
+            let mut staged =
+                fs::read_to_string(prompt_file.path()).expect("prompt file should be readable");
+            // Mirror llama.cpp common/arg.cpp `--file`.
+            if staged.ends_with('\n') {
+                staged.pop();
+            }
+            assert_eq!(staged, prompt);
+        }
     }
 
     #[test]
