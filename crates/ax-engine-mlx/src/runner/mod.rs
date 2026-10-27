@@ -6161,15 +6161,14 @@ fn bf16_mean_pool(hidden: &MlxArray, actual_lens: &[usize], batch_size: i32) -> 
     );
     let masked = multiply(hidden, &mask_arr, None);
     let sums = sum_axis(&masked, 1, false, None);
-    let mut scale_data = vec![zero_bf16; actual_lens.len()];
-    for (i, &l) in actual_lens.iter().enumerate() {
-        scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
-    }
-    let scale_arr = MlxArray::from_raw_data(
-        scale_data.as_ptr() as *const u8,
-        scale_data.len() * std::mem::size_of::<u16>(),
+    // f32 scale, as the single-item path uses: truncating 1/len to bf16
+    // shrank every mean-pooled row by up to ~0.8%, so the same input came
+    // back with a different magnitude batched vs alone (normalize=false).
+    let scale_data: Vec<f32> = actual_lens.iter().map(|&l| 1.0 / l as f32).collect();
+    let scale_arr = mlx_sys::reshape(
+        &MlxArray::from_f32_slice(&scale_data),
         &[batch_size, 1_i32],
-        MlxDtype::Bfloat16,
+        None,
     );
     multiply(&sums, &scale_arr, None)
 }

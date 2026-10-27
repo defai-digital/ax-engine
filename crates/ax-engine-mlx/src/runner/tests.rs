@@ -10095,3 +10095,21 @@ fn mtp_accept_probability_cuts_top_p_against_the_min_p_survivor_mass() {
     );
     assert!((probability - 0.625).abs() < 1e-6, "{probability}");
 }
+
+#[test]
+fn batched_mean_pool_divides_by_the_exact_length() {
+    // Rows of 2.0 over lengths 3 and 5 (padded to 5): the mean is exactly 2.0.
+    // A bf16-truncated 1/len scaled it to ~1.992.
+    let hidden = mlx_sys::astype(
+        &mlx_sys::reshape(&MlxArray::from_f32_slice(&[2.0; 10]), &[2, 5, 1], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let pooled = mlx_sys::astype(
+        &bf16_mean_pool(&hidden, &[3, 5], 2),
+        MlxDtype::Float32,
+        None,
+    );
+    mlx_sys::eval(&[&pooled]);
+    assert_eq!(pooled.data_f32(), &[2.0, 2.0]);
+}
