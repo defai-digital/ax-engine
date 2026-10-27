@@ -1803,11 +1803,16 @@ pub(crate) fn decode_gemma4_chat_output_with_reasoning(
 /// Decode a DeepSeek thinking-mode chat completion. Generation starts inside
 /// an open think block, so the output carries reasoning until the first
 /// close tag; unterminated output is all reasoning (never leaks to content).
+///
+/// `</think>` is an ordinary added token in DeepSeek tokenizers, so the
+/// split survives a special-token-skipping decode. Skip them like the stream
+/// decoder and the thinking-off path do: keeping them would serve control
+/// tokens (`<｜end▁of▁sentence｜>`) as content that the stream never shows.
 pub(crate) fn decode_deepseek_chat_output_with_reasoning(
     tokenizer: &EngineTokenizer,
     output_tokens: &[u32],
 ) -> Result<(String, Option<String>), EngineTokenizerError> {
-    let text = tokenizer.decode(output_tokens, false)?;
+    let text = tokenizer.decode(output_tokens, true)?;
     let (reasoning, content) = match text.split_once(DEEPSEEK_THINK_CLOSE) {
         Some((before, after)) => (before, after),
         None => (text.as_str(), ""),
@@ -1886,6 +1891,45 @@ pub(crate) fn decode_glm_chat_output(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_reasoning_decode_skips_special_tokens_like_the_stream() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-engine-deepseek-special-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":5}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0", "truncation": null, "padding": null,
+  "added_tokens": [
+    {"id": 3, "content": "</think>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": false},
+    {"id": 5, "content": "<eos>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null,
+  "decoder": null,
+  "model": {"type": "WordLevel",
+    "vocab": {"[UNK]": 0, "plan": 1, "answer": 2, "</think>": 3, "<eos>": 5},
+    "unk_token": "[UNK]"}
+}"#,
+        )
+        .expect("tokenizer");
+        let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer loads");
+        let (content, reasoning) =
+            decode_deepseek_chat_output_with_reasoning(&tokenizer, &[1, 3, 2, 5]).expect("decode");
+        assert_eq!(reasoning.as_deref(), Some("plan"));
+        assert!(
+            !content.contains("<eos>"),
+            "special tokens must not surface as content: {content:?}"
+        );
+        assert_eq!(content.trim(), "answer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn deepseek_r1_distills_use_the_deepseek_template() {
