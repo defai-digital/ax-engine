@@ -788,13 +788,14 @@ fn build_llama_cpp_completion_request<'a>(
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
         top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
+        min_p: Some(delegated_min_p(&request.sampling)),
         repeat_penalty: request.sampling.repetition_penalty,
         repeat_last_n: request.sampling.repetition_context_size,
         presence_penalty: request.sampling.presence_penalty,
         frequency_penalty: request.sampling.frequency_penalty,
         logit_bias: &request.sampling.logit_bias,
-        seed: request.sampling.seed,
+        seed: explicit_seed(&request.sampling),
+        ignore_eos: request.sampling.ignore_eos,
         n_predict: request.max_output_tokens,
         stream,
         return_tokens: true,
@@ -814,13 +815,14 @@ fn build_llama_cpp_chat_completion_request(
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
         top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
+        min_p: Some(delegated_min_p(&request.sampling)),
         repeat_penalty: request.sampling.repetition_penalty,
         repeat_last_n: request.sampling.repetition_context_size,
         presence_penalty: request.sampling.presence_penalty,
         frequency_penalty: request.sampling.frequency_penalty,
         logit_bias: &request.sampling.logit_bias,
-        seed: request.sampling.seed,
+        seed: explicit_seed(&request.sampling),
+        ignore_eos: request.sampling.ignore_eos,
         stream,
         stop: request.stop_sequences.clone(),
         metadata: request.metadata.as_deref(),
@@ -848,10 +850,24 @@ fn build_llama_cpp_prompt(
     }
 }
 
+/// The seed to send upstream, or None for "unseeded". `seed: 0` without
+/// `seed_explicit` is the SDK's no-seed default; llama.cpp would take it as a
+/// fixed seed and repeat the same "random" output on every request.
+fn explicit_seed(sampling: &GenerateSampling) -> Option<u64> {
+    (sampling.seed_explicit || sampling.seed != 0).then_some(sampling.seed)
+}
+
+/// `GenerateSampling::min_p` None means min-p off; llama.cpp applies its own
+/// 0.05 default when the field is absent, so send the 0 explicitly.
+fn delegated_min_p(sampling: &GenerateSampling) -> f32 {
+    sampling.min_p.unwrap_or(0.0)
+}
+
 fn append_sampling_args(command: &mut Command, sampling: &GenerateSampling) {
+    if let Some(seed) = explicit_seed(sampling) {
+        command.arg("--seed").arg(seed.to_string());
+    }
     command
-        .arg("--seed")
-        .arg(sampling.seed.to_string())
         .arg("--temp")
         .arg(sampling.temperature.to_string())
         .arg("--top-p")
@@ -860,11 +876,29 @@ fn append_sampling_args(command: &mut Command, sampling: &GenerateSampling) {
         .arg(sampling.top_k.to_string())
         .arg("--repeat-penalty")
         .arg(sampling.repetition_penalty.to_string());
-    if let Some(min_p) = sampling.min_p {
-        command.arg("--min-p").arg(min_p.to_string());
-    }
+    command
+        .arg("--min-p")
+        .arg(delegated_min_p(sampling).to_string());
     if let Some(ctx) = sampling.repetition_context_size {
         command.arg("--repeat-last-n").arg(ctx.to_string());
+    }
+    // The server path forwards these too; llama-cli takes them as flags.
+    if !is_zero_penalty(&sampling.presence_penalty) {
+        command
+            .arg("--presence-penalty")
+            .arg(sampling.presence_penalty.to_string());
+    }
+    if !is_zero_penalty(&sampling.frequency_penalty) {
+        command
+            .arg("--frequency-penalty")
+            .arg(sampling.frequency_penalty.to_string());
+    }
+    for (token, bias) in &sampling.logit_bias {
+        // llama-cli's TOKEN_ID(+/-)BIAS form.
+        command.arg("--logit-bias").arg(format!("{token}{bias:+}"));
+    }
+    if sampling.ignore_eos {
+        command.arg("--ignore-eos");
     }
 }
 
@@ -1001,7 +1035,12 @@ struct LlamaCppCompletionRequest<'a> {
     /// OpenAI-style `{"<token id>": bias}` object; omitted when empty.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     logit_bias: &'a std::collections::BTreeMap<u32, f32>,
-    seed: u64,
+    /// Omitted unless the caller chose a seed: llama.cpp treats any sent
+    /// value (0 included) as a fixed seed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    ignore_eos: bool,
     n_predict: u32,
     stream: bool,
     return_tokens: bool,
@@ -1030,7 +1069,12 @@ struct LlamaCppChatCompletionRequest<'a> {
     /// OpenAI-style `{"<token id>": bias}` object; omitted when empty.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     logit_bias: &'a std::collections::BTreeMap<u32, f32>,
-    seed: u64,
+    /// Omitted unless the caller chose a seed: llama.cpp treats any sent
+    /// value (0 included) as a fixed seed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    ignore_eos: bool,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
@@ -1183,6 +1227,43 @@ mod tests {
             &BackendPolicy::allow_llama_cpp(),
             &ResolvedBackend::llama_cpp(SelectedBackend::LlamaCpp, "test delegated route"),
         )
+    }
+
+    #[test]
+    fn completion_payload_leaves_seed_unset_and_min_p_off_by_default() {
+        let mut request = GenerateRequest {
+            prefill_hints: Default::default(),
+            model_id: "qwen3".to_string(),
+            input_tokens: Vec::new(),
+            input_text: Some("hi".to_string()),
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 3,
+            sampling: crate::generate::GenerateSampling::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        };
+        let payload = |request: &GenerateRequest| {
+            serde_json::to_value(build_llama_cpp_completion_request(
+                LlamaCppPrompt::Text("hi"),
+                request,
+                false,
+                false,
+            ))
+            .expect("payload serializes")
+        };
+        let value = payload(&request);
+        // llama.cpp takes any sent seed (0 included) as fixed, and fills an
+        // absent min_p with its own 0.05.
+        assert!(value.get("seed").is_none(), "{value}");
+        assert_eq!(value["min_p"], 0.0);
+        assert!(value.get("ignore_eos").is_none());
+
+        request.sampling.seed = 0;
+        request.sampling.seed_explicit = true;
+        request.sampling.ignore_eos = true;
+        let value = payload(&request);
+        assert_eq!(value["seed"], 0);
+        assert_eq!(value["ignore_eos"], true);
     }
 
     #[test]

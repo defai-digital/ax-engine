@@ -445,7 +445,10 @@ fn build_mlx_lm_completion_request<'a>(
         presence_penalty: request.sampling.presence_penalty,
         frequency_penalty: request.sampling.frequency_penalty,
         logit_bias: &request.sampling.logit_bias,
-        seed: request.sampling.seed,
+        // mlx-lm reseeds per request and stops batching for any non-null
+        // seed; send one only when the caller chose it.
+        seed: (request.sampling.seed_explicit || request.sampling.seed != 0)
+            .then_some(request.sampling.seed),
         stream,
         stop: request.stop_sequences.clone(),
         stream_options: stream.then_some(MlxLmStreamOptions {
@@ -481,7 +484,10 @@ fn build_mlx_lm_chat_completion_request(
         presence_penalty: request.sampling.presence_penalty,
         frequency_penalty: request.sampling.frequency_penalty,
         logit_bias: &request.sampling.logit_bias,
-        seed: request.sampling.seed,
+        // mlx-lm reseeds per request and stops batching for any non-null
+        // seed; send one only when the caller chose it.
+        seed: (request.sampling.seed_explicit || request.sampling.seed != 0)
+            .then_some(request.sampling.seed),
         stream,
         stop: request.stop_sequences.clone(),
         metadata: request.metadata.as_deref(),
@@ -547,7 +553,8 @@ struct MlxLmCompletionRequest<'a> {
     /// OpenAI-style `{"<token id>": bias}` object; omitted when empty.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     logit_bias: &'a std::collections::BTreeMap<u32, f32>,
-    seed: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
@@ -576,7 +583,8 @@ struct MlxLmChatCompletionRequest<'a> {
     /// OpenAI-style `{"<token id>": bias}` object; omitted when empty.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     logit_bias: &'a std::collections::BTreeMap<u32, f32>,
-    seed: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
@@ -957,6 +965,20 @@ mod tests {
             &BackendPolicy::allow_mlx_lm_delegated(),
             &ResolvedBackend::mlx_lm_delegated("test delegated route"),
         )
+    }
+
+    #[test]
+    fn completion_payload_omits_an_unchosen_seed() {
+        // Any non-null seed makes mlx-lm reseed and run the request unbatched.
+        let plain = text_request("hi");
+        let value = serde_json::to_value(build_mlx_lm_completion_request(&plain, "hi", false))
+            .expect("payload serializes");
+        assert!(value.get("seed").is_none(), "{value}");
+        let mut seeded = text_request("hi");
+        seeded.sampling.seed_explicit = true;
+        let value = serde_json::to_value(build_mlx_lm_completion_request(&seeded, "hi", false))
+            .expect("payload serializes");
+        assert_eq!(value["seed"], 0);
     }
 
     #[test]
