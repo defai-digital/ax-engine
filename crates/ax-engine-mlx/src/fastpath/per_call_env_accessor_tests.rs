@@ -231,10 +231,6 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
     ("src/mtp_adaptive_gate.rs", "bins_from_env"),
     ("src/ngram_accel.rs", "effective_draft_confidence_threshold"),
     (
-        "src/ngram_accel.rs",
-        "effective_speculative_accept_threshold",
-    ),
-    (
         "src/per_layer_compile.rs",
         "COMPILE_CACHE_REFRESH_THRESHOLD",
     ),

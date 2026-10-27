@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use mlx_sys::{MlxArray, MlxDtype, argmax, eval, multiply, reshape, slice, softmax, take};
+use mlx_sys::{MlxArray, MlxDtype, argmax, eval, slice};
 
 use crate::sampling::{
     MlxSamplingParams, Xorshift64, sample_categorical_gpu, sample_categorical_into,
@@ -100,47 +100,6 @@ pub(crate) fn effective_draft_confidence_threshold() -> f32 {
     *CACHED.get_or_init(|| {
         parse_confidence_threshold(
             std::env::var(DRAFT_CONFIDENCE_THRESHOLD_ENV)
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
-/// Minimum softmax probability for a draft token to be accepted without matching
-/// the model's argmax.  When `p_target(draft) >= NGRAM_SPECULATIVE_ACCEPT_THRESHOLD`
-/// the draft is accepted even if the argmax predicted a different token.
-///
-/// Set to 0.0 to disable (pure argmax comparison, original behaviour).
-/// Default 0.30: accept if draft token holds at least 30% probability mass.
-pub(crate) const NGRAM_SPECULATIVE_ACCEPT_THRESHOLD: f32 = 0.30;
-
-/// Environment variable that overrides `NGRAM_SPECULATIVE_ACCEPT_THRESHOLD`.
-pub(crate) const NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV: &str =
-    "AX_NGRAM_SPECULATIVE_ACCEPT_THRESHOLD";
-
-pub(crate) fn parse_speculative_accept_threshold(raw: Option<&str>) -> f32 {
-    let Some(value) = raw else {
-        return NGRAM_SPECULATIVE_ACCEPT_THRESHOLD;
-    };
-    match value.parse::<f32>() {
-        Ok(parsed) if !parsed.is_nan() && (0.0..=1.0).contains(&parsed) => parsed,
-        _ => {
-            tracing::warn!(
-                "{NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV} must be a float in [0.0, 1.0]; \
-                 got {value:?}; falling back to default {NGRAM_SPECULATIVE_ACCEPT_THRESHOLD}"
-            );
-            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
-        }
-    }
-}
-
-/// Resolve the effective speculative accept threshold for the current process.
-pub(crate) fn effective_speculative_accept_threshold() -> f32 {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<f32> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        parse_speculative_accept_threshold(
-            std::env::var(NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV)
                 .ok()
                 .as_deref(),
         )
@@ -1158,7 +1117,6 @@ pub(crate) fn ngram_accel_decode_step_with_sampling_buffers(
         draft,
         token_offset,
         sampling,
-        effective_speculative_accept_threshold(),
         rng,
         sampling_probs_buf,
         sampling_logits_buf,
@@ -1229,7 +1187,6 @@ fn ngram_accel_decode_step_linear_safe(
         draft,
         token_offset,
         sampling,
-        effective_speculative_accept_threshold(),
         rng,
         sampling_probs_buf,
         sampling_logits_buf,
@@ -1271,40 +1228,22 @@ pub(crate) fn ngram_feedback_policy(cfg: &ModelConfig) -> (u32, f32) {
     }
 }
 
-/// For each draft position i, gather `softmax(logits_all[i] / T)[draft[i]]` —
-/// the model's probability for that specific draft token.
-///
-/// Returns a lazy `[n]` f32 array; caller must include it in the combined `eval()`
-/// before calling `.data_f32()`.  Only called when `temperature > 0`.
-///
-/// Index mapping: `verify_input = [last_token, D0, D1, …, D_{n-1}]`.
-/// `logits_all[i]` is the prediction *after* `verify_input[i]`, so
-/// `logits_all[i]` predicts `D_i = draft[i]` — no off-by-one.
-fn gather_draft_token_probs_lazy(
-    logits_all: &MlxArray,
-    draft: &[u32],
-    vocab: i32,
-    temperature: f32,
-) -> MlxArray {
-    let n = draft.len();
-    let inv_temp_val = 1.0_f32 / temperature;
-    let inv_temp = MlxArray::from_raw_data(
-        &inv_temp_val as *const f32 as *const u8,
-        std::mem::size_of::<f32>(),
-        &[],
-        MlxDtype::Float32,
-    );
-    let scaled = multiply(logits_all, &inv_temp, None);
-    let probs = softmax(&scaled, -1, None); // [verify_len, vocab] lazy
-    let flat_indices: Vec<i32> = (0..n).map(|i| i as i32 * vocab + draft[i] as i32).collect();
-    let flat_idx_arr = MlxArray::from_raw_data(
-        flat_indices.as_ptr() as *const u8,
-        flat_indices.len() * 4,
-        &[n as i32],
-        MlxDtype::Int32,
-    );
-    let probs_flat = reshape(&probs, &[-1_i32], None);
-    take(&probs_flat, &flat_idx_arr, 0, None) // [n] lazy
+/// One step of exact speculative sampling for a deterministic draft token:
+/// `Ok` accepts `drafted` (probability `p(drafted)`), `Err` carries the
+/// correction sampled from `p` with `drafted` removed. The combined output
+/// is distributed exactly as `p`.
+fn exact_draft_verdict(
+    target: &crate::sampling::TokenDistribution,
+    drafted: u32,
+    rng: &mut Xorshift64,
+) -> Result<(), Option<u32>> {
+    if rng.next_f32() < target.probability(drafted) {
+        return Ok(());
+    }
+    let removed = crate::sampling::TokenDistribution::new(vec![(drafted, 1.0)]);
+    Err(removed.and_then(|removed| {
+        crate::sampling::sample_residual_token_distribution(target, &removed, rng)
+    }))
 }
 
 struct DraftVerification {
@@ -1322,7 +1261,6 @@ fn verify_draft(
     draft: &[u32],
     token_offset: usize,
     sampling: MlxSamplingParams,
-    accept_threshold: f32,
     rng: &mut Xorshift64,
     sampling_probs_buf: &mut Vec<f32>,
     sampling_logits_buf: &mut Vec<f32>,
@@ -1338,32 +1276,13 @@ fn verify_draft(
     let logits_all = forward_all_positions(cfg, weights, &verify_input, cache, token_offset);
     cache.advance(verify_len);
 
-    // Build argmax and, when speculative threshold is active, the draft-token
-    // probability vector — both lazily, evaluated in a single blocking call.
+    // Argmax for the greedy accept rule (and the fallback correction token).
     let predicted_arr = argmax(&logits_all, None);
     let vocab = cfg.vocab_size as i32;
 
-    // Compute per-draft-position softmax probabilities when the threshold is
-    // active and temperature > 0.  Bundled into the same eval() as argmax and
-    // KV refs to avoid a second GPU sync.
-    let use_speculative = accept_threshold > 0.0 && sampling.temperature > 0.0 && !draft.is_empty();
-    let draft_probs_arr_opt: Option<MlxArray> = if use_speculative {
-        Some(gather_draft_token_probs_lazy(
-            &logits_all,
-            draft,
-            vocab,
-            sampling.temperature,
-        ))
-    } else {
-        None
-    };
-
     let kv_refs = cache.collect_eval_refs();
-    let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
     targets.push(&predicted_arr);
-    if let Some(ref arr) = draft_probs_arr_opt {
-        targets.push(arr);
-    }
     targets.extend(kv_refs);
     eval(&targets);
 
@@ -1371,26 +1290,63 @@ fn verify_draft(
     // materialised.  KV backing buffers are flat — no separate materialize_cache
     // call needed in the caller.
     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
-    let draft_probs: Vec<f32> = draft_probs_arr_opt
-        .as_ref()
-        .map(|arr| arr.data_f32().to_vec())
-        .unwrap_or_default();
 
     // Accept/reject.
     // predicted[i] = argmax prediction for token AFTER verify_input[i] = draft[i].
-    // Accept when:
-    //   (a) argmax agrees with the draft, OR
-    //   (b) speculative threshold: p_target(draft[i]) >= accept_threshold.
-    // Case (b) accepts slightly-off-argmax drafts when the draft token still holds
-    // high probability mass, mirroring the --mtp-optimistic strategy in lightning.
+    // Greedy: accept while the argmax agrees with the draft. Sampled: exact
+    // speculative sampling (below).
     let mut result: Vec<u32> = Vec::new();
     let mut accept_count = 0usize;
 
-    for i in 0..draft.len() {
-        let argmax_match = predicted[i] == draft[i];
-        let prob_accept = !draft_probs.is_empty() && draft_probs[i] >= accept_threshold;
+    if sampling.temperature > 0.0 {
+        // Exact speculative sampling for a deterministic n-gram proposal:
+        // accept draft d with probability p(d) under the request's processed
+        // target law (temperature, min_p, top_k, top_p); on rejection sample
+        // from p with d removed. The former rule accepted any argmax match or
+        // p(d) >= 0.30 outright, which emitted tokens top_p excludes and
+        // fixed tokens that should only be sampled with probability p(d).
+        for (i, &drafted) in draft.iter().enumerate() {
+            let p = i as i32;
+            let row = slice(&logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
+            eval(&[&row]);
+            let Some(target) = crate::sampling::token_distribution(row.data_f32(), sampling) else {
+                result.push(predicted[i]);
+                break;
+            };
+            match exact_draft_verdict(&target, drafted, rng) {
+                Ok(()) => {
+                    result.push(drafted);
+                    accept_count += 1;
+                }
+                Err(correction) => {
+                    result.push(correction.unwrap_or(predicted[i]));
+                    break;
+                }
+            }
+        }
+        if accept_count == draft.len() {
+            let pos = draft.len();
+            result.push(sample_logit_row(
+                &logits_all,
+                predicted[pos],
+                pos,
+                vocab,
+                sampling,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            ));
+        }
+        return DraftVerification {
+            accept_count,
+            committed_len: token_offset + 1 + accept_count,
+            result,
+        };
+    }
 
-        if argmax_match || prob_accept {
+    for i in 0..draft.len() {
+        if predicted[i] == draft[i] {
             result.push(draft[i]);
             accept_count += 1;
         } else {
@@ -2738,39 +2694,28 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // Speculative accept threshold constant / env-var parsing
-    // ---------------------------------------------------------------------------
-
     #[test]
-    fn speculative_accept_threshold_default() {
-        assert_eq!(
-            parse_speculative_accept_threshold(None),
-            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD,
-        );
-    }
-
-    #[test]
-    fn speculative_accept_threshold_parse_valid() {
-        assert!((parse_speculative_accept_threshold(Some("0.0")) - 0.0).abs() < 1e-6);
-        assert!((parse_speculative_accept_threshold(Some("0.3")) - 0.3).abs() < 1e-6);
-        assert!((parse_speculative_accept_threshold(Some("1.0")) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn speculative_accept_threshold_parse_out_of_range_falls_back() {
-        assert_eq!(
-            parse_speculative_accept_threshold(Some("1.5")),
-            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
-        );
-    }
-
-    #[test]
-    fn speculative_accept_threshold_parse_invalid_string_falls_back() {
-        assert_eq!(
-            parse_speculative_accept_threshold(Some("not_a_float")),
-            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
-        );
+    fn exact_draft_verdict_reproduces_the_target_law() {
+        // Target after top_p: A 0.6, B 0.4 (C excluded). Whatever the n-gram
+        // drafts, the emitted token must follow 0.6 / 0.4 and never be C.
+        let target =
+            crate::sampling::TokenDistribution::new(vec![(0, 0.6), (1, 0.4)]).expect("target");
+        for drafted in [0u32, 1, 2] {
+            let mut rng = Xorshift64::new(17 + u64::from(drafted));
+            let mut counts = [0u32; 3];
+            let trials = 20_000;
+            for _ in 0..trials {
+                let token = match exact_draft_verdict(&target, drafted, &mut rng) {
+                    Ok(()) => drafted,
+                    Err(correction) => correction.expect("correction"),
+                };
+                counts[token as usize] += 1;
+            }
+            let share = |index: usize| counts[index] as f32 / trials as f32;
+            assert!((share(0) - 0.6).abs() < 0.02, "draft {drafted}: {counts:?}");
+            assert!((share(1) - 0.4).abs() < 0.02, "draft {drafted}: {counts:?}");
+            assert_eq!(counts[2], 0, "a top_p-excluded token is never emitted");
+        }
     }
 
     #[test]
