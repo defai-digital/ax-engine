@@ -7,7 +7,7 @@ require_relative "../lib/ax_engine"
 
 # Minimal single-threaded TCP server for testing.
 class MockServer
-  attr_reader :last_method, :last_path, :last_body, :disconnects
+  attr_reader :last_method, :last_path, :last_body, :last_raw_body, :disconnects
 
   def initialize
     @server      = TCPServer.new("127.0.0.1", 0)
@@ -68,6 +68,7 @@ class MockServer
 
     @last_method = method
     @last_path   = path
+    @last_raw_body = body
     @last_body   = (JSON.parse(body) rescue body) unless body.empty?
 
     resp = @response
@@ -168,6 +169,37 @@ class TestClient < Minitest::Test
     @client.completion({ "prompt" => "hash-form", "max_tokens" => 8 })
     assert_equal "hash-form", @srv.last_body["prompt"]
     assert_equal 8, @srv.last_body["max_tokens"]
+  end
+
+  def test_kwargs_override_a_string_key_without_duplicating_it
+    @srv.set_response(body: { choices: [{ text: "ok" }] })
+    request = { "prompt" => "p", "max_tokens" => 10 }
+    @client.completion(request, max_tokens: 20)
+    assert_equal 1, @srv.last_raw_body.scan('"max_tokens"').length, @srv.last_raw_body
+    assert_equal 20, @srv.last_body["max_tokens"]
+    assert_equal({ "prompt" => "p", "max_tokens" => 10 }, request)
+  end
+
+  def test_ipv6_literal_base_url_connects
+    server = begin
+      TCPServer.new("::1", 0)
+    rescue SystemCallError
+      skip "IPv6 loopback unavailable"
+    end
+    port = server.addr[1]
+    thread = Thread.new do
+      client = server.accept
+      while (line = client.gets) && line != "\r\n"; end
+      body = JSON.generate({ status: "ok" })
+      client.write "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" \
+                   "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
+      client.close
+    end
+    resp = AxEngine::Client.new(base_url: "http://[::1]:#{port}", timeout: 5).health
+    assert_equal "ok", resp["status"]
+  ensure
+    thread&.join(5)
+    server&.close
   end
 
   # --- chat_completion ---
