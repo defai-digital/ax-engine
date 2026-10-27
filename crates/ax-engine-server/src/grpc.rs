@@ -4,6 +4,11 @@
 // at the module level rather than peppering individual functions.
 #![allow(clippy::result_large_err)]
 
+use crate::generation::native::reject_failed_generate_status;
+use crate::openai::stop::{
+    apply_client_stops_to_answer_only, apply_client_stops_to_generate_response,
+    validate_client_stop_sequences,
+};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -210,12 +215,17 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::ChatCompletionResponse>, Status> {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        reject_failed_generate_status(r.status, r.finish_reason).map_err(openai_error_to_status)?;
         // Native MLX leaves output_text unset; decode + strip channels like OpenAI.
         populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::ChatCompletion, false)
             .map_err(openai_error_to_status)?;
+        // The native session ignores stop_sequences; enforce client stops on
+        // the decoded answer as the HTTP surfaces do.
+        apply_client_stops_to_answer_only(&mut r, &req.stop);
         // Delegated backends report counts without materializing token
         // arrays, so `.len()` would report zero usage; use the SDK's
         // authoritative counts exactly like the HTTP surface.
@@ -256,11 +266,12 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_chat_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
         let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_chat_stream(model_id, tx, stream, tokenizer)
+        spawn_grpc_chat_stream(model_id, tx, stream, tokenizer, req.stop.clone())
             .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -273,11 +284,14 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::CompletionResponse>, Status> {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_completion_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        reject_failed_generate_status(r.status, r.finish_reason).map_err(openai_error_to_status)?;
         populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::Completion, false)
             .map_err(openai_error_to_status)?;
+        apply_client_stops_to_generate_response(&mut r, &req.stop);
         // Delegated backends report counts without materializing token
         // arrays, so `.len()` would report zero usage; use the SDK's
         // authoritative counts exactly like the HTTP surface.
@@ -315,11 +329,12 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_completion_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
         let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_completion_stream(model_id, tx, stream, tokenizer)
+        spawn_grpc_completion_stream(model_id, tx, stream, tokenizer, req.stop.clone())
             .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
