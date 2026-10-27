@@ -59,8 +59,8 @@ pub(super) enum DraftSourceFamily {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum MtpNgramAcceptanceMode {
-    #[default]
     Confidence,
+    #[default]
     Delta,
     Greedy,
 }

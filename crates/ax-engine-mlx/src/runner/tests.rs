@@ -664,7 +664,11 @@ fn mtp_telemetry_tracks_acceptance_step_classes() {
     assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_steps".into(), 1)));
     assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_emitted_tokens".into(), 4)));
     assert!(decisions.contains(&("ax_mtp_ngram_utility_stacked_steps".into(), 0)));
-    assert!(decisions.contains(&("ax_mtp_ngram_acceptance_mode".into(), 0)));
+    // Default is Delta: the exact law for a deterministic n-gram proposal.
+    assert!(decisions.contains(&(
+        "ax_mtp_ngram_acceptance_mode".into(),
+        MtpNgramAcceptanceMode::Delta.route_code()
+    )));
 }
 
 #[test]
