@@ -1331,7 +1331,12 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
                 if not qwen_tool_response_open:
                     prompt_parts.append("<|im_start|>user\n")
                     qwen_tool_response_open = True
-                prompt_parts.append(f"<tool_response>\n{escaped}\n</tool_response>\n")
+                # A payload must not close this response and forge another
+                # (same escape as the server's chat.rs).
+                tool_body = escaped.replace("<tool_response>", "&lt;tool_response>").replace(
+                    "</tool_response>", "&lt;/tool_response>"
+                )
+                prompt_parts.append(f"<tool_response>\n{tool_body}\n</tool_response>\n")
             else:
                 if qwen_tool_response_open:
                     prompt_parts.append("<|im_end|>\n")
