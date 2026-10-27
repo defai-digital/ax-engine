@@ -17,12 +17,28 @@ pub(crate) struct GenerateHttpRequest {
     input_text: Option<String>,
     #[serde(default)]
     max_output_tokens: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_sampling")]
     sampling: Option<GenerateSampling>,
     #[serde(default)]
     multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     metadata: Option<String>,
+}
+
+/// A JSON `seed` key is an explicit seed, including `0`: SDKs send
+/// `"seed": 0` and cannot set the internal `seed_explicit` flag.
+fn deserialize_sampling<'de, D>(deserializer: D) -> Result<Option<GenerateSampling>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let seed_present = value.get("seed").is_some_and(|seed| !seed.is_null());
+    let mut sampling: GenerateSampling =
+        serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+    sampling.seed_explicit |= seed_present;
+    Ok(Some(sampling))
 }
 
 impl GenerateHttpRequest {
@@ -79,6 +95,29 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn json_seed_zero_is_an_explicit_seed() {
+        let parse = |body: serde_json::Value| {
+            serde_json::from_value::<GenerateHttpRequest>(body)
+                .expect("request")
+                .sampling
+                .expect("sampling")
+        };
+        let zero = parse(serde_json::json!({"sampling": {"temperature": 0.8, "seed": 0}}));
+        assert_eq!(zero.seed, 0);
+        assert!(zero.seed_explicit, "seed 0 must be reproducible");
+        let absent = parse(serde_json::json!({"sampling": {"temperature": 0.8}}));
+        assert!(!absent.seed_explicit);
+        let seven = parse(serde_json::json!({"sampling": {"seed": 7}}));
+        assert_eq!(seven.seed, 7);
+        assert!(
+            serde_json::from_value::<GenerateHttpRequest>(
+                serde_json::json!({"sampling": {"seed": -1}})
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn generate_http_request_deserializes_gemma4_processed_multimodal_inputs() {
