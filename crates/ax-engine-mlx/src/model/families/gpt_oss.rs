@@ -11,6 +11,24 @@ use super::super::shared::{
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
 
+/// RoPE for one GPT-OSS layer: `(base, freqs, apply YaRN mscale)`.
+///
+/// Every layer, sliding or full, uses the model's YaRN RoPE and mscale; only
+/// the attention window differs (mlx-lm `gpt_oss`, HF `GptOssModel` and the
+/// OpenAI reference share one rotary embedding). GPT-OSS has no sliding-layer
+/// theta, so a sliding layer must not fall back to its default local theta.
+pub(crate) fn gpt_oss_layer_rope<'a>(
+    cfg: &'a ModelConfig,
+    layer_rope_freqs: Option<&'a MlxArray>,
+    rope_theta: f32,
+) -> (Option<f32>, Option<&'a MlxArray>, bool) {
+    let (rope_base, rope_freqs) = layer_rope_freqs
+        .or(cfg.rope_freqs.as_ref())
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
+    (rope_base, rope_freqs, (cfg.rope_mscale - 1.0).abs() > 1e-6)
+}
+
 /// Full layer forward for GPT-OSS (20B / 120B).
 ///
 /// Architecture (aligned with mlx-lm `gpt_oss.py` and llama.cpp `openai-moe.cpp`):
@@ -46,22 +64,8 @@ pub(crate) fn layer_forward(
         &normed,
         w.q_proj.as_ref().expect("gpt_oss layer must have q_proj"),
     );
-    // Sliding-attention layers use plain RoPE at the local base theta
-    // (LayerConfig's swa_theta) with no YaRN corrected freqs and no mscale —
-    // mlx-lm gpt_oss applies YarnRoPE + mscale to the full-attention layers
-    // only. Falling back to the model-level yarn freqs on a sliding layer
-    // would silently override that layer's own theta.
-    let full_attention = sliding_window.is_none();
-    let rope_freqs = if full_attention {
-        layer_rope_freqs.or(cfg.rope_freqs.as_ref())
-    } else {
-        layer_rope_freqs
-    };
-    let (rope_base, rope_freqs_ref) = rope_freqs
-        .map(|f| (None, Some(f)))
-        .unwrap_or((Some(rope_theta), None));
-    // YaRN mscale: full-attention layers only (see above).
-    let yarn_mscale_active = full_attention && (cfg.rope_mscale - 1.0).abs() > 1e-6;
+    let (rope_base, rope_freqs_ref, yarn_mscale_active) =
+        gpt_oss_layer_rope(cfg, layer_rope_freqs, rope_theta);
 
     let q = qk_norm_bhsd_from_proj(
         &q_raw,

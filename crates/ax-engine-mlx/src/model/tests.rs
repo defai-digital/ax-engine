@@ -5016,3 +5016,23 @@ fn batched_prefill_rejects_degenerate_inputs() {
     let with_empty: Vec<&[u32]> = vec![&[1, 2, 3], &[]];
     assert!(prefill_batched_forward(&model_cfg, &weights, &with_empty).is_err());
 }
+
+#[test]
+fn gpt_oss_sliding_layers_keep_the_model_yarn_rope() {
+    // mlx-lm gpt_oss and HF GptOssModel share one YaRN rotary embedding across
+    // sliding and full layers; only the window differs.
+    let mut config = cfg(false);
+    config.rope_freqs = Some(MlxArray::from_f32_slice(&[1.0, 2.0]));
+    config.rope_mscale = 1.35;
+    // A sliding layer has no own freqs and the converter's default local theta.
+    let (base, freqs, mscale) = families::gpt_oss::gpt_oss_layer_rope(&config, None, 10_000.0);
+    assert_eq!(base, None, "the model YaRN freqs replace the local theta");
+    assert!(freqs.is_some());
+    assert!(mscale, "YaRN mscale applies to sliding layers too");
+    config.rope_freqs = None;
+    config.rope_mscale = 1.0;
+    let (base, freqs, mscale) = families::gpt_oss::gpt_oss_layer_rope(&config, None, 150_000.0);
+    assert_eq!(base, Some(150_000.0));
+    assert!(freqs.is_none());
+    assert!(!mscale);
+}
