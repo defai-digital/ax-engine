@@ -7697,11 +7697,14 @@ impl MlxRunner {
                         // A scheduler split inside a canonical segment changes
                         // its arithmetic. Do not publish later recurrent state
                         // under the canonical partition identity.
-                        if end < prompt_len && !ends_at_boundary {
+                        // An empty item executes nothing and keeps the partition.
+                        if start < end && end < prompt_len && !ends_at_boundary {
                             state.semantic_partition_valid = false;
                         }
-                        state.semantic_checkpoint_cut =
-                            (state.semantic_partition_valid && ends_at_boundary).then_some(end);
+                        if start < end {
+                            state.semantic_checkpoint_cut =
+                                (state.semantic_partition_valid && ends_at_boundary).then_some(end);
+                        }
                         &prefill_tokens[cursor..]
                     } else {
                         prefill_tokens
