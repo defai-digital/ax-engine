@@ -19,11 +19,19 @@ actor StreamingResponse<Element: Sendable> {
     private var cancelled = false
     private var reading = false
     private var paused = false
+    // Bumped on every pause/resume so a stale watchdog cannot resume a later
+    // pause early.
+    private var pauseGeneration = 0
+    // A suspended task reads nothing, keep-alives included, while URLSession's
+    // idle timer keeps running. Resume a pause before that timer can expire.
+    private let maxPause: TimeInterval
 
     init(request: Result<URLRequest, Error>, session: URLSession,
          limits: AxEngineStreamLimits, requiresDoneSentinel: Bool,
          decode: @escaping @Sendable (SSEEvent) throws -> Element) {
         self.request = request
+        let timeout = (try? request.get().timeoutInterval) ?? session.configuration.timeoutIntervalForRequest
+        self.maxPause = max(min(timeout, session.configuration.timeoutIntervalForRequest) / 2, 0.05)
         self.session = session
         self.limits = limits
         self.requiresDoneSentinel = requiresDoneSentinel
@@ -58,10 +66,7 @@ actor StreamingResponse<Element: Sendable> {
 
     private func readNext() async throws -> Element? {
         try Task.checkCancellation()
-        if paused {
-            transport?.resume()
-            paused = false
-        }
+        resumeTransport()
         if iterator == nil {
             try limits.validate()
             guard let pending = request else {
@@ -113,8 +118,7 @@ actor StreamingResponse<Element: Sendable> {
             iterator = current
             // Also pause transport between demands. Foundation may already
             // have buffered some bytes; this is not a whole-process byte cap.
-            transport?.suspend()
-            paused = true
+            pauseTransport()
             return value
         }
         if requiresDoneSentinel && !current.sawDone {
@@ -125,6 +129,34 @@ actor StreamingResponse<Element: Sendable> {
         }
         close()
         return nil
+    }
+
+    private func pauseTransport() {
+        guard let transport else { return }
+        transport.suspend()
+        paused = true
+        pauseGeneration += 1
+        let generation = pauseGeneration
+        let delay = UInt64(maxPause * 1_000_000_000)
+        // Weak: an abandoned stream must still deallocate and cancel.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            await self?.endPause(generation)
+        }
+    }
+
+    private func endPause(_ generation: Int) {
+        // A consumer slower than the idle timeout keeps the connection alive
+        // (server keep-alives are read again); Foundation buffers what arrives.
+        guard paused, generation == pauseGeneration else { return }
+        resumeTransport()
+    }
+
+    private func resumeTransport() {
+        guard paused else { return }
+        transport?.resume()
+        paused = false
+        pauseGeneration += 1
     }
 
     private func cancel() {
