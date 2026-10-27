@@ -1060,7 +1060,9 @@ fn tensor_quantization(
 ) -> Option<NativeTensorQuantization> {
     let global = config_quantization(config).unwrap_or_default();
     let mut quantization = global.clone();
-    if let Some(override_quantization) = tensor_quantization_override(config, tensor_name) {
+    let tensor_override = tensor_quantization_override(config, tensor_name);
+    let has_tensor_override = tensor_override.is_some();
+    if let Some(override_quantization) = tensor_override {
         quantization = override_quantization;
     }
     // mlx-lm's Gemma4 quantization predicate keeps router.proj at 8-bit while
@@ -1075,6 +1077,10 @@ fn tensor_quantization(
         "gemma4" | "gemma4_vl" | "gemma4_unified"
     ) && tensor_name.ends_with(".router.proj.weight")
         && quantization.mode == "affine"
+        // mlx-lm: a per-layer config entry always wins (mixed recipes write
+        // the router's real bits there); the 8-bit default applies only
+        // when the config is silent about this tensor.
+        && !has_tensor_override
     {
         quantization.bits = 8;
     }

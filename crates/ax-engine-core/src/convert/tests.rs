@@ -5575,6 +5575,17 @@ fn gemma4_router_eight_bit_override_applies_only_to_affine_quantization() {
     assert_eq!(quantization.mode, "mxfp4");
     assert_eq!(quantization.bits, 4);
     assert_eq!(quantization.group_size, 32);
+    // A mixed recipe writes the router's real setting as a per-layer entry;
+    // it wins over the 8-bit default, as in mlx-lm.
+    let mixed = serde_json::json!({
+        "model_type": "gemma4",
+        "quantization": {
+            "mode": "affine", "bits": 6, "group_size": 64,
+            "language_model.model.layers.0.router.proj": {"mode": "affine", "bits": 4, "group_size": 64}
+        }
+    });
+    let quantization = super::tensor_quantization(&mixed, &family, router).expect("mixed");
+    assert_eq!(quantization.bits, 4);
 }
 
 #[test]
