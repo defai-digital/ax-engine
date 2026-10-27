@@ -3168,3 +3168,24 @@ fn auto_request_ids_wrap_instead_of_sticking_at_u64_max() {
     }
     assert_eq!(ids.len(), 1200, "auto ids must stay unique");
 }
+
+#[test]
+fn coalesced_stream_steps_keep_every_folded_steps_model_time() {
+    let mut last = EngineStepReport {
+        cpu_time_us: 700,
+        runner_time_us: 500,
+        scheduled_tokens: 1,
+        ..Default::default()
+    };
+    let folded = EngineStepReport {
+        cpu_time_us: 300,
+        runner_time_us: 200,
+        scheduled_tokens: 1,
+        ..Default::default()
+    };
+    super::fold_step_work(&mut last, &folded);
+    assert_eq!(
+        (last.cpu_time_us, last.runner_time_us, last.scheduled_tokens),
+        (1000, 700, 2)
+    );
+}

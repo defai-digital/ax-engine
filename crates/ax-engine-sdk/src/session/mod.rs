@@ -276,6 +276,15 @@ pub struct EngineSession {
     llama_terminal_request_order: VecDeque<u64>,
 }
 
+/// Add a coalesced step's model work to the step event that represents it.
+fn fold_step_work(into: &mut EngineStepReport, folded: &EngineStepReport) {
+    into.cpu_time_us = into.cpu_time_us.saturating_add(folded.cpu_time_us);
+    into.runner_time_us = into.runner_time_us.saturating_add(folded.runner_time_us);
+    into.scheduled_tokens = into
+        .scheduled_tokens
+        .saturating_add(folded.scheduled_tokens);
+}
+
 impl EngineSession {
     /// Clear process-global native compiled closures after all work for the
     /// current model has drained and before constructing a replacement model.
@@ -1521,7 +1530,12 @@ impl EngineSession {
                         };
                         batch_tokens.extend(next_step.delta_tokens);
                         batch_logprobs.extend(next_step.delta_token_logprobs);
-                        last_step = next_step.step;
+                        // The coalesced event stands for every folded step:
+                        // carry their work, or `GenerateStreamPerformance`
+                        // (which observes each event once) undercounts model
+                        // time and inflates decode tokens/s.
+                        let folded = std::mem::replace(&mut last_step, next_step.step);
+                        fold_step_work(&mut last_step, &folded);
                         if is_terminal_request_state(state.current_report.state) {
                             break;
                         }
