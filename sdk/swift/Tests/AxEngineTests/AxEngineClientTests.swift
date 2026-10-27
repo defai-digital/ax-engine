@@ -115,6 +115,44 @@ final class AxEngineClientTests: XCTestCase {
     }
 
 
+    func testStepMergesModelIntoBaseURLQuery() async throws {
+        MockURLProtocol.handler = { req in
+            let components = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+            XCTAssertEqual(components.path, "/p/v1/step")
+            XCTAssertEqual(components.percentEncodedQuery, "token=abc&model=m")
+            return jsonResponse([
+                "step_id": 0, "scheduled_requests": 0, "scheduled_tokens": 0,
+                "ttft_events": 0, "prefix_hits": 0, "kv_usage_blocks": 0,
+                "evictions": 0, "cpu_time_us": 0, "runner_time_us": 0,
+            ])
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = AxEngineClient(
+            baseURL: URL(string: "http://127.0.0.1:8080/p?token=abc")!,
+            session: URLSession(configuration: config)
+        )
+        _ = try await client.step(model: "m")
+    }
+
+    func testNegativeRequestIdsFailBeforeHTTP() async throws {
+        MockURLProtocol.handler = { _ in
+            XCTFail("a negative request id must not reach the server")
+            return jsonResponse([:])
+        }
+        for call in [
+            { try await makeClient().requestSnapshot(id: -1) },
+            { try await makeClient().cancel(id: -1) },
+        ] as [() async throws -> RequestReport] {
+            do {
+                _ = try await call()
+                XCTFail("negative request id must throw")
+            } catch let error as AxEngineHTTPError {
+                XCTAssertEqual(error.statusCode, 0)
+            }
+        }
+    }
+
     func testHealth() async throws {
         MockURLProtocol.handler = { req in
             XCTAssertEqual(req.httpMethod, "GET")

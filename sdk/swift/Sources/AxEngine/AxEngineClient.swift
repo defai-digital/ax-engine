@@ -86,12 +86,25 @@ public final class AxEngineClient: @unchecked Sendable {
 
     /// GET /v1/requests/{id} — fetch a live request snapshot.
     public func requestSnapshot(id: Int) async throws -> RequestReport {
-        try await get("/v1/requests/\(id)")
+        try await get("/v1/requests/\(try Self.requestIdSegment(id))")
     }
 
     /// POST /v1/requests/{id}/cancel
     public func cancel(id: Int) async throws -> RequestReport {
-        try await post("/v1/requests/\(id)/cancel", body: Empty())
+        try await post("/v1/requests/\(try Self.requestIdSegment(id))/cancel", body: Empty())
+    }
+
+    /// Request ids are unsigned on the server; reject negatives before HTTP,
+    /// as the JavaScript and Ruby clients do.
+    static func requestIdSegment(_ id: Int) throws -> String {
+        guard id >= 0 else {
+            throw AxEngineHTTPError(
+                statusCode: 0,
+                message: "request id must be a non-negative integer, got \(id)",
+                payload: nil
+            )
+        }
+        return String(id)
     }
 
     /// POST /v1/step — advance the scheduler by one step.
@@ -105,12 +118,18 @@ public final class AxEngineClient: @unchecked Sendable {
         }
         let stepURL = baseURL.appendingPathComponent("/v1/step")
         var components = URLComponents(url: stepURL, resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "model", value: model)]
+        var modelQuery = URLComponents()
+        modelQuery.queryItems = [URLQueryItem(name: "model", value: model)]
         // URLQueryItem leaves + literal, but the server's form decoder reads
         // it as a space. Escape only literal plus signs after URL encoding.
-        let encodedQuery = components?.percentEncodedQuery?
-            .replacingOccurrences(of: "+", with: "%2B")
-        components?.percentEncodedQuery = encodedQuery
+        let encodedModel = modelQuery.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B") ?? ""
+        // Merge with the base URL's query (for example an auth token), as the
+        // other SDKs do, instead of replacing it.
+        let baseQuery = components?.percentEncodedQuery ?? ""
+        components?.percentEncodedQuery = baseQuery.isEmpty
+            ? encodedModel
+            : baseQuery + "&" + encodedModel
         guard let url = components?.url else {
             throw AxEngineHTTPError(
                 statusCode: 0,

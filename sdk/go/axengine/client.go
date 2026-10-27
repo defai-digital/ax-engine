@@ -208,12 +208,27 @@ func (c *Client) Submit(ctx context.Context, req PreviewGenerateRequest) (Reques
 
 // RequestSnapshot calls GET /v1/requests/{id} to fetch a request state snapshot.
 func (c *Client) RequestSnapshot(ctx context.Context, requestID int64) (RequestReport, error) {
+	if err := validateRequestID(requestID); err != nil {
+		return RequestReport{}, err
+	}
 	return requestJSON[RequestReport](c, ctx, http.MethodGet, fmt.Sprintf("/v1/requests/%d", requestID), nil)
 }
 
 // Cancel calls POST /v1/requests/{id}/cancel.
 func (c *Client) Cancel(ctx context.Context, requestID int64) (RequestReport, error) {
+	if err := validateRequestID(requestID); err != nil {
+		return RequestReport{}, err
+	}
 	return requestJSON[RequestReport](c, ctx, http.MethodPost, fmt.Sprintf("/v1/requests/%d/cancel", requestID), nil)
+}
+
+// validateRequestID rejects negative ids before HTTP: server request ids are
+// unsigned, and the JavaScript and Ruby clients reject them the same way.
+func validateRequestID(requestID int64) error {
+	if requestID < 0 {
+		return fmt.Errorf("request id must be a non-negative integer, got %d", requestID)
+	}
+	return nil
 }
 
 // Step calls POST /v1/step to advance the scheduler by one step.

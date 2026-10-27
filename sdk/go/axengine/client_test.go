@@ -840,3 +840,19 @@ func TestNativeStreamsStopReadingAtDone(t *testing.T) {
 		}
 	}
 }
+
+func TestNegativeRequestIDsFailBeforeHTTP(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("negative request id reached the server: %s", r.URL.Path)
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		if _, err := client.RequestSnapshot(context.Background(), -1); err == nil {
+			t.Fatal("RequestSnapshot(-1) must fail")
+		}
+		if _, err := client.Cancel(context.Background(), -1); err == nil {
+			t.Fatal("Cancel(-1) must fail")
+		}
+	})
+}
