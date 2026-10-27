@@ -95,6 +95,12 @@ _FORWARDED_REQUEST_KEYS = frozenset(
         "user",
         "metadata",
         "n",
+        # The server applies these (OpenAI penalties, logit_bias, and the
+        # max_completion_tokens alias of max_tokens).
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "max_completion_tokens",
     }
 )
 _SUPPORTED_KWARG_KEYS = sorted(set(_SAMPLING_PARAM_KEYS) | _FORWARDED_REQUEST_KEYS)

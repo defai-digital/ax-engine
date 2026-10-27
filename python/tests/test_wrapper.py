@@ -3434,6 +3434,37 @@ class WrapperContractTests(unittest.TestCase):
             {"content": "line one\n\nline two"},
         )
 
+    def test_openai_mlx_shim_default_repetition_penalty_matches_the_server(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        def default(model_id: str, temperature: float) -> float:
+            payload = {"max_tokens": 4, "temperature": temperature}
+            return openai_server.session_generate_kwargs(payload, model_id)["repetition_penalty"]
+
+        # Greedy keeps 1.0 so the argmax fast path stays on (it used to be 1.1).
+        self.assertEqual(default("qwen3.6-27b", 0.0), 1.0)
+        self.assertEqual(default("qwen3.6-27b", 0.7), 1.1)
+        self.assertEqual(default("gemma-4-12b", 0.7), 1.1)
+        self.assertEqual(default("glm-4.7-flash", 0.7), 1.0)
+        self.assertEqual(default("llama-3.1-8b", 0.7), 1.0)
+        explicit = {"max_tokens": 4, "temperature": 0.0, "repetition_penalty": 1.3}
+        self.assertEqual(
+            openai_server.session_generate_kwargs(explicit, "qwen3")["repetition_penalty"], 1.3
+        )
+
+    def test_openai_mlx_shim_rejects_penalties_it_cannot_apply(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        for payload in (
+            {"presence_penalty": 0.5},
+            {"frequency_penalty": -1},
+            {"logit_bias": {"7": 5}},
+        ):
+            error = openai_server.validate_sampling_params(payload)
+            self.assertIsNotNone(error, payload)
+            self.assertEqual(error[0], 400)
+        for payload in ({"presence_penalty": 0}, {"logit_bias": {}}, {}):
+            self.assertIsNone(openai_server.validate_sampling_params(payload), payload)
+
     def test_openai_mlx_shim_forwards_seed_presence(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         self.assertIsNone(openai_server.session_generate_kwargs({"max_tokens": 4})["seed"])

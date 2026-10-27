@@ -631,6 +631,22 @@ class TestAXEngineChatModel(unittest.TestCase):
         bound.invoke([HumanMessage(content="What is the weather?")])
         self.assertIs(self.srv.last_body["parallel_tool_calls"], False)
 
+    def test_penalty_and_budget_kwargs_reach_the_server(self):
+        # The Rust server applies these; the adapter used to warn and drop them.
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        chat.bind(
+            presence_penalty=1.5,
+            frequency_penalty=0.5,
+            logit_bias={"7": -100},
+            max_completion_tokens=12,
+        ).invoke([HumanMessage(content="hi")])
+        body = self.srv.last_body
+        self.assertEqual(body["presence_penalty"], 1.5)
+        self.assertEqual(body["frequency_penalty"], 0.5)
+        self.assertEqual(body["logit_bias"], {"7": -100})
+        self.assertEqual(body["max_completion_tokens"], 12)
+
     def test_standard_request_keys_forwarded(self):
         # metadata is deliberately absent: langchain-core 1.x consumes a
         # metadata kwarg itself (run metadata), so bind(metadata=...) can

@@ -756,9 +756,7 @@ def usage(
     # A text-only delegated backend reports authoritative counts while leaving
     # the token arrays empty; prefer the count when present.
     prompt_count = len(prompt_tokens) if prompt_token_count is None else prompt_token_count
-    completion_count = (
-        len(output_tokens) if output_token_count is None else output_token_count
-    )
+    completion_count = len(output_tokens) if output_token_count is None else output_token_count
     return {
         "prompt_tokens": prompt_count,
         "completion_tokens": completion_count,
@@ -952,7 +950,7 @@ def create_app(
             return StreamingResponse(events, media_type="text/event-stream")
 
         def _blocking_completion() -> Any:
-            return session.generate(input_tokens, **session_generate_kwargs(payload))
+            return session.generate(input_tokens, **session_generate_kwargs(payload, model_id))
 
         # generate() blocks for the whole generation; running it inline would
         # park the event loop and stall every concurrent request, /health
@@ -1015,7 +1013,8 @@ def create_app(
             if parse_tool_calls:
 
                 def _blocking_tool_chat() -> Any:
-                    return session.generate(input_tokens, **session_generate_kwargs(payload))
+                    kwargs = session_generate_kwargs(payload, model_id)
+                    return session.generate(input_tokens, **kwargs)
 
                 # Blocking generate off the event loop; see the completions
                 # handler for rationale.
@@ -1051,7 +1050,7 @@ def create_app(
             return StreamingResponse(gated_events, media_type="text/event-stream")
 
         def _blocking_chat() -> Any:
-            return session.generate(input_tokens, **session_generate_kwargs(payload))
+            return session.generate(input_tokens, **session_generate_kwargs(payload, model_id))
 
         # Blocking generate off the event loop; see the completions handler
         # for rationale.
@@ -1209,7 +1208,32 @@ def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
     min_p = payload.get("min_p")
     if min_p is not None and not 0.0 <= float(min_p) <= 1.0:
         return 400, "OpenAI-compatible MLX shim requires min_p to be within [0, 1]"
+    # The Python session has no presence/frequency penalty or logit_bias
+    # input; silently ignoring a non-neutral value would answer 200 as though
+    # it had been applied.
+    for key in ("presence_penalty", "frequency_penalty"):
+        value = payload.get(key)
+        if value is not None and value != 0:
+            return 400, f"OpenAI-compatible MLX shim does not support {key}"
+    if payload.get("logit_bias"):
+        return 400, "OpenAI-compatible MLX shim does not support logit_bias"
     return None
+
+
+def default_repetition_penalty(model_id: str, temperature: float) -> float:
+    """Default penalty when the request sends none, matching the Rust server.
+
+    Greedy requests keep 1.0 so the deterministic argmax fast path stays on;
+    sampled Qwen/Gemma requests get the mild 1.1 default (GLM keeps 1.0).
+    """
+    if temperature <= 0.0:
+        return 1.0
+    normalized = model_id.lower()
+    if "glm" in normalized:
+        return 1.0
+    if "qwen" in normalized or "gemma" in normalized:
+        return 1.1
+    return 1.0
 
 
 def validate_metadata(payload: dict[str, Any]) -> tuple[int, str] | None:
@@ -1219,7 +1243,7 @@ def validate_metadata(payload: dict[str, Any]) -> tuple[int, str] | None:
     return None
 
 
-def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+def session_generate_kwargs(payload: dict[str, Any], model_id: str = "") -> dict[str, Any]:
     """Sampling kwargs shared by every generate/stream_generate call site.
 
     ``min_p`` is forwarded only when the client provided it so the shim keeps
@@ -1228,7 +1252,7 @@ def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     ``max_completion_tokens`` is honored as validated.
     """
     temperature = float(payload.get("temperature", 0.0))
-    default_rp = 1.1 if temperature <= 0.0 else 1.0
+    default_rp = default_repetition_penalty(model_id, temperature)
     _max_tokens_key, max_tokens = requested_max_tokens(payload)
     seed = payload.get("seed")
     kwargs: dict[str, Any] = {
@@ -1293,7 +1317,8 @@ def stream_completion_chunks(
     response_prompt_token_count: int | None = None
     response_output_token_count: int | None = None
     try:
-        generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
+        kwargs = session_generate_kwargs(payload, model_id)
+        generator = session.stream_generate(input_tokens, **kwargs)
         for event in generator:
             if event.event == "step" and (event.delta_tokens or event.delta_text is not None):
                 accumulated_tokens.extend(event.delta_tokens)
@@ -1352,12 +1377,8 @@ def stream_completion_chunks(
                     yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
                     break
             elif event.event == "response" and event.response is not None:
-                response_prompt_token_count = getattr(
-                    event.response, "prompt_token_count", None
-                )
-                response_output_token_count = getattr(
-                    event.response, "output_token_count", None
-                )
+                response_prompt_token_count = getattr(event.response, "prompt_token_count", None)
+                response_output_token_count = getattr(event.response, "output_token_count", None)
                 # No later delta can complete a stop: flush whatever prefix was
                 # held back against a stop split across deltas.
                 if held_text:
