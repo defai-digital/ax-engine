@@ -220,6 +220,12 @@ impl Dflash2RequestState {
 
 /// Smallest verify window: the anchor and two drafts.
 const MIN_WINDOW: usize = 3;
+
+/// An operator-pinned verify window, kept inside the drafter's block. A block
+/// below `MIN_WINDOW` must not invert the clamp (which panics).
+fn pinned_window(rows: usize, block: usize) -> usize {
+    rows.clamp(MIN_WINDOW.min(block), block)
+}
 /// Prior weight and rate for the per-position acceptance estimate, and the
 /// per-observation decay that lets the estimate follow a change of content.
 const PRIOR_WEIGHT: f64 = 2.0;
@@ -726,7 +732,7 @@ impl MlxRunner {
 
         // How many rows to verify: pinned, or the policy's pick for this request.
         let window = match crate::fastpath::dflash2_window_override() {
-            Some(rows) => rows.clamp(MIN_WINDOW, block),
+            Some(rows) => pinned_window(rows, block),
             None => state
                 .dflash2
                 .as_ref()
@@ -1354,6 +1360,16 @@ impl MlxRunner {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_window_stays_inside_small_drafter_blocks() {
+        assert_eq!(pinned_window(5, 8), 5);
+        assert_eq!(pinned_window(1, 8), MIN_WINDOW);
+        assert_eq!(pinned_window(12, 8), 8);
+        // Blocks below MIN_WINDOW used to invert the clamp and panic.
+        assert_eq!(pinned_window(4, 2), 2);
+        assert_eq!(pinned_window(1, 1), 1);
+    }
 
     #[test]
     fn prompt_sidecar_round_trips_a_truncated_tail_and_rejects_wrong_identity() {

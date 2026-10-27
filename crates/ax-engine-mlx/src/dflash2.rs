@@ -1395,7 +1395,14 @@ pub(crate) fn target_is_qwen38_27b(model_dir: &Path) -> bool {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_ascii_lowercase)
         })
-        .is_some_and(|name| name.trim_end_matches('/').ends_with("qwen3.8-27b"))
+        // Compare the whole repository or directory name: a fine-tune such as
+        // `Swift-1.5-Qwen3.8-27b` merely ends with the base name.
+        .is_some_and(|name| {
+            name.trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .is_some_and(|repo| repo == "qwen3.8-27b")
+        })
 }
 
 /// Finds the drafter checkpoint to load: the explicit directory (which is never
@@ -2258,6 +2265,21 @@ mod tests {
         let e = root.join("e");
         std::fs::create_dir_all(&e).unwrap();
         assert!(!target_is_qwen38_27b(&e));
+        // A fine-tune whose name only ends with the base name does not match.
+        let f = root.join("f");
+        write(
+            &f,
+            "config.json",
+            r#"{"_name_or_path": "ukisai/Swift-1.5-Qwen3.8-27b"}"#,
+        );
+        assert!(!target_is_qwen38_27b(&f));
+        let g = root.join("g");
+        write(
+            &g,
+            "config.json",
+            r#"{"_name_or_path": "/models/Qwen3.8-27B/"}"#,
+        );
+        assert!(target_is_qwen38_27b(&g));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
