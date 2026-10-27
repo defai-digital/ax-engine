@@ -65,6 +65,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
     .await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     validate_openai_response_format(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
@@ -108,6 +109,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
     .await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     validate_openai_response_format(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(

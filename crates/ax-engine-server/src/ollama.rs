@@ -1565,6 +1565,7 @@ async fn run_ollama_chat_completion(
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         validate_openai_response_format(&response, &response_options)?;
         return Ok(openai_chat_completion_response(
             &response,
@@ -1592,6 +1593,7 @@ async fn run_ollama_chat_completion(
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         validate_openai_response_format(&response, &response_options)?;
         return Ok(openai_chat_completion_response(
             &response,

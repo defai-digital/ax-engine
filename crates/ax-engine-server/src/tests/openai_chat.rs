@@ -4394,6 +4394,36 @@ async fn openai_chat_endpoint_forwards_messages_for_mlx_lm_delegated() {
     );
 }
 
+#[tokio::test]
+async fn openai_chat_delegated_failed_generation_is_a_bad_gateway() {
+    // A delegated backend that reports finish_reason "error" maps to a Failed
+    // generation; it must not come back as a normal 200 completion.
+    let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_server(
+        r#"{"choices":[{"message":{"content":"partial"},"finish_reason":"error"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}"#.to_string(),
+        |_| {},
+    );
+    let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&sample_openai_chat_request(
+                "hello mlx-lm chat",
+                Some(2),
+                false,
+            ))))
+            .unwrap(),
+    )
+    .await;
+    mlx_lm_server_handle
+        .join()
+        .expect("mlx-lm server thread should finish");
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    assert_eq!(json["error"]["code"], json!("generation_failed"));
+}
+
 /// Closed family×scenario matrix for hub chat-template fidelity.
 ///
 /// Drives the real `render_openai_chat_prompt*` entry points for every

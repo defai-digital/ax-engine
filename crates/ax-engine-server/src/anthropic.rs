@@ -327,6 +327,7 @@ async fn run_anthropic_messages_generation(
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         return Ok((request_id, response, None));
     }
 
@@ -346,6 +347,7 @@ async fn run_anthropic_messages_generation(
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         return Ok((request_id, response, None));
     }
 
