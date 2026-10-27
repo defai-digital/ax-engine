@@ -106,8 +106,10 @@ module AxEngine
     #   resp = chat.chat(messages: [{ role: "user", content: "Hello!" }])
     #   puts resp.chat_completion
     #
-    #   # Streaming (yields delta strings)
-    #   chat.chat(messages: [...], stream: true) { |delta| print delta }
+    #   # Streaming (yields delta strings; returns the assembled response,
+    #   # including any tool calls, which never arrive as content deltas)
+    #   resp = chat.chat(messages: [...], stream: true) { |delta| print delta }
+    #   resp.tool_calls
     class ChatModel
       include Params
 
@@ -122,7 +124,9 @@ module AxEngine
       # Compatible with langchainrb's Langchain::LLM::Base#chat interface.
       #
       # @param messages [Array<Hash>]  e.g. [{role: "user", content: "Hi"}]
-      # @param stream   [Boolean]      if true, yields delta strings and returns nil
+      # @param stream   [Boolean]      if true, yields content delta strings and
+      #                                returns the response assembled from the
+      #                                stream (content, tool_calls, finish_reason)
       # @param kwargs   [Hash]         request overrides (max_tokens, model, metadata,
       #                                response_format, tools, tool_choice,
       #                                parallel_tool_calls, …)
@@ -134,19 +138,68 @@ module AxEngine
         params = build_params(kwargs).merge(messages: messages)
 
         if stream
+          assembled = StreamedChat.new
           @client.stream_chat_completion(params) do |event|
             Langchain.raise_on_stream_error!(event)
             data = event["data"]
             next unless data.is_a?(Hash)
 
+            assembled.add(data)
             delta = data.dig("choices", 0, "delta", "content")
             block.call(delta) if delta
           end
-          nil
+          raw = assembled.to_completion
+          ::Langchain::LLM::OpenAIResponse.new(raw, model: raw["model"])
         else
           raw = @client.chat_completion(params)
           ::Langchain::LLM::OpenAIResponse.new(raw, model: raw["model"])
         end
+      end
+    end
+
+    # Folds chat completion chunks back into one non-streaming response body.
+    # Tool calls stream as `delta.tool_calls` fragments keyed by index (id and
+    # name on the first fragment, arguments concatenated), never as content.
+    class StreamedChat
+      def initialize
+        @model = nil
+        @content = +""
+        @tool_calls = {}
+        @finish_reason = nil
+        @usage = nil
+      end
+
+      def add(chunk)
+        @model ||= chunk["model"]
+        @usage = chunk["usage"] if chunk["usage"]
+        choice = chunk.dig("choices", 0)
+        return unless choice.is_a?(Hash)
+
+        @finish_reason = choice["finish_reason"] if choice["finish_reason"]
+        delta = choice["delta"] || {}
+        @content << delta["content"] if delta["content"]
+        Array(delta["tool_calls"]).each do |fragment|
+          call = (@tool_calls[fragment["index"] || 0] ||= {
+            "id" => nil, "type" => "function", "function" => { "name" => +"", "arguments" => +"" }
+          })
+          call["id"] ||= fragment["id"]
+          call["type"] = fragment["type"] if fragment["type"]
+          function = fragment["function"] || {}
+          call["function"]["name"] << function["name"] if function["name"]
+          call["function"]["arguments"] << function["arguments"] if function["arguments"]
+        end
+      end
+
+      def to_completion
+        message = { "role" => "assistant", "content" => @content }
+        message["tool_calls"] = @tool_calls.sort.map(&:last) unless @tool_calls.empty?
+        body = {
+          "object" => "chat.completion",
+          "model" => @model,
+          "choices" => [{ "index" => 0, "message" => message, "finish_reason" => @finish_reason }]
+        }
+        body["usage"] = @usage if @usage
+        body
       end
     end
 

@@ -278,7 +278,7 @@ class TestLangchainChatModel < Minitest::Test
     assert_empty client.calls
   end
 
-  def test_streaming_yields_deltas_and_returns_nil
+  def test_streaming_yields_deltas_and_returns_the_assembled_response
     client = FakeClient.new(stream_events: [
       { "event" => "message",
         "data" => { "choices" => [{ "delta" => { "content" => "he" } }] } },
@@ -290,8 +290,30 @@ class TestLangchainChatModel < Minitest::Test
 
     result = chat_model(client).chat(messages: messages, stream: true) { |delta| deltas << delta }
 
-    assert_nil result
     assert_equal %w[he llo], deltas
+    assert_equal "hello", result.chat_completion
+  end
+
+  def test_streaming_returns_tool_calls_that_never_arrive_as_content
+    client = FakeClient.new(stream_events: [
+      { "event" => "message", "data" => { "model" => "m", "choices" => [{ "delta" => {
+        "role" => "assistant",
+        "tool_calls" => [{ "index" => 0, "id" => "call_0", "type" => "function",
+                           "function" => { "name" => "weather", "arguments" => "{\"city\"" } }]
+      } }] } },
+      { "event" => "message", "data" => { "choices" => [{ "delta" => {
+        "tool_calls" => [{ "index" => 0, "function" => { "arguments" => ":\"Paris\"}" } }]
+      } }] } },
+      { "event" => "message",
+        "data" => { "choices" => [{ "delta" => {}, "finish_reason" => "tool_calls" }] } }
+    ])
+
+    result = chat_model(client).chat(messages: messages, stream: true) { |_delta| flunk "no content" }
+
+    call = result.tool_calls.first
+    assert_equal "call_0", call["id"]
+    assert_equal "weather", call.dig("function", "name")
+    assert_equal({ "city" => "Paris" }, JSON.parse(call.dig("function", "arguments")))
   end
 
   def test_streaming_surfaces_server_error_events
