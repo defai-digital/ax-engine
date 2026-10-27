@@ -387,9 +387,12 @@ fn anthropic_message_response(
     response: &GenerateResponse,
     stop_sequence: Option<String>,
 ) -> AnthropicMessageResponse {
-    let (input_tokens, output_tokens) = response
-        .known_usage()
-        .unwrap_or((0, response.output_tokens.len() as u32));
+    // Report each count on its own: an empty native output has no known output
+    // count, which must not also zero the known prompt count.
+    let input_tokens = response.prompt_tokens_used().unwrap_or(0);
+    let output_tokens = response
+        .known_output_token_count()
+        .unwrap_or(response.output_tokens.len() as u32);
     AnthropicMessageResponse {
         id: format!("msg-{request_id}"),
         response_type: "message",
@@ -480,6 +483,48 @@ pub(crate) fn map_anthropic_generation_error(
 mod feature_gate_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn empty_native_output_keeps_the_known_prompt_token_count() {
+        use ax_engine_sdk::{
+            CapabilityReport, GenerateStatus, ResolutionPolicy, RuntimeReport, SelectedBackend,
+            SupportTier,
+        };
+        let response = GenerateResponse {
+            request_id: 3,
+            model_id: "qwen3".to_string(),
+            prompt_tokens: vec![1, 2, 3],
+            prompt_text: None,
+            output_tokens: Vec::new(),
+            output_token_logprobs: Vec::new(),
+            output_text: Some(String::new()),
+            prompt_token_count: None,
+            output_token_count: None,
+            status: GenerateStatus::Finished,
+            finish_reason: Some(GenerateFinishReason::Stop),
+            step_count: 1,
+            ttft_step: None,
+            route: Default::default(),
+            runtime: RuntimeReport {
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
+                fallback_reason: None,
+                host: Default::default(),
+                metal_toolchain: Default::default(),
+                mlx_runtime: None,
+                mlx_model: None,
+                delegated_runtime: None,
+            },
+            performance: Default::default(),
+        };
+        let message = serde_json::to_value(anthropic_message_response(3, &response, None))
+            .expect("serialize message");
+        assert_eq!(message["usage"]["input_tokens"], json!(3));
+        assert_eq!(message["usage"]["output_tokens"], json!(0));
+    }
 
     #[test]
     #[allow(clippy::expect_used)]
