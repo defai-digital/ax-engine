@@ -2896,7 +2896,33 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
                 )
                 .map_err(media_error_response)?;
                 let (patches, geom, grid_t) = patchify_qwen3_vl_video(&frames, &processor)?;
-                (patches, geom, grid_t, true)
+                // HF Qwen3-VL / Qwen3.5 lay a video out per temporal group:
+                // `<t seconds><|vision_start|>` + pads + `<|vision_end|>`, with
+                // the grid split so each group positions like a t=1 image.
+                // A single span with t advancing inside it shifted every
+                // later position and dropped the timestamps.
+                if let Some(next_cursor) = expand_qwen3_vl_video_per_frame(
+                    &tokenizer,
+                    &base_tokens,
+                    start,
+                    placeholder_len,
+                    pad_id,
+                    &frames,
+                    patches,
+                    &geom,
+                    grid_t,
+                    &mut expanded,
+                    &mut media_rt,
+                )? {
+                    cursor = next_cursor;
+                    continue;
+                }
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "qwen3_vl video placeholder must be wrapped in <|vision_start|>…<|vision_end|>"
+                        .to_string(),
+                ));
             }
         };
         let soft = geom.soft_token_count;
@@ -4186,6 +4212,77 @@ fn patchify_qwen3_vl_image(
 /// Patchify sampled video frames into Qwen's Conv3D `C,T,H,W` rows. Frames
 /// are paired along the temporal patch axis and the final frame is repeated
 /// when the sample count is odd, matching the still-image duplication rule.
+/// Expand one video placeholder into HF's per-temporal-group layout. The
+/// rendered markup is `<|vision_start|><|video_pad|><|vision_end|>`; each
+/// group becomes `<{t:.1} seconds><|vision_start|>` + `frame_seqlen` pads +
+/// `<|vision_end|>`, and its patches become a t=1 runtime input. Returns the
+/// base-token cursor after the closing `<|vision_end|>`, or `None` when the
+/// placeholder is not wrapped in the vision markers.
+#[allow(clippy::too_many_arguments)]
+fn expand_qwen3_vl_video_per_frame(
+    tokenizer: &EngineTokenizer,
+    base_tokens: &[u32],
+    start: usize,
+    placeholder_len: usize,
+    pad_id: u32,
+    frames: &[VideoFrame],
+    patches: Qwen3VlPatches,
+    geom: &Qwen3VlGeom,
+    grid_t: u32,
+    expanded: &mut Vec<u32>,
+    media_rt: &mut Vec<Qwen3VlImageRuntimeInput>,
+) -> Result<Option<usize>, HttpErrorResponse> {
+    let encode = |text: &str| {
+        tokenizer.encode(text, false).map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to tokenize qwen3_vl video markup: {error}"),
+            )
+        })
+    };
+    let vision_start = encode("<|vision_start|>")?;
+    let vision_end = encode("<|vision_end|>")?;
+    let end = start + placeholder_len;
+    if !expanded.ends_with(&vision_start) || !base_tokens[end..].starts_with(&vision_end) {
+        return Ok(None);
+    }
+    expanded.truncate(expanded.len() - vision_start.len());
+    let groups = grid_t.max(1) as usize;
+    let frame_seqlen = geom.soft_token_count / grid_t.max(1);
+    let patches_per_group = patches.num_patches / grid_t.max(1);
+    let floats_per_group = patches_per_group as usize * patches.patch_dim as usize;
+    let temporal = geom.temporal_patch_size.max(1) as usize;
+    for group in 0..groups {
+        // HF `_calculate_timestamps`: the mean of the group's first and last
+        // frame times, padding with the last frame.
+        let first = (group * temporal).min(frames.len().saturating_sub(1));
+        let last = (group * temporal + temporal - 1).min(frames.len().saturating_sub(1));
+        let seconds = (frames[first].timestamp_seconds + frames[last].timestamp_seconds) / 2.0;
+        expanded.extend(encode(&format!("<{seconds:.1} seconds>"))?);
+        expanded.extend_from_slice(&vision_start);
+        let placeholder_index = expanded.len();
+        expanded.extend(std::iter::repeat_n(pad_id, frame_seqlen as usize));
+        expanded.extend_from_slice(&vision_end);
+        let offset = group * floats_per_group;
+        media_rt.push(Qwen3VlImageRuntimeInput {
+            placeholder_index,
+            soft_token_count: frame_seqlen,
+            patches: patches.patches[offset..offset + floats_per_group].to_vec(),
+            num_patches: patches_per_group,
+            patch_dim: patches.patch_dim,
+            grid_t: 1,
+            height: geom.height,
+            width: geom.width,
+            patch_size: geom.patch_size,
+            temporal_patch_size: geom.temporal_patch_size,
+            spatial_merge_size: geom.spatial_merge_size,
+            is_video: true,
+        });
+    }
+    Ok(Some(end + vision_end.len()))
+}
+
 fn patchify_qwen3_vl_video(
     frames: &[VideoFrame],
     config: &Qwen3VlProcessorConfig,
@@ -5107,6 +5204,100 @@ mod media_tests {
         let needle = [9u32, 9];
         assert_eq!(find_subsequence_starts(&hay, &needle), vec![2, 5]);
         assert!(find_subsequence_starts(&hay, &[7]).is_empty());
+    }
+
+    #[test]
+    fn qwen_video_expands_into_hf_per_frame_segments() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-engine-qwen-video-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":1}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0", "truncation": null, "padding": null,
+  "added_tokens": [
+    {"id": 10, "content": "<|vision_start|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 11, "content": "<|vision_end|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 12, "content": "<|video_pad|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null,
+  "decoder": null,
+  "model": {"type": "WordLevel", "vocab": {"[UNK]": 0, "<eos>": 1, "hi": 2,
+    "<|vision_start|>": 10, "<|vision_end|>": 11, "<|video_pad|>": 12}, "unk_token": "[UNK]"}
+}"#,
+        )
+        .expect("tokenizer");
+        let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer loads");
+        // Four frames at 0.0/0.5/1.0/1.5 s, temporal patch 2: two groups at
+        // 0.25 s and 1.25 s, each 2 merged tokens.
+        let frames: Vec<VideoFrame> = (0..4)
+            .map(|index| VideoFrame {
+                image: image::RgbImage::new(1, 1),
+                timestamp_seconds: index as f32 * 0.5,
+            })
+            .collect();
+        let geom = Qwen3VlGeom {
+            height: 32,
+            width: 64,
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            soft_token_count: 4,
+        };
+        let patches = Qwen3VlPatches {
+            patches: (0..16).map(|value| value as f32).collect(),
+            num_patches: 16,
+            patch_dim: 1,
+        };
+        let base = vec![2, 10, 12, 11, 2];
+        let mut expanded = base[..2].to_vec();
+        let mut media = Vec::new();
+        let cursor = expand_qwen3_vl_video_per_frame(
+            &tokenizer,
+            &base,
+            2,
+            1,
+            12,
+            &frames,
+            patches,
+            &geom,
+            2,
+            &mut expanded,
+            &mut media,
+        )
+        .expect("expand")
+        .expect("wrapped placeholder");
+        assert_eq!(cursor, 4);
+        assert_eq!(media.len(), 2);
+        assert!(
+            media
+                .iter()
+                .all(|item| item.grid_t == 1 && item.soft_token_count == 2)
+        );
+        assert_eq!(
+            media[1].patches,
+            (8..16).map(|value| value as f32).collect::<Vec<_>>()
+        );
+        // Each group: timestamp text, vision_start, 2 pads, vision_end.
+        assert_eq!(expanded.iter().filter(|token| **token == 10).count(), 2);
+        assert_eq!(expanded.iter().filter(|token| **token == 11).count(), 2);
+        assert_eq!(expanded.iter().filter(|token| **token == 12).count(), 4);
+        assert_eq!(expanded[media[0].placeholder_index - 1], 10);
+        assert_eq!(expanded.last(), Some(&11));
+        let first_segment = tokenizer
+            .decode(&expanded[1..media[0].placeholder_index - 1], false)
+            .expect("decode");
+        assert!(
+            first_segment.contains("0.2") || first_segment.contains("[UNK]"),
+            "{first_segment}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
