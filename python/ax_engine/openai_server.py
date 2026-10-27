@@ -527,19 +527,25 @@ def client_stop_sequences(payload: dict[str, Any]) -> list[str]:
 
 
 def truncate_at_stop(text: str, stops: list[str]) -> tuple[str, bool]:
-    """Cut `text` at the earliest client stop string; `True` when one matched.
+    """Cut `text` at the first client stop string to complete; `True` when one matched.
 
     The native MLX session does not apply stop strings at decode (the Rust
     server truncates post-decode too), so the shim must enforce them here.
+    Matches rank by end offset, ties by earlier start, as in the Rust server:
+    generation emits text left to right, so with stops ``abcd`` and ``bc``
+    the turn ends on ``bc`` even though ``abcd`` starts first.
     """
-    cut = None
+    best: tuple[int, int] | None = None
     for stop in stops:
         index = text.find(stop)
-        if index != -1 and (cut is None or index < cut):
-            cut = index
-    if cut is None:
+        if index == -1:
+            continue
+        candidate = (index + len(stop), index)
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
         return text, False
-    return text[:cut], True
+    return text[: best[1]], True
 
 
 def split_held_stop_prefix(text: str, stops: list[str]) -> tuple[str, str]:

@@ -4276,6 +4276,8 @@ hello
             ("hello ", True),
         )
         self.assertEqual(openai_server.truncate_at_stop("hello", ["STOP"]), ("hello", False))
+        # The first stop to complete wins, as in the Rust server.
+        self.assertEqual(openai_server.truncate_at_stop("xabcdy", ["abcd", "bc"]), ("xa", True))
         self.assertEqual(openai_server.split_held_stop_prefix("xxSTO", ["STOP"]), ("xx", "STO"))
         self.assertEqual(openai_server.split_held_stop_prefix("xxSTOQ", ["STOP"]), ("xxSTOQ", ""))
         self.assertEqual(openai_server.split_held_stop_prefix("STOP", ["STOP"]), ("STOP", ""))

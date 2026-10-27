@@ -51,9 +51,16 @@ pub(crate) fn validate_client_stop_sequences(
     Ok(())
 }
 
-/// Byte offset of the earliest match of any stop sequence, with its length.
-/// Ties at the same offset prefer the longest sequence so truncation removes
-/// the whole matched stop text.
+/// Byte offset and length of the stop match that completes first, i.e. the
+/// one with the smallest end offset; ties prefer the earlier start (the
+/// longer sequence) so truncation removes the whole matched stop text.
+///
+/// Generation emits text left to right, so the first stop to *complete* is
+/// the one that ends the turn. Ranking by start offset instead made the
+/// result depend on how much text was available: with stops `abcd` and `bc`,
+/// a stream that received `abc` stopped after `a`, while the non-stream
+/// response (and a stream that received `abcd` in one chunk) stopped before
+/// it.
 pub(crate) fn find_earliest_stop(text: &str, sequences: &[String]) -> Option<(usize, usize)> {
     let mut earliest: Option<(usize, usize)> = None;
     for sequence in sequences {
@@ -61,16 +68,25 @@ pub(crate) fn find_earliest_stop(text: &str, sequences: &[String]) -> Option<(us
             continue;
         }
         if let Some(index) = text.find(sequence.as_str()) {
-            let better = match earliest {
-                None => true,
-                Some((at, len)) => index < at || (index == at && sequence.len() > len),
-            };
-            if better {
-                earliest = Some((index, sequence.len()));
-            }
+            consider_stop_match(&mut earliest, index, sequence.len());
         }
     }
     earliest
+}
+
+/// Keep `(index, len)` when it completes before the current best (see
+/// [`find_earliest_stop`]).
+fn consider_stop_match(best: &mut Option<(usize, usize)>, index: usize, len: usize) {
+    let better = match *best {
+        None => true,
+        Some((at, best_len)) => {
+            let (end, best_end) = (index + len, at + best_len);
+            end < best_end || (end == best_end && index < at)
+        }
+    };
+    if better {
+        *best = Some((index, len));
+    }
 }
 
 /// Truncate at the earliest stop match. Returns true when a match fired
@@ -188,13 +204,7 @@ fn find_earliest_answer_stop(text: &str, sequences: &[String]) -> Option<(usize,
                 .iter()
                 .any(|(start, mask_end)| index < *mask_end && end > *start);
             if !overlaps_reasoning {
-                let better = match earliest {
-                    None => true,
-                    Some((at, len)) => index < at || (index == at && sequence.len() > len),
-                };
-                if better {
-                    earliest = Some((index, sequence.len()));
-                }
+                consider_stop_match(&mut earliest, index, sequence.len());
                 break;
             }
             from = index + sequence.len();
@@ -325,11 +335,40 @@ mod tests {
     }
 
     #[test]
-    fn earliest_match_wins_and_ties_prefer_longest() {
+    fn first_completed_match_wins_and_ties_prefer_longest() {
         let stops = vec!["END".to_string(), "ENDING".to_string(), "STOP".to_string()];
         assert_eq!(find_earliest_stop("xxSTOPyyEND", &stops), Some((2, 4)));
-        // Both END and ENDING match at 2; the longer one is removed whole.
+        // END completes before ENDING does; generation would have stopped on
+        // it first.
+        assert_eq!(find_earliest_stop("xxENDING", &stops), Some((2, 3)));
+        // Both end at the same byte: the longer one is removed whole.
+        let stops = vec!["NG".to_string(), "ENDING".to_string()];
         assert_eq!(find_earliest_stop("xxENDING", &stops), Some((2, 6)));
+    }
+
+    #[test]
+    fn overlapping_stops_resolve_the_same_streamed_or_not() {
+        // `bc` completes before `abcd`, though `abcd` starts first.
+        let stops = vec!["abcd".to_string(), "bc".to_string()];
+        let mut text = "xabcdy".to_string();
+        assert!(truncate_at_stop(&mut text, &stops));
+        assert_eq!(text, "xa");
+        for chunks in [
+            &["xabcdy"][..],
+            &["xab", "cdy"][..],
+            &["x", "a", "b", "c", "d", "y"][..],
+        ] {
+            let mut scanner = scanner(&["abcd", "bc"]);
+            let mut emitted = String::new();
+            for chunk in chunks {
+                let step = scanner.push(chunk);
+                emitted.push_str(&step.emit);
+                if step.matched {
+                    break;
+                }
+            }
+            assert_eq!(emitted, "xa", "chunks {chunks:?}");
+        }
     }
 
     #[test]
