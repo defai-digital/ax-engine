@@ -497,8 +497,12 @@ async fn ollama_chat_inner(
     if keep_alive_unload {
         // The completion has been produced (the two-chunk stream emulation is
         // fully buffered), so unloading now honors `keep_alive: 0` without
-        // cutting off an in-flight body.
-        unload_model_after_keep_alive(&state, live.model_id.as_ref()).await;
+        // cutting off an in-flight body. Release this handler's snapshot first:
+        // it owns the stateless prefix/weight context the post-unload trim
+        // must be able to reclaim.
+        let model_id = live.model_id.as_ref().clone();
+        drop(live);
+        unload_model_after_keep_alive(&state, &model_id).await;
     }
     if stream {
         return ollama_ndjson_response(vec![
@@ -602,7 +606,10 @@ async fn ollama_generate_inner(
     let ollama =
         run_ollama_completion(state.clone(), live.clone(), openai_request, num_ctx).await?;
     if keep_alive_unload {
-        unload_model_after_keep_alive(&state, live.model_id.as_ref()).await;
+        // Release this handler's snapshot before the post-unload trim.
+        let model_id = live.model_id.as_ref().clone();
+        drop(live);
+        unload_model_after_keep_alive(&state, &model_id).await;
     }
     if stream {
         return ollama_ndjson_response(vec![
