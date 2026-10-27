@@ -97,6 +97,23 @@ impl LinearAttentionConfig {
     }
 }
 
+/// DeepSeek V3 YaRN softmax correction (mlx-lm `deepseek_v3`):
+/// `scale *= get_mscale(factor, mscale_all_dim)^2` when `mscale_all_dim` is
+/// set. 1.0 for unscaled RoPE (GLM MLA rejects rope_scaling at convert).
+fn mla_yarn_softmax_scale(m: &NativeModelManifest) -> f32 {
+    let is_yarn = matches!(
+        m.rope_scaling_type.as_deref(),
+        Some("yarn") | Some("deepseek_yarn")
+    );
+    let factor = m.rope_scaling_factor.unwrap_or(1.0);
+    let mscale_all_dim = m.rope_mscale_all_dim.unwrap_or(0.0);
+    if !is_yarn || mscale_all_dim == 0.0 || factor <= 1.0 {
+        return 1.0;
+    }
+    let mscale = 0.1 * mscale_all_dim * factor.ln() + 1.0;
+    mscale * mscale
+}
+
 /// GLM4MoELite MLA attention dimensions extracted from the manifest.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaAttentionConfig {
@@ -143,7 +160,7 @@ impl MlaAttentionConfig {
             // GLM MLA scales scores by the original query head width
             // (qk_nope_head_dim + qk_rope_head_dim), not by the packed
             // SDPA key width (kv_lora_rank + qk_rope_head_dim).
-            query_scale: 1.0 / (q_head_dim as f32).sqrt(),
+            query_scale: 1.0 / (q_head_dim as f32).sqrt() * mla_yarn_softmax_scale(m),
         })
     }
 
@@ -634,6 +651,15 @@ impl ModelConfig {
                 .qk_rope_head_dim
                 .map(|dims| dims as usize)
                 .unwrap_or(head_dim)
+        } else if let Some(dims) = m
+            .mla_attention
+            .is_enabled()
+            .then_some(m.mla_attention.qk_rope_head_dim)
+            .flatten()
+        {
+            // MLA (DeepSeek V3 / GLM) rotates only the qk_rope_head_dim
+            // slice; YaRN freqs must be built for that width.
+            dims as usize
         } else {
             m.partial_rotary_factor
                 .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
@@ -1223,6 +1249,56 @@ mod tests {
             "{}",
             nemotron_cfg.rope_mscale
         );
+    }
+
+    #[test]
+    fn deepseek_v3_mla_yarn_scales_softmax_and_rotates_the_pe_slice() {
+        // DeepSeek-V3: q_head_dim 192 (128 nope + 64 rope), YaRN factor 40,
+        // mscale = mscale_all_dim = 1 (mlx-lm deepseek_v3: scale *= s^2).
+        let mla = serde_json::json!({
+            "model_family": "deepseek_v3",
+            "attention_head_dim": 192,
+            "rope_scaling_type": "yarn",
+            "rope_scaling_factor": 40.0,
+            "rope_original_context_len": 4096,
+            "rope_mscale": 1.0,
+            "rope_mscale_all_dim": 1.0,
+            "mla_attention": {
+                "q_lora_rank": 32,
+                "kv_lora_rank": 16,
+                "qk_nope_head_dim": 128,
+                "qk_rope_head_dim": 64,
+                "value_head_dim": 128
+            }
+        });
+        let cfg = ModelConfig::from_manifest(&rope_manifest(mla.clone()));
+        let s = 0.1 * 40.0_f32.ln() + 1.0;
+        let expected = 1.0 / 192.0_f32.sqrt() * s * s;
+        let mla_cfg = cfg.mla_attention.as_ref().expect("mla config");
+        assert!(
+            (mla_cfg.query_scale - expected).abs() < 1e-6,
+            "{}",
+            mla_cfg.query_scale
+        );
+        // YaRN divisors for the 64-dim pe slice, and no extra pe pre-scale.
+        let freqs = cfg.rope_freqs.as_ref().expect("yarn freqs").data_f32();
+        assert_eq!(freqs.len(), 32);
+        assert!((cfg.rope_mscale - 1.0).abs() < 1e-6);
+
+        // Unscaled MLA (GLM) keeps the plain 1/sqrt(q_head_dim).
+        let mut plain = mla;
+        for key in [
+            "rope_scaling_type",
+            "rope_scaling_factor",
+            "rope_mscale",
+            "rope_mscale_all_dim",
+        ] {
+            plain.as_object_mut().expect("object").remove(key);
+        }
+        let cfg = ModelConfig::from_manifest(&rope_manifest(plain));
+        let mla_cfg = cfg.mla_attention.as_ref().expect("mla config");
+        assert!((mla_cfg.query_scale - 1.0 / 192.0_f32.sqrt()).abs() < 1e-7);
+        assert!(cfg.rope_freqs.is_none());
     }
 
     #[test]
