@@ -44,6 +44,7 @@ use native::{build_native_core_with_mlx_shares, load_native_whisper_model};
 use routes::{
     apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
     native_step_needs_route_capture, native_step_read_deltas, route_has_decode_path_work,
+    strip_prefix_reuse_telemetry,
 };
 pub use stream::{GenerateStream, GenerateStreamPerformance, GenerateStreamState};
 use stream::{
@@ -817,6 +818,16 @@ impl EngineSession {
             }
             return Ok(());
         }
+        // Cancelling a request that already finished is a no-op, as on the
+        // delegated path: a cancel racing completion must not error.
+        if self
+            .core
+            .request_manager()
+            .snapshot(RequestId(request_id))
+            .is_some_and(|snapshot| snapshot.state.is_terminal())
+        {
+            return Ok(());
+        }
         self.cancel(RequestId(request_id))
     }
 
@@ -979,8 +990,34 @@ impl EngineSession {
                 }
                 // Always merge when we paid to materialise the route: decode
                 // counters are max-merged into any prefill-only store.
+                //
+                // Prefix reuse counters in the step route are batch sums, and
+                // only a prefill can hit the prefix cache: a request decoding
+                // in the same step must not record a sibling's hit as its own
+                // (it surfaced as that request's usage cached_tokens).
+                let decode_request_ids: Vec<u64> = outcome
+                    .schedule_plan
+                    .execution_batch
+                    .as_ref()
+                    .map(|batch| {
+                        batch
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                item.mode == ax_engine_core::ExecutionMode::Decode
+                                    && item.prefix_tokens_reused == 0
+                            })
+                            .map(|item| item.request_id.0)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let multi_request = batch_request_ids.len() > 1;
                 for request_id in batch_request_ids {
-                    self.store_native_request_route(request_id, route.clone(), &keep);
+                    let mut request_route = route.clone();
+                    if multi_request && decode_request_ids.contains(&request_id) {
+                        strip_prefix_reuse_telemetry(&mut request_route);
+                    }
+                    self.store_native_request_route(request_id, request_route, &keep);
                 }
             }
             report
@@ -1061,7 +1098,7 @@ impl EngineSession {
     /// Next auto id not retained or live. Caller-chosen ids can reserve any
     /// u64, including MAX, so the allocator wraps and skips used entries
     /// instead of stalling on a duplicate.
-    fn next_free_auto_request_id(&self) -> u64 {
+    fn next_free_auto_request_id(&mut self) -> u64 {
         const SCAN_LIMIT: u64 = 1024;
         let mut candidate = self.next_request_id;
         for _ in 0..SCAN_LIMIT {
@@ -1072,6 +1109,13 @@ impl EngineSession {
                 .is_none()
                 && !self.llama_requests.contains_key(&candidate)
             {
+                // `advance_request_id` cannot move past u64::MAX: once an
+                // explicit id pushed the counter there, every auto allocation
+                // restarted at MAX and handed it out again as soon as its
+                // snapshot was pruned. Wrap after allocating MAX.
+                if candidate == u64::MAX {
+                    self.next_request_id = 1;
+                }
                 return candidate;
             }
             candidate = candidate.checked_add(1).unwrap_or(1);

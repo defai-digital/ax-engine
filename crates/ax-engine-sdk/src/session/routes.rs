@@ -111,6 +111,23 @@ pub(super) fn native_step_read_deltas(
 // are merged via max(); all others fall back to last-wins to preserve current
 // behaviour for non-prefix-reuse telemetry. Restore source retains the latest
 // nonzero observation; zero means that this step did not restore anything.
+/// Drop the prefix-cache reuse telemetry from a per-request copy of a batch
+/// route (see the decode-item handling in `step_report_with_request_ids`).
+pub(super) fn strip_prefix_reuse_telemetry(route: &mut GenerateRouteReport) {
+    route.prefix_cache_path = None;
+    route.crossover_decisions.retain(|key, _| {
+        !(key.starts_with("ax_mlx_prefix_cache_")
+            || matches!(
+                key.as_str(),
+                "prefix_reused_requests"
+                    | "live_share_hits"
+                    | "retained_cache_hits"
+                    | "prefix_reused_blocks"
+                    | "prefix_reused_tokens"
+            ))
+    });
+}
+
 pub(super) fn merge_native_route_into(stored: &mut GenerateRouteReport, new: GenerateRouteReport) {
     if new.execution_plan.is_some() {
         stored.execution_plan = new.execution_plan;

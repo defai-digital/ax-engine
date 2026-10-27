@@ -3096,3 +3096,75 @@ fn resubmitting_a_recycled_request_id_drops_the_previous_route() {
         "a recycled request id must start without the previous request's route"
     );
 }
+
+fn native_probe_request(tokens: Vec<u32>, max_output_tokens: u32) -> GenerateRequest {
+    GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "m".to_string(),
+        input_tokens: tokens,
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    }
+}
+
+#[test]
+fn a_decoding_request_does_not_record_a_sibling_prefix_hit() {
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    let shared: Vec<u32> = (100..164).collect();
+    session
+        .generate(native_probe_request(shared.clone(), 2))
+        .expect("seed the prefix cache");
+    let decoding = session
+        .submit_generate(native_probe_request((1..=8).collect(), 30))
+        .expect("submit A");
+    for _ in 0..3 {
+        session.step_report().expect("step");
+    }
+    // B reuses the cached prefix while A decodes in the same step.
+    let reusing = session
+        .submit_generate(native_probe_request(shared, 2))
+        .expect("submit B");
+    while session.has_active_stepwise_requests() {
+        session.step_report().expect("step");
+    }
+    let report = session.request_report(decoding).expect("A report");
+    assert_eq!(
+        report.route.decision("prefix_reused_tokens").unwrap_or(0),
+        0,
+        "A reused nothing: {:?}",
+        report.route
+    );
+    let reused = session.request_report(reusing).expect("B report");
+    assert!(reused.route.decision("prefix_reused_tokens").unwrap_or(0) > 0);
+}
+
+#[test]
+fn cancelling_a_finished_native_request_is_a_no_op() {
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    let response = session
+        .generate(native_probe_request(vec![1, 2, 3], 2))
+        .expect("generate");
+    session
+        .cancel_request(response.request_id)
+        .expect("cancel after completion must not error");
+}
+
+#[test]
+fn auto_request_ids_wrap_instead_of_sticking_at_u64_max() {
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    session
+        .generate_with_request_id(u64::MAX - 1, native_probe_request(vec![1, 2], 1))
+        .expect("explicit id");
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..1200 {
+        let response = session
+            .generate(native_probe_request(vec![1, 2], 1))
+            .expect("generate");
+        ids.insert(response.request_id);
+    }
+    assert_eq!(ids.len(), 1200, "auto ids must stay unique");
+}
