@@ -299,18 +299,42 @@ fn responses_messages(
             // per-call assistant turns insert an extra assistant boundary on
             // Qwen ChatML and mis-attach outputs on Gemma 4.
             let mut pending_tool_calls: Vec<Value> = Vec::new();
+            // Index of an assistant message item that function_call items may
+            // still join: one model turn with text and calls is emitted as
+            // [message, function_call...] and must replay as one assistant
+            // message carrying both, as on /v1/chat/completions.
+            let mut open_assistant: Option<usize> = None;
+            // Text of `reasoning` items (this endpoint emits them as output),
+            // replayed as the next assistant turn's reasoning_content.
+            let mut pending_reasoning = String::new();
             for (index, item) in items.iter().enumerate() {
                 let object = item
                     .as_object()
                     .ok_or_else(|| invalid(format!("input[{index}] must be an object")))?;
                 match object.get("type").and_then(Value::as_str) {
+                    Some("reasoning") => {
+                        flush_pending_tool_calls(
+                            &mut messages,
+                            &mut pending_tool_calls,
+                            &mut open_assistant,
+                            &mut pending_reasoning,
+                        );
+                        open_assistant = None;
+                        pending_reasoning.push_str(&response_reasoning_text(object));
+                    }
                     Some("function_call") => {
                         let (call_id, tool_call) = response_function_tool_call(object, index)?;
                         seen_call_ids.insert(call_id);
                         pending_tool_calls.push(tool_call);
                     }
                     Some("function_call_output") => {
-                        flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+                        flush_pending_tool_calls(
+                            &mut messages,
+                            &mut pending_tool_calls,
+                            &mut open_assistant,
+                            &mut pending_reasoning,
+                        );
+                        open_assistant = None;
                         let call_id = required_string(object, "call_id", index)?;
                         if !seen_call_ids.contains(call_id) {
                             return Err(invalid(format!(
@@ -320,12 +344,30 @@ fn responses_messages(
                         messages.push(response_function_output_item(object, index)?);
                     }
                     _ => {
-                        flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
-                        messages.push(response_input_item(item, index)?);
+                        flush_pending_tool_calls(
+                            &mut messages,
+                            &mut pending_tool_calls,
+                            &mut open_assistant,
+                            &mut pending_reasoning,
+                        );
+                        let mut message = response_input_item(item, index)?;
+                        let is_assistant =
+                            message.get("role").and_then(Value::as_str) == Some("assistant");
+                        if is_assistant && !pending_reasoning.is_empty() {
+                            message["reasoning_content"] =
+                                Value::String(std::mem::take(&mut pending_reasoning));
+                        }
+                        messages.push(message);
+                        open_assistant = is_assistant.then(|| messages.len() - 1);
                     }
                 }
             }
-            flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+            flush_pending_tool_calls(
+                &mut messages,
+                &mut pending_tool_calls,
+                &mut open_assistant,
+                &mut pending_reasoning,
+            );
         }
         _ => {
             return Err(invalid(
@@ -354,16 +396,54 @@ fn response_input_item(item: &Value, index: usize) -> Result<Value, HttpErrorRes
 }
 
 /// Emit the pending run of function_call items as one assistant message
-/// whose tool_calls array holds every call in order.
-fn flush_pending_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut Vec<Value>) {
+/// whose tool_calls array holds every call in order. Calls that directly
+/// follow an assistant message item join it instead of opening a new turn.
+fn flush_pending_tool_calls(
+    messages: &mut Vec<Value>,
+    pending_tool_calls: &mut Vec<Value>,
+    open_assistant: &mut Option<usize>,
+    pending_reasoning: &mut String,
+) {
     if pending_tool_calls.is_empty() {
         return;
     }
-    messages.push(json!({
-        "role": "assistant",
-        "content": null,
-        "tool_calls": std::mem::take(pending_tool_calls)
-    }));
+    let calls = Value::Array(std::mem::take(pending_tool_calls));
+    if let Some(message) = open_assistant
+        .take()
+        .and_then(|index| messages.get_mut(index))
+    {
+        message["tool_calls"] = calls;
+        return;
+    }
+    let mut message = json!({"role": "assistant", "content": null, "tool_calls": calls});
+    if !pending_reasoning.is_empty() {
+        message["reasoning_content"] = Value::String(std::mem::take(pending_reasoning));
+    }
+    messages.push(message);
+}
+
+/// Text of a `reasoning` input item: its `summary` parts, else its
+/// `content` parts (`summary_text` / `reasoning_text`).
+fn response_reasoning_text(object: &Map<String, Value>) -> String {
+    let parts_text = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    };
+    let summary = parts_text("summary");
+    if summary.is_empty() {
+        parts_text("content")
+    } else {
+        summary
+    }
 }
 
 fn response_message_item(
@@ -374,6 +454,9 @@ fn response_message_item(
         .get("role")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid(format!("input[{index}].role must be a string")))?;
+    // Responses clients send `developer` instructions; chat templates know
+    // them as `system`.
+    let role = if role == "developer" { "system" } else { role };
     let content = response_item_text(object.get("content"), index)?;
     Ok(json!({"role": role, "content": content}))
 }
@@ -668,17 +751,28 @@ fn build_responses_output(
         "previous_response_id": null,
         "reasoning": request.reasoning.clone().unwrap_or_else(|| json!({})),
         "store": false,
-        "temperature": request.temperature,
+        "temperature": request.temperature.map(echo_f32),
         "text": request.text.clone().unwrap_or_else(|| json!({"format": {"type": "text"}})),
         "tool_choice": request.tool_choice.clone().unwrap_or_else(|| json!("auto")),
         "tools": request.tools.clone().unwrap_or_else(|| json!([])),
-        "top_p": request.top_p,
+        "top_p": request.top_p.map(echo_f32),
         "truncation": request.truncation.as_deref().unwrap_or("disabled"),
         "usage": usage,
         "metadata": request.metadata.clone().unwrap_or_else(|| json!({})),
         "user": request.user.clone(),
         "service_tier": request.service_tier.as_deref().unwrap_or("default")
     }))
+}
+
+/// The client's sampling value as it was written: widening the parsed f32
+/// directly echoes `0.7` as `0.699999988079071`.
+fn echo_f32(value: f32) -> Value {
+    value
+        .to_string()
+        .parse::<f64>()
+        .ok()
+        .and_then(serde_json::Number::from_f64)
+        .map_or(Value::Null, Value::Number)
 }
 
 fn responses_usage(usage: Option<&Value>) -> Value {
@@ -693,7 +787,10 @@ fn responses_usage(usage: Option<&Value>) -> Value {
     let cached_tokens = usage
         .get("prompt_tokens_details")
         .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+        // Chat omits prompt_tokens_details when nothing was reused; with a
+        // known prompt count that means zero cached tokens, not unknown.
+        .or(prompt_tokens.map(|_| 0));
     let reasoning_tokens = usage
         .get("completion_tokens_details")
         .and_then(|details| details.get("reasoning_tokens"))
@@ -1011,6 +1108,71 @@ mod tests {
                 {"role": "tool", "tool_call_id": "call_a", "content": "a result"},
                 {"role": "tool", "tool_call_id": "call_b", "content": "b result"}
             ])
+        );
+    }
+
+    #[test]
+    fn replayed_output_items_round_trip_into_one_assistant_turn() {
+        // The stateless loop appends a thinking model's output - reasoning,
+        // text and a call from one turn - to the next request's input.
+        let messages = responses_messages(
+            None,
+            &json!([
+                {"type": "message", "role": "developer", "content": "Be terse"},
+                {"type": "message", "role": "user", "content": "weather?"},
+                {"type": "reasoning", "id": "rs_1",
+                 "summary": [{"type": "summary_text", "text": "need the tool"}]},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Let me check"}]},
+                {"type": "function_call", "call_id": "call_1", "name": "weather",
+                 "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                {"type": "message", "role": "user", "content": "thanks"}
+            ]),
+        )
+        .expect("replayed output should map");
+        assert_eq!(
+            Value::Array(messages),
+            json!([
+                {"role": "system", "content": "Be terse"},
+                {"role": "user", "content": "weather?"},
+                {
+                    "role": "assistant",
+                    "content": "Let me check",
+                    "reasoning_content": "need the tool",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "weather", "arguments": "{}"}
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+                {"role": "user", "content": "thanks"}
+            ])
+        );
+    }
+
+    #[test]
+    fn response_echoes_sampling_values_and_counts_uncached_prompts_as_zero() {
+        let request: OpenAiResponsesRequest =
+            serde_json::from_value(json!({"input": "hi", "temperature": 0.7, "top_p": 0.9}))
+                .expect("Responses request should deserialize");
+        let response = build_responses_output(
+            &request,
+            &json!({
+                "id": "chatcmpl-echo",
+                "created": 1,
+                "model": "qwen3",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+            }),
+        )
+        .expect("response should map");
+        assert_eq!(response["temperature"], json!(0.7));
+        assert_eq!(response["top_p"], json!(0.9));
+        assert_eq!(
+            response["usage"]["input_tokens_details"]["cached_tokens"],
+            0
         );
     }
 
