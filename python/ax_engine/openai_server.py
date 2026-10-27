@@ -831,6 +831,32 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_cls: Any) -> Any:
     return tokenizer_cls.from_file(str(path))
 
 
+def gated_stream(gate: Any, chunks: Iterator[str]) -> AsyncIterator[str]:
+    """Hold ``gate`` for a stream's whole lifetime.
+
+    The gate is released when the stream is exhausted or the client
+    disconnects. Before release, the underlying sync iterator is closed: a
+    disconnect only closes this async wrapper, and an inner native stream left
+    open would keep the session busy, so the next request admitted through the
+    gate would fail with "session already has an active stream".
+    """
+    import anyio
+    from starlette.concurrency import iterate_in_threadpool
+
+    async def _gated_chunks() -> AsyncIterator[str]:
+        async with gate:
+            try:
+                async for chunk in iterate_in_threadpool(chunks):
+                    yield chunk
+            finally:
+                close = getattr(chunks, "close", None)
+                if callable(close):
+                    with anyio.CancelScope(shield=True):
+                        await anyio.to_thread.run_sync(close)
+
+    return _gated_chunks()
+
+
 def create_app(
     *,
     model_id: str = "qwen3_dense",
@@ -843,7 +869,6 @@ def create_app(
         import anyio
         from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse, StreamingResponse
-        from starlette.concurrency import iterate_in_threadpool
         from tokenizers import Tokenizer
     except ImportError as error:
         raise RuntimeError(
@@ -865,18 +890,7 @@ def create_app(
     generation_gate = anyio.Semaphore(1)
 
     def serialized_stream(chunks: Iterator[str]) -> AsyncIterator[str]:
-        """Hold the generation gate for a stream's whole lifetime.
-
-        The gate is released in the ``async with`` unwind when the stream is
-        exhausted or the client disconnects (Starlette closes the generator).
-        """
-
-        async def _gated_chunks() -> AsyncIterator[str]:
-            async with generation_gate:
-                async for chunk in iterate_in_threadpool(chunks):
-                    yield chunk
-
-        return _gated_chunks()
+        return gated_stream(generation_gate, chunks)
 
     @asynccontextmanager
     async def lifespan(_app: Any):
