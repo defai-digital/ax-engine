@@ -7756,12 +7756,6 @@ mod tests {
 
     #[test]
     fn qsa_tiled_preserves_signed_zero_order() {
-        // The positive execution contract is limited to admitted GPU/MLX
-        // combinations, just like qsa_tiled_score_bits_match_monolithic.
-        if !tiled_score_runtime_matches() {
-            eprintln!("skipping tiled signed-zero check: GPU/MLX runtime is not admitted");
-            return;
-        }
         let (batch, seq, heads, dim, n_blocks) = (1, 2, 2, 4, 2);
         let queries = cast_tensor(
             &vec![0.0f32; (batch * seq * heads * dim) as usize],
@@ -7779,8 +7773,15 @@ mod tests {
         .unwrap();
         assert_eq!(plan.query_rows, vec![1, 1]);
         let monolithic = score_bits(&queries, &blocks);
-        let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
-        assert_same_bits(&tiled, &monolithic);
+        // Only the tiled execution contract is limited to admitted GPU/MLX
+        // combinations, as in qsa_tiled_score_bits_match_monolithic; the plan
+        // and the host tie-breaks below hold everywhere.
+        if tiled_score_runtime_matches() {
+            let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
+            assert_same_bits(&tiled, &monolithic);
+        } else {
+            eprintln!("skipping tiled signed-zero bits: GPU/MLX runtime is not admitted");
+        }
         let scores: Vec<f32> = monolithic
             .chunks(n_blocks as usize)
             .flat_map(|row| {
@@ -8082,10 +8083,6 @@ mod tests {
 
     #[test]
     fn qsa_tiled_peak_workspace_is_bounded() {
-        if !tiled_score_runtime_matches() {
-            eprintln!("skipping tiled peak measurement: GPU/MLX runtime is not admitted");
-            return;
-        }
         with_isolated_peak_memory(|| {
             let seq = 2048i32;
             let heads = 4i32;
@@ -8125,6 +8122,12 @@ mod tests {
                 }
                 Err(error) => panic!("monolithic path must reject this chunk, got {error}"),
                 Ok(_) => panic!("monolithic path must reject this chunk"),
+            }
+            // The plan and the rejection above hold on every host; only the
+            // tiled execution and its peak are bound to admitted runtimes.
+            if !tiled_score_runtime_matches() {
+                eprintln!("skipping tiled peak measurement: GPU/MLX runtime is not admitted");
+                return;
             }
             let previous_limit = mlx_sys::set_cache_limit(0);
             let active_before = mlx_sys::mempressure::device_active_bytes().unwrap_or(0);
