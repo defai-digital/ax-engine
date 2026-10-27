@@ -4972,6 +4972,9 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        // A failure recorded outside a step (warmup, a contained panic) must
+        // not fail this step's unrelated requests.
+        let _ = crate::expert_stream::take_paging_failure();
         *self.last_prefix_model_id.lock() = input.execution_batch.model_id.clone();
         self.last_block_size_tokens.store(
             input.block_size_tokens,
@@ -10005,6 +10008,11 @@ impl MlxRunner {
         media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
+        // An expert paging failure this step replaced an MoE output with
+        // zeros; the resulting KV is wrong and must not be reused.
+        if crate::expert_stream::paging_failure_pending() {
+            return telemetry;
+        }
         let tokens = &state.prompt_prefix_tokens[..prefix_len];
         let mut key =
             self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
@@ -10142,6 +10150,9 @@ impl MlxRunner {
         state: &RequestState,
         options: PromptPrefixSnapshotStoreOptions<'_>,
     ) -> MlxPrefixCacheTelemetry {
+        if crate::expert_stream::paging_failure_pending() {
+            return MlxPrefixCacheTelemetry::default();
+        }
         let PromptPrefixSnapshotStoreOptions {
             linear_boundary_snapshot,
             prefill_completes_prompt,

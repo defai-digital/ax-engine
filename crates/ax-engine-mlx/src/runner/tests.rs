@@ -9634,6 +9634,48 @@ fn semantic_tail_chunk_ignores_preceding_segments() {
 }
 
 #[test]
+fn paging_failure_blocks_prefix_snapshot_publication() {
+    // A paging failure replaces an MoE output with zeros for the rest of the
+    // forward; KV computed after it must not reach the prefix cache, where a
+    // later request would silently restore it.
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    let run = |id: u64| {
+        let mut item = prefill_item_with_claim(0, 8);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; 8];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = 8;
+        ctx.max_output_tokens = 4;
+        runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            4,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    crate::expert_stream::record_paging_failure("injected paging failure".to_string());
+    run(150);
+    assert_eq!(
+        runner.prefix_cache.lock().stats().entries,
+        0,
+        "a step with a paging failure must not publish snapshots"
+    );
+    assert!(crate::expert_stream::take_paging_failure().is_some());
+    run(151);
+    assert!(
+        runner.prefix_cache.lock().stats().entries > 0,
+        "a clean step publishes as before"
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
 fn checkpoint_after_ordered_prefill_commits() {
     // Every prefill latches its rotation decision. An ordered latch must not
     // turn every later handoff checkpoint into a miss.

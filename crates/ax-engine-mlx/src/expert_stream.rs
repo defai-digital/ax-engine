@@ -1189,6 +1189,13 @@ pub(crate) fn record_paging_failure(message: String) {
     });
 }
 
+/// Whether this thread recorded a paging failure that is not yet drained.
+/// The forward that saw it produced zeros instead of the MoE output, so any
+/// KV computed after it must not be published to the prefix cache.
+pub(crate) fn paging_failure_pending() -> bool {
+    PAGING_FAILURE.with(|slot| slot.borrow().is_some())
+}
+
 /// Take the paging failure recorded on this thread, if any.
 pub(crate) fn take_paging_failure() -> Option<String> {
     PAGING_FAILURE.with(|slot| slot.borrow_mut().take())
