@@ -924,7 +924,25 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
         16,
     );
     let tie_margin = mtp_parity::mtp_tie_margin();
-    let margin = result.min_correction_margin().unwrap_or(f32::INFINITY);
+    // Certify a near-tie only with the direct-decode gap at the divergence
+    // itself; a correction margin from another verifier position cannot
+    // (same rule as `runner_greedy_identity`). Unknown means not a tie.
+    let divergence = expected
+        .iter()
+        .zip(&result.tokens)
+        .position(|(expected, actual)| expected != actual);
+    let margin = divergence
+        .and_then(|position| {
+            direct_margin_at_divergence(
+                &runner,
+                result.prefill_state.as_ref(),
+                prompt.len(),
+                &expected[..position],
+                expected[position],
+                result.tokens[position],
+            )
+        })
+        .unwrap_or(f32::INFINITY);
     let identity =
         mtp_parity::greedy_identity_until_tie(&expected, &result.tokens, margin, tie_margin)
             .unwrap_or_else(|error| panic!("{error}"));
