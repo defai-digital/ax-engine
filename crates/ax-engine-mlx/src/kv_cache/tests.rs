@@ -704,12 +704,12 @@ fn bounded_ring_multi_token_append_places_tokens_by_slot_and_wraps() {
     assert_eq!(lkv.rotating_window, Some(4));
     assert_eq!(lkv.capacity, 7);
     assert_eq!(ck.shape(), vec![1, 1, 7, HD as i32]);
-    // Conversion copies tokens 1..=3 (window - 1 back from write_start 4)
-    // to slots 1..=3; new tokens 4..=6 land at slots 4..=6; slot 0 (token
-    // 0's slot) was outside the copy range and stays zero.
+    // Conversion copies every token the ring keeps (0..=3 here, since the
+    // ring holds 7 and three new tokens follow) to their slots; new tokens
+    // 4..=6 land at slots 4..=6. A rollback within the slack can need them.
     assert_eq!(
         token_row_values(&lkv.k, HD),
-        vec![0.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
     );
 
     // Two single-token appends wrap: token 7 → slot 0, token 8 → slot 1.
@@ -734,6 +734,39 @@ fn ordered_cache_reports_no_rotated_sliding_layers() {
     cache.append(0, k, v);
     cache.advance(2);
     assert!(!cache.has_rotated_sliding_layers());
+}
+
+#[test]
+fn ring_conversion_keeps_the_keys_a_rollback_within_slack_needs() {
+    // Window 4, slack 3: capacity 7. Six prefill tokens (values 1..=6), then a
+    // one-token decode converts the layer to a ring (E = 7). A rollback to 5 is
+    // within the slack, and the next forward at position 5 reads keys 2..=5.
+    // The conversion used to copy only window - 1 tokens (3, 4, 5), leaving
+    // token 2's slot zeroed although trim_to accepted the rollback.
+    const HD: usize = 4;
+    let mut cache = MlxKVCache::new(1);
+    cache.set_rotating_sliding_decode(true);
+    cache.set_rotating_sliding_slack(3);
+    let k = tokens_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], HD);
+    let v = tokens_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], HD);
+    cache.append(0, k, v);
+    cache.seq_len = 6;
+    let k = tokens_f32(&[7.0], HD);
+    let v = tokens_f32(&[7.0], HD);
+    cache.append_with_retained_window(0, k, v, Some(4));
+    cache.seq_len = 7;
+    assert!(cache.has_rotated_sliding_layers());
+    assert!(cache.trim_to(5));
+    let lkv = contiguous_layer(&cache, 0);
+    let slots = token_row_values(&lkv.k, HD);
+    // Token t lives at slot t % 7; tokens 2..=5 must hold their values.
+    for token in 2..=5_usize {
+        assert_eq!(
+            slots[token % 7],
+            (token + 1) as f32,
+            "token {token}: {slots:?}"
+        );
+    }
 }
 
 #[test]
@@ -763,9 +796,10 @@ fn bounded_ring_trim_within_slack_rewrites_same_slots() {
     cache.append_with_retained_window(0, k, v, Some(4));
     cache.seq_len = 7;
     let lkv = contiguous_layer(&cache, 0);
+    // Conversion fills every slot the ring keeps, so token 0 is resident too.
     assert_eq!(
         token_row_values(&lkv.k, HD),
-        vec![0.0, 2.0, 3.0, 4.0, 5.0, 60.0, 70.0]
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 60.0, 70.0]
     );
 
     // Rollback deeper than the slack is refused (fail-closed).

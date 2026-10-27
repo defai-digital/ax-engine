@@ -3923,7 +3923,12 @@ impl MlxKVCache {
             let buf_shape = [1i32, lkv.n_kv_heads, capacity as i32, lkv.head_dim];
             let k_new = zeros(&buf_shape, lkv.dtype, None);
             let v_new = zeros(&buf_shape, lkv.dtype, None);
-            let old_start = write_start.saturating_add(1).saturating_sub(window);
+            // Fill every slot the ring keeps, not only the attention window:
+            // `trim_to` accepts rollbacks within the slack on the premise that
+            // the last `capacity` tokens are resident. Copying only
+            // `window - 1` left older slots zeroed, so a rollback past the
+            // conversion point attended over zero K/V rows.
+            let old_start = (write_start + new_tokens).saturating_sub(capacity);
             let old_end = write_start;
             let k_new =
                 copy_token_range_to_rotating(&k_old, &k_new, lkv, old_start, old_end, capacity);
