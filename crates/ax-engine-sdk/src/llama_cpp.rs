@@ -655,7 +655,10 @@ fn run_llama_cpp_server_completion_generate(
         prompt_token_count,
         None,
         finish_reason_from_stop_type(response.stop, response.stop_type.as_deref()),
-        llama_cpp_server_completion_route("llama_cpp.server_completion", response.tokens_cached),
+        llama_cpp_server_completion_route(
+            "llama_cpp.server_completion",
+            response.timings.map_or(0, |timings| timings.cache_n),
+        ),
     ))
 }
 
@@ -1107,10 +1110,19 @@ struct LlamaCppCompletionResponse {
     stop: bool,
     #[serde(default)]
     stop_type: Option<String>,
+    // Not `tokens_cached`: that is the slot's whole token count (prompt plus
+    // generated), so it reported a prefix hit for every request, cold ones
+    // included. `timings.cache_n` is the prompt prefix actually reused.
     #[serde(default)]
-    tokens_cached: u32,
+    timings: Option<LlamaCppCompletionTimings>,
     #[serde(default)]
     tokens_evaluated: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LlamaCppCompletionTimings {
+    #[serde(default)]
+    cache_n: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1227,6 +1239,27 @@ mod tests {
             &BackendPolicy::allow_llama_cpp(),
             &ResolvedBackend::llama_cpp(SelectedBackend::LlamaCpp, "test delegated route"),
         )
+    }
+
+    #[test]
+    fn blocking_completion_reports_only_the_reused_prompt_prefix() {
+        let route_for = |body: &str| {
+            let response: LlamaCppCompletionResponse =
+                serde_json::from_str(body).expect("response parses");
+            llama_cpp_server_completion_route(
+                "llama_cpp.server_completion",
+                response.timings.map_or(0, |timings| timings.cache_n),
+            )
+        };
+        // A cold request: tokens_cached counts the whole slot (prompt plus
+        // output), not reuse.
+        let cold = route_for(r#"{"content":"x","tokens_cached":12,"timings":{"cache_n":0}}"#);
+        assert!(cold.prefix_cache_path.is_none(), "{cold:?}");
+        let warm = route_for(r#"{"content":"x","tokens_cached":12,"timings":{"cache_n":5}}"#);
+        assert_eq!(
+            warm.crossover_decisions.get("delegated_cached_tokens"),
+            Some(&5)
+        );
     }
 
     #[test]
