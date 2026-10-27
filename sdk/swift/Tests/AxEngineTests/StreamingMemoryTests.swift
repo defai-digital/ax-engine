@@ -280,6 +280,44 @@ final class StreamingMemoryTests: XCTestCase {
         withExtendedLifetime(stream) {}
     }
 
+    func testCancelledStreamDoesNotLaterReadAsCleanEnd() async throws {
+        let probe = StreamProbe("data: 1\n\n")
+        let session = session(probe)
+        defer { session.invalidateAndCancel() }
+        let reader = StreamingResponse(request: .success(URLRequest(url: url)), session: session,
+            limits: .init(), requiresDoneSentinel: true) { Int($0.data)! }
+        let first = try await reader.next()
+        XCTAssertEqual(first, 1)
+        let blocked = Task { try await reader.next() }
+        try await Task.sleep(for: .milliseconds(30))
+        blocked.cancel()
+        _ = await blocked.result
+        await fulfillment(of: [probe.stopped], timeout: 2)
+        do {
+            let value = try await reader.next()
+            XCTFail("A cancelled stream must not end cleanly, got \(String(describing: value))")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+    }
+
+    func testTerminalResponseEventReleasesTransportImmediately() async throws {
+        // No EOF from the transport: only the terminal event may release it.
+        let probe = StreamProbe("event: step\ndata: 1\n\nevent: response\ndata: 2\n\n")
+        let session = session(probe)
+        defer { session.invalidateAndCancel() }
+        let reader = StreamingResponse(request: .success(URLRequest(url: url)), session: session,
+            limits: .init(), requiresDoneSentinel: false) { Int($0.data)! }
+        let step = try await reader.next()
+        XCTAssertEqual(step, 1)
+        let response = try await reader.next()
+        XCTAssertEqual(response, 2)
+        await fulfillment(of: [probe.stopped], timeout: 2)
+        let end = try await reader.next()
+        XCTAssertNil(end)
+        withExtendedLifetime(reader) {}
+    }
+
     func testConcurrentReaderMisuseClosesThePendingRead() async throws {
         let probe = StreamProbe("", sendHeaders: false)
         let session = session(probe)

@@ -15,6 +15,8 @@ actor StreamingResponse<Element: Sendable> {
     private var opening: Task<(URLSession.AsyncBytes, URLResponse), Error>?
     private var sawResponse = false
     private var finished = false
+    // A cancelled stream must not later read as a clean end of stream.
+    private var cancelled = false
     private var reading = false
     private var paused = false
 
@@ -31,7 +33,10 @@ actor StreamingResponse<Element: Sendable> {
     deinit { opening?.cancel(); transport?.cancel() }
 
     func next() async throws -> Element? {
-        guard !finished else { return nil }
+        guard !finished else {
+            if cancelled { throw CancellationError() }
+            return nil
+        }
         guard !reading else {
             close()
             throw AxEngineStreamError(message: "Concurrent stream iteration is not supported.", payload: "")
@@ -47,7 +52,7 @@ actor StreamingResponse<Element: Sendable> {
             }
         } onCancel: {
             // Actor reentrancy lets cancellation close a blocked byte read.
-            Task { await self.close() }
+            Task { await self.cancel() }
         }
     }
 
@@ -96,7 +101,15 @@ actor StreamingResponse<Element: Sendable> {
         if let event {
             if event.event == "error" { throw AxEngineClient.streamError(from: event.data) }
             let value = try decode(event)
-            if event.event == "response" { sawResponse = true }
+            if event.event == "response" {
+                sawResponse = true
+                // The response event is terminal here; release the transport
+                // now instead of on the next pull or deallocation.
+                if !requiresDoneSentinel {
+                    close()
+                    return value
+                }
+            }
             iterator = current
             // Also pause transport between demands. Foundation may already
             // have buffered some bytes; this is not a whole-process byte cap.
@@ -112,6 +125,11 @@ actor StreamingResponse<Element: Sendable> {
         }
         close()
         return nil
+    }
+
+    private func cancel() {
+        if !finished { cancelled = true }
+        close()
     }
 
     private func close() {
