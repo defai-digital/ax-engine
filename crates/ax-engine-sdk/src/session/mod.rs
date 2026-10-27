@@ -1052,6 +1052,7 @@ impl EngineSession {
                 .request_manager()
                 .snapshot(RequestId(candidate))
                 .is_none()
+                && !self.llama_requests.contains_key(&candidate)
             {
                 return candidate;
             }
@@ -1176,7 +1177,8 @@ impl EngineSession {
         &mut self,
         request: GenerateRequest,
     ) -> Result<GenerateStream<'_>, EngineSessionError> {
-        self.stream_generate_with_request_id(self.next_request_id, request)
+        let request_id = self.next_free_auto_request_id();
+        self.stream_generate_with_request_id(request_id, request)
     }
 
     pub fn stream_generate_with_request_id(
@@ -1202,7 +1204,8 @@ impl EngineSession {
         &mut self,
         request: GenerateRequest,
     ) -> Result<GenerateResponse, EngineSessionError> {
-        self.generate_with_request_id(self.next_request_id, request)
+        let request_id = self.next_free_auto_request_id();
+        self.generate_with_request_id(request_id, request)
     }
 
     pub fn generate_with_request_id(
@@ -1302,7 +1305,8 @@ impl EngineSession {
         &mut self,
         request: GenerateRequest,
     ) -> Result<GenerateStreamState, EngineSessionError> {
-        self.stream_generate_state_with_request_id(self.next_request_id, request)
+        let request_id = self.next_free_auto_request_id();
+        self.stream_generate_state_with_request_id(request_id, request)
     }
 
     pub fn stream_generate_state_with_request_id(

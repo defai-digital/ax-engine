@@ -887,6 +887,38 @@ fn auto_allocation_wraps_past_a_used_max_id() {
 }
 
 #[test]
+fn every_auto_entry_point_skips_a_retained_max_id() {
+    // Only submit_generate used the wrapping allocator; the stream and
+    // generate entry points reused next_request_id and collided with MAX.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(u64::MAX - 1, request.clone())
+        .expect("explicit max-1 id");
+    session
+        .submit_generate(request.clone())
+        .expect("auto takes MAX");
+    let first = session
+        .stream_generate_state(request.clone())
+        .expect("stream state must skip the retained MAX id");
+    assert_eq!(first.request_id(), 1);
+    let second = session
+        .stream_generate_state(request)
+        .expect("a second stream state gets a fresh id");
+    assert_eq!(second.request_id(), 2);
+}
+
+#[test]
 fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
     let mut multimodal_inputs = sample_gemma4_multimodal_inputs();
     multimodal_inputs
