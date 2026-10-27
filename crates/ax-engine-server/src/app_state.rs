@@ -84,6 +84,8 @@ pub(crate) struct AppState {
     /// Loaded model states — take a snapshot at the start of each handler.
     pub(crate) live: Arc<parking_lot::RwLock<LiveModelRegistry>>,
     pub(crate) api_key: Option<Arc<String>>,
+    /// Hosts a server without an API key answers (DNS-rebinding guard).
+    pub(crate) allowed_hosts: Arc<crate::routes::HostAllowlist>,
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Start-up-resolved process-environment configuration (parsed once in
     /// `main`); request-path code reads these fields instead of the
@@ -121,6 +123,7 @@ impl AppState {
                 models,
             })),
             api_key: None,
+            allowed_hosts: Arc::new(crate::routes::HostAllowlist::default()),
             metrics,
             env: Arc::new(env),
             loading: Arc::new(AtomicBool::new(false)),
@@ -396,6 +399,12 @@ impl AppState {
 
     pub(crate) fn with_api_key(mut self, api_key: Option<String>) -> Self {
         self.api_key = api_key.map(Arc::new);
+        self
+    }
+
+    /// `AX_SERVER_ALLOWED_HOSTS`, resolved once at start-up.
+    pub(crate) fn with_allowed_hosts(mut self, raw: Option<&str>) -> Self {
+        self.allowed_hosts = Arc::new(crate::routes::HostAllowlist::from_env(raw));
         self
     }
 

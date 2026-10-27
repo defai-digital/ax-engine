@@ -129,6 +129,30 @@ pub(crate) fn build_router_with_rate_limit(state: AppState, rate_limited: bool) 
         None => router,
     };
 
+    // Without an API key, a web page could rebind its own domain to this
+    // loopback server and drive it (model load, generation) as same-origin.
+    // Answer only hosts a remote page cannot point here; a key already blocks
+    // that attack, so the check is skipped when one is configured.
+    let router = if state.api_key.is_none() {
+        let allowlist = Arc::clone(&state.allowed_hosts);
+        router.layer(middleware::from_fn(move |request: Request, next: Next| {
+            let allowlist = Arc::clone(&allowlist);
+            async move {
+                if allowlist.admits(&request) {
+                    return next.run(request).await;
+                }
+                (
+                    StatusCode::FORBIDDEN,
+                    "request Host or Origin is not allowed for a server without an API key; \
+                     set --api-key or AX_SERVER_ALLOWED_HOSTS",
+                )
+                    .into_response()
+            }
+        }))
+    } else {
+        router
+    };
+
     // Inside the metrics layer so timed-out requests are recorded as 408s.
     let router = match state.limits.request_timeout {
         Some(timeout) => router.layer(middleware::from_fn(
@@ -255,6 +279,101 @@ impl Drop for GuardedBody {
         if let Some(guard) = self.guard.take() {
             guard.finish_body();
         }
+    }
+}
+
+/// Hosts a server without an API key answers. DNS rebinding needs the
+/// attacker's own domain name in `Host`, so IP literals, `localhost` and mDNS
+/// `.local` names stay allowed; `AX_SERVER_ALLOWED_HOSTS` adds names
+/// (comma-separated), and `*` disables the check.
+#[derive(Debug, Default)]
+pub(crate) struct HostAllowlist {
+    allow_any: bool,
+    extra: Vec<String>,
+}
+
+impl HostAllowlist {
+    pub(crate) fn from_env(raw: Option<&str>) -> Self {
+        let mut allowlist = Self::default();
+        for entry in raw.unwrap_or("").split(',') {
+            let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+            if entry == "*" {
+                allowlist.allow_any = true;
+            } else if !entry.is_empty() {
+                allowlist.extra.push(entry);
+            }
+        }
+        allowlist
+    }
+
+    fn admits<B>(&self, request: &axum::http::Request<B>) -> bool {
+        if self.allow_any {
+            return true;
+        }
+        let header_host = |name| {
+            request
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().ok().map(str::to_string))
+        };
+        // HTTP/2 carries the authority in the URI rather than `Host`.
+        let host = header_host(header::HOST).or_else(|| {
+            request
+                .uri()
+                .authority()
+                .map(|a| Some(a.as_str().to_string()))
+        });
+        let host_ok = match host {
+            None => true,
+            Some(Some(host)) => self.host_is_allowed(&host),
+            Some(None) => false,
+        };
+        let origin_ok = match header_host(header::ORIGIN) {
+            None => true,
+            Some(Some(origin)) => {
+                origin_authority(&origin).is_some_and(|host| self.host_is_allowed(host))
+            }
+            Some(None) => false,
+        };
+        host_ok && origin_ok
+    }
+
+    pub(crate) fn host_is_allowed(&self, authority: &str) -> bool {
+        if self.allow_any {
+            return true;
+        }
+        let host = strip_port(authority.trim())
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+        unbracketed.parse::<std::net::IpAddr>().is_ok()
+            || host == "localhost"
+            || host.ends_with(".localhost")
+            || host.ends_with(".local")
+            || self.extra.contains(&host)
+    }
+}
+
+/// `scheme://authority[/path]` to its authority; `null` and opaque origins
+/// have none.
+fn origin_authority(origin: &str) -> Option<&str> {
+    let (_, rest) = origin.trim().split_once("://")?;
+    let authority = rest.split('/').next()?;
+    (!authority.is_empty()).then_some(authority)
+}
+
+/// Drop a trailing `:port`, keeping a bracketed IPv6 literal intact.
+fn strip_port(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        return authority
+            .split_once(']')
+            .map_or(authority, |(head, _)| &authority[..head.len() + 1]);
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => {
+            host
+        }
+        _ => authority,
     }
 }
 

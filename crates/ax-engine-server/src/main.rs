@@ -120,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lan_cluster = args.resolved_lan_cluster();
     let state = build_app_state(model_id.clone(), session_config, env_config)?
         .with_api_key(api_key.clone())
+        .with_allowed_hosts(std::env::var("AX_SERVER_ALLOWED_HOSTS").ok().as_deref())
         .with_limits(limits)
         .with_discovery(app_state::DiscoveryMeta {
             instance_id: discovery_instance_id.clone(),

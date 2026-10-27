@@ -94,3 +94,74 @@ async fn metrics_route_requires_auth_and_emits_prometheus_text() {
     assert!(body.contains("# TYPE ax_engine_http_requests_total counter"));
     assert!(body.contains("ax_engine_http_requests_in_flight"));
 }
+
+#[test]
+fn keyless_host_allowlist_admits_local_names_and_ip_literals_only() {
+    use crate::routes::HostAllowlist;
+    let default = HostAllowlist::from_env(None);
+    for host in [
+        "127.0.0.1:31418",
+        "localhost:31418",
+        "LOCALHOST",
+        "[::1]:31418",
+        "192.168.1.20:31418",
+        "mac-studio.local:31418",
+        "app.localhost",
+    ] {
+        assert!(default.host_is_allowed(host), "{host}");
+    }
+    for host in [
+        "evil.example:31418",
+        "rebind.attacker.com",
+        "localhost.evil.com",
+    ] {
+        assert!(!default.host_is_allowed(host), "{host}");
+    }
+    let custom = HostAllowlist::from_env(Some("studio.lan, Inference.Example."));
+    assert!(custom.host_is_allowed("studio.lan:31418"));
+    assert!(custom.host_is_allowed("inference.example"));
+    assert!(HostAllowlist::from_env(Some("*")).host_is_allowed("anything.example"));
+}
+
+#[tokio::test]
+async fn keyless_server_rejects_dns_rebinding_hosts_and_foreign_origins() {
+    let app = build_router(llama_cpp_state());
+    let request = |host: &str, origin: Option<&str>| {
+        let mut builder = Request::builder()
+            .uri("/v1/models")
+            .header(header::HOST, host);
+        if let Some(origin) = origin {
+            builder = builder.header(header::ORIGIN, origin);
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+    let (status, _, _) = text_response(&app, request("127.0.0.1:31418", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = text_response(&app, request("rebind.attacker.com:31418", None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = text_response(
+        &app,
+        request("127.0.0.1:31418", Some("https://attacker.example")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "cross-site browser origin");
+    let (status, _, _) = text_response(&app, request("127.0.0.1:31418", Some("null"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "opaque origin");
+    let (status, _, _) = text_response(
+        &app,
+        request("127.0.0.1:31418", Some("http://localhost:3000")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a local web UI stays allowed");
+
+    // With an API key the key is the boundary; any Host is accepted.
+    let keyed = build_router(llama_cpp_state().with_api_key(Some("secret".to_string())));
+    let response = Request::builder()
+        .uri("/v1/models")
+        .header(header::HOST, "studio.example")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text_response(&keyed, response).await;
+    assert_eq!(status, StatusCode::OK);
+}

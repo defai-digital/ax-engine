@@ -150,6 +150,17 @@ every RPC must carry the same `authorization: Bearer <key>` metadata, except
 the `Health` RPC, which stays unauthenticated to mirror the HTTP probe
 exemption. Unauthenticated calls fail with gRPC status `UNAUTHENTICATED`.
 
+### Host and Origin check without an API key
+
+A server running without an API key answers only requests whose `Host` (and
+browser `Origin`, when present) is an IP address, `localhost`, a
+`*.localhost` name or an mDNS `*.local` name. This blocks DNS-rebinding and
+cross-site browser requests from driving a local server. To reach a keyless
+server through another name, list it in `AX_SERVER_ALLOWED_HOSTS`
+(comma-separated, for example `studio.lan,inference.example`); `*` turns the
+check off. With `--api-key` set, the key is the boundary and no Host check
+runs.
+
 ## Resource Limits & Rate Limiting
 
 All of the following are opt-in and disabled by default, preserving today's
