@@ -201,7 +201,8 @@ trimmed back to the accepted position and decode resumes from there.
 **Limitation**: `trim_to` never resets `linear_layers`. Linear attention
 recurrent state (Qwen3.5 GatedDeltaNet) is sequential and cannot be rolled
 back, which is why a linear or GDN checkpoint is only stored when the cache
-already sits at the cut. The speculative decode retry interval is adjusted for
+already sits at the cut. An ordered (non-rotating) sliding-window latch does
+not block a checkpoint; an engaged rotating ring does. The speculative decode retry interval is adjusted for
 linear-attention requests to compensate.
 
 ---
@@ -311,6 +312,9 @@ The disabled path keeps its existing prefill schedule.
 Cache identity includes the partition version, configured chunk sizes and the
 accepted boundaries through each checkpoint. Different turn hints therefore
 miss instead of restoring recurrent state produced under a different partition.
+A prefill handoff checkpoint publishes only when the request's last prefill
+item ended at one of these boundaries with the partition intact; a scheduler
+split elsewhere is a counted unsupported checkpoint.
 Cold/warm comparisons must use the same execution settings; equality with a
 switch-off run is not implied. Restore-value only selects existing snapshots.
 

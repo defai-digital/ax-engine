@@ -614,6 +614,9 @@ struct RequestState {
     dflash2: Option<dflash2_decode::Dflash2RequestState>,
     semantic_cut_tokens: Vec<u32>,
     semantic_partition_valid: bool,
+    /// Canonical semantic boundary at which the last executed prefill item
+    /// ended. A handoff checkpoint may publish only this position.
+    semantic_checkpoint_cut: Option<usize>,
     dflash2_prefix_snapshots:
         std::collections::BTreeMap<usize, Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
     /// Set when the linear DFlash2 verify fence fails after rebind. The cache
@@ -1334,6 +1337,7 @@ impl RequestState {
             dflash2: None,
             semantic_cut_tokens: Vec::new(),
             semantic_partition_valid: true,
+            semantic_checkpoint_cut: None,
             dflash2_prefix_snapshots: Default::default(),
             dflash2_verify_fence_error: None,
         }
@@ -4830,7 +4834,12 @@ impl ExecutionRunner for MlxRunner {
                 committed_limit,
             );
         };
-        if state.rotating_sliding_latch.is_some() || state.cache.has_unserializable_layers() {
+        // Every prefill latches its rotation decision; only an engaged ring is
+        // request-local slot order that another request cannot restore.
+        if matches!(state.rotating_sliding_latch, Some((true, _)))
+            || state.cache.has_rotated_sliding_layers()
+            || state.cache.has_unserializable_layers()
+        {
             return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
                 request_id,
                 committed_limit,
@@ -4846,6 +4855,17 @@ impl ExecutionRunner for MlxRunner {
         // `cut`. `trim_to` cannot roll that state back, so a longer cache
         // must be a counted miss instead of a trimmed store.
         if state.cache.seq_len() != cut && state.cache.recurrent_capture_requires_exact_prefix() {
+            self.checkpoint_unsupported
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        // Semantic keys bind the canonical partition. A scheduler split off
+        // that partition, or after it was invalidated, would publish state
+        // that a cold run of the same prompt does not compute.
+        if self.semantic_prefix_enabled() && state.semantic_checkpoint_cut != Some(cut) {
             self.checkpoint_unsupported
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
@@ -4873,7 +4893,9 @@ impl ExecutionRunner for MlxRunner {
                 .fetch_add(errors, std::sync::atomic::Ordering::Relaxed);
         }
         let tokens = &state.prompt_prefix_tokens[..cut];
-        let key = self.prefix_cache_key_with_media(&model_id, block_size, tokens, "");
+        let mut key = self.prefix_cache_key_with_media(&model_id, block_size, tokens, "");
+        // Match the key `store_at_cut` used, or a resident entry reads as a miss.
+        self.bind_semantic_partition(&mut key, cut, &state.semantic_cut_tokens);
         let l1_resident = self.prefix_cache.lock().contains_exact_tokens(&key, tokens);
         checkpoint_receipt_from_prefix_store(request_id, committed_limit, &telemetry, l1_resident)
     }
@@ -7678,6 +7700,8 @@ impl MlxRunner {
                         if end < prompt_len && !ends_at_boundary {
                             state.semantic_partition_valid = false;
                         }
+                        state.semantic_checkpoint_cut =
+                            (state.semantic_partition_valid && ends_at_boundary).then_some(end);
                         &prefill_tokens[cursor..]
                     } else {
                         prefill_tokens

@@ -9470,7 +9470,28 @@ fn semantic_runner_captures_early_cuts_and_binds_partition_identity() {
     );
     runner.prefix_cache.lock().entries.clear();
     // A non-canonical scheduler boundary may not publish later state.
+    let checkpoint = |id: u64, cut: u32| {
+        ax_engine_core::ExecutionRunner::checkpoint_request(
+            &runner,
+            RequestId(id),
+            ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+            cut,
+        )
+    };
+    let unsupported = || {
+        runner
+            .checkpoint_unsupported
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    *runner.last_prefix_model_id.lock() = "qwen3_5".to_string();
+    runner
+        .last_block_size_tokens
+        .store(4, std::sync::atomic::Ordering::Relaxed);
     run(113, 0, 900, &hints);
+    // Nor may a handoff checkpoint publish that split position itself.
+    let before = unsupported();
+    assert!(!checkpoint(113, 900).committed);
+    assert_eq!(unsupported(), before + 1);
     run(113, 900, 1030, &hints);
     let entries: Vec<_> = runner
         .prefix_cache
@@ -9480,6 +9501,63 @@ fn semantic_runner_captures_early_cuts_and_binds_partition_identity() {
         .map(|e| e.snapshot.token_count)
         .collect();
     assert_eq!(entries, vec![700]);
+    run(114, 0, 1024, &hints);
+    let before = unsupported();
+    let canonical = checkpoint(114, 1024);
+    assert_eq!(
+        unsupported(),
+        before,
+        "a canonical grid boundary may checkpoint"
+    );
+    assert!(canonical.committed);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn checkpoint_after_ordered_prefill_commits() {
+    // Every prefill latches its rotation decision. An ordered latch must not
+    // turn every later handoff checkpoint into a miss.
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    *runner.last_prefix_model_id.lock() = "qwen3_5".to_string();
+    runner
+        .last_block_size_tokens
+        .store(4, std::sync::atomic::Ordering::Relaxed);
+    let mut item = prefill_item_with_claim(0, 8);
+    item.request_id = RequestId(120);
+    item.input_token_slice = vec![3; 8];
+    let mut ctx = ctx_with_argmax(true);
+    ctx.request_id = item.request_id;
+    ctx.prompt_len = 16;
+    ctx.max_output_tokens = 4;
+    let result = runner.run_item(
+        &item,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(result.update.error.is_none(), "{:?}", result.update.error);
+    {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(120)];
+        assert_eq!(
+            state.rotating_sliding_latch.map(|(rotate, _)| rotate),
+            Some(false)
+        );
+        assert_eq!(state.cache.seq_len(), 8);
+    }
+    let receipt = ax_engine_core::ExecutionRunner::checkpoint_request(
+        &runner,
+        RequestId(120),
+        ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+        8,
+    );
+    assert!(receipt.committed, "{receipt:?}");
+    assert!(receipt.adopts_cursor(8));
     fs::remove_dir_all(artifacts.root_dir()).unwrap();
 }
 
