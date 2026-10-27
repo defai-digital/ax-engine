@@ -4328,6 +4328,133 @@ fn dense_full_attention_layer(cfg: &ModelConfig, seed: u32) -> LayerWeights {
 }
 
 #[test]
+fn embeddinggemma_window_mask_matches_bidirectional_reach_and_keeps_padded_rows_finite() {
+    let mask = build_bidirectional_window_mask(1, 6, &[5], 2, MlxDtype::Float32);
+    assert_eq!(mask.shape(), vec![1, 1, 6, 6]);
+    let data = mask.data_f32().to_vec();
+    for query in 0..6_usize {
+        for key in 0..6_usize {
+            let visible = key < 5 && (query >= 5 || query.abs_diff(key) <= 2);
+            let value = data[query * 6 + key];
+            assert_eq!(value == 0.0, visible, "query {query}, key {key}");
+            if !visible {
+                assert_eq!(value, f32::NEG_INFINITY);
+            }
+        }
+    }
+    let mut config = cfg(false);
+    config.global_sliding_window = Some(512);
+    let fits = build_embedding_gemma3_masks(&config, 1, 257, &[257], MlxDtype::Float32);
+    assert!(fits.sliding.is_none(), "every token is within reach 256");
+    let long = build_embedding_gemma3_masks(&config, 1, 258, &[258], MlxDtype::Float32);
+    assert!(long.sliding.is_some());
+}
+
+#[test]
+fn embeddinggemma_sliding_layers_ignore_tokens_outside_the_window() {
+    with_gpu_numeric_lock(|| {
+        let mut config = cfg(false);
+        config.model_family = "embeddinggemma".into();
+        config.generation_kind = ax_engine_core::GenerationKind::EncoderEmbed;
+        config.layer_count = 1;
+        config.hidden_size = 64;
+        config.vocab_size = 64;
+        config.intermediate_size = 128;
+        config.head_dim = 32;
+        config.rope_dims = 32;
+        config.query_scale = 1.0 / 32_f32.sqrt();
+        config.hidden_states_scale = Some(8.0);
+        config.uses_geglu = true;
+        config.global_sliding_window = Some(8);
+        let mut weights = empty_model_weights(None);
+        weights.token_embedding = QuantizedWeight::new(
+            array_f32(&patterned_signal(64 * 64, 15), &[64, 64]),
+            None,
+            None,
+        );
+        weights.final_norm = Some(ones_norm(64));
+        weights.embedding_dense_0 = Some(dense_weight_from_data(
+            &patterned_signal(256 * 64, 71),
+            &[256, 64],
+        ));
+        weights.embedding_dense_1 = Some(dense_weight_from_data(
+            &patterned_signal(64 * 256, 73),
+            &[64, 256],
+        ));
+        let mut layer = dense_full_attention_layer(&config, 19);
+        layer.attn_post_norm = Some(ones_norm(64));
+        layer.ffn_post_norm = Some(ones_norm(64));
+        layer.q_norm = Some(ones_norm(32));
+        layer.k_norm = Some(ones_norm(32));
+        weights.layers.push(layer);
+        let weights = Arc::new(weights);
+
+        let base: Vec<u32> = (0..20).map(|i| (i % 63 + 1) as u32).collect();
+        let mut far = base.clone();
+        far[15] = 40;
+        let first_row = |config: &ModelConfig, ids: &[u32]| {
+            let (hidden, _) = forward_for_embedding_gemma3_batch(config, &weights, &[ids.to_vec()]);
+            let hidden = astype(&hidden, MlxDtype::Float32, None);
+            eval(&[&hidden]);
+            hidden.data_f32()[..64].to_vec()
+        };
+        // Reach 4: token 15 is outside position 0's window on the only layer.
+        assert_eq!(first_row(&config, &base), first_row(&config, &far));
+        let mut full = config.clone();
+        full.global_sliding_window = None;
+        assert_ne!(
+            first_row(&full, &base),
+            first_row(&full, &far),
+            "full attention must see the changed token"
+        );
+
+        // The compiled pooled closure applies the same window under padding.
+        let batch = vec![base.clone(), base[..7].to_vec()];
+        let lengths = [20, 7];
+        let hidden = build_embedding_batch_hidden(&config, &weights, &batch, 2, 20);
+        let masks = build_embedding_gemma3_masks(&config, 2, 20, &lengths, hidden.dtype());
+        assert!(masks.sliding.is_some());
+        let (pool_mask, pool_scale) = build_embedding_mean_pool_inputs(2, 20, &lengths);
+        let compiled = build_embedding_gemma3_pooled_batch_forward_closure(
+            Arc::new(config.clone()),
+            Arc::clone(&weights),
+            masks,
+            pool_mask,
+            pool_scale,
+        )
+        .unwrap();
+        let output = compiled.apply(&[&hidden]);
+        eval(&[&output[0]]);
+        let output = output[0].data_f32().to_vec();
+        assert!(output.iter().all(|x| x.is_finite()));
+        for (row, ids) in batch.iter().enumerate() {
+            let (eager, _) =
+                forward_for_embedding_gemma3_batch(&config, &weights, std::slice::from_ref(ids));
+            let eager = astype(&eager, MlxDtype::Float32, None);
+            let mean = divide(
+                &sum_axis(&eager, 1, false, None),
+                &MlxArray::from_f32_slice(&[ids.len() as f32]),
+                None,
+            );
+            let expected = apply_embedding_dense_head(&weights, &mean);
+            let expected = astype(&expected, MlxDtype::Float32, None);
+            eval(&[&expected]);
+            // bf16 pooling scale in the compiled graph: compare direction.
+            let actual = &output[row * 64..(row + 1) * 64];
+            let expected = expected.data_f32();
+            let dot: f64 = actual
+                .iter()
+                .zip(expected)
+                .map(|(&a, &e)| a as f64 * e as f64)
+                .sum();
+            let norm = |v: &[f32]| v.iter().map(|&x| (x as f64).powi(2)).sum::<f64>().sqrt();
+            let cosine = dot / (norm(actual) * norm(expected));
+            assert!(cosine >= 0.9999, "row {row}: cosine {cosine}");
+        }
+    });
+}
+
+#[test]
 fn embeddinggemma_300m_mx_matches_dequantized_encoder_and_compiled_padding() {
     use mlx_sys::{MlxQuantizationMode, dequantize_with_mode, quantize};
 
@@ -4482,12 +4609,12 @@ fn embeddinggemma_300m_mx_matches_dequantized_encoder_and_compiled_padding() {
                 .collect();
             let lengths: Vec<_> = batch.iter().map(Vec::len).collect();
             let hidden = build_embedding_batch_hidden(&config, &quantized, &batch, 4, 160);
-            let padding = build_bidirectional_padding_mask(4, 160, &lengths, hidden.dtype());
+            let masks = build_embedding_gemma3_masks(&config, 4, 160, &lengths, hidden.dtype());
             let (mask, scale) = build_embedding_mean_pool_inputs(4, 160, &lengths);
             let compiled = build_embedding_gemma3_pooled_batch_forward_closure(
                 Arc::new(config.clone()),
                 Arc::clone(&quantized),
-                padding,
+                masks,
                 mask,
                 scale,
             )

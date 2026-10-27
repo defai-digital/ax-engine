@@ -3911,6 +3911,115 @@ pub(crate) fn build_bidirectional_padding_mask(
     })
 }
 
+/// Attention masks for the EmbeddingGemma (Gemma3) encoder.
+///
+/// Full-attention layers see every real token. Sliding layers attend within
+/// the bidirectional window: Hugging Face Gemma3 halves `sliding_window` for
+/// bidirectional models (`sliding_window // 2 + 1`, exclusive), so a query
+/// reaches keys at most `sliding_window / 2` positions away on either side.
+/// `sliding` is `None` when every sequence fits inside that reach.
+#[derive(Clone)]
+pub(crate) struct EmbedGemma3Masks {
+    pub(crate) full: Option<MlxArray>,
+    pub(crate) sliding: Option<MlxArray>,
+}
+
+impl EmbedGemma3Masks {
+    fn for_layer(&self, sliding_layer: bool) -> &Option<MlxArray> {
+        if sliding_layer && self.sliding.is_some() {
+            &self.sliding
+        } else {
+            &self.full
+        }
+    }
+}
+
+/// Bidirectional reach of EmbeddingGemma sliding layers, if any.
+fn embedding_gemma3_window_reach(cfg: &ModelConfig) -> Option<usize> {
+    cfg.layer_configs
+        .iter()
+        .find_map(|layer| layer.sliding_window)
+        .or(cfg.global_sliding_window)
+        .map(|window| window / 2)
+}
+
+pub(crate) fn build_embedding_gemma3_masks(
+    cfg: &ModelConfig,
+    batch: usize,
+    max_len: usize,
+    actual_lens: &[usize],
+    dtype: MlxDtype,
+) -> EmbedGemma3Masks {
+    let full = build_bidirectional_padding_mask(batch, max_len, actual_lens, dtype);
+    let sliding = embedding_gemma3_window_reach(cfg)
+        .filter(|&reach| max_len > reach + 1)
+        .map(|reach| build_bidirectional_window_mask(batch, max_len, actual_lens, reach, dtype));
+    EmbedGemma3Masks { full, sliding }
+}
+
+/// Additive `[batch, 1, max_len, max_len]` mask: key `j` is visible to query
+/// `i` when it is a real token and `|i - j| <= reach`. Padded query rows keep
+/// the plain padding row, so they never become all-masked (NaN) rows; pooling
+/// discards them.
+fn build_bidirectional_window_mask(
+    batch: usize,
+    max_len: usize,
+    actual_lens: &[usize],
+    reach: usize,
+    dtype: MlxDtype,
+) -> MlxArray {
+    let visible = |len: usize, query: usize, key: usize| {
+        key < len && (query >= len || query.abs_diff(key) <= reach)
+    };
+    let shape = [batch as i32, 1, max_len as i32, max_len as i32];
+    let mask = if dtype == MlxDtype::Bfloat16 {
+        let neg_inf = (f32::NEG_INFINITY.to_bits() >> 16) as u16;
+        let mut data = vec![neg_inf; batch * max_len * max_len];
+        for (b, &len) in actual_lens.iter().enumerate() {
+            for query in 0..max_len {
+                let row = (b * max_len + query) * max_len;
+                for key in 0..max_len {
+                    if visible(len, query, key) {
+                        data[row + key] = 0;
+                    }
+                }
+            }
+        }
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            data.len() * std::mem::size_of::<u16>(),
+            &shape,
+            MlxDtype::Bfloat16,
+        )
+    } else {
+        let mut data = vec![f32::NEG_INFINITY; batch * max_len * max_len];
+        for (b, &len) in actual_lens.iter().enumerate() {
+            for query in 0..max_len {
+                let row = (b * max_len + query) * max_len;
+                for key in 0..max_len {
+                    if visible(len, query, key) {
+                        data[row + key] = 0.0;
+                    }
+                }
+            }
+        }
+        let arr = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            data.len() * std::mem::size_of::<f32>(),
+            &shape,
+            MlxDtype::Float32,
+        );
+        if dtype == MlxDtype::Float32 {
+            arr
+        } else {
+            astype(&arr, dtype, None)
+        }
+    };
+    // Materialize while the host buffer is alive.
+    mlx_sys::eval(&[&mask]);
+    mask
+}
+
 /// Build EmbeddingGemma mean-pooling tensors captured by the compiled batch
 /// closure. Shapes are `[B, max_seq, 1]` for the token mask and `[B, 1]` for
 /// the reciprocal real-token counts.
@@ -3987,7 +4096,7 @@ fn layer_forward_embed_gemma3(
     w: &LayerWeights,
     hidden: &MlxArray,
     layer_idx: usize,
-    bidir_mask: &Option<MlxArray>,
+    masks: &EmbedGemma3Masks,
     pending_ffn: Option<&MlxArray>,
 ) -> (MlxArray, MlxArray) {
     let (
@@ -3995,7 +4104,7 @@ fn layer_forward_embed_gemma3(
         rope_theta,
         rope_dims,
         layer_rope_freqs,
-        _sliding_window,
+        sliding_window,
         _kv_source,
         v_norm_no_scale,
     ) = layer_params(cfg, layer_idx);
@@ -4066,7 +4175,8 @@ fn layer_forward_embed_gemma3(
         rope_freqs_ref,
     );
 
-    // 4. Bidirectional SDPA (full attention over real tokens; padding masked).
+    // 4. Bidirectional SDPA over real tokens; sliding layers stay in the window.
+    let bidir_mask = masks.for_layer(sliding_window.is_some());
     //    query_scale = query_pre_attn_scalar^-0.5 (set in ModelConfig).
     let attn_sdpa =
         full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, bidir_mask);
@@ -4109,8 +4219,8 @@ fn forward_for_embedding_gemma3_batch(
     let batch = batch_token_ids.len();
 
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
-    let bidir_mask = build_bidirectional_padding_mask(batch, max_len, &actual_lens, hidden.dtype());
-    let out = forward_for_embedding_gemma3_batch_body(cfg, weights, hidden, &bidir_mask);
+    let masks = build_embedding_gemma3_masks(cfg, batch, max_len, &actual_lens, hidden.dtype());
+    let out = forward_for_embedding_gemma3_batch_body(cfg, weights, hidden, &masks);
     (out, actual_lens)
 }
 
@@ -4122,12 +4232,12 @@ fn forward_for_embedding_gemma3_batch_body(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     mut hidden: MlxArray,
-    bidir_mask: &Option<MlxArray>,
+    masks: &EmbedGemma3Masks,
 ) -> MlxArray {
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let (h, ffn_out) =
-            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, bidir_mask, pending_ffn.as_ref());
+            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, masks, pending_ffn.as_ref());
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -4158,20 +4268,14 @@ pub fn forward_for_embedding_gemma3_depth_probe(
     let hidden_size = cfg.hidden_size;
 
     let mut hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
-    let bidir_mask = build_bidirectional_padding_mask(batch, max_len, &actual_lens, hidden.dtype());
+    let masks = build_embedding_gemma3_masks(cfg, batch, max_len, &actual_lens, hidden.dtype());
 
     let mut checkpoints: Vec<MlxArray> = Vec::with_capacity(weights.layers.len() + 1);
 
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) = layer_forward_embed_gemma3(
-            cfg,
-            layer_w,
-            &hidden,
-            li,
-            &bidir_mask,
-            pending_ffn.as_ref(),
-        );
+        let (h, ffn_out) =
+            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, &masks, pending_ffn.as_ref());
         // Apply FFN residual so the checkpoint reflects the complete layer.
         hidden = gemma3_clip_residual(&h, &ffn_out);
         pending_ffn = None;
@@ -4245,8 +4349,8 @@ fn l2_normalize_probe(x: &MlxArray) -> MlxArray {
 }
 
 /// Build an `mlx_compile`-wrapped closure for the EmbeddingGemma batched
-/// forward. The closure captures the bidirectional padding mask (which is
-/// determined by `actual_lens` + `max_len`) and takes the pre-embedded
+/// forward. The closure captures the bidirectional padding and window masks
+/// (determined by `actual_lens` + `max_len`) and takes the pre-embedded
 /// `[B, max_seq, H]` hidden state as its only input. Returns the final
 /// norm output `[B, max_seq, H]`. The runner applies mean pooling + Dense
 /// head after the closure returns.
@@ -4257,14 +4361,14 @@ fn l2_normalize_probe(x: &MlxArray) -> MlxArray {
 pub(crate) fn build_embedding_gemma3_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
-    bidir_mask: Option<MlxArray>,
+    masks: EmbedGemma3Masks,
 ) -> Result<MlxClosure, String> {
     let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
         if inputs.is_empty() {
             return vec![];
         }
         let hidden = inputs.get(0);
-        let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &bidir_mask);
+        let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &masks);
         // Fold the f32 cast into the compiled graph.
         vec![astype(&out, MlxDtype::Float32, None)]
     });
@@ -4277,7 +4381,7 @@ pub(crate) fn build_embedding_gemma3_batch_forward_closure(
 pub(crate) fn build_embedding_gemma3_pooled_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
-    bidir_mask: Option<MlxArray>,
+    masks: EmbedGemma3Masks,
     pool_mask: MlxArray,
     pool_scale: MlxArray,
 ) -> Result<MlxClosure, String> {
@@ -4286,7 +4390,7 @@ pub(crate) fn build_embedding_gemma3_pooled_batch_forward_closure(
             return vec![];
         }
         let hidden = inputs.get(0);
-        let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &bidir_mask);
+        let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &masks);
         let masked = multiply(&out, &pool_mask, None);
         let sums = sum_axis(&masked, 1, false, None);
         let pooled = multiply(&sums, &pool_scale, None);

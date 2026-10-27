@@ -6550,7 +6550,8 @@ impl MlxRunner {
             &self.weights,
             batch_token_ids,
         );
-        let bidir_mask = crate::model::build_bidirectional_padding_mask(
+        let masks = crate::model::build_embedding_gemma3_masks(
+            &self.cfg,
             batch,
             max_len,
             &actual_lens,
@@ -6569,7 +6570,7 @@ impl MlxRunner {
             match crate::model::build_embedding_gemma3_batch_forward_closure(
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
-                bidir_mask,
+                masks,
             ) {
                 Ok(cls) => {
                     embed_compile_cache_evict_if_full(&mut cache);
@@ -6660,7 +6661,8 @@ impl MlxRunner {
                     &actual_lens,
                 )
             } else {
-                let bidir_mask = crate::model::build_bidirectional_padding_mask(
+                let masks = crate::model::build_embedding_gemma3_masks(
+                    &self.cfg,
                     batch,
                     max_len,
                     &actual_lens,
@@ -6671,7 +6673,7 @@ impl MlxRunner {
                 crate::model::build_embedding_gemma3_pooled_batch_forward_closure(
                     Arc::clone(&self.cfg_arc),
                     Arc::clone(&self.weights),
-                    bidir_mask,
+                    masks,
                     pool_mask,
                     pool_scale,
                 )

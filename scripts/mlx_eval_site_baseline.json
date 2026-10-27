@@ -42,7 +42,7 @@
   },
   "crates/ax-engine-mlx/src/model/mod.rs": {
     "async_eval": 4,
-    "eval": 10
+    "eval": 11
   },
   "crates/ax-engine-mlx/src/model/profile.rs": {
     "eval": 6
