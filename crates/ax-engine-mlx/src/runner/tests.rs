@@ -9514,6 +9514,126 @@ fn semantic_runner_captures_early_cuts_and_binds_partition_identity() {
 }
 
 #[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
+fn semantic_empty_prefill_item_keeps_partition_validity() {
+    assert!(crate::fastpath::prefix_semantic_cuts_enabled());
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.prefill_chunk = 1024;
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![700],
+    };
+    let run = |id: u64, claim: usize, len: usize| {
+        let mut item = prefill_item_with_claim(claim, len);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; len];
+        item.reused_prefix_token_slice = vec![3; claim];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = 1930;
+        ctx.processed_prompt_tokens = claim as u32;
+        ctx.max_output_tokens = 16;
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            4,
+            None,
+            Some(&hints),
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        result
+    };
+    let partition = |runner: &MlxRunner, id: u64| {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(id)];
+        (
+            state.cache.seq_len(),
+            state.semantic_partition_valid,
+            state.semantic_checkpoint_cut,
+        )
+    };
+    run(140, 0, 700);
+    assert_eq!(partition(&runner, 140), (700, true, Some(700)));
+    // The runner probe restores the stored cut, so the item executes nothing.
+    let over_claimed = run(141, 0, 700);
+    assert!(over_claimed.prefix_cache.hits > 0);
+    assert_eq!(
+        partition(&runner, 141),
+        (700, true, None),
+        "an item that executes nothing cannot leave the partition"
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
+fn semantic_tail_chunk_ignores_preceding_segments() {
+    // The long-prompt clamp must see the tail after the last boundary, which
+    // cold and warm runs share, not the whole item length.
+    assert!(crate::fastpath::prefix_semantic_cuts_enabled());
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.cfg.model_family = "qwen3_next".into();
+    assert!(crate::fastpath::long_prompt_prefill_clamp_applies(
+        &runner.cfg.model_family
+    ));
+    runner.prefill_chunk = 1024;
+    runner.cold_prefill_chunk = 1024;
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: Vec::new(),
+    };
+    let prompt_len = 3000;
+    let run = |id: u64, claim: usize| {
+        let len = prompt_len - claim;
+        let mut item = prefill_item_with_claim(claim, len);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; len];
+        item.reused_prefix_token_slice = vec![3; claim];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = prompt_len as u32;
+        ctx.processed_prompt_tokens = claim as u32;
+        ctx.max_output_tokens = 16;
+        ctx.ignore_eos = true;
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_next",
+            4,
+            None,
+            Some(&hints),
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        result
+    };
+    let cold = run(130, 0);
+    let warm = run(131, 2048);
+    assert!(warm.prefix_cache.hits > 0);
+    assert_eq!(cold.update.output_token, warm.update.output_token);
+    let states = runner.states.lock();
+    assert_eq!(
+        states[&RequestId(130)]
+            .decode_telemetry
+            .prefill_chunk_selected,
+        states[&RequestId(131)]
+            .decode_telemetry
+            .prefill_chunk_selected,
+        "the shared tail must use one chunk size"
+    );
+    assert_eq!(
+        states[&RequestId(130)].cache.serialize_to_bytes(),
+        states[&RequestId(131)].cache.serialize_to_bytes()
+    );
+    drop(states);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
 fn checkpoint_after_ordered_prefill_commits() {
     // Every prefill latches its rotation decision. An ordered latch must not
     // turn every later handoff checkpoint into a miss.

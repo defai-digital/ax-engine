@@ -7709,6 +7709,29 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
+                    // Cold and warm runs share the tail after the last semantic
+                    // boundary, not the item length; scale the tail's chunk by it.
+                    let prefill_chunk_for_request = if semantic_capture {
+                        let tail_chunk = ax_engine_core::prefill_handoff::effective_prefill_chunk(
+                            requested_quantum.and_then(|chunk| u32::try_from(chunk).ok()),
+                            u32::try_from(base_prefill_chunk).unwrap_or(u32::MAX),
+                            warm_extend,
+                            u32::try_from(
+                                crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+                                    base_prefill_chunk,
+                                    prefill_tokens.len(),
+                                    &self.cfg.model_family,
+                                ),
+                            )
+                            .unwrap_or(u32::MAX),
+                        ) as usize;
+                        state
+                            .decode_telemetry
+                            .record_prefill_chunk_selection(tail_chunk, warm_extend);
+                        tail_chunk
+                    } else {
+                        prefill_chunk_for_request
+                    };
                     // The disabled path keeps its existing grid and final-token schedule.
                     let rung_head = if !semantic_capture
                         && self.cfg.linear_attention.is_some()
