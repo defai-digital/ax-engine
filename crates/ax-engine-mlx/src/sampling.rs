@@ -425,12 +425,23 @@ pub(crate) fn processed_logits<'a>(
                 recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
             );
         }
+        // The n-gram ban can remove every token the grammar still allows;
+        // an all -inf row then fell back to token 0, which the grammar
+        // forbids. The grammar is the hard constraint: drop the ban for
+        // that step instead.
+        let before_ngram_ban = (sampling.json_grammar_active && sampling.uses_no_repeat_ngram())
+            .then(|| logits_buf.clone());
         logits_with_no_repeat_ngram_in_place(
             logits_buf,
             sampling.no_repeat_ngram_size,
             sampling.ngram_window,
             repetition_tokens,
         );
+        if let Some(before) = before_ngram_ban
+            && logits_buf.iter().all(|value| *value == f32::NEG_INFINITY)
+        {
+            *logits_buf = before;
+        }
         if sampling.uses_presence_frequency_penalty() {
             ax_engine_core::apply_presence_frequency_penalty_in_place(
                 logits_buf,
@@ -1683,6 +1694,20 @@ mod tests {
             crate::batched_sampling::batched_sampling_class(greedy, false),
             None
         );
+    }
+
+    #[test]
+    fn grammar_wins_when_the_ngram_ban_would_mask_every_allowed_token() {
+        // History [2, 3, 2]: a 2-gram ban forbids 3 after 2. The grammar
+        // allows only token 3, so the ban would leave an all -inf row and
+        // the fallback used to emit token 0, which the grammar forbids.
+        let logits = vec![4.0, 3.0, 0.0, 1.0];
+        let mut rng = Xorshift64::new(5);
+        let greedy = MlxSamplingParams::greedy()
+            .with_json_grammar_active(true)
+            .with_no_repeat_ngram(2, 128);
+        let _scope = scoped_token_mask(Some(vec![0b1000u64]));
+        assert_eq!(sample_categorical(&logits, greedy, &[2, 3, 2], &mut rng), 3);
     }
 
     #[test]
