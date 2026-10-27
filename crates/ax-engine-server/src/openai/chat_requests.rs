@@ -2123,8 +2123,9 @@ impl QwenToolContractStyle {
 
 fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
     let normalized = chat::normalize_model_id_token(model_id);
-    if chat::uses_qwen_coder_xml_tool_contract(model_id) {
+    if chat::uses_qwen_coder_xml_tool_contract(model_id) || chat::is_nemotron_chat_model(model_id) {
         // Coder-Next: XML tool *declarations* + function= call format.
+        // Nemotron 3 hub templates carry the same tool block verbatim.
         QwenToolContractStyle::CoderXml
     } else if normalized.contains("qwen3-next")
         || normalized.contains("qwen3-5")

@@ -50,6 +50,10 @@ pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
     "<|im_start|>assistant\n<think>\n";
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str = "<|im_start|>assistant\n";
+/// Nemotron 3 (Nano / Super / 3.5 Lightning) hub templates: thinking off
+/// prefills an empty `<think></think>` with no surrounding newlines.
+const NEMOTRON_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str =
+    "<|im_start|>assistant\n<think></think>";
 
 // MiniMax M3 hub `chat_template.jinja` control tokens. These strings must
 // stay byte-identical to the tokenizer added-token entries.
@@ -1023,6 +1027,8 @@ fn render_prompt_internal(
     // Every system message before a user turn, in order (hub jinja emits
     // each [SYSTEM_PROMPT] block; keeping only the last dropped the rest).
     let mut mistral_system: Vec<&str> = Vec::new();
+    let nemotron =
+        matches!(template, ChatPromptTemplate::QwenChatMl) && is_nemotron_chat_model(model_id);
     let mut ministral_system: Option<&str> = None;
     let mut gpt_oss_system: Option<&str> = None;
     let mut ministral_loop_start = 0usize;
@@ -1075,9 +1081,23 @@ fn render_prompt_internal(
                         prompt.push_str("<|im_end|>\n");
                         qwen_tool_response_open = false;
                     }
+                    // Nemotron 3 hub jinja always opens with a system block,
+                    // empty when the caller sent none.
+                    if nemotron && msg_index == 0 && role != "system" {
+                        prompt.push_str("<|im_start|>system\n<|im_end|>\n");
+                    }
                     prompt.push_str("<|im_start|>");
                     prompt.push_str(role);
                     prompt.push('\n');
+                    // ...and prefixes past assistant turns without think
+                    // markers with an empty `<think></think>`.
+                    if nemotron
+                        && role == "assistant"
+                        && !content.contains("<think>")
+                        && !content.contains("</think>")
+                    {
+                        prompt.push_str("<think></think>");
+                    }
                     prompt.push_str(&escape_qwen_chatml_content(content));
                     prompt.push_str("<|im_end|>\n");
                 }
@@ -1533,7 +1553,19 @@ fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &
     if thinking_enabled {
         return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING;
     }
+    if is_nemotron_chat_model(model_id) {
+        return NEMOTRON_ASSISTANT_GENERATION_PROMPT_NO_THINK;
+    }
     QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+}
+
+/// Nemotron 3 chat checkpoints use ChatML framing with their own think
+/// conventions (always a system block, `<think></think>` on past turns).
+pub(crate) fn is_nemotron_chat_model(model_id: &str) -> bool {
+    let normalized = normalize_model_id_token(model_id);
+    normalized.contains("nemotron")
+        && !normalized.contains("nemotron-embed")
+        && !normalized.contains("nemotron-h")
 }
 
 pub(crate) fn is_qwen_non_thinking_only_model(model_id: &str) -> bool {
@@ -2211,6 +2243,51 @@ mod tests {
             assert!(!prompt.contains("You are a helpful assistant."), "{prompt}");
             assert!(prompt.contains("]~b]ai\n</mm:think>yo[e~["), "{prompt}");
         }
+    }
+
+    #[test]
+    fn nemotron_3_matches_its_hub_chatml_framing() {
+        // Rendered from the Nemotron 3 Nano / Super / 3.5 Lightning hub
+        // chat_template.jinja (all three agree), thinking off.
+        let model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16";
+        let render = |messages: &[(&str, &str)]| {
+            render_prompt_with_template_and_framing(
+                model,
+                ChatPromptTemplate::QwenChatMl,
+                &owned(messages),
+                false,
+                None,
+            )
+            .expect("nemotron render")
+        };
+        assert_eq!(
+            render(&[("user", "hi")]),
+            "<|im_start|>system\n<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n\
+             <|im_start|>assistant\n<think></think>"
+        );
+        assert_eq!(
+            render(&[
+                ("system", "S"),
+                ("user", "hi"),
+                ("assistant", "yo"),
+                ("user", "more")
+            ]),
+            "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n\
+             <|im_start|>assistant\n<think></think>yo<|im_end|>\n\
+             <|im_start|>user\nmore<|im_end|>\n<|im_start|>assistant\n<think></think>"
+        );
+        // Qwen keeps its own framing.
+        assert!(
+            !render_prompt_with_template_and_framing(
+                "Qwen/Qwen3-8B",
+                ChatPromptTemplate::QwenChatMl,
+                &owned(&[("user", "hi")]),
+                false,
+                None,
+            )
+            .expect("qwen render")
+            .contains("<|im_start|>system")
+        );
     }
 
     #[test]
