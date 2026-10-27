@@ -4544,20 +4544,34 @@ impl MlxRunner {
             } else {
                 &self.terminal_token_ids
             };
+            let ignore_eos = ctx.is_some_and(|c| c.ignore_eos);
             let (sampled, stop_reason) =
                 truncate_sampled_tokens_for_stop(vec![tok], generated_len, max_output, terminal);
-            {
+            let (sampled, stop_reason) = {
                 let mut states = self.states.lock();
+                // Same loop-detection tail as the per-item decode, so a tensor
+                // cohort row stops exactly where its solo decode would.
+                let (sampled, stop_reason) = match states.get(&request_id) {
+                    Some(state) => apply_loop_detection_stop(
+                        sampled,
+                        stop_reason,
+                        &state.generated_tokens,
+                        loop_detection_for_request(ignore_eos, &self.cfg.model_family),
+                    ),
+                    None => (sampled, stop_reason),
+                };
                 if stop_reason.is_none() {
                     if let Some(state) = states.get_mut(&request_id) {
                         for &t in &sampled {
                             state.generated_tokens.push(t);
+                            update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, t);
                         }
                     }
                 } else {
                     states.remove(&request_id);
                 }
-            }
+                (sampled, stop_reason)
+            };
             if stop_reason.is_some() {
                 session.remove(id);
             }
@@ -4604,6 +4618,15 @@ impl MlxRunner {
             let (token, _, _) = finish_pending_token(&pending);
             let (sampled, stop_reason) =
                 truncate_sampled_tokens_for_stop(vec![token], generated_len, max_output, terminal);
+            let (sampled, stop_reason) = apply_loop_detection_stop(
+                sampled,
+                stop_reason,
+                &state.generated_tokens,
+                loop_detection_for_request(
+                    ctx.is_some_and(|ctx| ctx.ignore_eos),
+                    &self.cfg.model_family,
+                ),
+            );
             if stop_reason.is_none() {
                 clear_private_decode_latches_for_batched_session(state);
                 seed_batched_session_and_reclaim_private_cache(
@@ -4613,7 +4636,10 @@ impl MlxRunner {
                     token,
                     None,
                 );
-                state.generated_tokens.extend_from_slice(&sampled);
+                for &t in &sampled {
+                    state.generated_tokens.push(t);
+                    update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, t);
+                }
             } else {
                 states.remove(&request_id);
             }
