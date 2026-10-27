@@ -77,19 +77,19 @@ module AxEngine
       # single call. Kept explicit on purpose: arbitrary kwargs are never
       # forwarded, and `stream` belongs to AxEngine::Client's transport, not
       # to a request body.
-      REQUEST_KEYS = (SAMPLING_KEYS + %i[model response_format tools tool_choice]).freeze
+      REQUEST_KEYS = (SAMPLING_KEYS + %i[model metadata response_format tools tool_choice]).freeze
 
       def initialize(base_url: AxEngine::Client::DEFAULT_BASE_URL,
                      headers: {}, timeout: 300, **defaults)
         @client   = AxEngine::Client.new(base_url: base_url, headers: headers, timeout: timeout)
-        @defaults = defaults.slice(*REQUEST_KEYS)
+        @defaults = defaults.slice(*self.class::REQUEST_KEYS)
       end
 
       private
 
       # Per-call options override constructor defaults.
       def build_params(overrides)
-        @defaults.merge(overrides.slice(*REQUEST_KEYS))
+        @defaults.merge(overrides.slice(*self.class::REQUEST_KEYS))
       end
     end
 
@@ -111,6 +111,9 @@ module AxEngine
     class ChatModel
       include Params
 
+      # /v1/completions does not define parallel_tool_calls.
+      REQUEST_KEYS = (Params::REQUEST_KEYS + %i[parallel_tool_calls]).freeze
+
       def initialize(**kwargs)
         AxEngine::Langchain._require_langchain!
         super(**kwargs)
@@ -120,8 +123,9 @@ module AxEngine
       #
       # @param messages [Array<Hash>]  e.g. [{role: "user", content: "Hi"}]
       # @param stream   [Boolean]      if true, yields delta strings and returns nil
-      # @param kwargs   [Hash]         request overrides (max_tokens, model,
-      #                                response_format, tools, tool_choice, …)
+      # @param kwargs   [Hash]         request overrides (max_tokens, model, metadata,
+      #                                response_format, tools, tool_choice,
+      #                                parallel_tool_calls, …)
       def chat(messages:, stream: false, **kwargs, &block)
         if stream && block.nil?
           raise ArgumentError, "#{self.class}#chat requires a block when stream: true"

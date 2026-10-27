@@ -231,6 +231,21 @@ class TestLangchainChatModel < Minitest::Test
     assert_equal ["hi"], deltas
   end
 
+  def test_metadata_and_parallel_tool_calls_reach_the_chat_body
+    client = FakeClient.new(unary_response: CHAT_PAYLOAD)
+    chat   = chat_model(client, metadata: "constructor-trace", parallel_tool_calls: false)
+
+    chat.chat(messages: messages)
+    params = client.calls.last[1]
+    assert_equal "constructor-trace", params[:metadata]
+    assert_equal false, params[:parallel_tool_calls]
+
+    chat.chat(messages: messages, metadata: "call-trace", parallel_tool_calls: true)
+    params = client.calls.last[1]
+    assert_equal "call-trace", params[:metadata]
+    assert_equal true, params[:parallel_tool_calls]
+  end
+
   def test_unknown_options_are_not_forwarded
     client = FakeClient.new(unary_response: CHAT_PAYLOAD)
     chat   = chat_model(client)
@@ -321,8 +336,12 @@ class TestLangchainTextLLM < Minitest::Test
     client = FakeClient.new(unary_response: COMPLETION_PAYLOAD)
     model  = text_model(client, model: "constructor-model", max_tokens: 8)
 
-    model.complete(prompt: "hi", model: "call-model", stop: ["\n"], not_a_request_key: 1)
+    model.complete(prompt: "hi", model: "call-model", stop: ["\n"], not_a_request_key: 1,
+                   metadata: "trace", parallel_tool_calls: true)
     params = client.calls.last[1]
+
+    assert_equal "trace", params[:metadata]
+    refute params.key?(:parallel_tool_calls), "completions do not define parallel_tool_calls"
 
     assert_equal :completion, client.calls.last[0]
     assert_equal "hi", params[:prompt]
