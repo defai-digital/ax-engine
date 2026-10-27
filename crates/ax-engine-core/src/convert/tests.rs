@@ -112,6 +112,7 @@ fn embeddinggemma_300m_mx_preserves_mixed_precision_and_both_dense_heads() {
             manifest.generation_kind(),
             crate::GenerationKind::EncoderEmbed
         );
+        let mut mx_projections = 0;
         for spec in &manifest.tensors {
             if spec.role == NativeTensorRole::TokenEmbedding {
                 let quant = spec.quantization.as_ref().unwrap();
@@ -124,8 +125,12 @@ fn embeddinggemma_300m_mx_preserves_mixed_precision_and_both_dense_heads() {
                     (quant.mode.as_str(), quant.bits, quant.group_size),
                     (mode, bits as u32, 32)
                 );
+                mx_projections += 1;
             }
         }
+        // Every attention and MLP projection must stay quantized; a converter
+        // that dropped the quantization would otherwise pass the loop above.
+        assert_eq!(mx_projections, 7, "{mode} projection quantization");
         for role in [
             NativeTensorRole::EmbeddingDense0,
             NativeTensorRole::EmbeddingDense1,
