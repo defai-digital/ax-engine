@@ -702,6 +702,31 @@ class TestAXEngineChatModel(unittest.TestCase):
         chat.invoke([HumanMessage(content="x")], stop=[])
         self.assertEqual(self.srv.last_body["stop"], [])
 
+    def test_usage_metadata_reaches_the_message(self):
+        self.srv.set_response(_chat_response("Hi"))
+        result = self._make_chat().invoke([HumanMessage(content="x")])
+        self.assertEqual(
+            result.usage_metadata, {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        )
+
+    def test_stream_usage_chunk_reaches_the_aggregated_message(self):
+        usage = {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "choices": [],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        }
+        body = _chat_sse("Hel", "lo").replace(
+            "data: [DONE]", f"data: {json.dumps(usage)}\n\ndata: [DONE]"
+        )
+        self.srv.set_response(body)
+        chunks = list(self._make_chat().stream([HumanMessage(content="x")]))
+        combined = sum(chunks[1:], chunks[0])
+        self.assertEqual(combined.content, "Hello")
+        self.assertEqual(
+            combined.usage_metadata, {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}
+        )
+
     def test_stream_yields_chunks(self):
         self.srv.set_response(_chat_sse("Hello", " world"))
         chat = self._make_chat()
@@ -760,8 +785,16 @@ class TestAXEngineChatModel(unittest.TestCase):
 
         for ending in (b"\n", b"\r", b"\r\n", b"\n\r"):
             wire = b"\xef\xbb\xbf" + ending.join(
-                [b"event: error", b"", b": keepalive", b'data: {"text":"\xce\xbb"}',
-                 b"", b"data: [DONE]", b"", b""]
+                [
+                    b"event: error",
+                    b"",
+                    b": keepalive",
+                    b'data: {"text":"\xce\xbb"}',
+                    b"",
+                    b"data: [DONE]",
+                    b"",
+                    b"",
+                ]
             )
             for boundary in range(len(wire) + 1):
                 with self.subTest(ending=ending, boundary=boundary):
