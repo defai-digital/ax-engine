@@ -340,7 +340,14 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 }
 
 fn command_stdout_with_reason(program: &str, args: &[&str]) -> (Option<String>, Option<String>) {
-    let output = match Command::new(program).args(args).output() {
+    // `SYSTEM_VERSION_COMPAT=1` (set by some shells or launchd plists) makes
+    // `sw_vers` report a compatibility version such as 16.0 on macOS 26, which
+    // would reject a supported host.
+    let output = match Command::new(program)
+        .args(args)
+        .env_remove("SYSTEM_VERSION_COMPAT")
+        .output()
+    {
         Ok(output) => output,
         Err(error) => {
             return (None, Some(format!("failed to spawn {program}: {error}")));
