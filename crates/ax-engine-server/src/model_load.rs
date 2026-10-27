@@ -594,16 +594,18 @@ pub(crate) async fn perform_unload(
         // Drop the preflight snapshot too: it owns the stateless prefix/weight
         // context and the embedding sender independently of the registry entry.
         drop(preflight_live);
-        live.retire().await.map_err(map_generation_service_error)?;
+        let retired = live.retire().await;
         // The worker has joined, including its thread-local tensor destructors.
         // Reclaim only unused buffers; sibling compiled graphs remain intact.
+        // The model is already out of the registry, so trim even when the
+        // worker join reported an error.
         if let Err(error) =
             tokio::task::spawn_blocking(ax_engine_sdk::EngineSession::trim_native_allocator_cache)
                 .await
         {
             tracing::warn!(%error, "model retired but unused allocator buffers could not be trimmed");
         }
-        Ok(())
+        retired.map_err(map_generation_service_error)
     });
 
     match task.await {
