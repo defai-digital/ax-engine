@@ -1488,9 +1488,6 @@ fn render_gemma4_openai_chat_prompt(
     // (tool-call → tool-response → answer).
     let mut prev_message_type: Option<Gemma4PrevMessageType> = None;
     let mut prev_non_tool_role: Option<&'static str> = None;
-    // Whether the immediately preceding assistant message contributed text
-    // content; used to separate consecutive model turns without tool traffic.
-    let mut prev_assistant_had_content = false;
 
     while index < messages.len() {
         let message = &messages[index];
@@ -1516,22 +1513,6 @@ fn render_gemma4_openai_chat_prompt(
         let mut rendered_tool_call = false;
         let mut tool_response_count = 0usize;
         let mut next_index = index + 1;
-
-        // Assistant text renders before its tool_calls and before the tool
-        // responses that follow them (official template order: content first).
-        let content = render_openai_chat_content(message.content.as_ref())?;
-        let content_for_prompt = if role == "assistant" {
-            chat::strip_gemma4_thinking_from_history(&content)
-        } else {
-            content.trim().to_string()
-        };
-        let has_content = !content_for_prompt.is_empty();
-        if has_content {
-            if continue_same_model_turn && prev_assistant_had_content {
-                prompt.push('\n');
-            }
-            prompt.push_str(&content_for_prompt);
-        }
 
         if role == "assistant" {
             let mut tool_names_by_id = BTreeMap::new();
@@ -1568,6 +1549,18 @@ fn render_gemma4_openai_chat_prompt(
             }
         }
 
+        // Official template order: tool calls, then the tool responses that
+        // follow them, then the message text. Consecutive assistant messages
+        // in one model turn are joined with no separator.
+        let content = render_openai_chat_content(message.content.as_ref())?;
+        let content_for_prompt = if role == "assistant" {
+            chat::strip_gemma4_thinking_from_history(&content)
+        } else {
+            content.trim().to_string()
+        };
+        let has_content = !content_for_prompt.is_empty();
+        prompt.push_str(&content_for_prompt);
+
         let next_non_tool_role = next_non_tool_role(messages, next_index);
         // Keep the model turn open when another assistant message follows
         // (agent loop: call → response → final answer in one turn).
@@ -1588,7 +1581,6 @@ fn render_gemma4_openai_chat_prompt(
         }
 
         prev_non_tool_role = Some(role);
-        prev_assistant_had_content = role == "assistant" && has_content;
         index = next_index;
     }
 

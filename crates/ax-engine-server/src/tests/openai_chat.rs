@@ -1502,7 +1502,7 @@ fn openai_gemma4_tool_roundtrip_with_thinking_opens_thought_channel() {
 }
 
 #[test]
-fn openai_gemma4_renders_assistant_content_before_tool_calls() {
+fn openai_gemma4_renders_assistant_content_after_its_tool_traffic() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "weather?"},
         {
@@ -1539,11 +1539,13 @@ fn openai_gemma4_renders_assistant_content_before_tool_calls() {
     )
     .expect("gemma4 content+tool prompt should render");
 
+    // Official chat_template.jinja: tool calls, then the forward-scanned
+    // tool responses, then the message text.
     assert!(
         prompt.contains(
-            "<|turn>model\nLet me check.<|tool_call>call:weather{city:<|\"|>NYC<|\"|>}<tool_call|><|tool_response>response:weather{value:<|\"|>Sunny<|\"|>}<tool_response|>"
+            "<|turn>model\n<|tool_call>call:weather{city:<|\"|>NYC<|\"|>}<tool_call|><|tool_response>response:weather{value:<|\"|>Sunny<|\"|>}<tool_response|>Let me check."
         ),
-        "assistant content must render before its tool call and response: {prompt}"
+        "assistant content must follow its tool call and response: {prompt}"
     );
 }
 
@@ -1569,7 +1571,7 @@ fn openai_gemma4_skips_tool_message_after_assistant_without_tool_call() {
 }
 
 #[test]
-fn openai_gemma4_separates_consecutive_assistant_contents() {
+fn openai_gemma4_joins_consecutive_assistant_contents_like_the_template() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "First"},
@@ -1579,9 +1581,10 @@ fn openai_gemma4_separates_consecutive_assistant_contents() {
 
     let prompt = render_openai_chat_prompt("gemma4-e2b", &messages).expect("gemma4 history");
 
+    // The official template keeps one model turn and adds no separator.
     assert!(
-        prompt.contains("<|turn>model\nFirst\nSecond<turn|>\n"),
-        "consecutive assistant contents must be separated by a newline in one model turn: {prompt}"
+        prompt.contains("<|turn>model\nFirstSecond<turn|>\n"),
+        "consecutive assistant contents stay in one model turn with no separator: {prompt}"
     );
 }
 
