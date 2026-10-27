@@ -287,6 +287,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_beta_fast,
         rope_beta_slow,
     ) = parse_rope_scaling(&config, &model_type);
+    let (rope_mscale, rope_mscale_all_dim) = parse_rope_mscale(&config, &model_type);
 
     let query_pre_attn_scalar =
         arch_f64(&config, &model_type, "query_pre_attn_scalar").and_then(f64_to_u32);
@@ -383,6 +384,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_original_context_len,
         rope_beta_fast,
         rope_beta_slow,
+        rope_mscale,
+        rope_mscale_all_dim,
         // Llama4 iRoPE period: mlx-lm hardcodes `(layer_idx + 1) % 4 != 0` for
         // use_rope. Do **not** reuse `interleave_moe_layer_step` (that selects MoE
         // layers). Prefer deriving the period from the `no_rope_layers` mask when

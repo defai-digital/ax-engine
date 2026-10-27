@@ -64,7 +64,7 @@ pub(crate) use mlp::{
     shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
-pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};
+pub(super) use rope::{build_linear_rope_freqs, build_llama3_rope_freqs, build_yarn_rope_freqs};
 pub(crate) use utils::Gemma4PrefillSkipLastFfnPackedGuard;
 pub(crate) use utils::scale_hidden_pub;
 pub(crate) use utils::{

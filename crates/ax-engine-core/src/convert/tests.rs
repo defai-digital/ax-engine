@@ -17,8 +17,8 @@ use super::{
     compute_attention_value_from_key_layers, compute_kv_shared_sources, config_quantization,
     convert_hf_model_dir, deepseek_v4_config, ensure_deepseek_v4_chat_template,
     ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_qwen4_exp_ngram_tensor,
-    match_tensor, model_family_for_type, moe_config, parse_layer_types, parse_rope_params,
-    parse_rope_scaling, qwen4_exp_config, tensor_name_looks_like_media_role,
+    match_tensor, model_family_for_type, moe_config, parse_layer_types, parse_rope_mscale,
+    parse_rope_params, parse_rope_scaling, qwen4_exp_config, tensor_name_looks_like_media_role,
     tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
     with_real_model_manifest_lock, write_manifest,
 };
@@ -7960,6 +7960,42 @@ fn parse_rope_scaling_keeps_yarn_beta_bounds() {
     );
     assert_eq!(beta_fast, None);
     assert_eq!(beta_slow, None);
+}
+
+#[test]
+fn rope_parameters_blocks_carry_yarn_and_its_attention_scale() {
+    // Ministral 3 (transformers v5) nests YaRN under text_config.rope_parameters;
+    // it used to be read only for Nemotron 3 Embed, so Ministral ran plain RoPE.
+    let ministral = serde_json::json!({
+        "model_type": "mistral3",
+        "text_config": {
+            "rope_parameters": {
+                "rope_type": "yarn",
+                "rope_theta": 1000000.0,
+                "factor": 16.0,
+                "original_max_position_embeddings": 16384,
+                "mscale": 1.0,
+                "mscale_all_dim": 1.0,
+                "beta_fast": 32.0,
+                "beta_slow": 1.0
+            }
+        }
+    });
+    let (ty, factor, _, _, orig, _, _) = parse_rope_scaling(&ministral, "mistral3");
+    assert_eq!(ty.as_deref(), Some("yarn"));
+    assert_eq!(factor, Some(16.0));
+    assert_eq!(orig, Some(16384));
+    assert_eq!(
+        parse_rope_mscale(&ministral, "mistral3"),
+        (Some(1.0), Some(1.0))
+    );
+
+    // A v5 "default" block is plain RoPE, not a scaling request.
+    let plain = serde_json::json!({
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000.0}
+    });
+    assert_eq!(parse_rope_scaling(&plain, "llama").0, None);
+    assert_eq!(parse_rope_mscale(&plain, "llama"), (None, None));
 }
 
 // ---------------------------------------------------------------------------

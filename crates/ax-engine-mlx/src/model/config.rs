@@ -714,11 +714,32 @@ impl ModelConfig {
                 // the primary YaRN path consistent so non-default bounds land.
                 let beta_fast = m.rope_beta_fast.unwrap_or(32.0);
                 let beta_slow = m.rope_beta_slow.unwrap_or(1.0);
+                // mlx-lm YarnRoPE: get_mscale(factor, mscale) /
+                // get_mscale(factor, mscale_all_dim). Absent keys keep the
+                // gpt-oss `0.1 ln(factor) + 1`; Nemotron 3 Embed's
+                // `mscale_all_dim: 1` makes it 1.0.
                 let (freqs, mscale) = super::shared::build_yarn_rope_freqs(
-                    rope_dims, rope_theta, factor, orig_ctx, beta_fast, beta_slow, 1.0, 0.0,
+                    rope_dims,
+                    rope_theta,
+                    factor,
+                    orig_ctx,
+                    beta_fast,
+                    beta_slow,
+                    m.rope_mscale.unwrap_or(1.0),
+                    m.rope_mscale_all_dim.unwrap_or(0.0),
                 );
                 (Some(freqs), mscale)
             }
+            // Position interpolation: every wavelength stretches by `factor`
+            // (mlx-lm `nn.RoPE(scale=1/factor)`).
+            Some("linear") => (
+                Some(super::shared::build_linear_rope_freqs(
+                    rope_dims,
+                    rope_theta,
+                    m.rope_scaling_factor.unwrap_or(1.0),
+                )),
+                1.0,
+            ),
             _ => (None, 1.0),
         };
 
@@ -1160,6 +1181,65 @@ mod tests {
         assert_eq!(cfg.layer_configs.len(), 2);
         assert_eq!(cfg.layer_configs[0].sliding_window, Some(128));
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    fn rope_manifest(extra: serde_json::Value) -> ax_engine_core::NativeModelManifest {
+        let mut base = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "llama3",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 64,
+            "attention_head_count": 4,
+            "attention_head_dim": 16,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "rope_theta": 10000,
+            "tensors": [],
+        });
+        for (key, value) in extra.as_object().expect("object") {
+            base[key] = value.clone();
+        }
+        serde_json::from_value(base).expect("manifest")
+    }
+
+    #[test]
+    fn yarn_attention_scale_follows_manifest_mscale_all_dim() {
+        let yarn = serde_json::json!({
+            "rope_scaling_type": "yarn",
+            "rope_scaling_factor": 16.0,
+            "rope_original_context_len": 4096,
+        });
+        // Absent keys keep the gpt-oss 0.1 ln(factor) + 1.
+        let default_cfg = ModelConfig::from_manifest(&rope_manifest(yarn.clone()));
+        assert!((default_cfg.rope_mscale - (0.1 * 16.0_f32.ln() + 1.0)).abs() < 1e-5);
+        // Nemotron 3 Embed: mscale = mscale_all_dim = 1 -> scale 1.0.
+        let mut nemotron = yarn;
+        nemotron["rope_mscale"] = serde_json::json!(1.0);
+        nemotron["rope_mscale_all_dim"] = serde_json::json!(1.0);
+        let nemotron_cfg = ModelConfig::from_manifest(&rope_manifest(nemotron));
+        assert!(
+            (nemotron_cfg.rope_mscale - 1.0).abs() < 1e-6,
+            "{}",
+            nemotron_cfg.rope_mscale
+        );
+    }
+
+    #[test]
+    fn linear_rope_scaling_stretches_every_wavelength() {
+        let cfg = ModelConfig::from_manifest(&rope_manifest(serde_json::json!({
+            "rope_scaling_type": "linear",
+            "rope_scaling_factor": 4.0,
+        })));
+        let freqs = cfg
+            .rope_freqs
+            .as_ref()
+            .expect("linear scaling precomputes freqs")
+            .data_f32();
+        // dims 16: divisors 4 * 10000^(2i/16).
+        assert_eq!(freqs.len(), 8);
+        assert!((freqs[0] - 4.0).abs() < 1e-4);
+        assert!((freqs[1] - 4.0 * 10000_f32.powf(2.0 / 16.0)).abs() < 1e-2);
     }
 
     #[test]
