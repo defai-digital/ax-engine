@@ -2292,7 +2292,12 @@ fn lm_head_verify_window_projection(
             && let Some(weight_t) = lm_head.decode_weight_t.as_ref()
             && let Some(wide) = shared::utils::dense_wide_gemv_weight_t(normed, weight_t)
         {
-            return wide;
+            // Same bias as the singleton `qw_direct` decode and the other
+            // verify branches, so verify and direct logits stay aligned.
+            return match &lm_head.linear_bias {
+                Some(bias) => add(&wide, bias, None),
+                None => wide,
+            };
         }
         // Quantized affine heads: the `Leading`-invariant qmv_fast kernel
         // keeps each row on the singleton arithmetic (the same kernel the
