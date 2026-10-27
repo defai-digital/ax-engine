@@ -597,12 +597,19 @@ pub(crate) fn qwen4_exp_config(
         .transpose()?
         .unwrap_or(1234);
     Ok(NativeQwen4ExpConfig {
+        // Reference config: `output_gate_type or hidden_act`, and hidden_act
+        // defaults to silu. A missing gate type is not sigmoid.
         output_gate_type: Some(
             field("output_gate_type")
                 .filter(|value| !value.is_null())
                 .map(|value| value.as_str().ok_or_else(|| error("output_gate_type")))
                 .transpose()?
-                .unwrap_or("sigmoid")
+                .filter(|gate| !gate.is_empty())
+                .or(field("hidden_act")
+                    .filter(|value| !value.is_null())
+                    .map(|value| value.as_str().ok_or_else(|| error("hidden_act")))
+                    .transpose()?)
+                .unwrap_or("silu")
                 .to_string(),
         ),
         ple_layer_ids,

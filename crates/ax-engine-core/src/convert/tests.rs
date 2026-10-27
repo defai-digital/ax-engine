@@ -5381,6 +5381,26 @@ fn qwen4_exp_preserves_ple_and_block_selection_contract() {
     assert!(defaults.ple_layer_ids.is_empty());
     assert!(defaults.never_eval_ngram_at_load);
     assert!(!qwen4_exp_config(&config, "qwen3_5").unwrap().is_enabled());
+
+    // Reference config: `output_gate_type or hidden_act`, hidden_act = silu.
+    let gate = |config: serde_json::Value| {
+        qwen4_exp_config(&config, "qwen4_exp")
+            .unwrap()
+            .output_gate_type
+    };
+    assert_eq!(gate(serde_json::json!({})).as_deref(), Some("silu"));
+    assert_eq!(
+        gate(serde_json::json!({"hidden_act": "sigmoid"})).as_deref(),
+        Some("sigmoid")
+    );
+    assert_eq!(
+        gate(serde_json::json!({"output_gate_type": "", "hidden_act": "silu"})).as_deref(),
+        Some("silu")
+    );
+    assert_eq!(
+        gate(serde_json::json!({"output_gate_type": "sigmoid", "hidden_act": "silu"})).as_deref(),
+        Some("sigmoid")
+    );
 }
 
 #[test]
