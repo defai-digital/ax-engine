@@ -432,3 +432,22 @@ async fn background_eviction_never_retires_the_current_default_model() {
             .expect("fixture shutdown");
     }
 }
+
+#[tokio::test]
+async fn resolving_a_model_for_a_request_counts_as_activity() {
+    use std::sync::atomic::Ordering;
+    let state = llama_cpp_state();
+    let live = state.snapshot();
+    // Idle for a long time, as the evictor would see it.
+    live.last_used.store(0, Ordering::Relaxed);
+    let resolved =
+        crate::openai::validation::select_model(&state, None).expect("default model resolves");
+    assert!(
+        resolved.last_used.load(Ordering::Relaxed) > 0,
+        "a request still preparing (media, prompt render) must not look idle"
+    );
+    live.generation_service
+        .shutdown()
+        .await
+        .expect("fixture shutdown");
+}

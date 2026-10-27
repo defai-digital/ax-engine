@@ -138,12 +138,15 @@ fn generation_service_status(error: GenerationServiceError) -> Status {
 
 fn grpc_model(state: &AppState, requested: &str) -> Result<crate::app_state::LiveState, Status> {
     let requested = (!requested.is_empty()).then_some(requested);
-    state.snapshot_for_model(requested).ok_or_else(|| {
+    let live = state.snapshot_for_model(requested).ok_or_else(|| {
         Status::not_found(format!(
             "requested model is not loaded; loaded models: {}",
             state.model_ids().join(", ")
         ))
-    })
+    })?;
+    // Activity before admission (see `select_model`).
+    live.mark_used();
+    Ok(live)
 }
 
 // ─── Service implementation ───────────────────────────────────────────────────

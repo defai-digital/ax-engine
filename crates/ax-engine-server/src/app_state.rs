@@ -448,6 +448,11 @@ impl AppState {
 }
 
 impl LiveState {
+    /// Record activity for the idle evictor (admission records it too).
+    pub(crate) fn mark_used(&self) {
+        self.last_used.store(unix_now_secs(), Ordering::Relaxed);
+    }
+
     pub(crate) async fn retire(
         self,
     ) -> Result<(), crate::generation::service::GenerationServiceError> {
