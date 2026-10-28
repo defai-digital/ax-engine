@@ -55,9 +55,20 @@ public struct EngineConnection: Sendable, Identifiable, CustomStringConvertible,
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.timeoutInterval = timeout
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await Self.session.data(for: request)
+        let (bytes, response) = try await Self.session.bytes(for: request)
+        defer { bytes.task.cancel() }
         try Self.validate(response)
-        guard data.count <= 4 * 1024 * 1024 else { throw AppFailure.message("Service response exceeds the display limit.") }
+        let limit = 4 * 1024 * 1024
+        guard response.expectedContentLength <= Int64(limit) else {
+            throw AppFailure.message("Service response exceeds the display limit.")
+        }
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < limit else {
+                throw AppFailure.message("Service response exceeds the display limit.")
+            }
+            data.append(byte)
+        }
         return data
     }
     private static func validate(_ response: URLResponse) throws {

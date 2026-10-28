@@ -10,6 +10,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        limit = 4 * 1024 * 1024
+        if self.path == '/advertised':
+            self.send_header('Content-Length', str(limit + 1))
+            self.end_headers()
+            self.wfile.write(b'x' * 16384)
+            self.wfile.flush()
+            time.sleep(8)
+            return
+        self.end_headers()
+        self.wfile.write(b'x' * (limit if self.path == '/exact' else limit + 1))
+        self.wfile.flush()
+        if self.path != '/exact':
+            time.sleep(8)
+
     def do_POST(self):
         if self.path.endswith('/cancel'):
             self.send_response(200)

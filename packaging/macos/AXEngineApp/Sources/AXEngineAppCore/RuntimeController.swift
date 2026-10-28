@@ -136,6 +136,7 @@ public final class RuntimeController: ObservableObject {
         await launch?.value
         await logStore.append(logs, stream: .stderr)
         connection = nil; models = []; metrics = [:]; owned = false; busy = false; state = "Stopped"
+        error = nil; lastSuccessfulCheck = nil; startedAt = nil
     }
 
     public func detach() {

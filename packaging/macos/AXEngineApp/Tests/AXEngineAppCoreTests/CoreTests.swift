@@ -272,6 +272,9 @@ private func temporary() throws -> URL {
     await runtime.stop()
     #expect(!runtime.job.running)
     #expect(!runtime.owned)
+    #expect(runtime.startedAt == nil)
+    #expect(runtime.lastSuccessfulCheck == nil)
+    #expect(runtime.error == nil)
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AX_ENGINE_GUI_REAL_PORT"] != nil, "Requires an explicitly provisioned model test service")) @MainActor func realRuntimeSmokeWhenExplicitlyRequested() async throws {
