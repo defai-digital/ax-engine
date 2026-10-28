@@ -1,0 +1,21 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "baseline-grammar.txt": "2098bb925238a0dbd9136f4f0fb3374f2c64db2eafd62fafdca60da9330efea5",
+    "fixed-grammar.txt": "eb981a44227a80f29dd914df3a050e71025652c962132e3649676a2f3fb9f5eb",
+    "insufficient_budget.json": "d6025741f7529c1c512051bb1a5d8b7d2783dfb5e93e4c4fea6c1831fe26e281",
+    "json_budget.json": "21650614a8eb45d4b4f0a07bd5f19ec2da56a58cc4621c76cc44f397af222b45",
+    "memory-after.json": "6d2e5c51fd3bd4b9b8cc1c230e28f1ead1508124a3382c1315dd51c7ad220e79",
+    "memory-before.json": "426710c1477c6186654c68157b2a6c1428ffda0da0cdd5e3f7ab34f49b8628c9",
+    "memory-summary.json": "c697b7412d9fbbd0a3109f80796861a6c5f6ce42d652690430337d37679f5654",
+    "nested_unicode.json": "84b1a715dfb82714fe3fa35969bf835a0492d8fac97547da0de63106a7ea72cb",
+    "open-schema-0.json": "6dd2c46b0e045dfe71ec3ebd5b123c2412b84aa96f967049e84ee43d9eab383f",
+    "open-schema-1.json": "bdef49687fb5d75fbbab06170efa2c7640bd347358bc4810ebaa4e0e10e6b3c4",
+    "provenance.json": "c3aff45cc469435498c4c7100cc3ee6eade72ef3b22fa3d501e8240c34dc6cc9",
+    "reasoning_budget.json": "5b8f627ae336fedf695a25d7bd09898c651d0e70769428b5737488244928e78e",
+    "software-checks.json": "000af5b68297cfd0d31d52e6fc12112f7f2f27856933a7d37584695a65e78938",
+    "source-identity.json": "ff8a8c3efe892178dafe81ae62af4e84884f74a446c911dfd2f43bd00c643d04",
+    "summary.json": "5a00ddf666bc98a8c0d0e92cdbb17431c2d516e47436bdf087a9b866a04da0f5",
+    "verification.json": "445e7b95e8c83398025cd487b77a298a4d13197e4258af0ea5140573e8f89867"
+  }
+}

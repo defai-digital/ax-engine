@@ -1,0 +1,106 @@
+{
+  "toolchain": "Rust 1.99.1 via pinned sysroot PATH",
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 2.2487812920007855
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 66.62564408383332
+    },
+    {
+      "name": "rust-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "seconds": 425.4979650420137
+    },
+    {
+      "name": "maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0,
+      "seconds": 88.33950166613795
+    },
+    {
+      "name": "python-tests",
+      "command": [
+        "pytest",
+        "python/tests"
+      ],
+      "exit_code": 0,
+      "seconds": 16.077192167053
+    },
+    {
+      "name": "scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0,
+      "seconds": 45.77079795883037
+    },
+    {
+      "name": "qwen27-dry",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "seconds": 0.02769170794636011
+    },
+    {
+      "name": "flash-dry",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "seconds": 0.026714625069871545
+    },
+    {
+      "name": "claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.10261399997398257
+    }
+  ],
+  "rust": {
+    "passed": 4516,
+    "failed": 0,
+    "ignored": 92
+  },
+  "python": {
+    "passed": 332,
+    "failed": 0,
+    "skipped": 7
+  }
+}

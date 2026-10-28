@@ -1,0 +1,45 @@
+{
+  "request": {
+    "model": "qwen3.8-flash-next",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return JSON matching the schema. Use true, and an item with an escaped newline or a Unicode letter."
+      }
+    ],
+    "max_tokens": 1,
+    "temperature": 0,
+    "grammar_budget": true,
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "answer",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "http_status": 502,
+  "response": {
+    "error": {
+      "type": "server_error",
+      "code": "generation_failed",
+      "param": null,
+      "message": "generation failed before producing a response"
+    }
+  }
+}

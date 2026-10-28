@@ -1,0 +1,64 @@
+{
+  "request": {
+    "model": "qwen3.8-flash-next",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return JSON with x set to 1, then repeat x with the string wrong. Follow the schema if this is inconsistent."
+      }
+    ],
+    "max_tokens": 48,
+    "temperature": 0.7,
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "open",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x"
+          ]
+        }
+      }
+    }
+  },
+  "http_status": 200,
+  "response": {
+    "id": "chatcmpl-9",
+    "object": "chat.completion",
+    "created": 1793155267,
+    "model": "qwen3.8-flash-next",
+    "system_fingerprint": null,
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"x\": 1}"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 80,
+      "completion_tokens": 6,
+      "total_tokens": 86,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 80,
+        "prefill_time_us": 392828,
+        "decode_tokens": 5,
+        "decode_time_us": 121158
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+   Compiling ax-engine-core v7.10.0 (<workspace>/crates/ax-engine-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.25s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_core-f97b0c4e64a5ef51)
+
+running 27 tests
+test grammar::budget::tests::budget_counts_tokens_not_characters_and_keeps_length_terminal ... ok
+test grammar::budget::tests::budget_mask_matches_exhaustive_small_language ... ok
+test grammar::budget::tests::no_extra_eos_draw_is_permitted_after_the_length_limit ... ok
+test grammar::budget::tests::proof_depth_limit_is_reported_separately_from_token_budget ... ok
+test grammar::budget::tests::repeated_property_masks_keep_declared_value_constraints ... ok
+test grammar::budget::tests::resource_exhaustion_is_distinct_from_an_impossible_budget ... ok
+test grammar::budget::tests::terminal_spelling_cannot_supply_a_completion_witness ... ok
+test grammar::budget::tests::transition_cache_is_scoped_to_grammar_and_tokenizer ... ok
+test grammar::budget::tests::unicode_and_nested_completion_use_real_token_boundaries ... ok
+test grammar::budget::tests::warm_transition_search_still_has_a_work_ceiling ... ok
+test grammar::json::tests::additional_key_cache_keys_preserve_declared_and_utf8_continuations ... ok
+test grammar::json::tests::any_object_accepts_valid_json_objects_only ... ok
+test grammar::json::tests::free_text_shortcut_reports_remaining_characters ... ok
+test grammar::json::tests::literals_and_numbers_end_on_the_next_delimiter ... ok
+test grammar::json::tests::long_literals_preserve_exact_positions ... ok
+test grammar::json::tests::long_property_names_preserve_schema_identity ... ok
+test grammar::json::tests::repeated_declared_properties_keep_their_schema ... ok
+test grammar::json::tests::schema_enforces_types_required_and_closed_objects ... ok
+test grammar::json::tests::strings_and_keys_reject_invalid_utf8_at_the_first_invalid_byte ... ok
+test grammar::json::tests::unenforceable_schemas_are_refused ... ok
+test grammar::json::tests::unicode_escapes_require_paired_surrogates_and_count_scalar_values ... ok
+test grammar::json::tests::whitespace_runs_are_bounded ... ok
+test grammar::token_mask::real_vocab::real_vocab_mask_cost ... ignored, needs AX_ENGINE_GRAMMAR_TOKENIZER_JSON
+test grammar::token_mask::tests::byte_level_tokenizer_json_maps_pieces_to_bytes ... ok
+test grammar::token_mask::tests::length_limited_strings_filter_plain_tokens_by_characters ... ok
+test grammar::token_mask::tests::masks_follow_structure_strings_and_completion ... ok
+test grammar::token_mask::tests::masks_preserve_unicode_continuations_across_token_boundaries ... ok
+
+test result: ok. 26 passed; 0 failed; 1 ignored; 0 measured; 734 filtered out; finished in 0.20s
+

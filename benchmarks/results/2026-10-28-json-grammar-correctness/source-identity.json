@@ -1,0 +1,11 @@
+{
+  "base_commit": "e5dec8f38e139a24e115d0d8e2bab3b53a0bf9c1",
+  "fix_commit": "be4360a6118f01a783cec3f86cdc8fe09aaf9972",
+  "fix_tree": "aacf3021041574c28585cce2a6f3ae751bea3530",
+  "source_manifest_sha256": "c88b887b9ea1390c8df75b28c1cc67402c4df304038ca7b03a34c266be700270",
+  "source_files_checked": 17162,
+  "mismatches": [],
+  "binding": "The pre-build candidate manifest matches the committed tracked files. Evidence files are added in a separate commit.",
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "scope": "Parser regressions and bounded real-model JSON serving smoke; not model qualification or performance evidence."
+}
