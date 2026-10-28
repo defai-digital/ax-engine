@@ -30,7 +30,7 @@ function fixture(version='1.2.3', commit='a'.repeat(40)) {
 }
 function memoryStore(initial=[]) {
   const data=new Map(initial), writes=[];
-  return {data,writes,async read(key){
+  return {data,writes,async remove(key){data.delete(key);},async read(key){
     if(key==='appcast.xml' && data.has('latest.json')) {
       const tag=Buffer.from(JSON.parse(data.get('latest.json')).payload,'base64').toString().split('\n')[0];
       return data.get(`releases/download/${tag}/appcast.xml`)??null;
@@ -225,4 +225,21 @@ test('pre-updater inventories remain verifiable without manufacturing an appcast
   const result=verifyDirectory(f.output,verify);
   assert.equal(result.schema,'ax-engine.gui-inventory.v1');
   assert.ok(!releaseObjects(f.output,result).some(x=>x.key.endsWith('appcast.xml')));
+});
+
+test('failed first-release feed verification removes the unqualified pointer',async()=>{
+  const f=fixture(), store=memoryStore();
+  await assert.rejects(publishObjects(f.objects,f.inventory,store,key=>key==='appcast.xml'?null:store.read(key),verify),/Sparkle feed readback/);
+  assert.equal(await store.read('latest.json'),null);
+});
+test('failed rollback is reported and a newer concurrent pointer is preserved',async()=>{
+  const f=fixture(), store=memoryStore();
+  store.remove=async()=>{};
+  await assert.rejects(publishObjects(f.objects,f.inventory,store,key=>key==='appcast.xml'?null:store.read(key),verify),/rollback readback/);
+  const newer=fixture('1.2.4'), concurrent=memoryStore();
+  await assert.rejects(publishObjects(f.objects,f.inventory,concurrent,async key=>{
+    if(key==='appcast.xml'){await concurrent.write('latest.json',newer.objects.at(-1).body);return null;}
+    return concurrent.read(key);
+  },verify),/Sparkle feed readback/);
+  assert.deepEqual(await concurrent.read('latest.json'),newer.objects.at(-1).body);
 });

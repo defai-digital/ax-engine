@@ -196,6 +196,13 @@ export function cloudflareStore(secret, fetcher = fetch) {
       check(response.ok, `R2 read failed: HTTP ${response.status}`);
       return Buffer.from(await response.arrayBuffer());
     },
+    async remove(key) {
+      const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/r2/buckets/${BUCKET}/objects/${encodeURIComponent(key)}`,
+        {method: 'DELETE', headers: {Authorization: `Bearer ${secret}`}, signal: AbortSignal.timeout(600000)});
+      check(response.ok, `R2 delete failed: HTTP ${response.status}`);
+      const reply = await response.json();
+      check(reply.success === true, 'R2 rejected deletion');
+    },
     async write(key, body) {
       const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/r2/buckets/${BUCKET}/objects/${encodeURIComponent(key)}`,
         {method: 'PUT', body, headers: {Authorization: `Bearer ${secret}`, 'Content-Type': 'application/octet-stream'},
@@ -239,7 +246,12 @@ export async function publishObjects(objects, inventory, store, publicRead, veri
     }
   } catch (error) {
     // Restore only our pointer; never overwrite another publisher's newer state.
-    if (old && (await store.read(latest.key))?.equals(latest.body)) await store.write(latest.key, old);
+    if ((await store.read(latest.key))?.equals(latest.body)) {
+      if (old) await store.write(latest.key, old);
+      else await store.remove(latest.key);
+      const restored = await store.read(latest.key);
+      check(old ? restored?.equals(old) : restored === null, 'Release pointer rollback readback failed');
+    }
     throw error;
   }
 }
