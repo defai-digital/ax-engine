@@ -143,6 +143,8 @@ const ENV_VAR_WHOLE_FILE_ALLOWED: &[&str] = &["src/fastpath.rs"];
 /// cached-in-place `std::env::var(` reads outside `fastpath.rs`. Adding a
 /// new per-call read on a dispatch path will fail this test.
 const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
+    // Read only during the process-wide prefetch accounting OnceLock initialization.
+    ("src/ngram_table/prefetch.rs", "parse_env_usize"),
     ("src/batched_decode_policy.rs", "row_exact_moe_enabled"),
     ("src/batched_decode_session.rs", "batched_decode_enabled"),
     (
