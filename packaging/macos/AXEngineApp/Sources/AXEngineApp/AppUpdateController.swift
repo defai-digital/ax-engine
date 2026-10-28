@@ -108,7 +108,7 @@ struct AppUpdatesSettings: View {
                 if updates.canRetryStart { Button("Retry", action: updates.retryStart) }
             } else {
                 Toggle("Automatically check for updates", isOn: Binding(
-                    get: { updates.automaticChecks }, set: updates.setAutomaticChecks))
+                    get: { updates.automaticChecks }, set: { enabled in updates.setAutomaticChecks(enabled) }))
                 CheckForAppUpdates(updates: updates)
                 Text("AX Engine checks its release service for updates. You choose when to download and restart to install. Models, settings and conversations stay on this Mac.")
                     .foregroundStyle(.secondary)
