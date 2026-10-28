@@ -139,7 +139,7 @@ sw_vers -productVersion  # must print 26.0 or higher
    python3.13 -m venv "$HOME/.venvs/ax-engine"
    source "$HOME/.venvs/ax-engine/bin/activate"
    python -m pip install --upgrade pip
-   python -m pip install --upgrade "ax-engine[download]>=8.0.0,<9"
+   python -m pip install --upgrade "ax-engine[download]>=8.0.1,<9"
    ax-engine doctor
    ```
 
