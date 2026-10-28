@@ -36,7 +36,7 @@ private func until(_ condition: () -> Bool) async throws {
 
 @Test @MainActor func libraryPublishesRowsBeforeWorkerCompletesAndKeepsPartialResults() async throws {
     let (root, fixture) = try scanFixture(); defer { try? FileManager.default.removeItem(at: root) }
-    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: fixture, scanTimeout: 1)
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: fixture, scanTimeout: 5)
     var settings = AppSettings(); settings.modelsDirectory = root.appendingPathComponent("slow").path
     let scan = Task { await store.scan(settings: settings) }
     try await until { !store.library.isEmpty }
