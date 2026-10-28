@@ -93,6 +93,46 @@ class ReleaseTests(unittest.TestCase):
             extra=app/'Contents/Resources/unknown';extra.parent.mkdir(parents=True);extra.write_bytes(b'\xcf\xfa\xed\xfe')
             with self.assertRaisesRegex(ValueError,'unexpected'):release.signing_targets(app)
 
+    def test_updater_code_is_explicitly_signed_before_its_containers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp)
+            paths = [app/'Contents/MacOS'/name for name in ('AXEngineApp','AXEngineModelScanner')]
+            paths += [app/release.RUNTIME/'Contents/MacOS'/name for name in
+                      ('ax-engine','ax-engine-server','ax-engine-bench','libmlx.dylib','libjaccl.dylib')]
+            framework = app/release._UPDATER.FRAMEWORK
+            paths += [framework/name for name in release._UPDATER.SPARKLE_BINARIES]
+            for file in paths:
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b'\xcf\xfa\xed\xfe')
+            targets = release.signing_targets(app)
+            for binary in release._UPDATER.SPARKLE_BINARIES:
+                for bundle in release._UPDATER.SPARKLE_BUNDLES:
+                    if (framework/binary).is_relative_to(framework/bundle):
+                        self.assertLess(targets.index(framework/binary),targets.index(framework/bundle))
+            self.assertLess(targets.index(framework), targets.index(app))
+            (framework/'Versions/B/Unexpected').write_bytes(b'\xcf\xfa\xed\xfe')
+            with self.assertRaisesRegex(ValueError,'unexpected'):
+                release.signing_targets(app)
+
+    def test_updater_trust_configuration_and_framework_are_required_together(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp); (app/'Contents').mkdir()
+            config = json.loads((release.ROOT/'packaging/macos/sparkle.json').read_text())
+            data = {'CFBundleIdentifier':release.BUNDLE_ID, 'CFBundleShortVersionString':'1.2.3',
+                    'CFBundleVersion':'1.2.3','LSMinimumSystemVersion':release.MIN_MACOS,
+                    'AXEngineDistributionBuild':True,'SUFeedURL':config['feedURL'],
+                    'SUPublicEDKey':config['publicKey'],'SUAllowsAutomaticUpdates':False,
+                    'SUEnableAutomaticChecks':False,'SUEnableSystemProfiling':False}
+            def write(): (app/'Contents/Info.plist').write_bytes(plistlib.dumps(data))
+            write()
+            with self.assertRaisesRegex(ValueError,'Missing updater'):
+                release.identity(app,'1.2.3')
+            (app/release._UPDATER.FRAMEWORK).mkdir(parents=True)
+            release.identity(app,'1.2.3')
+            data['SUPublicEDKey']='substituted';write()
+            with self.assertRaisesRegex(ValueError,'updater configuration'):
+                release.identity(app,'1.2.3')
+
     def test_dirty_source_blocks_build_before_mutation(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(release,'run',return_value=' M source'):
             output=Path(temp)/'output'

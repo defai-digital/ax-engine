@@ -1,10 +1,12 @@
 import {test, after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import {appcast, verifyAppcast} from './sparkle.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import {execFileSync} from 'node:child_process';
-import {prepare, verifyDirectory, releaseObjects, publishObjects, verifyLatest, hash, validIdentity, compareVersion, cask} from './distribution.mjs';
+import {prepare, verifyDirectory, releaseObjects, publishObjects, verifyLatest, hash, validIdentity, compareVersion, cask, ready} from './distribution.mjs';
 import worker, {objectKey, byteRange} from './download-worker/worker.mjs';
 import {validateConfig, routeOwner} from './gateway.mjs';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ax-gui-distribution-test-'));
@@ -12,6 +14,9 @@ after(() => fs.rmSync(root, {recursive:true, force:true}));
 execFileSync('minisign', ['-G', '-W', '-p', path.join(root,'test.pub'), '-s', path.join(root,'test.sec')], {stdio:'pipe'});
 function sign(file) { execFileSync('minisign', ['-S', '-s', path.join(root,'test.sec'), '-m',file], {stdio:'pipe'}); }
 function verify(file) { execFileSync('minisign', ['-Vm',file, '-p',path.join(root,'test.pub')], {stdio:'pipe'}); }
+const sparkleKeys = crypto.generateKeyPairSync('ed25519');
+const sparklePublicKey = sparkleKeys.publicKey.export({format:'der',type:'spki'}).subarray(-32).toString('base64');
+const signSparkle = file => crypto.sign(null,fs.readFileSync(file),sparkleKeys.privateKey).toString('base64');
 function fixture(version='1.2.3', commit='a'.repeat(40)) {
   const dir=fs.mkdtempSync(path.join(root,'fixture-')), source=path.join(dir,'source'), output=path.join(dir,'release');
   fs.mkdirSync(source);
@@ -20,16 +25,22 @@ function fixture(version='1.2.3', commit='a'.repeat(40)) {
   fs.writeFileSync(path.join(source,'notarization.json'),JSON.stringify({schema:'ax-engine.gui-notarization.v1',
     version,commit,filename,size:content.length,sha256:hash(content),team:'N5ZUZDUJS6',bundleId:'com.automatosx.ax-engine',
     appRequest:'test-app-request',dmgRequest:'test-dmg-request',appTreeSha256:'b'.repeat(64)}));
-  const inventory=prepare(source, output, {sign, verify, verifyApple:()=>{},sourceAuthority:()=>{}});
+  const inventory=prepare(source, output, {sign, verify, signSparkle, sparklePublicKey, verifyApple:()=>{},sourceAuthority:()=>{}});
   return {dir,source,output,inventory,objects:releaseObjects(output,inventory)};
 }
 function memoryStore(initial=[]) {
   const data=new Map(initial), writes=[];
-  return {data,writes,async read(key){return data.get(key)??null;},async write(key,body){writes.push(key);data.set(key,body);}};
+  return {data,writes,async read(key){
+    if(key==='appcast.xml' && data.has('latest.json')) {
+      const tag=Buffer.from(JSON.parse(data.get('latest.json')).payload,'base64').toString().split('\n')[0];
+      return data.get(`releases/download/${tag}/appcast.xml`)??null;
+    }
+    return data.get(key)??null;
+  },async write(key,body){writes.push(key);data.set(key,body);}};
 }
 test('signed inventory binds image, source, manifest and atomic latest',()=>{
   const f=fixture();
-  assert.equal(verifyDirectory(f.output,verify).digest,f.inventory.digest);
+  assert.equal(verifyDirectory(f.output,verify,sparklePublicKey).digest,f.inventory.digest);
   const latest=verifyLatest(fs.readFileSync(path.join(f.output,'latest.json')),verify);
   assert.equal(latest.inventory,f.inventory.digest);
   assert.equal(latest.commit,'a'.repeat(40));
@@ -39,7 +50,7 @@ test('signed inventory binds image, source, manifest and atomic latest',()=>{
 test('actual minisign rejects payload or signature corruption',()=>{
   const f=fixture(), file=path.join(f.output,'release.tsv');
   fs.appendFileSync(file,'injected');
-  assert.throws(()=>verifyDirectory(f.output,verify));
+  assert.throws(()=>verifyDirectory(f.output,verify,sparklePublicKey));
   const envelope=JSON.parse(fs.readFileSync(path.join(f.output,'latest.json')));
   envelope.payload=Buffer.from('v9.9.9\n').toString('base64');
   assert.throws(()=>verifyLatest(Buffer.from(JSON.stringify(envelope)),verify));
@@ -49,7 +60,7 @@ test('signed malformed inventory cannot traverse paths or omit artifacts',()=>{
     const f=fixture(), file=path.join(f.output,'inventory.json');
     const data=JSON.parse(fs.readFileSync(file));mutate(data);fs.writeFileSync(file,JSON.stringify(data));
     fs.unlinkSync(file+'.minisig');sign(file);
-    assert.throws(()=>verifyDirectory(f.output,verify));
+    assert.throws(()=>verifyDirectory(f.output,verify,sparklePublicKey));
   }
 });
 test('source/version/signing-team mismatches reject preparation',()=>{
@@ -62,7 +73,7 @@ test('source/version/signing-team mismatches reject preparation',()=>{
 test('symlink assets reject verification',()=>{
   const f=fixture(), file=path.join(f.output,'install');
   fs.renameSync(file,file+'.copy');fs.symlinkSync(file+'.copy',file);
-  assert.throws(()=>verifyDirectory(f.output,verify),/regular file/);
+  assert.throws(()=>verifyDirectory(f.output,verify,sparklePublicKey),/regular file/);
 });
 test('publisher completes readback before advancing latest and resumes idempotently',async()=>{
   const f=fixture(), store=memoryStore();
@@ -159,4 +170,59 @@ puts "Cask preflight passed"`;
     if (['26.0','26.1'].includes(version)) assert.throws(invoke, error=>error.stderr.toString().includes('requires macOS 26.2'));
     else assert.match(invoke().toString(),/Cask preflight passed/);
   }
+});
+
+test('Sparkle archive signatures reject tampering and appcast substitution',()=>{
+  const f=fixture(), image=fs.readFileSync(path.join(f.output,`AX-Engine-${f.inventory.version}-mac-arm64.dmg`));
+  const xml=fs.readFileSync(path.join(f.output,'appcast.xml'),'utf8');
+  verifyAppcast(xml,f.inventory.version,image,sparklePublicKey);
+  assert.throws(()=>verifyAppcast(xml,f.inventory.version,Buffer.from('tampered'),sparklePublicKey));
+  assert.throws(()=>verifyAppcast(xml.replace('26.2','10.0'),f.inventory.version,image,sparklePublicKey),/binding/);
+  assert.throws(()=>verifyAppcast(xml.replace('download.automatosx.com','evil.example'),f.inventory.version,image,sparklePublicKey),/binding/);
+  assert.throws(()=>verifyAppcast(xml,'9.0.0',image,sparklePublicKey),/binding/);
+  const badKey=crypto.generateKeyPairSync('ed25519').publicKey.export({format:'der',type:'spki'}).subarray(-32).toString('base64');
+  assert.throws(()=>verifyAppcast(xml,f.inventory.version,image,badKey),/signature/);
+  assert.throws(()=>appcast('1.0.0" injected',1,'A'.repeat(86)+'=='));
+});
+test('Sparkle feed follows the atomic release pointer and fails closed without an appcast',async()=>{
+  const f=fixture(), store=memoryStore();
+  const env={PUBLIC_RELEASE_ENABLED:'true',ENGINE_GUI_RELEASES:{
+    async get(key){const body=await store.read(key);return body?{size:body.length,json:async()=>JSON.parse(body)}:null;},
+    async head(key){return (await store.read(key))?{}:null;},
+  }};
+  const request=new Request('https://download.automatosx.com/ax-engine-desktop/appcast.xml');
+  assert.equal((await worker.fetch(request,env)).status,503);
+  // Uploads alone must not make an update available.
+  for(const object of f.objects.slice(0,-1))await store.write(object.key,object.body);
+  assert.equal((await worker.fetch(request,env)).status,503);
+  await store.write('latest.json',f.objects.at(-1).body);
+  const response=await worker.fetch(request,env);
+  assert.equal(response.status,302);
+  assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.equal(response.headers.get('location'),'https://download.automatosx.com/ax-engine-desktop/releases/download/v1.2.3/appcast.xml');
+  store.data.delete('releases/download/v1.2.3/appcast.xml');
+  assert.equal((await worker.fetch(request,env)).status,503);
+  await store.write('latest.json',Buffer.from('{"payload":"invalid"}'));
+  assert.equal((await worker.fetch(request,env)).status,503);
+});
+
+test('failed updater-feed readback restores the previous atomic pointer',async()=>{
+  const old=fixture('1.2.2'), next=fixture(), store=memoryStore([['latest.json',old.objects.at(-1).body]]);
+  await assert.rejects(publishObjects(next.objects,next.inventory,store,key=>key==='appcast.xml'?null:store.read(key),verify),/Sparkle feed readback/);
+  assert.deepEqual(await store.read('latest.json'),old.objects.at(-1).body);
+});
+test('pre-updater inventories remain verifiable without manufacturing an appcast',()=>{
+  const f=fixture(), inventory={...f.inventory,schema:'ax-engine.gui-inventory.v1'};
+  delete inventory.digest;
+  inventory.assets=inventory.assets.filter(x=>x.name!=='appcast.xml');
+  fs.writeFileSync(path.join(f.output,'inventory.json'),JSON.stringify(inventory));
+  fs.writeFileSync(path.join(f.output,'release-ready.txt'),ready(inventory,hash(fs.readFileSync(path.join(f.output,'inventory.json')))));
+  for(const name of ['inventory.json','release-ready.txt']){fs.unlinkSync(path.join(f.output,name+'.minisig'));sign(path.join(f.output,name));}
+  fs.writeFileSync(path.join(f.output,'latest.json'),JSON.stringify({
+    payload:fs.readFileSync(path.join(f.output,'release-ready.txt')).toString('base64'),
+    signature:fs.readFileSync(path.join(f.output,'release-ready.txt.minisig')).toString('base64'),
+  }));
+  const result=verifyDirectory(f.output,verify);
+  assert.equal(result.schema,'ax-engine.gui-inventory.v1');
+  assert.ok(!releaseObjects(f.output,result).some(x=>x.key.endsWith('appcast.xml')));
 });

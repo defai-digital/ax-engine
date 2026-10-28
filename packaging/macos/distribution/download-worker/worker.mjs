@@ -1,6 +1,6 @@
 // Adapted from AX Code Desktop download gateway; isolated AX Engine channel.
 const prefix = "/ax-engine-desktop/"
-const rootFiles = new Set(["install", "latest.json"])
+const rootFiles = new Set(["install", "latest.json", "appcast.xml"])
 
 export function objectKey(url) {
   if (url.hostname !== "download.automatosx.com" || !url.pathname.startsWith(prefix)) return null
@@ -29,11 +29,28 @@ export default {
     const key = objectKey(new URL(request.url))
     if (!key) return error("Not found", 404)
     if (env.PUBLIC_RELEASE_ENABLED !== "true") return error("AX Engine GUI public release is not enabled", 503)
+    // Resolve the feed through the same atomic pointer as curl upgrades. No
+    // second mutable feed can advance during a failed release cutover.
+    if (key === "appcast.xml") {
+      const pointer = await env.ENGINE_GUI_RELEASES.get("latest.json")
+      if (!pointer || pointer.size > 16384) return error("Update feed unavailable", 503)
+      try {
+        const envelope = await pointer.json()
+        const payload = atob(envelope.payload)
+        const match = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\n[a-f0-9]{40}\n[a-f0-9]{64}\n[a-f0-9]{64}\n$/.exec(payload)
+        if (!match) return error("Invalid update pointer", 503)
+        const feed = `releases/download/v${match[1]}/appcast.xml`
+        if (!await env.ENGINE_GUI_RELEASES.head(feed)) return error("Update feed unavailable", 503)
+        return new Response(null, {status:302, headers:{
+          Location:`https://download.automatosx.com${prefix}${feed}`, "Cache-Control":"no-store",
+        }})
+      } catch { return error("Invalid update pointer", 503) }
+    }
     const metadata = await env.ENGINE_GUI_RELEASES.head(key)
     if (!metadata) return error("Not found", 404)
     const headers = new Headers()
     metadata.writeHttpMetadata(headers)
-    headers.set("Content-Type", key.endsWith(".json") ? "application/json" : key.endsWith(".dmg") ? "application/x-apple-diskimage" : "text/plain; charset=utf-8")
+    headers.set("Content-Type", key.endsWith(".xml") ? "application/rss+xml; charset=utf-8" : key.endsWith(".json") ? "application/json" : key.endsWith(".dmg") ? "application/x-apple-diskimage" : "text/plain; charset=utf-8")
     headers.set("ETag", metadata.httpEtag)
     headers.set("X-Content-Type-Options", "nosniff")
     headers.set(

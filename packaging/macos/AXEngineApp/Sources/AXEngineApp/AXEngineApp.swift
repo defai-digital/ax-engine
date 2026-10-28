@@ -19,6 +19,7 @@ final class ApplicationModel: ObservableObject {
     @Published var hostMonitoringEnabled = UserDefaults.standard.bool(forKey: "hostMonitoringEnabled") {
         didSet { UserDefaults.standard.set(hostMonitoringEnabled, forKey: "hostMonitoringEnabled") }
     }
+    let updates = AppUpdateController()
     let hostMonitor = HostMonitor()
     let storageMonitor = StorageMonitor()
     let runtime = RuntimeController()
@@ -32,6 +33,14 @@ final class ApplicationModel: ObservableObject {
         settingsDraft = settings
     }
     var hasSettingsChanges: Bool { settingsDraft != settings }
+    var quitWarning: String? {
+        let active = runtime.owned || runtime.busy || models.downloading || models.removing || chat.generating
+        guard active || hasSettingsChanges else { return nil }
+        var messages: [String] = []
+        if active { messages.append("App-owned inference, downloads and model operations will stop. Attached services will keep running.") }
+        if hasSettingsChanges { messages.append("Unsaved settings will be discarded.") }
+        return messages.joined(separator: "\n\n")
+    }
     func saveSettings() -> Bool {
         do {
             try settingsDraft.save(to: settingsURL)
@@ -71,26 +80,24 @@ final class ApplicationModel: ObservableObject {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: ApplicationModel?
-    private var quitting = false
+    private let quitCoordinator = AppQuitCoordinator()
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !quitting, let model else { return .terminateNow }
-        if model.runtime.owned || model.models.downloading || model.models.removing || model.chat.generating {
-            let alert = NSAlert()
-            alert.messageText = "Quit AX Engine?"
-            alert.informativeText = "App-owned inference, downloads and model operations will stop. Attached services will keep running."
-            alert.addButton(withTitle: "Stop and Quit"); alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
-        }
-        quitting = true
-        Task {
-            await model.hostMonitor.shutdown()
-            await model.storageMonitor.shutdown()
-            await model.chat.stop()
-            await model.models.shutdown()
-            await model.runtime.stop()
-            sender.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
+        guard let model else { return .terminateNow }
+        return quitCoordinator.request(
+            needsConfirmation: model.quitWarning != nil,
+            confirm: {
+                let alert = NSAlert()
+                alert.messageText = "Quit AX Engine?"
+                alert.informativeText = model.quitWarning ?? ""
+                alert.addButton(withTitle: "Stop and Quit"); alert.addButton(withTitle: "Cancel")
+                return alert.runModal() == .alertFirstButtonReturn
+            }, shutdown: {
+                await model.hostMonitor.shutdown()
+                await model.storageMonitor.shutdown()
+                await model.chat.stop()
+                await model.models.shutdown()
+                await model.runtime.stop()
+            }, reply: { sender.reply(toApplicationShouldTerminate: true) })
     }
 }
 
@@ -105,6 +112,7 @@ struct AXEngineApplication: App {
                 .frame(minWidth: 940, minHeight: 680)
                 .onAppear {
                     delegate.model = model
+                    model.updates.start()
                     if let logo = Brand.logo { NSApplication.shared.applicationIconImage = logo }
                 }
         }
@@ -112,6 +120,9 @@ struct AXEngineApplication: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About AX Engine") { showAbout() }
+            }
+            CommandGroup(after: .appInfo) {
+                CheckForAppUpdates(updates: model.updates)
             }
             ThirdPartyNoticeCommands()
             SettingsNavigationCommands(model: model)

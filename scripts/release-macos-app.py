@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,9 @@ IDENTITY = "CCA480038EE61E7CB9DF9FAACD842EC06949CD79"
 BUNDLE_ID = "com.automatosx.ax-engine"
 MIN_MACOS = "26.2"
 RUNTIME = Path("Contents/Helpers/AXEngineRuntime.bundle")
+_UPDATER_SPEC = importlib.util.spec_from_file_location("embed_updater", ROOT / "scripts/embed-macos-updater.py")
+_UPDATER = importlib.util.module_from_spec(_UPDATER_SPEC)
+_UPDATER_SPEC.loader.exec_module(_UPDATER)
 MACHO = {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 
 
@@ -65,6 +69,15 @@ def identity(app: Path, version: str, commit: str | None = None) -> dict:
             info.get("CFBundleVersion") == version, "Unexpected app version")
     require(info.get("LSMinimumSystemVersion") == MIN_MACOS, "Unexpected minimum macOS")
     require(not any(k.startswith("AXEngineDevelopment") for k in info), "Development paths in app")
+    if "AXEngineDistributionBuild" in info:
+        config = json.loads((ROOT / 'packaging/macos/sparkle.json').read_text())
+        require(info['AXEngineDistributionBuild'] is True and
+                info.get('SUFeedURL') == config['feedURL'] and
+                info.get('SUPublicEDKey') == config['publicKey'] and
+                info.get('SUAllowsAutomaticUpdates') is False and
+                info.get('SUEnableAutomaticChecks') is False and
+                info.get('SUEnableSystemProfiling') is False, 'Invalid updater configuration')
+        require((app / _UPDATER.FRAMEWORK).is_dir(), 'Missing updater framework')
     if commit is not None:
         require(info.get("AXEngineSourceCommit") == commit, "App source commit mismatch")
     return info
@@ -74,6 +87,11 @@ def signing_targets(app: Path) -> list[Path]:
     expected = [app / "Contents/MacOS" / name for name in ("AXEngineApp", "AXEngineModelScanner")]
     expected += [app / RUNTIME / "Contents/MacOS" / name for name in
                  ("ax-engine", "ax-engine-server", "ax-engine-bench", "libmlx.dylib", "libjaccl.dylib")]
+    framework = app / _UPDATER.FRAMEWORK
+    # Historical pre-updater candidates remain verifiable. New builds always embed it.
+    updater_binaries = [framework / name for name in _UPDATER.SPARKLE_BINARIES] if framework.exists() else []
+    updater_bundles = [framework / name for name in _UPDATER.SPARKLE_BUNDLES] if framework.exists() else []
+    expected += updater_binaries
     found = []
     for file in app.rglob("*"):
         if file.is_file() and not file.is_symlink():
@@ -81,7 +99,7 @@ def signing_targets(app: Path) -> list[Path]:
                 if stream.read(4) in MACHO:
                     found.append(file)
     require(set(found) == set(expected), "Missing or unexpected native code in app")
-    return expected + [app / RUNTIME, app]
+    return expected + updater_bundles + [app / RUNTIME, app]
 
 
 def validate_native_platform(target: Path) -> None:

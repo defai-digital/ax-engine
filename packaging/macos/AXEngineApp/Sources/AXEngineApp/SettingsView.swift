@@ -3,7 +3,7 @@ import AppKit
 import AXEngineAppCore
 
 private enum SettingsPane: Hashable {
-    case generation, runtime, privacy, licenses
+    case generation, runtime, updates, privacy, licenses
     var editable: Bool { self == .generation || self == .runtime }
 }
 
@@ -32,6 +32,9 @@ struct SettingsView: View {
                 }
                 Tab("Runtime", systemImage: "cpu", value: SettingsPane.runtime) {
                     settingsForm { runtimeSection }
+                }
+                Tab("Updates", systemImage: "arrow.down.circle", value: SettingsPane.updates) {
+                    settingsForm { AppUpdatesSettings(updates: model.updates) }
                 }
                 Tab("Privacy", systemImage: "hand.raised", value: SettingsPane.privacy) {
                     settingsForm { privacySection }
@@ -139,6 +142,8 @@ struct SettingsView: View {
                 .font(.headline)
             Text("This app does not upload your conversations or usage analytics to AutomatosX. Playground sends requests to the AX Engine service on this Mac.")
             Text("Settings and conversations are saved locally. Use Clear in Playground to remove the saved conversation. Activity history stays in memory and resets when the app quits.")
+                .foregroundStyle(.secondary)
+            Text("Optional update checks connect to the AX Engine release service. Update downloads include version and platform requests, but no conversations or model data.")
                 .foregroundStyle(.secondary)
             Text("Model downloads connect to Hugging Face and its delivery hosts. Downloads and external links are subject to those services’ privacy practices.")
                 .foregroundStyle(.secondary)

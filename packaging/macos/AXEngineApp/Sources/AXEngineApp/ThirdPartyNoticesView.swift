@@ -26,6 +26,10 @@ struct ThirdPartyNoticesView: View {
 struct ThirdPartyCreditsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("App updates").font(.headline)
+            Text("Sparkle provides secure macOS application updates under its BSD license.")
+            Link("Sparkle source repository", destination: URL(string: "https://github.com/sparkle-project/Sparkle")!)
+            Button("Read Sparkle License") { openResource("SPARKLE-LICENSE") }
             Text("Adapted interface components").font(.headline)
             Text("Selected interface and support components are adapted from MTPLX by Youssof Altoukhi, Copyright 2026, under Apache-2.0. AX Engine provides the inference runtime.")
             Link("MTPLX source repository", destination: URL(string: "https://github.com/youssofal/mtplx")!)

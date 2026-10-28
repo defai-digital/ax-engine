@@ -2,6 +2,7 @@
 // Release contracts follow AX Code Desktop's signed-inventory workflow.
 // AX Engine has a separate channel and an atomic signed latest envelope.
 import fs from 'node:fs';
+import {signArchive, appcast, verifyAppcast} from './sparkle.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -40,7 +41,8 @@ export function validIdentity(version, commit) {
   check(/^[a-f0-9]{40}$/.test(commit), 'Invalid source commit');
 }
 const dmgName = version => `AX-Engine-${version}-mac-arm64.dmg`;
-const required = version => [dmgName(version), 'notarization.json', 'release.tsv', 'install', 'ax-engine-gui.rb'];
+const required = (version, schema) => [dmgName(version), 'notarization.json', 'release.tsv', 'install', 'ax-engine-gui.rb',
+  ...(schema === 'ax-engine.gui-inventory.v2' ? ['appcast.xml'] : [])];
 export function manifest(inventory) {
   const asset = inventory.assets.find(x => x.name === dmgName(inventory.version));
   check(asset, 'Missing installer');
@@ -77,30 +79,33 @@ export function prepare(source, output, options = {}) {
   fs.copyFileSync(path.join(source, 'notarization.json'), path.join(output, 'notarization.json'));
   fs.copyFileSync(path.join(DIRECTORY, 'install'), path.join(output, 'install'));
   fs.writeFileSync(path.join(output, 'ax-engine-gui.rb'), cask(receipt.version, receipt.sha256));
-  const inventory = {schema: 'ax-engine.gui-inventory.v1', version: receipt.version, commit: receipt.commit,
+  const archiveSignature = (options.signSparkle ?? signArchive)(path.join(output, receipt.filename));
+  fs.writeFileSync(path.join(output, 'appcast.xml'), appcast(receipt.version, image.length, archiveSignature));
+  verifyAppcast(bytes(path.join(output, 'appcast.xml')).toString(), receipt.version, image, options.sparklePublicKey);
+  const inventory = {schema: 'ax-engine.gui-inventory.v2', version: receipt.version, commit: receipt.commit,
     assets: [{name: receipt.filename, size: image.length, sha256: hash(image)}]};
   fs.writeFileSync(path.join(output, 'release.tsv'), manifest(inventory));
-  inventory.assets = required(receipt.version).sort().map(name => {
+  inventory.assets = required(receipt.version, inventory.schema).sort().map(name => {
     const content = bytes(path.join(output, name));
     return {name, size: content.length, sha256: hash(content)};
   });
   fs.writeFileSync(path.join(output, 'inventory.json'), JSON.stringify(inventory, null, 2) + '\n');
   fs.writeFileSync(path.join(output, 'release-ready.txt'), ready(inventory, hash(bytes(path.join(output, 'inventory.json')))));
-  for (const name of [...required(receipt.version), 'inventory.json', 'release-ready.txt']) signer(path.join(output, name));
+  for (const name of [...required(receipt.version, inventory.schema), 'inventory.json', 'release-ready.txt']) signer(path.join(output, name));
   fs.writeFileSync(path.join(output, 'latest.json'), JSON.stringify({
     payload: bytes(path.join(output, 'release-ready.txt')).toString('base64'),
     signature: bytes(path.join(output, 'release-ready.txt.minisig')).toString('base64'),
   }) + '\n');
-  return verifyDirectory(output, options.verify ?? signature);
+  return verifyDirectory(output, options.verify ?? signature, options.sparklePublicKey);
 }
-export function verifyDirectory(source, verify = signature) {
+export function verifyDirectory(source, verify = signature, sparklePublicKey) {
   const file = path.join(source, 'inventory.json');
   verify(file);
   check(bytes(file).length < 65536, 'Oversized inventory');
   const inventory = JSON.parse(bytes(file));
-  check(inventory.schema === 'ax-engine.gui-inventory.v1', 'Invalid inventory schema');
+  check(['ax-engine.gui-inventory.v1', 'ax-engine.gui-inventory.v2'].includes(inventory.schema), 'Invalid inventory schema');
   validIdentity(inventory.version, inventory.commit);
-  const names = required(inventory.version);
+  const names = required(inventory.version, inventory.schema);
   check(Array.isArray(inventory.assets) && inventory.assets.length === names.length, 'Incomplete inventory');
   const seen = new Set();
   for (const asset of inventory.assets) {
@@ -117,6 +122,10 @@ export function verifyDirectory(source, verify = signature) {
   check(receipt.schema === 'ax-engine.gui-notarization.v1' && receipt.version === inventory.version && receipt.commit === inventory.commit &&
     receipt.filename === image.name && receipt.sha256 === image.sha256 && receipt.size === image.size &&
     receipt.team === 'N5ZUZDUJS6' && receipt.bundleId === 'com.automatosx.ax-engine', 'Notarization binding mismatch');
+  if (inventory.schema === 'ax-engine.gui-inventory.v2') {
+    verifyAppcast(bytes(path.join(source, 'appcast.xml')).toString(), inventory.version,
+      bytes(path.join(source, image.name)), sparklePublicKey);
+  }
   const digest = hash(bytes(file));
   const expected = ready(inventory, digest);
   check(bytes(path.join(source, 'release-ready.txt')).toString() === expected, 'Readiness mismatch');
@@ -224,6 +233,10 @@ export async function publishObjects(objects, inventory, store, publicRead, veri
   await store.write(latest.key, latest.body);
   try {
     check((await store.read(latest.key))?.equals(latest.body) && (await publicRead(latest.key))?.equals(latest.body), 'Latest readback mismatch');
+    if (inventory.schema === 'ax-engine.gui-inventory.v2') {
+      const feed = objects.find(x => x.key.endsWith('/appcast.xml'));
+      check((await publicRead('appcast.xml'))?.equals(feed.body), 'Sparkle feed readback mismatch');
+    }
   } catch (error) {
     // Restore only our pointer; never overwrite another publisher's newer state.
     if (old && (await store.read(latest.key))?.equals(latest.body)) await store.write(latest.key, old);
@@ -260,6 +273,9 @@ async function main() {
       } finally { fs.unlinkSync(path.join(lock, 'owner.json')); fs.rmdirSync(lock); }
     } else if (command === 'verify-public') {
       for (const object of objects) check((await publicRead(object.key)).equals(object.body), `Public bytes differ: ${object.key}`);
+      if (inventory.schema === 'ax-engine.gui-inventory.v2') {
+        check((await publicRead('appcast.xml')).equals(bytes(path.join(source, 'appcast.xml'))), 'Public Sparkle feed differs');
+      }
     }
     console.log(`GUI ${inventory.version} ${command} complete (${inventory.commit}).`);
   }

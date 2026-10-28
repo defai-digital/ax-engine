@@ -30,6 +30,7 @@ RUNTIME_BUNDLE="$APP/Contents/Helpers/AXEngineRuntime.bundle"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/AXEngineApp" "$APP/Contents/MacOS/AXEngineApp"
 cp "$BIN/AXEngineModelScanner" "$APP/Contents/MacOS/AXEngineModelScanner"
+python3 "$ROOT/scripts/embed-macos-updater.py" "$APP" "$PACKAGE/.build/artifacts/sparkle/Sparkle"
 codesign --force --sign - "$APP/Contents/MacOS/AXEngineModelScanner"
 # Always regenerate from the untouched source master; never from a masked icon.
 "${AX_APP_ICON_PYTHON:-python3}" "$PACKAGE/Scripts/generate_icon.py" --output "$APP/Contents/Resources"
@@ -43,8 +44,9 @@ with open(sys.argv[1], 'rb') as source:
 PY
 )"
 python3 - "$APP/Contents/Info.plist" "$VERSION" "$ROOT" "$DISTRIBUTION" <<'PY'
-import os, plistlib, sys
+import json, os, plistlib, sys
 from pathlib import Path
+config = json.loads((Path(sys.argv[3]) / "packaging/macos/sparkle.json").read_text())
 development = {}
 if sys.argv[4] != "true":
     root = Path(sys.argv[3])
@@ -64,6 +66,10 @@ with open(sys.argv[1], 'wb') as dest:
         'CFBundleShortVersionString': sys.argv[2], 'CFBundleVersion': sys.argv[2],
         'CFBundleIconFile': 'AppIcon', 'LSMinimumSystemVersion': '26.2',
         'NSHighResolutionCapable': True,
+        'AXEngineDistributionBuild': sys.argv[4] == 'true',
+        'SUFeedURL': config['feedURL'], 'SUPublicEDKey': config['publicKey'],
+        'SUEnableAutomaticChecks': False, 'SUAllowsAutomaticUpdates': False,
+        'SUAutomaticallyUpdate': False, 'SUEnableSystemProfiling': False,
         'NSHumanReadableCopyright': 'AX Engine contributors.',
         'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
         **development,

@@ -133,8 +133,9 @@ and never caches the mutable root pointer or installer.
 The local canonical deployment wrapper exposes these tools through
 `.internal/deploy/deploy --gui`: `build`, `package`, `verify`,
 `prepare-downloads`, `verify-downloads`, `gateway`, `publish`, and `verify-public`.
-CLI/PyPI/formula publication remains unchanged. Sparkle automatic updates are a
-separate future feature; this channel supports manual DMG/curl/Cask upgrades.
+CLI/PyPI/formula publication remains unchanged. Native Sparkle updates use the
+same release channel; see [macOS app updates](MACOS-UPDATES.md) for first-release
+activation, signing and validation. Manual DMG/curl/Cask upgrades remain supported.
 
 ## Validation
 
