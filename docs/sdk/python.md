@@ -63,7 +63,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 
 Install `mlx-lm` first, or install the current Python package with the download
 extra:
-`python -m pip install --upgrade "ax-engine[download]>=7.10.0,<8"`.
+`python -m pip install --upgrade "ax-engine[download]>=8.0.0,<9"`.
 
 The source-tree script uses the same `mlx-lm` download path and can emit a
 machine-readable summary for automation:
@@ -105,7 +105,7 @@ Use `python3.13` explicitly, not the macOS-bundled `python3` (3.9):
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine>=7.10.0,<8"
+python -m pip install --upgrade "ax-engine>=8.0.0,<9"
 ```
 
 If you already have a virtual environment using an older Python, create a

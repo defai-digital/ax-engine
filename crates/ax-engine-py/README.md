@@ -18,7 +18,7 @@ yet install on 3.15 because MLX has no 3.15 wheels:
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.10.0,<8"
+python -m pip install --upgrade "ax-engine[download]>=8.0.0,<9"
 ax-engine doctor
 ```
 
@@ -28,7 +28,7 @@ Python version instead:
 ```bash
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=7.10.0,<8"
+uv pip install --upgrade "ax-engine[download]>=8.0.0,<9"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -146,8 +146,8 @@ Then point any OpenAI client at `http://127.0.0.1:31418`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install --upgrade "ax-engine[openai]>=7.10.0,<8"
-python3 -m pip install --upgrade "ax-engine[multimodal]>=7.10.0,<8"
+python3 -m pip install --upgrade "ax-engine[openai]>=8.0.0,<9"
+python3 -m pip install --upgrade "ax-engine[multimodal]>=8.0.0,<9"
 ```
 
 ## Requirements
