@@ -1,8 +1,8 @@
 {
   "algorithm": "sha256",
   "files": {
-    "baseline-grammar.log": "2098bb925238a0dbd9136f4f0fb3374f2c64db2eafd62fafdca60da9330efea5",
-    "fixed-grammar.log": "eb981a44227a80f29dd914df3a050e71025652c962132e3649676a2f3fb9f5eb",
+    "baseline-grammar.txt": "2098bb925238a0dbd9136f4f0fb3374f2c64db2eafd62fafdca60da9330efea5",
+    "fixed-grammar.txt": "eb981a44227a80f29dd914df3a050e71025652c962132e3649676a2f3fb9f5eb",
     "insufficient_budget.json": "d6025741f7529c1c512051bb1a5d8b7d2783dfb5e93e4c4fea6c1831fe26e281",
     "json_budget.json": "21650614a8eb45d4b4f0a07bd5f19ec2da56a58cc4621c76cc44f397af222b45",
     "memory-after.json": "6d2e5c51fd3bd4b9b8cc1c230e28f1ead1508124a3382c1315dd51c7ad220e79",

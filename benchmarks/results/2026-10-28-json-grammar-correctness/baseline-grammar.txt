@@ -1,0 +1,38 @@
+   Compiling ax-engine-core v7.10.0 (<workspace>/crates/ax-engine-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.41s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_core-f97b0c4e64a5ef51)
+
+running 12 tests
+test grammar::json::tests::additional_key_cache_keys_preserve_declared_and_utf8_continuations ... ok
+test grammar::json::tests::any_object_accepts_valid_json_objects_only ... ok
+test grammar::json::tests::free_text_shortcut_reports_remaining_characters ... ok
+test grammar::json::tests::literals_and_numbers_end_on_the_next_delimiter ... ok
+test grammar::json::tests::long_literals_preserve_exact_positions ... 
+thread 'grammar::json::tests::long_literals_preserve_exact_positions' (29795971) panicked at crates/ax-engine-core/src/grammar/json.rs:986:22:
+attempt to add with overflow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test grammar::json::tests::long_property_names_preserve_schema_identity ... 
+thread 'grammar::json::tests::long_property_names_preserve_schema_identity' (29795985) panicked at crates/ax-engine-core/src/grammar/json.rs:1329:13:
+assertion failed: !accepts(&grammar, &format!("{{\"{name}\":false}}"))
+FAILED
+test grammar::json::tests::repeated_declared_properties_keep_their_schema ... 
+thread 'grammar::json::tests::repeated_declared_properties_keep_their_schema' (29795986) panicked at crates/ax-engine-core/src/grammar/json.rs:1302:13:
+{"x":1,"x":"wrong"}
+FAILED
+test grammar::json::tests::schema_enforces_types_required_and_closed_objects ... ok
+test grammar::json::tests::strings_and_keys_reject_invalid_utf8_at_the_first_invalid_byte ... ok
+test grammar::json::tests::unenforceable_schemas_are_refused ... ok
+test grammar::json::tests::unicode_escapes_require_paired_surrogates_and_count_scalar_values ... ok
+test grammar::json::tests::whitespace_runs_are_bounded ... ok
+
+failures:
+
+failures:
+    grammar::json::tests::long_literals_preserve_exact_positions
+    grammar::json::tests::long_property_names_preserve_schema_identity
+    grammar::json::tests::repeated_declared_properties_keep_their_schema
+
+test result: FAILED. 9 passed; 3 failed; 0 ignored; 0 measured; 748 filtered out; finished in 0.11s
+
+error: test failed, to rerun pass `-p ax-engine-core --lib`
