@@ -1185,6 +1185,18 @@ impl EngineCore {
                     .validate_prefix_reuse(item.request_id, lookup.matched_token_count)?;
                 self.kv_manager
                     .validate_prefix_share(item.request_id, &lookup)?;
+                let record = self
+                    .request_manager
+                    .record(item.request_id)
+                    .ok_or(RequestManagerError::UnknownRequest(item.request_id))?;
+                if !self.runner.prepare_prefix_reuse(
+                    record,
+                    lookup.matched_token_count,
+                    self.kv_manager.config().block_size_tokens,
+                    sampling_params_allow_deterministic_argmax_fast_path(&record.sampling_params),
+                ) {
+                    continue;
+                }
                 pending_prefix_reuse.push((item.request_id, lookup));
             }
 
@@ -5513,6 +5525,73 @@ mod tests {
         assert_eq!(item.input_token_slice, vec![7; 8]);
         assert_eq!(item.position_range.start, 0);
         assert_eq!(item.prefix_tokens_reused, 0);
+    }
+
+    #[test]
+    fn runner_admits_only_available_complete_prefixes_before_rescheduling() {
+        #[derive(Debug)]
+        struct ExactPrefixRunner {
+            available: bool,
+            admitted: Arc<Mutex<Vec<(usize, u32)>>>,
+        }
+        impl ExecutionRunner for ExactPrefixRunner {
+            fn run(&self, input: RunnerInput) -> RunnerOutput {
+                DeterministicRunner.run(input)
+            }
+            fn prepare_prefix_reuse(
+                &self,
+                request: &crate::request::RequestRecord,
+                matched_tokens: u32,
+                _block_size_tokens: u32,
+                _deterministic_output: bool,
+            ) -> bool {
+                self.admitted
+                    .lock()
+                    .unwrap()
+                    .push((request.prompt_tokens.len(), matched_tokens));
+                self.available && matched_tokens as usize == request.prompt_tokens.len()
+            }
+        }
+        for (available, extend) in [(false, false), (true, true), (true, false)] {
+            let admitted = Arc::new(Mutex::new(Vec::new()));
+            let runner = ExactPrefixRunner {
+                available,
+                admitted: Arc::clone(&admitted),
+            };
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 4, 16),
+                runner,
+                DeterministicSampler,
+            );
+            let mut prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
+            engine
+                .submit(make_submission_with_prompt(1, 1, prompt.clone(), 1))
+                .unwrap();
+            engine.step(16, true).unwrap();
+            if extend {
+                prompt.push(18);
+            }
+            engine
+                .submit(make_submission_with_prompt(2, 2, prompt.clone(), 1))
+                .unwrap();
+            let outcome = engine.step(16, true).unwrap();
+            let batch = outcome.schedule_plan.execution_batch.as_ref().unwrap();
+            let item = batch
+                .items
+                .iter()
+                .find(|item| item.request_id == RequestId(2))
+                .unwrap();
+            if available && !extend {
+                assert_eq!(item.mode, ExecutionMode::Decode);
+                assert_eq!(item.prefix_tokens_reused, 8);
+            } else {
+                assert_eq!(item.mode, ExecutionMode::Prefill);
+                assert_eq!(item.position_range.start, 0);
+                assert_eq!(item.input_token_slice, prompt);
+                assert_eq!(item.prefix_tokens_reused, 0);
+            }
+            assert!(admitted.lock().unwrap().contains(&(prompt.len(), 8)));
+        }
     }
 
     #[test]

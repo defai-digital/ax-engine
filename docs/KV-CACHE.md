@@ -100,6 +100,14 @@ not refreshed.
    completed. A cache hit signals the MLX runner to restore GPU state from its
    own snapshot cache.
 
+Direct Flash Next (`qwen4_exp`, MTP off) admits only complete text-prompt
+snapshots with a compatible cached greedy first token. Admission retains the
+snapshot until execution, so an eviction cannot turn that hit into a different
+prefill replay. Partial matches, unavailable snapshots, sampled or constrained
+requests, and semantic-cut hints use cold prefill. This preserves repeatability
+across interleaved prompt lengths; partial-prefix acceleration is unavailable
+on this path. The experimental MTP path retains its separate cache policy.
+
 ### Eviction policy
 
 `select_cached_block_eviction_candidate` uses a four-tier O(N) scan:

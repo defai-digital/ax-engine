@@ -1603,6 +1603,10 @@ pub struct MlxRunner {
     /// stale KV after an in-place checkpoint replacement).
     artifact_fingerprint: Option<String>,
     states: Mutex<HashMap<RequestId, RequestState>>,
+    /// Full direct Flash Next snapshots admitted before scheduler reuse.
+    /// Retaining the Arc prevents eviction from turning a hit into a replay
+    /// with a different prefill partition between admission and execution.
+    prepared_prefixes: Mutex<HashMap<RequestId, Arc<MlxPrefixSnapshot>>>,
     /// Whether this model can use the experimental batched dense-decode path
     /// (computed once from the loaded model capabilities). Gates the `run()`
     /// interception together with `batched_decode_enabled()`.
@@ -3366,6 +3370,7 @@ impl MlxRunner {
                 crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
             ),
             states: Mutex::new(HashMap::new()),
+            prepared_prefixes: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
             batched_decode_model_rejections,
             batched_session,
@@ -4880,6 +4885,45 @@ fn restore_value_decision(
 }
 
 impl ExecutionRunner for MlxRunner {
+    fn prepare_prefix_reuse(
+        &self,
+        request: &ax_engine_core::RequestRecord,
+        matched_tokens: u32,
+        block_size_tokens: u32,
+        deterministic_output: bool,
+    ) -> bool {
+        if !self.flash_next_exact_prefix_only() {
+            return true;
+        }
+        if matched_tokens as usize != request.prompt_tokens.len()
+            || request.processed_prompt_tokens != 0
+            || !deterministic_output
+            || !request.multimodal_inputs.is_empty()
+            || !request.prefill_hints.is_empty()
+            || crate::fastpath::prefix_semantic_cuts_enabled()
+            || crate::fastpath::prefix_restore_value_enabled()
+        {
+            return false;
+        }
+        let key = self.prefix_cache_key_with_media(
+            &request.model_id.0,
+            block_size_tokens,
+            &request.prompt_tokens,
+            "",
+        );
+        let snapshot = self.prefix_cache.lock().get(&key, &request.prompt_tokens);
+        let Some(snapshot) = snapshot.filter(|snapshot| {
+            snapshot.token_count == request.prompt_tokens.len()
+                && snapshot.greedy_prefill_output_token.is_some()
+        }) else {
+            return false;
+        };
+        self.prepared_prefixes
+            .lock()
+            .insert(request.request_id, snapshot);
+        true
+    }
+
     fn checkpoint_request(
         &self,
         request_id: ax_engine_core::RequestId,
@@ -5887,6 +5931,7 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn release_request_state(&self, request_id: RequestId) {
+        self.prepared_prefixes.lock().remove(&request_id);
         // Terminal cleanup for requests that never reach a runner-observed stop
         // (cancelled while waiting/blocked, or cancelled by the engine after a
         // step reinserted state). Without this the per-request KV cache, MTP,
@@ -7287,6 +7332,11 @@ impl MlxRunner {
         let mut prefix_cache =
             if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
                 MlxPrefixCacheTelemetry::default()
+            } else if self.flash_next_exact_prefix_only() {
+                match self.restore_prepared_flash_prefix(&mut state, item, ctx, sampling) {
+                    Ok(telemetry) => telemetry,
+                    Err(error) => return errored_item_run(item.request_id, error),
+                }
             } else {
                 self.restore_reused_prefix_state(
                     &mut state,
@@ -9324,6 +9374,51 @@ impl MlxRunner {
                 "snapshot family does not match the model".into(),
             )),
         }
+    }
+
+    fn flash_next_exact_prefix_only(&self) -> bool {
+        self.cfg.model_family == "qwen4_exp" && !self.mtp_requested
+    }
+
+    fn restore_prepared_flash_prefix(
+        &self,
+        state: &mut RequestState,
+        item: &ax_engine_core::ExecutionItem,
+        ctx: Option<&RunnerRequestContext>,
+        sampling: MlxSamplingParams,
+    ) -> Result<MlxPrefixCacheTelemetry, String> {
+        if item.reused_prefix_token_slice.is_empty() {
+            self.prepared_prefixes.lock().remove(&item.request_id);
+            return Ok(MlxPrefixCacheTelemetry::default());
+        }
+        if state.cache.seq_len() != 0 {
+            // Decode's slice includes its feed token; the live cache can be
+            // one token behind it. Only an empty cache needs prefix restore.
+            return Ok(MlxPrefixCacheTelemetry::default());
+        }
+        let snapshot = self.prepared_prefixes.lock().remove(&item.request_id);
+        let Some(snapshot) = snapshot else {
+            return Err("Flash Next prefix was not admitted before scheduling".into());
+        };
+        if snapshot.tokens != item.reused_prefix_token_slice
+            || ctx.is_none_or(|ctx| ctx.prompt_len as usize != snapshot.token_count)
+            || !prefill_output_token_cacheable(ctx, sampling)
+        {
+            return Err("Flash Next admitted prefix does not match the request".into());
+        }
+        let mut cache = snapshot.rehydrate_cache().map_err(|e| e.to_string())?;
+        self.verify_restored_prefix_snapshot(&mut cache, snapshot.token_count)
+            .map_err(|e| e.to_string())?;
+        state.cache = cache;
+        state.prompt_prefix_tokens = snapshot.tokens.clone();
+        state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+        let mut telemetry = MlxPrefixCacheTelemetry {
+            hits: 1,
+            reused_tokens: saturating_u32(snapshot.token_count),
+            ..MlxPrefixCacheTelemetry::default()
+        };
+        telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+        Ok(telemetry)
     }
 
     #[allow(clippy::too_many_arguments)]

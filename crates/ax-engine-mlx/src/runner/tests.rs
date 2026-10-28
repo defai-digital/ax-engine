@@ -11,6 +11,107 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn flash_next_prefix_admission_pins_only_complete_greedy_snapshots() {
+    use ax_engine_core::{
+        BlockTable, CacheGroupId, ModelId, RequestRecord, RequestSubmission, SequenceNo,
+    };
+
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
+    // Admission depends on family and snapshot identity, not tensor execution.
+    runner.cfg.model_family = "qwen4_exp".into();
+    runner.mtp_requested = false;
+    let mut request = RequestRecord::new(
+        RequestSubmission {
+            request_id: RequestId(801),
+            model_id: ModelId("flash-test".into()),
+            input_tokens: vec![1, 2, 3, 4],
+            multimodal_inputs: Default::default(),
+            sampling_params: Default::default(),
+            max_output_tokens: 4,
+            arrival_sequence: SequenceNo(1),
+            metadata: None,
+            prefill_hints: Default::default(),
+        },
+        BlockTable::empty(CacheGroupId(1)),
+    );
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    let key = runner.prefix_cache_key_with_media("flash-test", 4, &request.prompt_tokens, "");
+    runner.prefix_cache.lock().insert(
+        key.clone(),
+        MlxPrefixSnapshot::from_shared_payload(
+            Arc::from([0u8]),
+            request.prompt_tokens.clone(),
+            4,
+            Some(5),
+            None,
+        ),
+    );
+    assert!(!runner.prepare_prefix_reuse(&request, 2, 4, true));
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, false));
+    request.prefill_hints.semantic_cut_tokens.push(2);
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    request.prefill_hints.semantic_cut_tokens.clear();
+    assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
+    assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
+    assert_eq!(runner.prepared_prefixes.lock().len(), 1);
+    assert_eq!(runner.prefix_cache.lock().reclaim_unborrowed(), 0);
+    let mut state = RequestState::new(1, 801, None);
+    let mut item = ax_engine_core::ExecutionItem {
+        request_id: request.request_id,
+        mode: ExecutionMode::Prefill,
+        planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+        input_token_slice: request.prompt_tokens.clone(),
+        reused_prefix_token_slice: Vec::new(),
+        position_range: PositionRange {
+            start: 0,
+            end_exclusive: 4,
+        },
+        scheduled_token_count: 4,
+        block_table_ref: request.request_id,
+        prefix_tokens_reused: 0,
+        prefix_blocks_reused: 0,
+    };
+    // A cold replan releases its earlier admission instead of treating the
+    // unused reservation as a malformed restore.
+    runner
+        .restore_prepared_flash_prefix(&mut state, &item, None, MlxSamplingParams::greedy())
+        .unwrap();
+    assert!(runner.prepared_prefixes.lock().is_empty());
+    item.reused_prefix_token_slice = request.prompt_tokens.clone();
+    assert!(
+        runner
+            .restore_prepared_flash_prefix(&mut state, &item, None, MlxSamplingParams::greedy())
+            .unwrap_err()
+            .contains("not admitted")
+    );
+    // The decode slice includes the next feed token, which is not in KV yet.
+    // It must not be mistaken for a failed snapshot restore.
+    state.cache.advance(3);
+    item.mode = ExecutionMode::Decode;
+    item.input_token_slice = vec![4];
+    runner
+        .restore_prepared_flash_prefix(&mut state, &item, None, MlxSamplingParams::greedy())
+        .unwrap();
+    assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
+    runner.release_request_state(request.request_id);
+    assert!(runner.prepared_prefixes.lock().is_empty());
+    assert_eq!(runner.prefix_cache.lock().reclaim_unborrowed(), 1);
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    runner.prefix_cache.lock().insert(
+        key,
+        MlxPrefixSnapshot::from_shared_payload(
+            Arc::from([0u8]),
+            request.prompt_tokens.clone(),
+            4,
+            None,
+            None,
+        ),
+    );
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    let _ = fs::remove_dir_all(artifacts.root_dir());
+}
+
+#[test]
 fn request_states_share_only_the_runner_owned_fa_pool() {
     let config = FaBlockPoolConfig {
         block_size_tokens: 4,
