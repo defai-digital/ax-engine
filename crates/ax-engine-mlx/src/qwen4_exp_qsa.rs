@@ -7755,6 +7755,20 @@ mod tests {
     }
 
     #[test]
+    fn qsa_tiled_plan_requires_runtime_admission() {
+        with_tiled_score_runtime(false, || {
+            assert!(planned(1, 2048, 4, 128, 8193, MlxDtype::Float32).is_none());
+            assert!(
+                with_tiled_score_runtime(true, || {
+                    planned(1, 2048, 4, 128, 8193, MlxDtype::Float32)
+                })
+                .is_some()
+            );
+            assert!(planned(1, 2048, 4, 128, 8193, MlxDtype::Float32).is_none());
+        });
+    }
+
+    #[test]
     fn qsa_tiled_preserves_signed_zero_order() {
         let (batch, seq, heads, dim, n_blocks) = (1, 2, 2, 4, 2);
         let queries = cast_tensor(
@@ -7767,8 +7781,10 @@ mod tests {
             *value = -0.0;
         }
         let blocks = cast_tensor(&keys, &[batch, n_blocks, dim], MlxDtype::Float32);
-        let plan = with_tile_limits(1, QSA_TILE_WORKSPACE_BUDGET, || {
-            planned(batch, seq, heads, dim, n_blocks, MlxDtype::Float32)
+        let plan = with_tiled_score_runtime(true, || {
+            with_tile_limits(1, QSA_TILE_WORKSPACE_BUDGET, || {
+                planned(batch, seq, heads, dim, n_blocks, MlxDtype::Float32)
+            })
         })
         .unwrap();
         assert_eq!(plan.query_rows, vec![1, 1]);
@@ -8090,7 +8106,10 @@ mod tests {
             let n_blocks = 8193i32;
             let monolithic = full_score_workspace_bytes(1, seq, heads, n_blocks as usize).unwrap();
             assert!(monolithic > QSA_SCORE_WORKSPACE_LIMIT);
-            let plan = planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32).unwrap();
+            let plan = with_tiled_score_runtime(true, || {
+                planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32)
+            })
+            .unwrap();
             assert!(plan.query_rows.len() > 1);
             assert!(plan.workspace_bytes <= QSA_TILE_WORKSPACE_BUDGET);
             assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
