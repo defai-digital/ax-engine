@@ -401,6 +401,7 @@ pub enum JsonConstraintStatus {
 pub struct PreparedJsonConstraint {
     schema: serde_json::Value,
     strict: bool,
+    budget: bool,
     grammar: Option<std::sync::Arc<ax_engine_core::grammar::JsonGrammar>>,
     status: JsonConstraintStatus,
 }
@@ -459,6 +460,11 @@ pub struct GenerateSampling {
     /// False preserves the caller-owned post-hoc validation contract.
     #[serde(default, skip_serializing_if = "is_false")]
     pub json_schema_strict: bool,
+    /// Opt in to tokenizer-aware JSON completion within the output budget.
+    /// Requires a fully enforced schema and native MLX; an infeasible budget
+    /// or bounded-search exhaustion fails explicitly without fabricated text.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub grammar_budget: bool,
     #[serde(skip)]
     pub prepared_json_constraint: Option<PreparedJsonConstraint>,
     #[serde(default)]
@@ -498,6 +504,7 @@ impl Default for GenerateSampling {
             logit_bias: std::collections::BTreeMap::new(),
             json_schema: None,
             json_schema_strict: false,
+            grammar_budget: false,
             prepared_json_constraint: None,
             seed: 0,
             seed_explicit: false,
@@ -509,19 +516,27 @@ impl Default for GenerateSampling {
 
 impl GenerateSampling {
     pub fn prepare_json_constraint(&mut self) -> Result<JsonConstraintStatus, String> {
+        if self.grammar_budget && self.ignore_eos {
+            self.prepared_json_constraint = None;
+            return Err("grammar_budget requires EOS stopping".to_string());
+        }
         let Some(schema) = self.json_schema.as_ref() else {
             self.prepared_json_constraint = None;
+            if self.grammar_budget {
+                return Err("grammar_budget requires json_schema".to_string());
+            }
             return Ok(JsonConstraintStatus::Disabled);
         };
         if let Some(prepared) = self.prepared_json_constraint.as_ref()
             && prepared.schema == *schema
             && prepared.strict == self.json_schema_strict
+            && prepared.budget == self.grammar_budget
         {
             return Ok(prepared.status);
         }
         self.prepared_json_constraint = None;
         let strict = ax_engine_core::grammar::JsonGrammar::validate_strict_schema(schema);
-        if self.json_schema_strict {
+        if self.json_schema_strict || self.grammar_budget {
             strict.as_ref().map_err(ToString::to_string)?;
         }
         let compiled = ax_engine_core::grammar::JsonGrammar::from_schema(schema);
@@ -531,13 +546,18 @@ impl GenerateSampling {
             JsonConstraintStatus::PostHocValidationRequired
         };
         let grammar = match compiled {
-            Ok(grammar) => Some(std::sync::Arc::new(grammar)),
-            Err(error) if self.json_schema_strict => return Err(error.to_string()),
+            Ok(grammar) => Some(std::sync::Arc::new(
+                grammar.with_completion_budget(self.grammar_budget),
+            )),
+            Err(error) if self.json_schema_strict || self.grammar_budget => {
+                return Err(error.to_string());
+            }
             Err(_) => None,
         };
         self.prepared_json_constraint = Some(PreparedJsonConstraint {
             schema: schema.clone(),
             strict: self.json_schema_strict,
+            budget: self.grammar_budget,
             grammar,
             status,
         });
@@ -891,6 +911,41 @@ mod tests {
             sampling.prepare_json_constraint().unwrap(),
             JsonConstraintStatus::Disabled
         );
+    }
+
+    #[test]
+    fn grammar_budget_requires_enforced_schema_and_invalidates_preparation() {
+        let mut sampling = GenerateSampling {
+            grammar_budget: true,
+            ..Default::default()
+        };
+        assert!(sampling.prepare_json_constraint().is_err());
+        sampling.json_schema = Some(serde_json::json!({"type":"string", "pattern":"x"}));
+        assert!(sampling.prepare_json_constraint().is_err());
+        sampling.json_schema = Some(serde_json::json!({"type":"object"}));
+        assert_eq!(
+            sampling.prepare_json_constraint().unwrap(),
+            JsonConstraintStatus::Enforced
+        );
+        let enabled = sampling
+            .clone()
+            .into_core(false)
+            .unwrap()
+            .json_grammar
+            .unwrap();
+        assert!(enabled.completion_budget());
+        sampling.grammar_budget = false;
+        let disabled = sampling
+            .clone()
+            .into_core(false)
+            .unwrap()
+            .json_grammar
+            .unwrap();
+        assert!(!disabled.completion_budget());
+        assert!(!std::sync::Arc::ptr_eq(&enabled, &disabled));
+        sampling.grammar_budget = true;
+        sampling.json_schema = None;
+        assert!(sampling.into_core(false).is_err());
     }
 
     #[test]

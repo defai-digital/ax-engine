@@ -969,6 +969,13 @@ pub(crate) fn sample_residual_token_distribution(
     draft: &TokenDistribution,
     rng: &mut Xorshift64,
 ) -> Option<u32> {
+    sample_from_token_distribution(&residual_token_distribution(target, draft), rng)
+}
+
+fn residual_token_distribution(
+    target: &TokenDistribution,
+    draft: &TokenDistribution,
+) -> TokenDistribution {
     let mut residual = BTreeMap::<u32, f32>::new();
     for (token, prob) in target.entries() {
         residual.insert(*token, *prob);
@@ -981,8 +988,7 @@ pub(crate) fn sample_residual_token_distribution(
         .into_iter()
         .filter(|(_, prob)| *prob > 0.0 && prob.is_finite())
         .collect();
-    let distribution = TokenDistribution::new(residual_entries).unwrap_or_else(|| target.clone());
-    sample_from_token_distribution(&distribution, rng)
+    TokenDistribution::new(residual_entries).unwrap_or_else(|| target.clone())
 }
 
 /// GPU-side categorical sampling from logits.
@@ -1563,6 +1569,36 @@ mod tests {
                 < 1e-6
         );
         assert_eq!(indexed_token_logprob(&logits, &indices, 12, sampling), None);
+    }
+
+    #[test]
+    fn residual_correction_completes_the_exact_target_probability_law() {
+        for (p, q) in [
+            ([0.4, 0.6, 0.0], [0.8, 0.2, 0.0]),
+            ([0.0, 0.3, 0.7], [0.5, 0.5, 0.0]),
+            ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            ([0.25, 0.5, 0.25], [0.25, 0.5, 0.25]),
+        ] {
+            let distribution = |values: [f32; 3]| {
+                TokenDistribution::new(
+                    values
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, p)| (i as u32, p))
+                        .collect(),
+                )
+                .unwrap()
+            };
+            let target = distribution(p);
+            let draft = distribution(q);
+            let residual = residual_token_distribution(&target, &draft);
+            let accepted: f32 = p.into_iter().zip(q).map(|(p, q)| p.min(q)).sum();
+            for token in 0..3 {
+                let output =
+                    p[token].min(q[token]) + (1.0 - accepted) * residual.probability(token as u32);
+                assert!((output - p[token]).abs() < 1e-6);
+            }
+        }
     }
 
     #[test]

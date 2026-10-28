@@ -70,6 +70,7 @@ pub struct JsonGrammar {
     nodes: Vec<Node>,
     literals: Vec<Vec<u8>>,
     root: NodeId,
+    completion_budget: bool,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -202,6 +203,7 @@ impl JsonGrammar {
             nodes: Vec::new(),
             literals: vec![b"true".to_vec(), b"false".to_vec(), b"null".to_vec()],
             root: 0,
+            completion_budget: false,
         }
     }
 
@@ -407,6 +409,17 @@ impl JsonGrammar {
             whitespace_run: 0,
         }
     }
+
+    /// Require a bounded tokenizer-level completion proof before each answer
+    /// token. The immutable policy travels with the request's compiled grammar.
+    pub fn with_completion_budget(mut self, enabled: bool) -> Self {
+        self.completion_budget = enabled;
+        self
+    }
+
+    pub fn completion_budget(&self) -> bool {
+        self.completion_budget
+    }
 }
 
 fn type_bit(name: &str, path: &str) -> Result<u8, JsonGrammarError> {
@@ -562,6 +575,19 @@ impl JsonMatcher {
                 && *max == u32::MAX
             {
                 *chars = (*chars).min(*min);
+            }
+            // Once no declared property shares this prefix, its length can
+            // never make it a declared property again. Keep UTF-8 progress,
+            // but merge arbitrary additional-key text into one language state.
+            if let Frame::Object {
+                state: ObjectState::InKey { lo, hi, len, .. },
+                ..
+            } = frame
+                && lo == hi
+            {
+                *lo = 0;
+                *hi = 0;
+                *len = 0;
             }
         }
         key
@@ -1159,6 +1185,33 @@ mod tests {
 
     fn prefix_ok(grammar: &JsonGrammar, text: &str) -> bool {
         grammar.matcher().advance_bytes(grammar, text.as_bytes())
+    }
+
+    #[test]
+    fn additional_key_cache_keys_preserve_declared_and_utf8_continuations() {
+        let grammar = JsonGrammar::from_schema(&json!({
+            "type":"object", "properties":{"known":{"type":"boolean"}},
+            "required":["known"]
+        }))
+        .unwrap();
+        for prefix in [&b"{\"extra"[..], &b"{\"k"[..], &b"{\"\xe6"[..]] {
+            let mut original = grammar.matcher();
+            assert!(original.advance_bytes(&grammar, prefix));
+            let canonical = original.mask_key();
+            for suffix in [
+                &b"\":0,\"known\":true}"[..],
+                &b"nown\":true}"[..],
+                &b"\xb0\xb4\":null,\"known\":true}"[..],
+            ] {
+                let mut before = original.clone();
+                let mut after = canonical.clone();
+                let accepted = before.advance_bytes(&grammar, suffix);
+                assert_eq!(accepted, after.advance_bytes(&grammar, suffix));
+                if accepted {
+                    assert_eq!(before.is_complete(&grammar), after.is_complete(&grammar));
+                }
+            }
+        }
     }
 
     #[test]

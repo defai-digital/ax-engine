@@ -1134,6 +1134,7 @@ fn ollama_chat_to_openai_request(
         metadata: Some("ollama:/api/chat".to_string()),
         multimodal_inputs: Default::default(),
         response_format: ollama_format_to_openai(request.format)?,
+        grammar_budget: false,
         tools: request.tools,
         tool_choice: None,
         parallel_tool_calls: None,
@@ -1187,6 +1188,7 @@ fn ollama_generate_to_openai_request(
         metadata: Some("ollama:/api/generate".to_string()),
         multimodal_inputs: Default::default(),
         response_format: ollama_format_to_openai(request.format)?,
+        grammar_budget: false,
         fit_max_tokens_to_context: num_predict.fill_context,
     })
 }

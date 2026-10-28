@@ -42,6 +42,17 @@ growth; a unit-test pass does not establish a real-model leak-free soak.
 
 ## Reduce retained and peak memory
 
+Native serving samples macOS host memory pressure with a five-second probe
+cache. Warning or critical pressure stops new prefix-cache publication and
+reclaims unborrowed portable/native prefix snapshots on the worker thread.
+Live request state and borrowed snapshots retain their owners. Critical
+pressure rejects new native requests with HTTP `503 host_memory_pressure`
+(gRPC `RESOURCE_EXHAUSTED`). Existing requests can finish or cancel normally.
+Recovery requires ten seconds of observed lower pressure; unavailable probes
+interrupt recovery and retain the last pressure level. This local protection
+also reacts to pressure from other applications; it does not impose a process
+memory limit.
+
 1. Unload unused models; configure `--model-idle-timeout-secs` for non-default
    models when appropriate.
 2. Set `--max-concurrent-requests` and constrain client context/output lengths.
@@ -78,3 +89,14 @@ overflow. These complement Playground's retained-history limits; they do not
 cap Foundation's own buffering or successful non-streaming response bodies.
 See [Swift SDK streaming](sdk/swift.md#streaming) for defaults, overrides, and
 cancellation behavior.
+
+Flash Next n-gram speculation shares a process-wide limit of four jobs and
+64 MiB of staging buffers, including auxiliary-plane warming. Configure these
+once before startup with `AX_FLASH_NEXT_NGRAM_PREFETCH_JOBS` and
+`AX_FLASH_NEXT_NGRAM_PREFETCH_BYTES`; zero disables admission of speculative
+work. Values are capped at 1024 jobs and 8 GiB. Demand reads keep working when
+these limits are reached. A request cancels stale prefetch and background
+warming without waiting for their threads; workers stop between reads, so an
+already-issued operating-system read may finish. Ready results retain their
+byte reservation until consumed or discarded. Duplicate rows are read once
+per gather while preserving the requested row order.

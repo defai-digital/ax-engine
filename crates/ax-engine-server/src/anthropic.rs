@@ -242,6 +242,7 @@ impl AnthropicMessagesRequest {
             metadata: None,
             multimodal_inputs: Default::default(),
             response_format: None,
+            grammar_budget: false,
             tools: None,
             tool_choice: None,
             parallel_tool_calls: None,

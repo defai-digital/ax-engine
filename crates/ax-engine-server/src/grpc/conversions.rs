@@ -24,6 +24,7 @@ pub(super) fn proto_sampling_to_sdk(s: proto::GenerateSampling) -> GenerateSampl
         logit_bias: Default::default(),
         json_schema: None,
         json_schema_strict: false,
+        grammar_budget: false,
         prepared_json_constraint: None,
         seed: s.seed,
         // proto3 scalar has no presence; only a non-zero seed is explicit.

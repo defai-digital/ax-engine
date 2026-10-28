@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ax_engine_core::grammar::budget::{BudgetError, BudgetWorkspace};
 use ax_engine_core::grammar::{JsonGrammar, JsonMatcher, MaskWorkspace, TokenVocab};
 use parking_lot::Mutex;
 
@@ -23,6 +24,9 @@ pub(super) struct RequestGrammar {
     grammar: Arc<JsonGrammar>,
     matcher: JsonMatcher,
     masks: Arc<MaskCache>,
+    budget: Arc<Mutex<BudgetWorkspace>>,
+    budget_error: Arc<Mutex<Option<BudgetError>>>,
+    remaining: u32,
     /// A committed token the matcher refused. Masking stops; the server's
     /// post-hoc validation reports the output.
     dead: bool,
@@ -33,6 +37,9 @@ pub(super) struct RequestGrammar {
 pub(super) struct GrammarCursor<'a> {
     grammar: &'a JsonGrammar,
     masks: &'a MaskCache,
+    budget: &'a Mutex<BudgetWorkspace>,
+    budget_error: &'a Mutex<Option<BudgetError>>,
+    remaining: u32,
     vocab: &'a TokenVocab,
     think: (Option<u32>, Option<u32>),
     terminal: &'a [u32],
@@ -48,12 +55,23 @@ impl RequestGrammar {
             grammar,
             matcher,
             masks: Arc::default(),
+            budget: Arc::default(),
+            budget_error: Arc::default(),
+            remaining: u32::MAX,
             dead: false,
         }
     }
 
     pub(super) fn is_for(&self, grammar: &Arc<JsonGrammar>) -> bool {
         Arc::ptr_eq(&self.grammar, grammar)
+    }
+
+    pub(super) fn set_remaining(&mut self, remaining: u32) {
+        self.remaining = remaining;
+    }
+
+    pub(super) fn take_budget_error(&self) -> Option<BudgetError> {
+        self.budget_error.lock().take()
     }
 
     pub(super) fn cursor<'a>(
@@ -66,6 +84,9 @@ impl RequestGrammar {
         GrammarCursor {
             grammar: &self.grammar,
             masks: &self.masks,
+            budget: &self.budget,
+            budget_error: &self.budget_error,
+            remaining: self.remaining,
             vocab,
             think,
             terminal,
@@ -101,6 +122,7 @@ impl RequestGrammar {
 
 impl GrammarCursor<'_> {
     pub(super) fn advance(&mut self, token: u32) {
+        self.remaining = self.remaining.saturating_sub(1);
         if self.think.0 == Some(token) {
             self.in_think = true;
             return;
@@ -125,12 +147,86 @@ impl GrammarCursor<'_> {
     /// (inside a think block, after a refused token, or at a dead end, which
     /// the post-hoc check then reports).
     pub(super) fn mask(&self) -> Option<Vec<u64>> {
+        if self.dead && self.grammar.completion_budget() {
+            return Some(vec![0; self.vocab.vocab_size().div_ceil(64)]);
+        }
+        match self.mask_checked() {
+            Ok(mask) => mask,
+            Err(error) => {
+                // An infeasible speculative suffix has zero target support;
+                // its entering draft is rejected by the preceding mask.
+                // Resource failure is not zero support: stop the request
+                // before committing the speculative result.
+                if error != BudgetError::Infeasible {
+                    *self.budget_error.lock() = Some(error);
+                }
+                Some(vec![0; self.vocab.vocab_size().div_ceil(64)])
+            }
+        }
+    }
+
+    pub(super) fn mask_checked(&self) -> Result<Option<Vec<u64>>, BudgetError> {
+        if self.dead && self.grammar.completion_budget() {
+            return Err(BudgetError::InvalidState);
+        }
+        if self.grammar.completion_budget() && !self.dead {
+            let mut workspace = self.budget.lock();
+            if self.in_think {
+                let end = self
+                    .think
+                    .1
+                    .filter(|&t| (t as usize) < self.vocab.vocab_size())
+                    .ok_or(BudgetError::MissingReasoningBoundary)?;
+                // The close marker itself consumes one output token.
+                workspace.mask(
+                    self.vocab,
+                    self.grammar,
+                    &self.matcher,
+                    self.terminal,
+                    self.remaining.saturating_sub(1),
+                )?;
+                return match workspace.mask(
+                    self.vocab,
+                    self.grammar,
+                    &self.matcher,
+                    self.terminal,
+                    self.remaining.saturating_sub(2),
+                ) {
+                    Ok(_) => {
+                        // Reasoning is free text, but terminal ids would end
+                        // the request before the required JSON answer exists.
+                        let mut mask = vec![u64::MAX; self.vocab.vocab_size().div_ceil(64)];
+                        for &token in self.terminal {
+                            if let Some(word) = mask.get_mut(token as usize / 64) {
+                                *word &= !(1u64 << (token % 64));
+                            }
+                        }
+                        Ok(Some(mask))
+                    }
+                    Err(BudgetError::Infeasible) => {
+                        let mut mask = vec![0; self.vocab.vocab_size().div_ceil(64)];
+                        mask[end as usize / 64] |= 1u64 << (end % 64);
+                        Ok(Some(mask))
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+            return workspace
+                .mask(
+                    self.vocab,
+                    self.grammar,
+                    &self.matcher,
+                    self.terminal,
+                    self.remaining,
+                )
+                .map(Some);
+        }
         if self.in_think || self.dead {
-            return None;
+            return Ok(None);
         }
         let key = self.matcher.mask_key();
         if let Some(mask) = self.masks.lock().get(&key) {
-            return Some(mask.to_vec());
+            return Ok(Some(mask.to_vec()));
         }
         let mut out = Vec::new();
         self.vocab.allowed_tokens(
@@ -144,14 +240,14 @@ impl GrammarCursor<'_> {
             tracing::warn!(
                 "grammar reached a position no token can continue; row left unconstrained"
             );
-            return None;
+            return Ok(None);
         }
         let mut masks = self.masks.lock();
         if masks.len() >= MASK_CACHE_ENTRIES {
             masks.clear();
         }
         masks.insert(key, Arc::from(out.as_slice()));
-        Some(out)
+        Ok(Some(out))
     }
 
     /// Masks for every verify row of an MTP window: row `i` follows
@@ -245,5 +341,116 @@ mod tests {
         let mut broken = RequestGrammar::new(Arc::new(JsonGrammar::any_object()));
         broken.commit(&vocab, THINK, false, EOS, 2);
         assert!(broken.cursor(&vocab, THINK, false, EOS).mask().is_none());
+    }
+
+    #[test]
+    fn completion_budget_reserves_reasoning_close_and_counts_each_verify_row() {
+        let vocab = vocab();
+        let compiled = Arc::new(JsonGrammar::any_object().with_completion_budget(true));
+        let mut grammar = RequestGrammar::new(compiled);
+        grammar.set_remaining(3);
+        let close = grammar
+            .cursor(&vocab, THINK, true, EOS)
+            .mask_checked()
+            .unwrap()
+            .unwrap();
+        assert!(mask_allows(&close, 6));
+        assert!(!mask_allows(&close, 2));
+        let masks = grammar
+            .cursor(&vocab, THINK, true, EOS)
+            .row_masks(&[6, 0, 1]);
+        assert!(mask_allows(masks[1].as_ref().unwrap(), 0));
+        assert!(mask_allows(masks[2].as_ref().unwrap(), 1));
+        assert!(!mask_allows(masks[2].as_ref().unwrap(), 3));
+        assert!(masks[3].as_ref().unwrap().iter().all(|&word| word == 0));
+        assert!(grammar.take_budget_error().is_none());
+        // A rejected speculative branch never advances the committed matcher.
+        let fresh = grammar
+            .cursor(&vocab, THINK, false, EOS)
+            .mask_checked()
+            .unwrap()
+            .unwrap();
+        assert!(mask_allows(&fresh, 0));
+        assert!(!mask_allows(&fresh, 1));
+    }
+
+    #[test]
+    fn completion_budget_invalid_drafts_are_zero_support_not_deleted() {
+        let vocab = vocab();
+        let mut grammar = RequestGrammar::new(Arc::new(
+            JsonGrammar::any_object().with_completion_budget(true),
+        ));
+        grammar.set_remaining(3);
+        for drafts in [&[2, 0][..], &[0, 2, 1][..]] {
+            let masks = grammar.cursor(&vocab, THINK, false, EOS).row_masks(drafts);
+            assert_eq!(masks.len(), drafts.len() + 1);
+            let invalid = drafts.iter().position(|&token| token == 2).unwrap();
+            assert!(!mask_allows(masks[invalid].as_ref().unwrap(), 2));
+            assert!(
+                masks[invalid + 1]
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .all(|&word| word == 0)
+            );
+        }
+        assert!(grammar.take_budget_error().is_none());
+        grammar.commit(&vocab, THINK, false, EOS, 0);
+        grammar.set_remaining(1);
+        let last = grammar
+            .cursor(&vocab, THINK, false, EOS)
+            .mask_checked()
+            .unwrap()
+            .unwrap();
+        assert!(mask_allows(&last, 1));
+        assert!(!mask_allows(&last, 3));
+    }
+
+    #[test]
+    fn completion_budget_failure_is_explicit_and_request_local() {
+        let vocab = vocab();
+        let compiled = Arc::new(JsonGrammar::any_object().with_completion_budget(true));
+        let mut short = RequestGrammar::new(Arc::clone(&compiled));
+        let mut enough = RequestGrammar::new(compiled);
+        short.set_remaining(1);
+        enough.set_remaining(2);
+        assert_eq!(
+            short.cursor(&vocab, THINK, false, EOS).mask_checked(),
+            Err(BudgetError::Infeasible)
+        );
+        assert!(
+            enough
+                .cursor(&vocab, THINK, false, EOS)
+                .mask_checked()
+                .is_ok()
+        );
+        short.commit(&vocab, THINK, false, EOS, 2);
+        assert_eq!(
+            short.cursor(&vocab, THINK, false, EOS).mask_checked(),
+            Err(BudgetError::InvalidState)
+        );
+        assert!(
+            enough
+                .cursor(&vocab, THINK, false, EOS)
+                .mask_checked()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn completion_budget_cannot_end_during_unconstrained_reasoning() {
+        let vocab = vocab();
+        let mut grammar = RequestGrammar::new(Arc::new(
+            JsonGrammar::any_object().with_completion_budget(true),
+        ));
+        grammar.set_remaining(16);
+        let mask = grammar
+            .cursor(&vocab, THINK, true, EOS)
+            .mask_checked()
+            .unwrap()
+            .unwrap();
+        assert!(mask_allows(&mask, 2));
+        assert!(mask_allows(&mask, 6));
+        assert!(!mask_allows(&mask, 7));
     }
 }

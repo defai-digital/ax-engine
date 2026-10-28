@@ -200,6 +200,32 @@ fn demote_test_snapshot(pool: &SharedFaBlockPool, tokens: Vec<u32>) -> MlxNative
 }
 
 #[test]
+fn host_pressure_retains_borrowed_native_prefix_until_release() {
+    let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+        block_size_tokens: 4,
+        max_blocks: 2,
+        hard_cap: true,
+    })
+    .unwrap();
+    let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 4096,
+        max_entries: 4,
+    });
+    let key = demote_test_key(1);
+    let inserted = cache.insert(key.clone(), demote_test_snapshot(&pool, vec![1, 2, 3]));
+    assert!(inserted.stored);
+    drop(inserted);
+    let (borrowed, _) = cache.get_longest_prefix(&key, &[1, 2, 3]).unwrap();
+    assert!(cache.reclaim_unborrowed().is_empty());
+    assert_eq!(borrowed.cache.seq_len(), 3);
+    drop(borrowed);
+    let retired = cache.reclaim_unborrowed();
+    assert_eq!(retired.len(), 1);
+    assert!(cache.is_empty());
+    drop(retired);
+}
+
+#[test]
 fn native_eviction_demotes_into_portable_store() {
     let _env = DemoteOnEvictEnvGuard::removed();
     let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
@@ -2541,10 +2567,45 @@ fn mtp_accept_count_aligns_hybrid_tail_distribution_after_ngram_prefix() {
 }
 
 #[test]
-fn mtp_accept_count_temperature_rescaling() {
-    // Draft at T=0.7, target at T=0.6 → ratio=7/6≈1.167.
-    // log_p_draft = ln(0.8) ≈ -0.223; scaled = -0.223*1.167 ≈ -0.260 → p_scaled ≈ 0.771.
-    // target_prob = 1.0 → accept_prob = 1.0/0.771 capped at 1.0 → always accept.
+fn sampled_mtp_preserves_target_law_with_different_draft_temperature() {
+    let draft = TokenDistribution::new(vec![(0, 0.8), (1, 0.2)]).unwrap();
+    let target = TokenDistribution::new(vec![(0, 0.4), (1, 0.6)]).unwrap();
+    let mut rng = Xorshift64::new(93);
+    let mut count = [0usize; 2];
+    for _ in 0..40_000 {
+        let proposed = crate::sampling::sample_from_token_distribution(&draft, &mut rng).unwrap();
+        let outcome = mtp_accept_count(
+            &[proposed],
+            &[draft.probability(proposed).ln()],
+            std::slice::from_ref(&draft),
+            &[MtpDraftSource::Mtp],
+            Some(&[target.probability(proposed)]),
+            Some(std::slice::from_ref(&target)),
+            &[1],
+            &mut rng,
+            2.0,
+            1.0,
+            MtpModelAcceptanceMode::RejectionSampling,
+            MtpNgramAcceptanceMode::Delta,
+        );
+        let token = if outcome.all_accepted {
+            proposed
+        } else {
+            outcome.rejection_correction.unwrap()
+        };
+        count[token as usize] += 1;
+    }
+    let observed = count[0] as f64 / 40_000.0;
+    assert!(
+        (observed - 0.4).abs() < 0.015,
+        "target probability 0.4, observed {observed}"
+    );
+}
+
+#[test]
+fn mtp_accept_count_uses_proposal_probabilities_at_any_temperature() {
+    // A target probability of one accepts this proposal independently of
+    // the temperatures that produced the target and proposal distributions.
     let mut rng = Xorshift64::new(1);
     let accept = mtp_accept_count(
         &[5],
@@ -2562,7 +2623,7 @@ fn mtp_accept_count_temperature_rescaling() {
     );
     assert_eq!(accept.accept_count, 1);
 
-    // When temperatures match, no rescaling occurs.
+    // Matching temperatures obey the same proposal law.
     let mut rng2 = Xorshift64::new(1);
     let accept2 = mtp_accept_count(
         &[5],
@@ -3274,6 +3335,24 @@ fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefix
         greedy_prefill_output_token: Some(7),
         mtp_cursor_payload: None,
     }
+}
+
+#[test]
+fn host_pressure_reclaims_only_unborrowed_portable_prefix_snapshots() {
+    let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1024,
+        max_entries: 4,
+    });
+    cache.insert(test_prefix_key(1), test_prefix_snapshot(1, 4, 100));
+    cache.insert(test_prefix_key(2), test_prefix_snapshot(2, 4, 200));
+    let borrowed = cache.get(&test_prefix_key(1), &[1; 4]).unwrap();
+    assert_eq!(cache.reclaim_unborrowed(), 1);
+    assert_eq!(cache.stats().bytes, 100);
+    assert_eq!(borrowed.tokens, vec![1; 4]);
+    drop(borrowed);
+    assert_eq!(cache.reclaim_unborrowed(), 1);
+    assert_eq!(cache.stats().bytes, 0);
+    assert!(cache.lru.is_empty());
 }
 
 #[test]
@@ -8968,6 +9047,35 @@ fn probe_exact_bound_covers_unaligned_bounds() {
     assert!(probe_exact_bound_needed(35, 32));
     assert!(!probe_exact_bound_needed(32, 32));
     assert!(!probe_exact_bound_needed(0, 32));
+}
+
+#[test]
+fn processor_histories_match_cold_partial_and_full_restores_without_draft_leaks() {
+    let prompt: Vec<u32> = (0..12).collect();
+    let sampling = MlxSamplingParams::new(0.7, 1.0, 0).with_repetition_penalty(1.1, Some(8));
+    for (claim, restored) in [(0, 0), (4, 4), (4, 8), (12, 12)] {
+        for accepted in 0..=3 {
+            let mut state = RequestState::new(2, 100, None);
+            state.prompt_prefix_tokens = prompt[..restored].to_vec();
+            let item = prefill_item_with_claim(claim, 12 - claim);
+            extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+            state.mtp_pending_draft = vec![20, 21, 22];
+            state.generated_tokens = state.mtp_pending_draft[..accepted].to_vec();
+            state.generated_tokens.push(30); // Correction or all-accepted bonus.
+            let mut expected = prompt.clone();
+            expected.extend_from_slice(&state.generated_tokens);
+            expected = expected[expected.len() - 8..].to_vec();
+            assert_eq!(state.repetition_history(&[], sampling), expected);
+            let presence = MlxSamplingParams::greedy().with_presence_frequency_penalty(1.0, 0.5);
+            assert_eq!(
+                state.repetition_history(&[], presence),
+                state.generated_tokens
+            );
+            // Another request with a different penalty view sees no history.
+            let other = RequestState::new(2, 101, None);
+            assert!(other.repetition_history(&[], presence).is_empty());
+        }
+    }
 }
 
 #[test]

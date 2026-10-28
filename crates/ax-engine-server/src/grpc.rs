@@ -105,6 +105,9 @@ async fn run_grpc_generate_request(
 
 fn admission_status(error: AdmissionError) -> Status {
     match error {
+        AdmissionError::HostMemoryPressure => Status::resource_exhausted(
+            "critical host memory pressure; retry after memory pressure recovers",
+        ),
         AdmissionError::Draining => Status::unavailable(
             "the current model is draining for replacement; retry after loading completes",
         ),

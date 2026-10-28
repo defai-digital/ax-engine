@@ -300,7 +300,9 @@ impl AppState {
         // Acquire the narrow scope first so a draining/saturated model does
         // not transiently consume process capacity. Both leases are merged
         // into one permit and therefore follow the actual engine-job lifetime.
-        let model_permit = live.admission.try_admit()?;
+        let blocked = live.runtime_report.selected_backend == ax_engine_sdk::SelectedBackend::Mlx
+            && ax_engine_sdk::EngineSession::native_host_pressure_blocks_admission();
+        let model_permit = live.admission.try_admit_with_host_pressure(blocked)?;
         let global_permit = self.admission.try_admit()?;
         let current_generation = self
             .live

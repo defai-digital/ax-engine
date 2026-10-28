@@ -1657,6 +1657,7 @@ pub struct MlxRunner {
     /// Runner-local native FA snapshots. Never shared through
     /// `MlxPrefixCacheStore`; live MLX arrays remain bound to this runner.
     native_prefix_cache: Mutex<MlxNativePrefixCache>,
+    last_host_pressure: Mutex<crate::host_pressure::HostPressure>,
     /// Optional L2 file-backed prefix cache (F3). Populated when
     /// `AX_MLX_PREFIX_CACHE_DIR` is set and the disk-disabled kill
     /// switch is not engaged. `None` when off; the L2 paths short-
@@ -3390,6 +3391,7 @@ impl MlxRunner {
             ngram_policy_variant,
             prefix_cache,
             native_prefix_cache: Mutex::new(MlxNativePrefixCache::new(native_prefix_cache_policy)),
+            last_host_pressure: Mutex::default(),
             disk_prefix_cache,
             disk_prefix_writer,
             rotating_sliding_decode,
@@ -5019,6 +5021,23 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        let pressure = crate::host_pressure::sample();
+        let previous_pressure = std::mem::replace(&mut *self.last_host_pressure.lock(), pressure);
+        if pressure != crate::host_pressure::HostPressure::Normal {
+            let portable = self.prefix_cache.lock().reclaim_unborrowed();
+            let retired = self.native_prefix_cache.lock().reclaim_unborrowed();
+            let native = retired.len();
+            drop(retired);
+            if pressure > previous_pressure || portable > 0 || native > 0 {
+                clear_cache();
+                tracing::info!(
+                    ?pressure,
+                    portable,
+                    native,
+                    "reclaimed unborrowed prefix state under host pressure"
+                );
+            }
+        }
         // A failure recorded outside a step (warmup, a contained panic) must
         // not fail this step's unrelated requests.
         let _ = crate::expert_stream::take_paging_failure();
@@ -7197,24 +7216,40 @@ impl MlxRunner {
         {
             state.json_grammar = Some(grammar::RequestGrammar::new(grammar.clone()));
         }
-        let _token_mask_scope = crate::sampling::scoped_token_mask(
-            grammar_vocab
-                .zip(state.json_grammar.as_ref())
-                .and_then(|(vocab, request_grammar)| {
-                    // A prefill samples after the whole prompt; decode
-                    // continues from the tracked think state.
-                    let in_think = if is_prefill {
-                        let before =
-                            compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
-                        compute_think_state(&self.cfg, before, token_ids)
-                    } else {
-                        state.ngram_in_think
-                    };
-                    request_grammar
-                        .cursor(vocab, self.think_token_ids(), in_think, terminal_token_ids)
-                        .mask()
-                }),
-        );
+        if let Some(grammar) = state.json_grammar.as_mut() {
+            grammar.set_remaining(
+                ctx.map_or(0, |c| c.max_output_tokens.saturating_sub(c.generated_len)),
+            );
+        }
+        if json_grammar.is_some_and(|grammar| grammar.completion_budget())
+            && grammar_vocab.is_none()
+        {
+            return errored_item_run(
+                item.request_id,
+                "grammar_budget requires the model tokenizer vocabulary",
+            );
+        }
+        let token_mask = grammar_vocab
+            .zip(state.json_grammar.as_ref())
+            .map(|(vocab, request_grammar)| {
+                // A prefill samples after the whole prompt; decode
+                // continues from the tracked think state.
+                let in_think = if is_prefill {
+                    let before = compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
+                    compute_think_state(&self.cfg, before, token_ids)
+                } else {
+                    state.ngram_in_think
+                };
+                request_grammar
+                    .cursor(vocab, self.think_token_ids(), in_think, terminal_token_ids)
+                    .mask_checked()
+            })
+            .transpose();
+        let token_mask = match token_mask {
+            Ok(mask) => mask.flatten(),
+            Err(error) => return errored_item_run(item.request_id, error.to_string()),
+        };
+        let _token_mask_scope = crate::sampling::scoped_token_mask(token_mask);
         // A fresh media request must project its media before decode, regardless
         // of the reuse flag or a token-only scheduler claim. A cache miss here
         // must never fall through to text-only prefix warmup.
@@ -8395,6 +8430,13 @@ impl MlxRunner {
         } else {
             (sampled_tokens, stop_reason)
         };
+        if let Some(error) = state
+            .json_grammar
+            .as_ref()
+            .and_then(|grammar| grammar.take_budget_error())
+        {
+            return errored_item_run(item.request_id, error.to_string());
+        }
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
             // Credit the think-token budget per token, not per step: an MTP
@@ -10066,6 +10108,10 @@ impl MlxRunner {
         cold_prefill_us: u64,
         media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
+        if crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal {
+            return MlxPrefixCacheTelemetry::default();
+        }
+
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         // An expert paging failure this step replaced an MoE output with
         // zeros; the resulting KV is wrong and must not be reused.
@@ -10209,6 +10255,10 @@ impl MlxRunner {
         state: &RequestState,
         options: PromptPrefixSnapshotStoreOptions<'_>,
     ) -> MlxPrefixCacheTelemetry {
+        if crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal {
+            return MlxPrefixCacheTelemetry::default();
+        }
+
         if crate::expert_stream::paging_failure_pending() {
             return MlxPrefixCacheTelemetry::default();
         }
@@ -17646,8 +17696,8 @@ fn mtp_accept_count(
     target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
-    draft_temperature: f32,
-    target_temperature: f32,
+    _draft_temperature: f32,
+    _target_temperature: f32,
     model_acceptance_mode: MtpModelAcceptanceMode,
     ngram_acceptance_mode: MtpNgramAcceptanceMode,
 ) -> MtpAcceptOutcome {
@@ -17692,29 +17742,16 @@ fn mtp_accept_count(
 
         if let (true, Some(tprobs)) = (can_rejection_sample, target_probs_cpu) {
             let p_target_d = tprobs[i].max(0.0_f32);
-            // Rescale draft log-prob when draft and target temperatures differ.
-            // The standard rejection-sampling formula min(1, p_target / p_draft)
-            // assumes p and q over the same effective sample space.  When draft
-            // and target use different temperatures, the unscaled ratio
-            // systematically rejects drafts even when both models agree on the
-            // token.  Empirically, log_p * (T_draft / T_target) acts as a
-            // re-temperaturing approximation that aligns AX output with the
-            // MTPLX reference (tokenwise-identical for ~87 tokens at default
-            // T_draft=0.7, T_target=0.6).  Skipped for n-gram delta log-probs
-            // (0.0) because they are not derived from softmax(logits/T_draft).
-            let log_p_draft = pending_log_probs[i];
-            let is_mtp_source = !matches!(source, MtpDraftSource::Ngram);
-            let log_p_scaled = if is_mtp_source
-                && draft_temperature > 0.0
-                && target_temperature > 0.0
-                && (draft_temperature - target_temperature).abs() > 1e-6
-            {
-                log_p_draft * (draft_temperature / target_temperature)
+            // Acceptance and residual correction must use the same actual
+            // proposal distribution. Changing q for the target temperature
+            // biases the output, even if the changed q is renormalized.
+            // Work in log space so tiny proposal probabilities are not
+            // clamped to an unrelated floor before computing the ratio.
+            let accept_prob = if p_target_d > 0.0 {
+                (p_target_d.ln() - pending_log_probs[i]).min(0.0).exp()
             } else {
-                log_p_draft
+                0.0
             };
-            let p_draft = log_p_scaled.exp().max(1e-37_f32);
-            let accept_prob = (p_target_d / p_draft).min(1.0_f32);
             if rng.next_f32() < accept_prob {
                 ac += 1;
                 if has_draft_distribution {

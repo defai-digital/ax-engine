@@ -307,6 +307,20 @@ impl EngineSession {
         mlx_sys::clear_cache();
     }
 
+    /// Refuse new native work at critical host pressure. Existing requests
+    /// retain ownership and can finish or cancel normally.
+    pub fn native_host_pressure_blocks_admission() -> bool {
+        #[cfg(feature = "mlx-native")]
+        {
+            ax_engine_mlx::host_pressure::sample()
+                == ax_engine_mlx::host_pressure::HostPressure::Critical
+        }
+        #[cfg(not(feature = "mlx-native"))]
+        {
+            false
+        }
+    }
+
     /// Flag whether a sibling model's work is active in this process so
     /// multi-token prefill can use ring-rotated sliding KV (S1 dual-model
     /// contract win) while exclusive single-model sessions keep ordered
@@ -407,6 +421,11 @@ impl EngineSession {
         request: &GenerateRequest,
     ) -> Result<(), EngineSessionError> {
         Self::validate_generate_request(request_id, request)?;
+        if request.sampling.grammar_budget && !selected_backend.is_mlx() {
+            return Err(EngineSessionError::InvalidJsonConstraint {
+                message: "grammar_budget requires native MLX".to_string(),
+            });
+        }
         if request.sampling.json_schema_strict
             && request.sampling.json_schema.is_some()
             && !selected_backend.is_mlx()

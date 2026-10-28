@@ -53,6 +53,11 @@ pub(crate) fn error_response(
 
 pub(crate) fn admission_error_response(error: AdmissionError) -> (StatusCode, Json<ErrorResponse>) {
     match error {
+        AdmissionError::HostMemoryPressure => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "host_memory_pressure",
+            "critical host memory pressure; retry after memory pressure recovers".to_string(),
+        ),
         AdmissionError::Draining => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "model_loading",

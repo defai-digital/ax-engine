@@ -145,6 +145,8 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     pub(crate) response_format: Option<Value>,
+    #[serde(default)]
+    pub(crate) grammar_budget: bool,
 }
 
 /// Kill switch for the WP12 OpenAI/Anthropic contract polish
@@ -249,6 +251,8 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     pub(crate) response_format: Option<Value>,
+    #[serde(default)]
+    pub(crate) grammar_budget: bool,
     #[serde(default)]
     pub(crate) tools: Option<Value>,
     #[serde(default)]

@@ -310,6 +310,7 @@ mod tests {
                 logit_bias: Default::default(),
                 json_schema: None,
                 json_schema_strict: false,
+                grammar_budget: false,
                 prepared_json_constraint: None,
                 ignore_eos: true,
             },

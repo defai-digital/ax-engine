@@ -1920,6 +1920,57 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
 }
 
 #[tokio::test]
+async fn grammar_budget_is_opt_in_and_requires_native_enforced_json() {
+    let artifact_dir = minimal_tokenizer_artifact("native-grammar-budget");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    for enabled in [false, true] {
+        let request = serde_json::from_value(json!({
+            "messages": [{"role":"user", "content":"Return JSON"}],
+            "max_tokens": 16,
+            "grammar_budget": enabled,
+            "response_format": {"type":"json_object"}
+        }))
+        .unwrap();
+        let built = build_openai_chat_request(&live, request).unwrap();
+        assert_eq!(built.generate_request.sampling.grammar_budget, enabled);
+        assert!(
+            built
+                .generate_request
+                .sampling
+                .prepared_json_constraint
+                .unwrap()
+                .has_grammar()
+        );
+    }
+    for extra in [
+        json!({}),
+        json!({"response_format":{"type":"json_schema", "json_schema":{
+            "name":"answer", "schema":{"type":"string", "pattern":"^safe$"}
+        }}}),
+        json!({"response_format":{"type":"json_object"}, "tools":[{
+            "type":"function", "function":{"name":"lookup", "parameters":{"type":"object"}}
+        }]}),
+    ] {
+        let mut value = json!({
+            "messages":[{"role":"user", "content":"Return JSON"}],
+            "max_tokens":16, "grammar_budget":true
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let request = serde_json::from_value(value).unwrap();
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("unsupported budget contract admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+    fs::remove_dir_all(artifact_dir).unwrap();
+}
+
+#[tokio::test]
 async fn openai_chat_context_overflow_is_the_same_error_for_stream_and_non_stream() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-context-stream-preflight");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);

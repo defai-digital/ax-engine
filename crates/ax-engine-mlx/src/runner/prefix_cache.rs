@@ -260,6 +260,21 @@ pub(crate) struct MlxPrefixCache {
 }
 
 impl MlxPrefixCache {
+    pub(crate) fn reclaim_unborrowed(&mut self) -> u32 {
+        let before = self.entries.len();
+        let mut reclaimed = 0u64;
+        self.entries.retain(|_, entry| {
+            if Arc::strong_count(&entry.snapshot) != 1 {
+                return true;
+            }
+            reclaimed = reclaimed.saturating_add(entry.snapshot.bytes);
+            false
+        });
+        self.bytes = self.bytes.saturating_sub(reclaimed);
+        self.lru.retain(|(key, _)| self.entries.contains_key(key));
+        saturating_u32(before - self.entries.len())
+    }
+
     pub(crate) fn new(policy: MlxPrefixCachePolicy) -> Self {
         Self {
             policy,
@@ -546,6 +561,28 @@ pub(crate) struct MlxNativePrefixCache {
 }
 
 impl MlxNativePrefixCache {
+    /// Remove cache-owned snapshots only. The caller drops these after
+    /// releasing this mutex because KV retirement locks the shared pool.
+    pub(crate) fn reclaim_unborrowed(&mut self) -> Vec<Arc<MlxNativePrefixSnapshot>> {
+        let keys: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| Arc::strong_count(&entry.snapshot) == 1)
+            .map(|(key, _)| Arc::clone(key))
+            .collect();
+        let mut retired = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.logical_bytes = self
+                    .logical_bytes
+                    .saturating_sub(entry.snapshot.logical_bytes);
+                retired.push(entry.snapshot);
+            }
+        }
+        self.lru.retain(|(key, _)| self.entries.contains_key(key));
+        retired
+    }
+
     pub(crate) fn new(policy: MlxPrefixCachePolicy) -> Self {
         Self {
             policy,
