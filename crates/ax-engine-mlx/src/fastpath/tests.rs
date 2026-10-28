@@ -3454,6 +3454,16 @@ fn activation_dtype_policy_defaults_to_bf16_and_selects_fp16_only_on_request_or_
     assert_eq!(gpu_generation("applegpu_g14d"), Some(14));
     assert_eq!(gpu_generation("applegpu_g17s"), Some(17));
     assert_eq!(gpu_generation("applegpu_g13"), Some(13));
+    // Base dies end in the size letter `g`: M1, M2 and M5 base.
+    assert_eq!(gpu_generation("applegpu_g13g"), Some(13));
+    assert_eq!(gpu_generation("applegpu_g14g"), Some(14));
+    assert_eq!(gpu_generation("applegpu_g17g"), Some(17));
+    assert!(gpu_lacks_native_bf16(|| Some(String::from(
+        "applegpu_g14g"
+    ))));
+    assert!(!gpu_lacks_native_bf16(|| Some(String::from(
+        "applegpu_g15g"
+    ))));
     assert_eq!(gpu_generation("something_else"), None);
 }
 

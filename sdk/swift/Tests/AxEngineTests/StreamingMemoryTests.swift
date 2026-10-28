@@ -145,6 +145,29 @@ final class StreamingMemoryTests: XCTestCase {
         await fulfillment(of: [probe.stopped], timeout: 2)
     }
 
+    func testPausedTransportResumesBeforeTheIdleTimeoutExpires() async throws {
+        // A suspended task reads no keep-alives while URLSession's idle timer
+        // runs, so a consumer pausing longer than the timeout used to fail
+        // with NSURLErrorTimedOut. The pause must end before half the timeout.
+        let probe = StreamProbe("data: 1\n\ndata: 2\n\ndata: [DONE]\n\n")
+        let session = session(probe)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 0.4
+        let reader = StreamingResponse(request: .success(request), session: session,
+            limits: .init(), requiresDoneSentinel: true) { Int($0.data)! }
+        let first = try await reader.next()
+        XCTAssertEqual(first, 1)
+        let paused = await session.allTasks.first?.state
+        XCTAssertEqual(paused, .suspended)
+        try await Task.sleep(for: .milliseconds(400))
+        let resumed = await session.allTasks.first?.state
+        XCTAssertEqual(resumed, .running,
+                       "an idle consumer must not hold the transport past the idle timeout")
+        let second = try await reader.next()
+        XCTAssertEqual(second, 2)
+    }
+
     func testOversizedHTTPErrorCancelsBeforeEOFAndPreservesStatus() async throws {
         let probe = StreamProbe(String(repeating: "x", count: 65), status: 503)
         let session = session(probe)
@@ -278,6 +301,44 @@ final class StreamingMemoryTests: XCTestCase {
         await fulfillment(of: [probe.stopped], timeout: 2)
         // Keep the stream alive across the cancellation assertion.
         withExtendedLifetime(stream) {}
+    }
+
+    func testCancelledStreamDoesNotLaterReadAsCleanEnd() async throws {
+        let probe = StreamProbe("data: 1\n\n")
+        let session = session(probe)
+        defer { session.invalidateAndCancel() }
+        let reader = StreamingResponse(request: .success(URLRequest(url: url)), session: session,
+            limits: .init(), requiresDoneSentinel: true) { Int($0.data)! }
+        let first = try await reader.next()
+        XCTAssertEqual(first, 1)
+        let blocked = Task { try await reader.next() }
+        try await Task.sleep(for: .milliseconds(30))
+        blocked.cancel()
+        _ = await blocked.result
+        await fulfillment(of: [probe.stopped], timeout: 2)
+        do {
+            let value = try await reader.next()
+            XCTFail("A cancelled stream must not end cleanly, got \(String(describing: value))")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+    }
+
+    func testTerminalResponseEventReleasesTransportImmediately() async throws {
+        // No EOF from the transport: only the terminal event may release it.
+        let probe = StreamProbe("event: step\ndata: 1\n\nevent: response\ndata: 2\n\n")
+        let session = session(probe)
+        defer { session.invalidateAndCancel() }
+        let reader = StreamingResponse(request: .success(URLRequest(url: url)), session: session,
+            limits: .init(), requiresDoneSentinel: false) { Int($0.data)! }
+        let step = try await reader.next()
+        XCTAssertEqual(step, 1)
+        let response = try await reader.next()
+        XCTAssertEqual(response, 2)
+        await fulfillment(of: [probe.stopped], timeout: 2)
+        let end = try await reader.next()
+        XCTAssertNil(end)
+        withExtendedLifetime(reader) {}
     }
 
     func testConcurrentReaderMisuseClosesThePendingRead() async throws {

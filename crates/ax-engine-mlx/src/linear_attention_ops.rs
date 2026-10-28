@@ -55,6 +55,13 @@ type GatedDeltaPrefillCompileKey = (i32, i32, i32, i32, i32, i32, ThreadId);
 type GatedDeltaPrefillCompileCache =
     Mutex<HashMap<GatedDeltaPrefillCompileKey, Option<MlxClosure>>>;
 static GATED_DELTA_PREFILL_COMPILE_CACHE: OnceLock<GatedDeltaPrefillCompileCache> = OnceLock::new();
+
+/// Release the gated-delta prefill graphs a retiring worker compiled.
+pub(crate) fn clear_worker_gated_delta_compile_cache(thread: ThreadId) {
+    crate::per_layer_compile::remove_worker_entries(&GATED_DELTA_PREFILL_COMPILE_CACHE, |key| {
+        key.6 == thread
+    });
+}
 pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
 pub(crate) const GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY: usize = 1024;
 pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;

@@ -43,6 +43,16 @@ impl AdmissionController {
         })
     }
 
+    pub(crate) fn try_admit_with_host_pressure(
+        self: &Arc<Self>,
+        blocked: bool,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        if blocked {
+            return Err(AdmissionError::HostMemoryPressure);
+        }
+        self.try_admit()
+    }
+
     pub(crate) fn active_jobs(&self) -> usize {
         self.active_jobs.load(Ordering::Acquire)
     }
@@ -76,6 +86,7 @@ pub(crate) enum AdmissionError {
     Draining,
     Saturated,
     StaleGeneration,
+    HostMemoryPressure,
 }
 
 pub(crate) struct AdmissionPermit {
@@ -131,6 +142,24 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn host_pressure_refusal_retains_active_jobs_and_releases_no_capacity() {
+        let controller = Arc::new(AdmissionController::new(Some(2)));
+        let active = controller.try_admit().expect("existing request");
+        assert_eq!(
+            controller.try_admit_with_host_pressure(true).err(),
+            Some(AdmissionError::HostMemoryPressure)
+        );
+        assert_eq!(controller.active_jobs(), 1);
+        let recovered = controller
+            .try_admit_with_host_pressure(false)
+            .expect("recovery");
+        assert_eq!(controller.active_jobs(), 2);
+        drop(active);
+        drop(recovered);
+        assert_eq!(controller.active_jobs(), 0);
+    }
 
     #[test]
     fn limited_controller_holds_capacity_until_job_permit_drops() {

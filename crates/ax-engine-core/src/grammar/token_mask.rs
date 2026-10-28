@@ -85,6 +85,7 @@ impl Trie {
 /// Byte strings of a model's tokens, indexed for mask computation.
 #[derive(Clone, Debug)]
 pub struct TokenVocab {
+    identity: u64,
     vocab_size: usize,
     /// Bytes of each token; empty for tokens a mask never admits.
     bytes: Vec<Box<[u8]>>,
@@ -277,6 +278,10 @@ impl TokenVocab {
         }
         plain_by_chars.sort_unstable();
         Self {
+            identity: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             vocab_size,
             bytes: by_token,
             full,
@@ -288,6 +293,10 @@ impl TokenVocab {
 
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
+    }
+
+    pub(crate) fn identity(&self) -> u64 {
+        self.identity
     }
 
     /// The token's bytes; `None` for tokens a mask never admits.

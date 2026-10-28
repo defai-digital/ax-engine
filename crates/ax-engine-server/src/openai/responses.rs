@@ -127,7 +127,10 @@ pub(crate) fn openai_chat_completion_response(
     // Qwen thinking prompts pre-fill `<think>`, so a generation cut off before
     // `</think>` is entirely reasoning (the streaming scanner already routes it
     // that way). Other families may legitimately answer without any marker.
+    // Native MLX only: delegated servers (llama-server, mlx_lm.server) return
+    // the answer with their own reasoning already split out.
     let (mut content, reasoning_content) = if options.include_reasoning
+        && response.runtime.selected_backend == ax_engine_sdk::SelectedBackend::Mlx
         && reasoning_content.is_none()
         && !content.trim().is_empty()
         && !content.contains("<think>")
@@ -138,14 +141,33 @@ pub(crate) fn openai_chat_completion_response(
     } else {
         (content, reasoning_content)
     };
-    let (tool_calls, preserve_tool_content) = if options.parse_tool_calls {
-        match extract_tool_calls(&mut content, options.tool_contract.as_deref()) {
-            Some((calls, preserve)) => (Some(calls), preserve),
-            None => (None, false),
-        }
-    } else {
-        (None, false)
-    };
+    // A client stop that occurs before any tool-call opener ends the turn
+    // there: the stream stops on it, and the call after it would never have
+    // been generated. A stop inside a call (opener already started) still
+    // loses to the call, as on the stream.
+    let stop_precedes_tool_call = options.parse_tool_calls
+        && crate::openai::stop::find_earliest_stop(&content, &options.client_stop_sequences)
+            .is_some_and(|(index, _)| {
+                let mut scanner =
+                    crate::openai::tool_stream::ToolCallStreamScanner::with_incremental(
+                        options.tool_contract.clone(),
+                        false,
+                    );
+                let events = scanner.push(&content[..index]);
+                !scanner.has_withheld_text()
+                    && !events.iter().any(|event| {
+                        !matches!(event, crate::openai::tool_stream::ToolScanEvent::Content(_))
+                    })
+            });
+    let (tool_calls, preserve_tool_content) =
+        if options.parse_tool_calls && !stop_precedes_tool_call {
+            match extract_tool_calls(&mut content, options.tool_contract.as_deref()) {
+                Some((calls, preserve)) => (Some(calls), preserve),
+                None => (None, false),
+            }
+        } else {
+            (None, false)
+        };
     let has_tool_calls = tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
     if has_tool_calls && !preserve_tool_content {
         content.clear();
@@ -153,9 +175,15 @@ pub(crate) fn openai_chat_completion_response(
     // Client stops match visible assistant content only (ADR-040 D2): tool
     // calls were already extracted above, so a stop string occurring inside
     // call arguments can never truncate a call.
-    let stop_hit = !has_tool_calls
-        && crate::openai::stop::truncate_at_stop(&mut content, &options.client_stop_sequences);
-    let finish_reason = if has_tool_calls {
+    let stop_match = if has_tool_calls {
+        None
+    } else {
+        crate::openai::stop::truncate_at_stop_matched(&mut content, &options.client_stop_sequences)
+    };
+    let stop_hit = stop_match.is_some();
+    let finish_reason = if !tool_call_finish_allowed(response.finish_reason) {
+        openai_finish_reason(response.finish_reason)
+    } else if has_tool_calls {
         Some("tool_calls")
     } else if stop_hit {
         Some("stop")
@@ -183,6 +211,7 @@ pub(crate) fn openai_chat_completion_response(
             } else {
                 openai_chat_logprobs(response, &options, tokenizer)
             },
+            stop_reason: stop_match.filter(|_| finish_reason == Some("stop")),
             finish_reason,
         }],
         usage: chat_usage(response, &options, tokenizer),
@@ -234,6 +263,7 @@ fn openai_completion_logprobs(
     // summing per-token decode lengths would then misalign the offsets with
     // the completion text. Offsets therefore index the running decoded output.
     let mut decoded_prefix = String::new();
+    let token_count = response.output_tokens.len();
     for (i, logprob) in token_logprobs.into_iter().enumerate() {
         text_offset.push(u32::try_from(decoded_prefix.len()).unwrap_or(u32::MAX));
         // Skip special tokens exactly as the completion text decode does
@@ -241,13 +271,23 @@ fn openai_completion_logprobs(
         // but absent from `text` would misalign the byte offsets.
         match tokenizer.decode(&response.output_tokens[..=i], true) {
             Ok(prefix) => {
+                // A byte-fallback token that ends inside a multi-byte character
+                // decodes to a trailing U+FFFD the completion text never
+                // contains. Hold it back until a later token completes the
+                // character, so offsets stay on character boundaries and the
+                // tokens join to the text; the last token keeps everything.
+                let stable = if i + 1 == token_count {
+                    prefix.as_str()
+                } else {
+                    prefix.trim_end_matches('\u{FFFD}')
+                };
                 // The delta is the token's in-context rendering; `strip_prefix`
                 // degrades to an empty token if the decode is non-monotonic
-                // (e.g. byte-fallback) instead of panicking on a slice.
-                let token_text = prefix.strip_prefix(decoded_prefix.as_str()).unwrap_or("");
+                // instead of panicking on a slice.
+                let token_text = stable.strip_prefix(decoded_prefix.as_str()).unwrap_or("");
                 tokens.push(token_text.to_string());
                 logprobs.push(logprob);
-                decoded_prefix = prefix;
+                decoded_prefix = stable.to_string();
             }
             Err(_) => {
                 // A single decode failure no longer drops the whole block: emit
@@ -1197,6 +1237,11 @@ pub(crate) fn served_prefix_reused_tokens(route: &GenerateRouteReport) -> Option
         return Some(0);
     }
     route.decision("prefix_reused_tokens")
+}
+
+/// Parsed calls cannot turn an interrupted generation into a successful call.
+pub(crate) fn tool_call_finish_allowed(reason: Option<GenerateFinishReason>) -> bool {
+    matches!(reason, None | Some(GenerateFinishReason::Stop))
 }
 
 pub(crate) fn openai_finish_reason(

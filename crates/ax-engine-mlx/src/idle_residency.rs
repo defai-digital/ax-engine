@@ -251,7 +251,7 @@ pub fn sample_under_memory_pressure() -> bool {
     )
 }
 
-fn cached_vm_pressure_level() -> Option<u32> {
+pub(crate) fn cached_vm_pressure_level() -> Option<u32> {
     const TTL: Duration = Duration::from_secs(5);
     static CACHE: std::sync::Mutex<Option<(Instant, Option<u32>)>> = std::sync::Mutex::new(None);
     {

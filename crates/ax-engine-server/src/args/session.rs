@@ -143,7 +143,10 @@ impl ServerArgs {
                 .speculation_profile
                 .map(|profile| profile.as_name().to_string()),
             mlx_prefill_chunk: self.prefill_chunk,
-            mlx_stream_experts: self.stream_experts,
+            mlx_stream_experts: super::effective_stream_experts_mode(
+                self.stream_experts,
+                std::env::var("AX_STREAM_EXPERTS").ok().as_deref(),
+            )?,
             mlx_numerics: self.mlx_numerics,
             multi_prefill_fair: self.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: self.max_prefill_tokens_per_request_per_step,

@@ -798,6 +798,8 @@ pub(crate) fn clear_worker_layer_compile_caches(thread: ThreadId) {
     remove_worker_entries(&LAYER_GEMMA4_DUAL_PATH_CACHE, |key| key.2 == thread);
     remove_worker_entries(&LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE, |key| key.2 == thread);
     crate::model::clear_worker_verify_compile_caches(thread);
+    crate::model::shared::clear_worker_mlp_compile_caches(thread);
+    crate::linear_attention_ops::clear_worker_gated_delta_compile_cache(thread);
 }
 
 /// Clear every compiled per-layer decode closure before a drained model swap.

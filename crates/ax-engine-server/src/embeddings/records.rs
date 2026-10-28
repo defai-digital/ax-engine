@@ -129,19 +129,34 @@ pub(crate) async fn embedding_records(
         .iter()
         .map(|chunk| chunk.token_ids.clone())
         .collect::<Vec<_>>();
-    let token_count: usize = chunks.iter().map(|chunk| chunk.token_count).sum();
-    // Same total-token guard as /v1/embeddings: the runner does not bound
-    // input length itself, and one oversized chunk would stall the shared
-    // worker or exhaust memory. Start-up-resolved
-    // AX_ENGINE_EMBED_MAX_TOKENS (default 8192).
+    // Same guards as /v1/embeddings: each chunk is embedded on its own, so it
+    // must fit AX_ENGINE_EMBED_MAX_TOKENS (default 8192), and the whole batch
+    // must fit AX_ENGINE_EMBED_MAX_BATCH_TOKENS. The runner does not bound
+    // input length itself; one oversized chunk would stall the shared worker.
     let max_tokens = state.env.embed_max_tokens;
-    if token_count > max_tokens {
+    let max_batch_tokens = state.env.embed_max_batch_tokens;
+    let mut token_count = 0usize;
+    for (i, chunk) in chunks.iter().enumerate() {
+        token_count += chunk.token_count;
+        if chunk.token_count > max_tokens {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!(
+                    "chunk[{i}] token count ({}) exceeds maximum ({max_tokens}); \
+                     set AX_ENGINE_EMBED_MAX_TOKENS to override",
+                    chunk.token_count
+                ),
+            ));
+        }
+    }
+    if token_count > max_batch_tokens {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             format!(
-                "total chunk token count ({token_count}) exceeds maximum ({max_tokens}); \
-                 set AX_ENGINE_EMBED_MAX_TOKENS to override"
+                "total chunk token count ({token_count}) exceeds maximum ({max_batch_tokens}); \
+                 set AX_ENGINE_EMBED_MAX_BATCH_TOKENS to override"
             ),
         ));
     }

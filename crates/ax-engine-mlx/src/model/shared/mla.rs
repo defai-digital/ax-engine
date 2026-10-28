@@ -36,6 +36,35 @@ pub(crate) struct GlmMlaCachedInputs {
     pub k_pe: MlxArray,
 }
 
+/// Traditional RoPE on the MLA pe slice. A YaRN checkpoint (DeepSeek V3)
+/// rotates with the precomputed YaRN divisors and pre-scales by the YaRN
+/// mscale (mlx-lm `YarnRoPE`); unscaled checkpoints keep plain `rope_theta`.
+fn mla_rope(cfg: &ModelConfig, x: &MlxArray, dims: usize, token_offset: usize) -> MlxArray {
+    let x = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+        mlx_sys::multiply(
+            x,
+            &mlx_sys::ops::cached_scalar(cfg.rope_mscale, x.dtype()),
+            None,
+        )
+    } else {
+        x.clone()
+    };
+    let (base, freqs) = match cfg.rope_freqs.as_ref() {
+        Some(freqs) => (None, Some(freqs)),
+        None => (Some(cfg.rope_theta), None),
+    };
+    rope(
+        &x,
+        dims as i32,
+        true,
+        base,
+        1.0,
+        token_offset as i32,
+        freqs,
+        None,
+    )
+}
+
 /// GLM4MoELite MLA input projection up to the latent-cache boundary.
 pub(crate) fn glm_mla_project_inputs(
     cfg: &ModelConfig,
@@ -71,16 +100,7 @@ pub(crate) fn glm_mla_project_inputs(
         mla_cfg.q_head_dim as i32,
         None,
     );
-    let q_pe = rope(
-        &q_pe,
-        mla_cfg.qk_rope_head_dim as i32,
-        true,
-        Some(cfg.rope_theta),
-        1.0,
-        token_offset as i32,
-        None,
-        None,
-    );
+    let q_pe = mla_rope(cfg, &q_pe, mla_cfg.qk_rope_head_dim, token_offset);
 
     let compressed_kv = slice_last_dim(&qa_kva, q_split, kva_end, None);
     let kv_latent_raw = slice_last_dim(&compressed_kv, 0, mla_cfg.kv_lora_rank as i32, None);
@@ -99,16 +119,7 @@ pub(crate) fn glm_mla_project_inputs(
     let kv_latent = expand_dims(&kv_latent, 1, None);
     let k_pe = reshape(&k_pe, &[1, seq, 1, mla_cfg.qk_rope_head_dim as i32], None);
     let k_pe = transpose(&k_pe, &[0, 2, 1, 3], None);
-    let k_pe = rope(
-        &k_pe,
-        mla_cfg.qk_rope_head_dim as i32,
-        true,
-        Some(cfg.rope_theta),
-        1.0,
-        token_offset as i32,
-        None,
-        None,
-    );
+    let k_pe = mla_rope(cfg, &k_pe, mla_cfg.qk_rope_head_dim, token_offset);
 
     GlmMlaProjectedInputs {
         q_nope,

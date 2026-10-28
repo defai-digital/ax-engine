@@ -3832,3 +3832,39 @@ fn moe_router_deepseek_v4_hash_path_uses_tid2eid_indices() {
         assert!((gw - ew).abs() < 1e-4, "weight {gw} vs expected {ew}");
     }
 }
+
+#[test]
+fn worker_cleanup_removes_only_retired_swiglu_graphs() {
+    let retiring = std::thread::current().id();
+    let sibling = std::thread::spawn(|| std::thread::current().id())
+        .join()
+        .expect("thread id");
+    let swiglu = SWIGLU_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let mut entries = swiglu.lock().expect("swiglu cache");
+        for thread in [retiring, sibling] {
+            entries.insert(thread, MlxClosure::new_dyn(|_| Vec::new()));
+        }
+    }
+    let v4 = V4_CLAMPED_SWIGLU_COMPILE.get_or_init(|| Mutex::new(HashMap::new()));
+    let v4_key = |thread| (MlxDtype::Float32, MlxDtype::Float32, u32::MAX, thread);
+    {
+        let mut entries = v4.lock().expect("v4 cache");
+        entries.insert(v4_key(retiring), None);
+        entries.insert(v4_key(sibling), None);
+    }
+    crate::per_layer_compile::clear_worker_layer_compile_caches(retiring);
+    let mut entries = swiglu.lock().expect("swiglu cache");
+    assert!(!entries.contains_key(&retiring));
+    assert!(
+        entries.remove(&sibling).is_some(),
+        "sibling graph must survive"
+    );
+    drop(entries);
+    let mut entries = v4.lock().expect("v4 cache");
+    assert!(!entries.contains_key(&v4_key(retiring)));
+    assert!(
+        entries.remove(&v4_key(sibling)).is_some(),
+        "sibling graph must survive"
+    );
+}

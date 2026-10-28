@@ -100,6 +100,14 @@ not refreshed.
    completed. A cache hit signals the MLX runner to restore GPU state from its
    own snapshot cache.
 
+Direct Flash Next (`qwen4_exp`, MTP off) admits only complete text-prompt
+snapshots with a compatible cached greedy first token. Admission retains the
+snapshot until execution, so an eviction cannot turn that hit into a different
+prefill replay. Partial matches, unavailable snapshots, sampled or constrained
+requests, and semantic-cut hints use cold prefill. This preserves repeatability
+across interleaved prompt lengths; partial-prefix acceleration is unavailable
+on this path. The experimental MTP path retains its separate cache policy.
+
 ### Eviction policy
 
 `select_cached_block_eviction_candidate` uses a four-tier O(N) scan:
@@ -201,7 +209,8 @@ trimmed back to the accepted position and decode resumes from there.
 **Limitation**: `trim_to` never resets `linear_layers`. Linear attention
 recurrent state (Qwen3.5 GatedDeltaNet) is sequential and cannot be rolled
 back, which is why a linear or GDN checkpoint is only stored when the cache
-already sits at the cut. The speculative decode retry interval is adjusted for
+already sits at the cut. An ordered (non-rotating) sliding-window latch does
+not block a checkpoint; an engaged rotating ring does. The speculative decode retry interval is adjusted for
 linear-attention requests to compensate.
 
 ---
@@ -272,6 +281,13 @@ MLX runner route metadata keeps that distinction visible:
 | `ax_mlx_prefix_cache_demoted_bytes_kib` | Serialized bytes retained via demote-on-evict, rounded to KiB |
 | `ax_mlx_prefix_cache_demotion_skips` | Native removals that kept the drop behavior (kill switch off, portable policy disabled, oversized or unserializable snapshot, already-resident snapshot, or portable budget refusal) |
 
+Native SDK route retention preserves the maximum observed prefix-cache hit,
+native-hit and disk-hit counters across later steps, and keeps the latest
+nonzero restore source. Repeated route snapshots do not add hits. Cache entry
+and byte gauges retain the latest observation. Steps that already own request
+KV do not emit another restore/value-decision event. These retained route
+observations are not sums of batch-level deltas attributed to one request.
+
 ## Value-Priced Restore and Semantic Cuts (Opt-In)
 
 Two further prefix features are opt-in and both default off. They are resolved
@@ -293,19 +309,29 @@ restores pay their own materialization. It only chooses among snapshots that
 already exist, so it **never changes the emitted text**; with the switch off,
 the historical longest-prefix decision is unchanged.
 
-`AX_MLX_PREFIX_SEMANTIC_CUTS` is partition-changing by design. Cut points are
-assistant-turn token starts taken from the prompt's single full tokenization,
-at least 256 tokens apart, with at most the three most recent kept below
-`prompt_len`; a terminal anchor aligned to `lcm(block_size_tokens, 256)` is
-always added as a fallback. Capturing a cut splits the cold prefill at that
-position, and the setting is part of the execution signature, so a snapshot is
-never adopted across a switch change. The exactness contract is therefore:
+`AX_MLX_PREFIX_SEMANTIC_CUTS` is partition-changing and remains opt-in.
+For linear-attention text prefill, accepted assistant-turn starts (at least
+256 tokens apart) and fixed prefill-grid boundaries execute in increasing
+order. Execution keeps earlier boundaries when a conversation grows; retention
+keeps the three most recent semantic cuts and the last grid checkpoint. A
+terminal anchor is a lookup candidate only when it was an execution boundary.
+The disabled path keeps its existing prefill schedule.
 
-- a semantic-cut run equals a cold run **under the same setting**, not
-  necessarily the switch-off output (that run used a different prefill chunk
-  partition);
-- restore-value never changes text at all, because it only picks among
-  existing snapshots.
+Cache identity includes the partition version, configured chunk sizes and the
+accepted boundaries through each checkpoint. Different turn hints therefore
+miss instead of restoring recurrent state produced under a different partition.
+A prefill handoff checkpoint publishes only when the request's last prefill
+item ended at one of these boundaries with the partition intact; a scheduler
+split elsewhere is a counted unsupported checkpoint.
+Cold/warm comparisons must use the same execution settings; equality with a
+switch-off run is not implied. Restore-value only selects existing snapshots.
+
+Eligible DFlash2 requests also retain a detached BF16 prompt tail in RAM prefix
+snapshots. The tail is bound to the target instance, drafter content identity
+and exact token offset; its bytes count against the cache budget and eviction
+releases it with the trunk. A compatible RAM hit resumes prompt capture and
+DFlash2 decoding. Missing or incompatible tails, including disk-only restores,
+keep the existing direct fallback. This does not enable MTP by default.
 
 Both features ride the same durable identity. The disk key is canonical
 schema **v4** (`ax.mlx.disk_prefix_key.v4`), which additionally commits to the

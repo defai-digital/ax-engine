@@ -1,0 +1,80 @@
+{
+  "baseline_checks_passed": 13,
+  "baseline_checks_total": 15,
+  "candidate_checks_passed": 15,
+  "candidate_checks_total": 15,
+  "measured_requests": 6,
+  "warmup_requests": 1,
+  "repeats": [
+    {
+      "input_tokens": 2048,
+      "output_tokens": 64,
+      "repeat_identity": true
+    },
+    {
+      "input_tokens": 8192,
+      "output_tokens": 64,
+      "repeat_identity": true
+    },
+    {
+      "input_tokens": 32704,
+      "output_tokens": 64,
+      "repeat_identity": true
+    }
+  ],
+  "mtp_counters_required_present_and_zero": [
+    "ax_mlx_flash_next_mtp_verified_steps",
+    "ax_mtp_requested",
+    "ax_mtp_draft_tokens",
+    "ax_mtp_accepted_tokens"
+  ],
+  "mtp_counters_verified": true,
+  "exact_repeat_physical_reused_tokens": 8192,
+  "peak_phys_footprint_gib": 82.16699960827827,
+  "pressure_levels": [
+    1
+  ],
+  "max_swap_growth_bytes": 0,
+  "guard_failures": [],
+  "limitations": [
+    "Bounded synthetic functional corpus, not a sustained qualification",
+    "Two measurements per context, no performance-gain claim",
+    "Direct Flash Next partial-prefix reuse intentionally recomputes; complete compatible resident greedy snapshots remain reusable",
+    "Experimental MTP cache policy unchanged"
+  ],
+  "reproduction": {
+    "server_options": [
+      "--max-concurrent-requests",
+      "1",
+      "--stream-experts",
+      "auto",
+      "--prefill-chunk",
+      "1024",
+      "--total-blocks",
+      "2048",
+      "--mlx-mtp-policy",
+      "disabled"
+    ],
+    "serving_script": "scripts/bench_ax_serving.py",
+    "corpus": "candidate/corpus.jsonl",
+    "serving_options": [
+      "--input-kind",
+      "tokens",
+      "--requests",
+      "6",
+      "--warmup-requests",
+      "1",
+      "--concurrency",
+      "1",
+      "--temperature",
+      "0",
+      "--top-p",
+      "1",
+      "--top-k",
+      "0",
+      "--seed",
+      "1",
+      "--ignore-eos"
+    ]
+  }
+}

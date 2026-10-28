@@ -81,6 +81,7 @@ pub use generate::{
     GenerateFinishReason, GenerateMtpReport, GeneratePerformanceReport, GenerateRequest,
     GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent,
     GenerateStreamRequestEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
+    JsonConstraintStatus, PreparedJsonConstraint,
 };
 pub use llama_cpp::{
     LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage, LlamaCppCliConfig,
@@ -91,7 +92,8 @@ pub use llama_cpp::{
 pub use mlx_lm::{
     MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmConfig,
     MlxLmServerCompletionConfig, MlxLmStreamChunkResult, MlxLmStreamHandle,
-    finish_reason_from_mlx_lm, run_blocking_chat_generate, start_streaming_chat_generate,
+    finish_reason_from_mlx_lm, run_blocking_chat_generate,
+    run_blocking_chat_generate_with_reasoning, start_streaming_chat_generate,
 };
 pub use request::{
     EngineStepReport, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,

@@ -231,6 +231,21 @@ class TestLangchainChatModel < Minitest::Test
     assert_equal ["hi"], deltas
   end
 
+  def test_metadata_and_parallel_tool_calls_reach_the_chat_body
+    client = FakeClient.new(unary_response: CHAT_PAYLOAD)
+    chat   = chat_model(client, metadata: "constructor-trace", parallel_tool_calls: false)
+
+    chat.chat(messages: messages)
+    params = client.calls.last[1]
+    assert_equal "constructor-trace", params[:metadata]
+    assert_equal false, params[:parallel_tool_calls]
+
+    chat.chat(messages: messages, metadata: "call-trace", parallel_tool_calls: true)
+    params = client.calls.last[1]
+    assert_equal "call-trace", params[:metadata]
+    assert_equal true, params[:parallel_tool_calls]
+  end
+
   def test_unknown_options_are_not_forwarded
     client = FakeClient.new(unary_response: CHAT_PAYLOAD)
     chat   = chat_model(client)
@@ -263,7 +278,7 @@ class TestLangchainChatModel < Minitest::Test
     assert_empty client.calls
   end
 
-  def test_streaming_yields_deltas_and_returns_nil
+  def test_streaming_yields_deltas_and_returns_the_assembled_response
     client = FakeClient.new(stream_events: [
       { "event" => "message",
         "data" => { "choices" => [{ "delta" => { "content" => "he" } }] } },
@@ -275,8 +290,30 @@ class TestLangchainChatModel < Minitest::Test
 
     result = chat_model(client).chat(messages: messages, stream: true) { |delta| deltas << delta }
 
-    assert_nil result
     assert_equal %w[he llo], deltas
+    assert_equal "hello", result.chat_completion
+  end
+
+  def test_streaming_returns_tool_calls_that_never_arrive_as_content
+    client = FakeClient.new(stream_events: [
+      { "event" => "message", "data" => { "model" => "m", "choices" => [{ "delta" => {
+        "role" => "assistant",
+        "tool_calls" => [{ "index" => 0, "id" => "call_0", "type" => "function",
+                           "function" => { "name" => "weather", "arguments" => "{\"city\"" } }]
+      } }] } },
+      { "event" => "message", "data" => { "choices" => [{ "delta" => {
+        "tool_calls" => [{ "index" => 0, "function" => { "arguments" => ":\"Paris\"}" } }]
+      } }] } },
+      { "event" => "message",
+        "data" => { "choices" => [{ "delta" => {}, "finish_reason" => "tool_calls" }] } }
+    ])
+
+    result = chat_model(client).chat(messages: messages, stream: true) { |_delta| flunk "no content" }
+
+    call = result.tool_calls.first
+    assert_equal "call_0", call["id"]
+    assert_equal "weather", call.dig("function", "name")
+    assert_equal({ "city" => "Paris" }, JSON.parse(call.dig("function", "arguments")))
   end
 
   def test_streaming_surfaces_server_error_events
@@ -321,8 +358,12 @@ class TestLangchainTextLLM < Minitest::Test
     client = FakeClient.new(unary_response: COMPLETION_PAYLOAD)
     model  = text_model(client, model: "constructor-model", max_tokens: 8)
 
-    model.complete(prompt: "hi", model: "call-model", stop: ["\n"], not_a_request_key: 1)
+    model.complete(prompt: "hi", model: "call-model", stop: ["\n"], not_a_request_key: 1,
+                   metadata: "trace", parallel_tool_calls: true)
     params = client.calls.last[1]
+
+    assert_equal "trace", params[:metadata]
+    refute params.key?(:parallel_tool_calls), "completions do not define parallel_tool_calls"
 
     assert_equal :completion, client.calls.last[0]
     assert_equal "hi", params[:prompt]

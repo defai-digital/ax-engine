@@ -1,0 +1,38 @@
+{
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "os": "27.0.1",
+  "source_state": "final prefix admission candidate",
+  "source_base_commit": "8d12d1310b33612e33f524472c0c30d8f7274d31",
+  "source_verification": {
+    "files_checked": 17131,
+    "mismatches": [],
+    "manifest_sha256": "dc8a530fdb0828639e47bed8af1dcd98cf2fb79abb486c2c33227a701b3398c6"
+  },
+  "binary_sha256": "a953cb14fb839af124b4ec75f855ab8c43a17f26dd231f862c30a0c91d6674d3",
+  "profile": "release-server",
+  "mlx": "0.32.4",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27) (Homebrew)",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "pack_pin": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "server_command": [
+    "$HOME/build/ax-reference-20261027/.internal/experiments/base/target/release-server/ax-engine-server",
+    "--mlx",
+    "--mlx-model-artifacts-dir",
+    "$HOME/build/ax-reference-20261027/.internal/flash-pack",
+    "--model-id",
+    "qwen3.8-flash-next",
+    "--port",
+    "31591",
+    "--max-concurrent-requests",
+    "1",
+    "--stream-experts",
+    "auto",
+    "--total-blocks",
+    "2048",
+    "--prefill-chunk",
+    "1024",
+    "--mlx-mtp-policy",
+    "disabled"
+  ],
+  "scope": "Bounded functional and serving regression; not certification or sustained qualification"
+}

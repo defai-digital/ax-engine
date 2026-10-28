@@ -2482,3 +2482,25 @@ fn compiled_silu_mul_normed_s2_matches_uncompiled_and_s1_row() {
         "S=1 must stay uncompiled so MTP-off decode fusion is unchanged"
     );
 }
+
+#[test]
+fn worker_cleanup_removes_only_retired_gated_delta_graphs() {
+    let retiring = std::thread::current().id();
+    let sibling = std::thread::spawn(|| std::thread::current().id())
+        .join()
+        .expect("thread id");
+    let key = |thread| (-1, -1, -1, -1, -1, -1, thread);
+    let cache = GATED_DELTA_PREFILL_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let mut entries = cache.lock().expect("gated delta cache");
+        entries.insert(key(retiring), None);
+        entries.insert(key(sibling), None);
+    }
+    crate::per_layer_compile::clear_worker_layer_compile_caches(retiring);
+    let mut entries = cache.lock().expect("gated delta cache");
+    assert!(!entries.contains_key(&key(retiring)));
+    assert!(
+        entries.remove(&key(sibling)).is_some(),
+        "sibling graph must survive"
+    );
+}

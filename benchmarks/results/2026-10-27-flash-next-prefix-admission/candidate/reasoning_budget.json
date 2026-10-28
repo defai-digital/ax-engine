@@ -1,0 +1,70 @@
+{
+  "request": {
+    "model": "qwen3.8-flash-next",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return JSON matching the schema. Use true, and an item with an escaped newline or a Unicode letter."
+      }
+    ],
+    "max_tokens": 16,
+    "temperature": 0,
+    "grammar_budget": true,
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    },
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "answer",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "http_status": 200,
+  "response": {
+    "id": "chatcmpl-6",
+    "object": "chat.completion",
+    "created": 1793150578,
+    "model": "qwen3.8-flash-next",
+    "system_fingerprint": null,
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"ok\": true}",
+          "reasoning_content": "The user wants me to return JSON matching the schema"
+        },
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 79,
+      "completion_tokens": 16,
+      "total_tokens": 95,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 79,
+        "prefill_time_us": 488882,
+        "decode_tokens": 15,
+        "decode_time_us": 317331
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 10
+      }
+    }
+  }
+}

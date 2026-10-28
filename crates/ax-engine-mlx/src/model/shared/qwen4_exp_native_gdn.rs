@@ -591,6 +591,7 @@ fn decay_reference(
     decay_proj: &MlxArray,
     dt_bias: &MlxArray,
     exp_a_log: &MlxArray,
+    beta_proj: &MlxArray,
 ) -> (MlxArray, MlxArray) {
     let projection = astype(decay_proj, MlxDtype::Float32, None);
     let summed = mlx_sys::add(&projection, &astype(dt_bias, MlxDtype::Float32, None), None);
@@ -605,8 +606,8 @@ fn decay_reference(
     let decay = mlx_sys::exp(&mlx_sys::negative(&scaled, None), None);
     let beta = astype(
         &astype(
-            &mlx_sys::sigmoid(&projection, None),
-            decay_proj.dtype(),
+            &mlx_sys::sigmoid(&astype(beta_proj, MlxDtype::Float32, None), None),
+            beta_proj.dtype(),
             None,
         ),
         MlxDtype::Float32,
@@ -670,7 +671,9 @@ fn decay_self_check(projection: MlxDtype, bias: MlxDtype) -> bool {
     let shape = [1, DECAY_CHECK_ROWS as i32, heads];
     let projection_values = self_check_values(elements, 0);
     let decay_proj = array_from_f32(&projection_values, &shape, projection);
-    let beta_proj = array_from_f32(&projection_values, &shape, projection);
+    // Distinct beta inputs: identical ones could not tell which projection
+    // the kernel reads for beta.
+    let beta_proj = array_from_f32(&self_check_values(elements, 2), &shape, projection);
     let bias_values = self_check_values(DECAY_CHECK_HEADS, 1);
     let dt_bias = array_from_f32(&bias_values, &[heads], bias);
     let exp_a_log = array_from_f32(
@@ -683,7 +686,8 @@ fn decay_self_check(projection: MlxDtype, bias: MlxDtype) -> bool {
         return false;
     }
 
-    let (decay_expected, beta_expected) = decay_reference(&decay_proj, &dt_bias, &exp_a_log);
+    let (decay_expected, beta_expected) =
+        decay_reference(&decay_proj, &dt_bias, &exp_a_log, &beta_proj);
     let Some((decay, beta)) = launch_decay(
         &decay_proj,
         &dt_bias,
@@ -1126,7 +1130,11 @@ mod tests {
         let shape = [1, rows as i32, heads as i32];
         let projection_values = self_check_values(elements, rotation);
         let decay_proj = array_from_f32(&projection_values, &shape, projection);
-        let beta_proj = array_from_f32(&projection_values, &shape, projection);
+        let beta_proj = array_from_f32(
+            &self_check_values(elements, rotation + 2),
+            &shape,
+            projection,
+        );
         let dt_bias = array_from_f32(
             &self_check_values(heads, rotation + 1),
             &[heads as i32],
@@ -1147,7 +1155,8 @@ mod tests {
         assert_eq!(decay.dtype(), MlxDtype::Float32);
         assert_eq!(beta.dtype(), MlxDtype::Float32);
 
-        let (decay_reference, beta_reference) = decay_reference(&decay_proj, &dt_bias, &exp_a_log);
+        let (decay_reference, beta_reference) =
+            decay_reference(&decay_proj, &dt_bias, &exp_a_log, &beta_proj);
         assert_eq!(
             raw_bits(&decay).expect("decay bits"),
             raw_bits(&decay_reference).expect("decay reference bits"),
@@ -1543,7 +1552,7 @@ mod tests {
                 let (decay, beta) = decay_beta(&decay_proj, &dt_bias, &exp_a_log, &decay_proj)
                     .unwrap_or_else(|| panic!("native decay chain at {cursor:#010x}"));
                 let (decay_expected, beta_expected) =
-                    decay_reference(&decay_proj, &dt_bias, &exp_a_log);
+                    decay_reference(&decay_proj, &dt_bias, &exp_a_log, &decay_proj);
                 assert_eq!(
                     raw_bits(&decay).expect("decay bits"),
                     raw_bits(&decay_expected).expect("decay reference bits"),
@@ -1573,7 +1582,8 @@ mod tests {
             );
             let (decay, beta) = decay_beta(&proj, &dt_bias, &exp_a_log, &proj)
                 .unwrap_or_else(|| panic!("native sigmoid sweep for {dtype:?}"));
-            let (decay_expected, beta_expected) = decay_reference(&proj, &dt_bias, &exp_a_log);
+            let (decay_expected, beta_expected) =
+                decay_reference(&proj, &dt_bias, &exp_a_log, &proj);
             assert_eq!(
                 raw_bits(&beta).expect("beta bits"),
                 raw_bits(&beta_expected).expect("beta reference bits"),

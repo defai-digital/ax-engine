@@ -497,8 +497,12 @@ async fn ollama_chat_inner(
     if keep_alive_unload {
         // The completion has been produced (the two-chunk stream emulation is
         // fully buffered), so unloading now honors `keep_alive: 0` without
-        // cutting off an in-flight body.
-        unload_model_after_keep_alive(&state, live.model_id.as_ref()).await;
+        // cutting off an in-flight body. Release this handler's snapshot first:
+        // it owns the stateless prefix/weight context the post-unload trim
+        // must be able to reclaim.
+        let model_id = live.model_id.as_ref().clone();
+        drop(live);
+        unload_model_after_keep_alive(&state, &model_id).await;
     }
     if stream {
         return ollama_ndjson_response(vec![
@@ -602,7 +606,10 @@ async fn ollama_generate_inner(
     let ollama =
         run_ollama_completion(state.clone(), live.clone(), openai_request, num_ctx).await?;
     if keep_alive_unload {
-        unload_model_after_keep_alive(&state, live.model_id.as_ref()).await;
+        // Release this handler's snapshot before the post-unload trim.
+        let model_id = live.model_id.as_ref().clone();
+        drop(live);
+        unload_model_after_keep_alive(&state, &model_id).await;
     }
     if stream {
         return ollama_ndjson_response(vec![
@@ -646,8 +653,6 @@ async fn stream_ollama_native(
     let stream_context = build_stream_state(&state, &live, generate_request).await?;
 
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(128);
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_monitor = Arc::clone(&cancel);
     // Mirror the SSE path: a client hangup must reach the generation worker
     // (not just the blocking adapter) so it cancels at the next scheduler
     // boundary instead of finishing the prefill for a dead connection.
@@ -655,18 +660,9 @@ async fn stream_ollama_native(
         StreamStateSource::Service(events) => Some(events.disconnect_flag()),
         StreamStateSource::Stateless { .. } | StreamStateSource::Stateful { .. } => None,
     };
-    let monitor_tx = tx.clone();
-    let error_tx = tx.clone();
-    tokio::spawn(async move {
-        monitor_tx.closed().await;
-        cancel_monitor.store(true, Ordering::Relaxed);
-        if let Some(disconnected) = service_disconnect {
-            disconnected.store(true, Ordering::Release);
-        }
-    });
-    let handle = match stream_context {
-        StreamStateSource::Service(mut events) => tokio::task::spawn_blocking(move || {
-            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+    let drive: OllamaStreamDriver = match stream_context {
+        StreamStateSource::Service(mut events) => Box::new(move |tx, cancel| {
+            drive_ollama_native_events(kind, tx, cancel, tokenizer, stop_scanner, || {
                 events.blocking_recv().transpose()
             });
         }),
@@ -674,9 +670,9 @@ async fn stream_ollama_native(
             mut state,
             context,
             permit,
-        } => tokio::task::spawn_blocking(move || {
+        } => Box::new(move |tx, cancel| {
             let _permit = permit;
-            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+            drive_ollama_native_events(kind, tx, cancel, tokenizer, stop_scanner, || {
                 context.next_stream_event(&mut state)
             });
         }),
@@ -684,17 +680,111 @@ async fn stream_ollama_native(
             mut state,
             mut session,
             permit,
-        } => tokio::task::spawn_blocking(move || {
+        } => Box::new(move |tx, cancel| {
             let _permit = permit;
-            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+            drive_ollama_native_events(kind, tx, cancel, tokenizer, stop_scanner, || {
                 session.next_stream_event(&mut state)
             });
         }),
     };
+    spawn_ollama_stream_driver(tx, service_disconnect, drive);
+    let rx = spawn_ndjson_deadline_relay(rx, state.limits.stream_deadlines);
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response())
+}
+
+/// Apply --stream-idle-timeout-secs / --stream-max-duration-secs to an
+/// NDJSON body, as the SSE paths do. Empty chunks are progress markers from
+/// the driver: they reset the idle timer and are not forwarded. On expiry
+/// the client gets an NDJSON error line and the producer is dropped (which
+/// cancels the request through the disconnect monitor).
+fn spawn_ndjson_deadline_relay(
+    mut rx: mpsc::Receiver<Result<String, std::io::Error>>,
+    deadlines: crate::generation::streaming::StreamDeadlines,
+) -> mpsc::Receiver<Result<String, std::io::Error>> {
+    if deadlines.idle_timeout.is_none() && deadlines.max_duration.is_none() {
+        return rx;
+    }
+    let (relay_tx, relay_rx) = mpsc::channel(128);
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        loop {
+            let remaining = deadlines
+                .max_duration
+                .map(|max| max.saturating_sub(start.elapsed()));
+            let wait = match (deadlines.idle_timeout, remaining) {
+                (Some(idle), Some(remaining)) => idle.min(remaining),
+                (Some(idle), None) => idle,
+                (None, Some(remaining)) => remaining,
+                (None, None) => return,
+            };
+            let received = tokio::select! {
+                _ = relay_tx.closed() => return,
+                result = tokio::time::timeout(wait, rx.recv()) => result,
+            };
+            match received {
+                Ok(Some(Ok(line))) if line.is_empty() => {}
+                Ok(Some(item)) => {
+                    if relay_tx.send(item).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => return,
+                Err(_elapsed) => {
+                    let message = if deadlines
+                        .max_duration
+                        .is_some_and(|max| start.elapsed() >= max)
+                    {
+                        "stream exceeded the configured maximum duration"
+                    } else {
+                        "stream exceeded the configured idle timeout"
+                    };
+                    let _ = relay_tx
+                        .send(Ok(format!("{}\n", json!({ "error": message }))))
+                        .await;
+                    return;
+                }
+            }
+        }
+    });
+    relay_rx
+}
+
+type OllamaStreamDriver =
+    Box<dyn FnOnce(&mpsc::Sender<Result<String, std::io::Error>>, &AtomicBool) + Send + 'static>;
+
+/// Run an NDJSON stream driver on the blocking pool with a disconnect
+/// monitor. The monitor holds a sender, so it is aborted once the driver
+/// returns: otherwise the receiver never reaches end-of-stream and the body
+/// stays open after the final `done:true` line until the client hangs up.
+fn spawn_ollama_stream_driver(
+    tx: mpsc::Sender<Result<String, std::io::Error>>,
+    service_disconnect: Option<Arc<AtomicBool>>,
+    drive: OllamaStreamDriver,
+) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_monitor = Arc::clone(&cancel);
+    let monitor_tx = tx.clone();
+    let error_tx = tx.clone();
+    let monitor_handle = tokio::spawn(async move {
+        monitor_tx.closed().await;
+        cancel_monitor.store(true, Ordering::Relaxed);
+        if let Some(disconnected) = service_disconnect {
+            disconnected.store(true, Ordering::Release);
+        }
+    });
+    let handle = tokio::task::spawn_blocking(move || drive(&tx, &cancel));
     // A panic in the drive task would otherwise drop the sender and end the
     // NDJSON body with a bare EOF that clients cannot tell from success.
     tokio::spawn(async move {
-        if let Err(error) = handle.await {
+        let result = handle.await;
+        monitor_handle.abort();
+        if let Err(error) = result {
             tracing::error!(%error, "Ollama stream task failed");
             let _ = error_tx
                 .send(Ok(format!(
@@ -704,13 +794,6 @@ async fn stream_ollama_native(
                 .await;
         }
     });
-
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/x-ndjson")],
-        Body::from_stream(ReceiverStream::new(rx)),
-    )
-        .into_response())
 }
 
 fn drive_ollama_native_events<N>(
@@ -735,10 +818,21 @@ fn drive_ollama_native_events<N>(
     // throughput as eval_count / eval_duration, and a zero duration would
     // divide by zero. Mirrors the buffered Ollama paths.
     let started = std::time::Instant::now();
+    let mut last_progress = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("Ollama stream cancelled: client disconnected");
             return;
+        }
+        // NDJSON has no comment frame: an empty chunk marks engine progress
+        // for the deadline relay (which drops it), so a long prefill does
+        // not read as an idle stream. Without a relay it is a zero-byte
+        // chunk the client never sees.
+        if last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+            if tx.blocking_send(Ok(String::new())).is_err() {
+                return;
+            }
+            last_progress = std::time::Instant::now();
         }
         match next() {
             Ok(None) => {
@@ -1040,6 +1134,7 @@ fn ollama_chat_to_openai_request(
         metadata: Some("ollama:/api/chat".to_string()),
         multimodal_inputs: Default::default(),
         response_format: ollama_format_to_openai(request.format)?,
+        grammar_budget: false,
         tools: request.tools,
         tool_choice: None,
         parallel_tool_calls: None,
@@ -1093,6 +1188,7 @@ fn ollama_generate_to_openai_request(
         metadata: Some("ollama:/api/generate".to_string()),
         multimodal_inputs: Default::default(),
         response_format: ollama_format_to_openai(request.format)?,
+        grammar_budget: false,
         fit_max_tokens_to_context: num_predict.fill_context,
     })
 }
@@ -1553,17 +1649,18 @@ async fn run_ollama_chat_completion(
         let runtime = live.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
         let permit = state.try_admit(&live).map_err(admission_error_response)?;
-        let response = run_blocking_session_task(move || {
+        let (response, reasoning) = run_blocking_session_task(move || {
             let _permit = permit;
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         validate_openai_response_format(&response, &response_options)?;
         return Ok(openai_chat_completion_response(
             &response,
             OpenAiStreamKind::ChatCompletion.response_id(request_id),
             response_options,
-            None,
+            reasoning,
             response_decode_tokenizer(&live).as_ref(),
         ));
     }
@@ -1585,6 +1682,7 @@ async fn run_ollama_chat_completion(
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         validate_openai_response_format(&response, &response_options)?;
         return Ok(openai_chat_completion_response(
             &response,
@@ -2037,6 +2135,57 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
+
+    #[tokio::test]
+    async fn ndjson_deadline_relay_honors_progress_and_idle_timeout() {
+        let deadlines = crate::generation::streaming::StreamDeadlines {
+            idle_timeout: Some(std::time::Duration::from_millis(150)),
+            max_duration: None,
+        };
+        // Progress markers keep a quiet stream alive and are not forwarded.
+        let (tx, rx) = mpsc::channel(16);
+        let mut out = spawn_ndjson_deadline_relay(rx, deadlines);
+        tokio::spawn(async move {
+            tx.send(Ok("a\n".to_string())).await.expect("send");
+            for _ in 0..6 {
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                tx.send(Ok(String::new())).await.expect("progress");
+            }
+            tx.send(Ok("b\n".to_string())).await.expect("send");
+        });
+        let mut lines = Vec::new();
+        while let Some(item) = out.recv().await {
+            lines.push(item.expect("line"));
+        }
+        assert_eq!(lines, vec!["a\n".to_string(), "b\n".to_string()]);
+
+        // A silent producer hits the idle timeout with an NDJSON error line.
+        let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(16);
+        let mut out = spawn_ndjson_deadline_relay(rx, deadlines);
+        let last = out.recv().await.expect("error line").expect("line");
+        assert!(last.contains("idle timeout"), "{last}");
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn native_ndjson_body_ends_after_the_driver_returns() {
+        let (tx, mut rx) = mpsc::channel::<Result<String, std::io::Error>>(8);
+        spawn_ollama_stream_driver(
+            tx,
+            None,
+            Box::new(|tx, _cancel| {
+                let _ = tx.blocking_send(Ok("{\"done\":true}\n".to_string()));
+            }),
+        );
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("final line arrives");
+        assert!(first.is_some());
+        let end = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the body must end once the driver returns, not wait for a client hangup");
+        assert!(end.is_none());
+    }
     use super::*;
 
     #[test]
@@ -2507,6 +2656,7 @@ mod tests {
                 },
                 logprobs: None,
                 finish_reason: Some("tool_calls"),
+                stop_reason: None,
             }],
             usage: Some(OpenAiUsage {
                 prompt_tokens: 3,

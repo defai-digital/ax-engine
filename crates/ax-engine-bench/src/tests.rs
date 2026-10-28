@@ -1350,6 +1350,8 @@ fn valid_native_model_manifest() -> ax_engine_core::NativeModelManifest {
         rope_original_context_len: None,
         rope_beta_fast: None,
         rope_beta_slow: None,
+        rope_mscale: None,
+        rope_mscale_all_dim: None,
         no_rope_layer_interval: 0,
         attn_temperature_floor: None,
         attn_temperature_scale: None,
@@ -2402,6 +2404,7 @@ fn serialize_runtime_metadata_prefers_actual_runtime_report_over_config_side_met
             NativeRuntimeArtifactsSource::ExplicitConfig,
         )),
         mlx_model: Some(NativeModelReport {
+            drafter_identity: None,
             artifacts_source: NativeModelArtifactsSource::ExplicitEnv,
             model_family: "actual_bound_model".to_string(),
             tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,

@@ -12,7 +12,7 @@ use crate::errors::{ErrorResponse, admission_error_response, error_response, map
 use crate::openai::compat::tokenizer_for_live_op;
 use crate::openai::schema::{
     EmbeddingInput, OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse,
-    OpenAiEmbeddingUsage,
+    OpenAiEmbeddingUsage, OpenAiEmbeddingVector,
 };
 use crate::openai::validation::select_model;
 
@@ -43,17 +43,19 @@ pub(crate) async fn openai_embeddings(
         )
     })?;
     let live = select_model(&state, request.model.as_deref())?;
-    if request
-        .encoding_format
-        .as_deref()
-        .is_some_and(|format| format != "float")
-    {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "unsupported_parameter",
-            "encoding_format currently supports only 'float'".to_string(),
-        ));
-    }
+    // The official OpenAI Python and Node clients send `base64` whenever the
+    // caller does not pick a format, so refusing it broke their default call.
+    let base64_encoding = match request.encoding_format.as_deref() {
+        None | Some("float") => false,
+        Some("base64") => true,
+        Some(other) => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                format!("encoding_format must be 'float' or 'base64', got {other:?}"),
+            ));
+        }
+    };
     if request.dimensions.is_some() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -201,7 +203,11 @@ pub(crate) async fn openai_embeddings(
         .enumerate()
         .map(|(index, embedding)| OpenAiEmbeddingObject {
             object: "embedding",
-            embedding,
+            embedding: if base64_encoding {
+                OpenAiEmbeddingVector::Base64(base64_embedding(&embedding))
+            } else {
+                OpenAiEmbeddingVector::Float(embedding)
+            },
             index: index as u32,
         })
         .collect();
@@ -215,6 +221,17 @@ pub(crate) async fn openai_embeddings(
             total_tokens: token_count,
         },
     }))
+}
+
+/// Little-endian float32 bytes, base64-encoded (OpenAI `encoding_format:
+/// "base64"`; clients decode with `np.frombuffer(..., dtype="float32")`).
+pub(crate) fn base64_embedding(embedding: &[f32]) -> String {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = embedding
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 pub(crate) fn embedding_input_tokens(

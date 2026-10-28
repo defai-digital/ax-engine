@@ -91,6 +91,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     live: LiveState,
     request: MlxLmChatGenerateRequest,
     include_usage: bool,
+    include_reasoning: bool,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let model_id = request.model_id.clone();
     stream_delegated_openai_chat(
@@ -100,7 +101,10 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
         include_usage,
         "openai mlx_lm chat stream",
         mlx_lm::config,
-        move |runtime, backend| mlx_lm::start_chat_stream(runtime, backend, &request),
+        move |runtime, backend| {
+            mlx_lm::start_chat_stream(runtime, backend, &request)
+                .map(|stream| (stream, include_reasoning))
+        },
         drive_openai_mlx_lm_chat_stream,
     )
     .await
@@ -364,31 +368,7 @@ impl OpenAiStreamDriver {
                 {
                     filter.mark_kept_output();
                 }
-                let content_text = match self.reasoning.as_mut() {
-                    Some(StreamReasoningMode::QwenThink(scanner)) => {
-                        let step = scanner.push(&delta_text);
-                        if !step.reasoning.is_empty()
-                            && !emit_reasoning_chunk(
-                                tx,
-                                request_id,
-                                &model_id,
-                                &mut self.chat_role_emitted,
-                                step.reasoning,
-                            )
-                        {
-                            return false;
-                        }
-                        step.content
-                    }
-                    // Thinking off: no reasoning stage, but content stops at a
-                    // re-emitted `</think>` (empty text is dropped below).
-                    Some(StreamReasoningMode::DeepSeekCut(cutter)) => cutter.push(&delta_text),
-                    _ => delta_text,
-                };
-                if content_text.is_empty() {
-                    return true;
-                }
-                self.process_text(tx, request_id, &model_id, content_text)
+                self.route_decoded_text(tx, request_id, &model_id, delta_text)
             }
             GenerateStreamEvent::Response(payload) => {
                 // A terminal Failed/Cancelled response is not a clean finish:
@@ -436,15 +416,24 @@ impl OpenAiStreamDriver {
                     return false;
                 }
                 // Text the incremental decoder was still holding for a
-                // trailing codepoint is content too; route it through the
-                // same scanners as any other delta.
+                // trailing codepoint is a delta like any other: it must pass
+                // the think scanner / `</think>` cutter before the content
+                // scanners, or a codepoint held inside an unclosed reasoning
+                // block leaks into `delta.content`.
                 if let Some(decoder) = self.decoder.as_mut() {
                     let tail = match map_stream_decode_result(decoder.finish(), tx) {
                         Ok(tail) => tail.unwrap_or_default(),
                         Err(()) => return false,
                     };
-                    if !tail.is_empty() && !self.process_text(tx, request_id, &model_id, tail) {
-                        return false;
+                    if !tail.is_empty() {
+                        if !tail.trim().is_empty()
+                            && let Some(filter) = self.channel_filter.as_mut()
+                        {
+                            filter.mark_kept_output();
+                        }
+                        if !self.route_decoded_text(tx, request_id, &model_id, tail) {
+                            return false;
+                        }
                     }
                 }
                 // Flush the think scanner before the tool/stop scanners so
@@ -510,7 +499,10 @@ impl OpenAiStreamDriver {
                     .tool_scanner
                     .as_ref()
                     .map_or(0, ToolCallStreamScanner::parsed_calls);
-                let final_sent = if parsed_tool_calls > 0 {
+                let final_sent = if parsed_tool_calls > 0
+                    && crate::openai::responses::tool_call_finish_allowed(
+                        payload.response.finish_reason,
+                    ) {
                     let chunk = chat_tool_calls_final_chunk(request_id, model_id);
                     send_openai_stream_chunk(tx, &chunk)
                 } else {
@@ -640,6 +632,44 @@ impl OpenAiStreamDriver {
         };
         tail.is_empty()
             || emit_reasoning_chunk(tx, request_id, model_id, &mut self.chat_role_emitted, tail)
+    }
+
+    /// Pass decoded text through the reasoning stage (think scanner or the
+    /// thinking-off `</think>` cutter), emit any reasoning, and hand the
+    /// surviving content to [`Self::process_text`]. Returns false when the
+    /// stream must end.
+    fn route_decoded_text(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        text: String,
+    ) -> bool {
+        let content_text = match self.reasoning.as_mut() {
+            Some(StreamReasoningMode::QwenThink(scanner)) => {
+                let step = scanner.push(&text);
+                if !step.reasoning.is_empty()
+                    && !emit_reasoning_chunk(
+                        tx,
+                        request_id,
+                        model_id,
+                        &mut self.chat_role_emitted,
+                        step.reasoning,
+                    )
+                {
+                    return false;
+                }
+                step.content
+            }
+            // Thinking off: no reasoning stage, but content stops at a
+            // re-emitted `</think>` (empty text is dropped below).
+            Some(StreamReasoningMode::DeepSeekCut(cutter)) => cutter.push(&text),
+            _ => text,
+        };
+        if content_text.is_empty() {
+            return true;
+        }
+        self.process_text(tx, request_id, model_id, content_text)
     }
 
     /// Route decoded text through the tool scanner (chat only) and the stop
@@ -787,7 +817,16 @@ impl OpenAiStreamDriver {
                     send_openai_stream_chunk(tx, &chunk)
                 }
                 OpenAiStreamKind::ChatCompletion => {
-                    let chunk = chat_final_chunk(request_id, model_id.to_string(), finish);
+                    let mut chunk = chat_final_chunk(request_id, model_id.to_string(), finish);
+                    let matched_text = self
+                        .pipeline
+                        .stop_scanner
+                        .as_ref()
+                        .and_then(StopSequenceScanner::matched_text)
+                        .map(str::to_string);
+                    if let Some(choice) = chunk.choices.first_mut() {
+                        choice.stop_reason = matched_text;
+                    }
                     send_openai_stream_chunk(tx, &chunk)
                 }
             };
@@ -1488,7 +1527,7 @@ fn drive_openai_mlx_lm_chat_stream(
     cancel: &AtomicBool,
     request_id: u64,
     model_id: String,
-    mut stream: MlxLmStreamHandle,
+    (mut stream, include_reasoning): (MlxLmStreamHandle, bool),
     include_usage: bool,
 ) {
     let mut chat_role_emitted = false;
@@ -1507,6 +1546,21 @@ fn drive_openai_mlx_lm_chat_stream(
             Ok(Some(chunk)) => {
                 prompt_token_count = chunk.prompt_token_count.or(prompt_token_count);
                 output_token_count = chunk.output_token_count.or(output_token_count);
+                // mlx-lm streams a thinking model's reasoning as
+                // delta.reasoning, never as content.
+                if include_reasoning
+                    && !final_emitted
+                    && !chunk.reasoning.is_empty()
+                    && !emit_reasoning_chunk(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        &mut chat_role_emitted,
+                        chunk.reasoning,
+                    )
+                {
+                    return;
+                }
                 if !final_emitted && !chunk.text.is_empty() {
                     let role = next_chat_delta_role(&mut chat_role_emitted);
                     let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.text);
@@ -2890,6 +2944,47 @@ mod openai_stream_driver_tests {
     }
 
     #[test]
+    fn parsed_tool_calls_preserve_terminal_interruption_reason() {
+        for incremental in [false, true] {
+            for partial_tail in ["", "<tool_call>{\"name\":\"g\",\"arguments\":{"] {
+                for (reason, expected) in [
+                    (GenerateFinishReason::MaxOutputTokens, "length"),
+                    (GenerateFinishReason::ContentFilter, "content_filter"),
+                ] {
+                    let mut driver = chat_driver(&[]);
+                    driver.pipeline.tool_scanner =
+                        Some(ToolCallStreamScanner::with_incremental(None, incremental));
+                    let (tx, mut rx) = mpsc::channel(64);
+                    let text = format!(
+                        "<tool_call>{{\"name\":\"f\",\"arguments\":{{}}}}</tool_call>{partial_tail}"
+                    );
+                    assert!(driver.process_text(&tx, 1, "qwen3", text));
+                    let mut response = sample_response();
+                    response.finish_reason = Some(reason);
+                    if reason == GenerateFinishReason::ContentFilter {
+                        response.status = GenerateStatus::Failed;
+                    }
+                    assert!(driver.handle_event(
+                        &tx,
+                        GenerateStreamEvent::Response(GenerateStreamResponseEvent { response }),
+                    ));
+                    drop(tx);
+                    let payloads = collect_chunk_payloads(&mut rx);
+                    let actual: Vec<_> = payloads
+                        .iter()
+                        .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
+                        .collect();
+                    assert_eq!(
+                        actual,
+                        vec![expected],
+                        "incremental={incremental}, tail={partial_tail}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn content_filter_terminal_response_keeps_the_normal_finish() {
         // The SDK reports content filtering as Failed; provider clients still
         // expect a normal final chunk with finish_reason content_filter.
@@ -2923,6 +3018,113 @@ mod openai_stream_driver_tests {
             reasons.contains(&"content_filter"),
             "expected a content_filter finish, got {payloads:?}"
         );
+    }
+
+    #[test]
+    fn client_stop_final_chunk_carries_the_matched_stop_text() {
+        let mut driver = OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: None,
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: StopSequenceScanner::new(vec!["DONE".to_string()]),
+                include_usage: false,
+                count_reasoning_tokens: false,
+            },
+            reasoning: None,
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+        assert!(
+            !driver.emit_content(&tx, 1, "m", "partial DONE rest".to_string()),
+            "a stop match ends the stream"
+        );
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let finals: Vec<&Value> = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+            .collect();
+        assert_eq!(finals.len(), 1, "{payloads:?}");
+        assert_eq!(finals[0]["finish_reason"], "stop");
+        assert_eq!(finals[0]["stop_reason"], "DONE");
+    }
+
+    #[test]
+    fn decoder_held_tail_inside_think_stays_reasoning_at_end_of_stream() {
+        // The content decoder holds the lead byte of `é` waiting for its
+        // continuation. The stream ends inside an unclosed think block, so the
+        // flushed tail is reasoning: it must pass the think scanner instead of
+        // leaking into `delta.content`.
+        let mut driver = OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: Some(IncrementalDecoder::new(byte_level_test_tokenizer(
+                "think-tail",
+            ))),
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: None,
+                include_usage: false,
+                count_reasoning_tokens: false,
+            },
+            reasoning: Some(StreamReasoningMode::QwenThink(
+                crate::openai::reasoning_stream::ThinkTagScanner::new_inside_think(),
+            )),
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+
+        let decoder = driver.decoder.as_mut().expect("decoder");
+        let delta = decoder.push(&[4]).expect("decode");
+        assert_eq!(delta, "ok");
+        let held = decoder.push(&[1]).expect("decode");
+        assert_eq!(held, "", "the incomplete codepoint is held back");
+        assert!(driver.route_decoded_text(&tx, 1, "qwen", delta));
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        let mut reasoning = String::new();
+        let mut content = String::new();
+        for delta in payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("delta"))
+        {
+            if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
+                reasoning.push_str(text);
+            }
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(text);
+            }
+        }
+        assert_eq!(reasoning, "ok\u{FFFD}");
+        assert_eq!(content, "", "no reasoning text may leak into content");
     }
 
     #[test]
@@ -3067,6 +3269,39 @@ mod openai_stream_driver_tests {
         GenerateStreamEvent::Response(GenerateStreamResponseEvent {
             response: sample_response(),
         })
+    }
+
+    #[test]
+    fn silent_engine_progress_still_emits_heartbeat_comments() {
+        // Steps that produce no client frame (prefill quanta, hidden
+        // reasoning) must still look like activity to the idle-timeout relay.
+        let (tx, mut rx) = mpsc::channel(64);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut steps = 0;
+        crate::generation::streaming::drive_stream_events(
+            &tx,
+            &cancel,
+            || {
+                steps += 1;
+                if steps > 3 {
+                    return Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                Ok(Some(step_with_delta_text("")))
+            },
+            |_event| true, // the driver emits nothing for these steps
+            || {},
+        );
+        drop(tx);
+        let mut frames = 0;
+        while let Ok(frame) = rx.try_recv() {
+            let _event = frame.expect("frame");
+            frames += 1;
+        }
+        assert!(
+            frames >= 1,
+            "1.8 s of silent progress must yield a heartbeat"
+        );
     }
 
     fn step_with_delta_text(text: &str) -> GenerateStreamEvent {

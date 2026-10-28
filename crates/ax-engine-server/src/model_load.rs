@@ -329,7 +329,10 @@ pub(crate) async fn load_model(
                     && let Err(error) = enable_resident_prefill_isolation(&state_clone).await
                 {
                     retire_unpublished(new_live).await;
-                    return Err(error);
+                    // A memory-constrained replace already shut the outgoing
+                    // default down; failing here without the rollback left the
+                    // registry pointing at a dead worker.
+                    return Err(with_rollback(&state_clone, rollback, error).await);
                 }
                 let published_model_id = Arc::clone(&new_live.model_id);
                 let _availability_drain;
@@ -342,11 +345,11 @@ pub(crate) async fn load_model(
                         .then(|| live.admission.begin_drain());
                     if let Err(error) = ensure_no_active_stepwise(&live.generation_service).await {
                         retire_unpublished(new_live).await;
-                        return Err(error);
+                        return Err(with_rollback(&state_clone, rollback, error).await);
                     }
                     if let Err(error) = wait_for_model_idle(&live).await {
                         retire_unpublished(new_live).await;
-                        return Err(error);
+                        return Err(with_rollback(&state_clone, rollback, error).await);
                     }
                 } else {
                     _availability_drain = None;
@@ -458,6 +461,18 @@ pub(crate) async fn unload_model(
 /// respawn the registry keeps pointing at a dead `LiveState` and every
 /// request 503s until an operator reloads. Returns a note appended to the
 /// load error message.
+/// Restore the outgoing model (memory-constrained replace only) and note the
+/// outcome on the error returned for a load that failed after the build.
+async fn with_rollback(
+    state: &AppState,
+    rollback: Option<(String, Arc<EngineSessionConfig>)>,
+    (status, Json(mut body)): HttpErrorResponse,
+) -> HttpErrorResponse {
+    let note = rollback_after_failed_memory_constrained_build(state, rollback).await;
+    body.error.message.push_str(&note);
+    (status, Json(body))
+}
+
 async fn rollback_after_failed_memory_constrained_build(
     state: &AppState,
     rollback: Option<(String, Arc<EngineSessionConfig>)>,
@@ -549,6 +564,19 @@ pub(crate) async fn perform_unload(
     // The loading flag serializes registry mutations, so these preconditions
     // remain true until remove_live runs. Reject without draining active work.
     let loading_guard = LoadingFlagGuard(state.clone());
+    // The idle evictor picks candidates from a snapshot taken before this
+    // flag; an operator unload in between can make a candidate the new
+    // default. Re-check under the flag: background eviction never retires
+    // the default model.
+    if wait_policy == UnloadWaitPolicy::AbortIfBusy
+        && state.snapshot().model_id.as_ref() == &model_id
+    {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "model_busy",
+            format!("model {model_id} eviction skipped: it is the default model"),
+        ));
+    }
     validate_unload_preflight(state, &model_id)?;
     let live = state.snapshot_for_model(Some(&model_id)).ok_or_else(|| {
         error_response(
@@ -594,16 +622,18 @@ pub(crate) async fn perform_unload(
         // Drop the preflight snapshot too: it owns the stateless prefix/weight
         // context and the embedding sender independently of the registry entry.
         drop(preflight_live);
-        live.retire().await.map_err(map_generation_service_error)?;
+        let retired = live.retire().await;
         // The worker has joined, including its thread-local tensor destructors.
         // Reclaim only unused buffers; sibling compiled graphs remain intact.
+        // The model is already out of the registry, so trim even when the
+        // worker join reported an error.
         if let Err(error) =
             tokio::task::spawn_blocking(ax_engine_sdk::EngineSession::trim_native_allocator_cache)
                 .await
         {
             tracing::warn!(%error, "model retired but unused allocator buffers could not be trimmed");
         }
-        Ok(())
+        retired.map_err(map_generation_service_error)
     });
 
     match task.await {
@@ -857,12 +887,19 @@ fn default_iogpu_floor_mb(total_ram_mb: u64) -> u64 {
 /// sysctl process spawns are acceptable here.
 #[cfg(target_os = "macos")]
 fn iogpu_wired_limit_floor() -> Option<u64> {
+    // A launchd/service PATH may omit /usr/sbin; fall back to the absolute
+    // path as the runtime's own sysctl helper does.
     fn sysctl_value(name: &str) -> Option<u64> {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", name])
-            .output()
-            .ok()?;
-        String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+        ["sysctl", "/usr/sbin/sysctl"]
+            .into_iter()
+            .find_map(|program| {
+                let output = std::process::Command::new(program)
+                    .args(["-n", name])
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())?;
+                String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+            })
     }
     let total_ram_mb = sysctl_value("hw.memsize")? / (1024 * 1024);
     let floor_mb = match sysctl_value("iogpu.wired_limit_mb") {
@@ -1507,8 +1544,12 @@ mod tests {
             .try_admit(&first)
             .expect("first model should hold an active job");
 
+        // A sibling-scoped wait would run to DRAIN_IDLE_TIMEOUT (120 s); 30 s
+        // tells the two apart while leaving room for a cold first unload
+        // (allocator trim, worker join), which made 250 ms flaky when the
+        // test ran alone.
         tokio::time::timeout(
-            Duration::from_millis(250),
+            Duration::from_secs(30),
             perform_unload(&state, "second".to_string(), UnloadWaitPolicy::WaitForIdle),
         )
         .await

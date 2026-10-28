@@ -463,3 +463,28 @@ to import `ax-engine-core` to handle session errors.
 
 `StatelessGenerateContext::supports_stateless_streaming()` returns `true` for
 `LlamaCpp` and `MlxLmDelegated`, `false` for `Mlx`.
+
+## JSON constraint admission
+
+Set `GenerateSampling.json_schema_strict = true` with `json_schema` to require
+native MLX grammar enforcement. Unsupported constraints or compilation errors
+return `SessionError::InvalidJsonConstraint` before assigning a request ID or
+enqueueing work. Delegated backends reject this strict mode explicitly.
+
+`prepare_json_constraint()` returns `JsonConstraintStatus::Disabled`, `Enforced`,
+or `PostHocValidationRequired`. Strict admission accepts the implemented subset:
+types, object properties/required/additionalProperties (boolean), array items
+and item bounds, string length bounds, and standalone enum/const literals.
+Unsupported assertions, including numeric bounds, patterns, references and
+combinators, are rejected rather than ignored. Validate the final result as well:
+interruption or output-token limits can still terminate an incomplete document.
+
+The default `json_schema_strict = false` preserves best-effort compilation.
+`PostHocValidationRequired` means the caller must validate the result; a grammar
+may enforce only part of the schema, or compilation may fall back to unrestricted
+generation. Preparation caches an immutable grammar and reuses it on submission;
+changing the schema or strict flag invalidates the prepared result.
+
+Native model reports include optional `drafter_identity`, containing the drafter
+revision, configuration/weights SHA-256 digests and projection precision. Use it
+to bind speculative-decoding evidence to the artifact that actually ran.

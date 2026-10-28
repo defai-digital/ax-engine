@@ -467,6 +467,26 @@ test("ChatAXEngine preserves tool calls in responses", skipIfNoLangChain, async 
   assert.equal(message.additional_kwargs.tool_calls[0].id, "call-1");
 });
 
+test("ChatAXEngine reports token usage in LangChain's shape", skipIfNoLangChain, async () => {
+  const chat = new ChatAXEngine();
+  chat.client = fakeClient({
+    choices: [{ message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+  });
+
+  const result = await chat._generate([new HumanMessage("hello")], {});
+  assert.deepEqual(result.llmOutput.tokenUsage, {
+    promptTokens: 5,
+    completionTokens: 7,
+    totalTokens: 12,
+  });
+  assert.deepEqual(result.generations[0].message.usage_metadata, {
+    input_tokens: 5,
+    output_tokens: 7,
+    total_tokens: 12,
+  });
+});
+
 test("ChatAXEngine preserves fragmented streaming tool calls", skipIfNoLangChain, async () => {
   const chat = new ChatAXEngine();
   chat.client = {

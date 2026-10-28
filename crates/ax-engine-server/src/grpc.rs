@@ -4,6 +4,11 @@
 // at the module level rather than peppering individual functions.
 #![allow(clippy::result_large_err)]
 
+use crate::generation::native::reject_failed_generate_status;
+use crate::openai::stop::{
+    apply_client_stops_to_answer_only, apply_client_stops_to_generate_response,
+    validate_client_stop_sequences,
+};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -77,15 +82,32 @@ async fn run_grpc_generate_request(
             .map_err(generation_service_status);
     }
     let ctx = Arc::clone(&live.stateless_generate_context);
-    run_blocking(move || {
+    let generate = run_blocking(move || {
         let _permit = permit;
         ctx.generate_with_request_id(request_id, request)
-    })
-    .await
+    });
+    // Same hang backstop as HTTP: a stalled delegated upstream must not hold
+    // the call (and its admission permit) forever.
+    match state.limits.generate_max_duration {
+        Some(deadline) => tokio::time::timeout(deadline, generate)
+            .await
+            .unwrap_or_else(|_elapsed| {
+                Err(generation_service_status(
+                    GenerationServiceError::DeadlineExceeded {
+                        request_id,
+                        observed_event_count: 0,
+                    },
+                ))
+            }),
+        None => generate.await,
+    }
 }
 
 fn admission_status(error: AdmissionError) -> Status {
     match error {
+        AdmissionError::HostMemoryPressure => Status::resource_exhausted(
+            "critical host memory pressure; retry after memory pressure recovers",
+        ),
         AdmissionError::Draining => Status::unavailable(
             "the current model is draining for replacement; retry after loading completes",
         ),
@@ -119,12 +141,15 @@ fn generation_service_status(error: GenerationServiceError) -> Status {
 
 fn grpc_model(state: &AppState, requested: &str) -> Result<crate::app_state::LiveState, Status> {
     let requested = (!requested.is_empty()).then_some(requested);
-    state.snapshot_for_model(requested).ok_or_else(|| {
+    let live = state.snapshot_for_model(requested).ok_or_else(|| {
         Status::not_found(format!(
             "requested model is not loaded; loaded models: {}",
             state.model_ids().join(", ")
         ))
-    })
+    })?;
+    // Activity before admission (see `select_model`).
+    live.mark_used();
+    Ok(live)
 }
 
 // ─── Service implementation ───────────────────────────────────────────────────
@@ -210,12 +235,17 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::ChatCompletionResponse>, Status> {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        reject_failed_generate_status(r.status, r.finish_reason).map_err(openai_error_to_status)?;
         // Native MLX leaves output_text unset; decode + strip channels like OpenAI.
         populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::ChatCompletion, false)
             .map_err(openai_error_to_status)?;
+        // The native session ignores stop_sequences; enforce client stops on
+        // the decoded answer as the HTTP surfaces do.
+        apply_client_stops_to_answer_only(&mut r, &req.stop);
         // Delegated backends report counts without materializing token
         // arrays, so `.len()` would report zero usage; use the SDK's
         // authoritative counts exactly like the HTTP surface.
@@ -256,12 +286,30 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_chat_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
+        // gRPC renders thinking off; DeepSeek then needs its `</think>` leak
+        // cut on the stream, as the unary path's sanitize does.
+        let deepseek_think_cut = live.runtime_report.selected_backend.is_mlx()
+            && matches!(
+                crate::chat::resolve_chat_template(
+                    live.model_id.as_ref(),
+                    crate::metadata::model_family_from_artifacts(&live).as_deref(),
+                ),
+                crate::chat::ChatPromptTemplate::DeepSeekChat
+            );
         let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_chat_stream(model_id, tx, stream, tokenizer)
-            .map_err(generation_service_status)?;
+        spawn_grpc_chat_stream(
+            model_id,
+            tx,
+            stream,
+            tokenizer,
+            req.stop.clone(),
+            deepseek_think_cut,
+        )
+        .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -273,11 +321,14 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::CompletionResponse>, Status> {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_completion_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
+        reject_failed_generate_status(r.status, r.finish_reason).map_err(openai_error_to_status)?;
         populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::Completion, false)
             .map_err(openai_error_to_status)?;
+        apply_client_stops_to_generate_response(&mut r, &req.stop);
         // Delegated backends report counts without materializing token
         // arrays, so `.len()` would report zero usage; use the SDK's
         // authoritative counts exactly like the HTTP surface.
@@ -315,11 +366,12 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
+        validate_client_stop_sequences(&req.stop).map_err(openai_error_to_status)?;
         let generate_req = build_completion_generate_request(&live, &req)?;
         let tokenizer = native_grpc_stream_tokenizer(&live)?;
         let stream = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_completion_stream(model_id, tx, stream, tokenizer)
+        spawn_grpc_completion_stream(model_id, tx, stream, tokenizer, req.stop.clone())
             .map_err(generation_service_status)?;
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -352,6 +404,14 @@ impl AxEngine for AxEngineGrpcService {
                 "embedding input must not be empty",
             ));
         }
+        // Same item-count cap as the HTTP surface.
+        let max_items = crate::openai::embeddings::DEFAULT_EMBED_MAX_ITEMS;
+        if batch.len() > max_items {
+            return Err(Status::invalid_argument(format!(
+                "input has {} items, exceeding the maximum of {max_items}",
+                batch.len()
+            )));
+        }
         // Start-up-resolved AX_ENGINE_EMBED_MAX_TOKENS (default 8192;
         // see ServerEnvConfig for the accepted values). The cap is per item,
         // matching the HTTP surface: each input is embedded independently, so
@@ -378,31 +438,48 @@ impl AxEngine for AxEngineGrpcService {
         }
         let permit = self.state.try_admit(&live).map_err(admission_status)?;
         let prompt_tokens = grpc_embedding_prompt_tokens(&batch);
+        // Same bound as HTTP /v1/embeddings (AX_ENGINE_EMBED_TIMEOUT_MS).
+        let embed_timeout = self.state.env.embed_timeout_ms;
+        let timeout = std::time::Duration::from_millis(embed_timeout);
+        let timed_out = || {
+            Status::unavailable(format!(
+                "embedding request timed out after {embed_timeout}ms"
+            ))
+        };
         let embeddings = if batch.len() == 1 {
             let input = batch
                 .into_iter()
                 .next()
                 .ok_or_else(|| Status::invalid_argument("embedding input must not be empty"))?;
             vec![
-                live.embedding_batcher
-                    .embed(input, pooling, req.normalize, permit)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?,
+                tokio::time::timeout(
+                    timeout,
+                    live.embedding_batcher
+                        .embed(input, pooling, req.normalize, permit),
+                )
+                .await
+                .map_err(|_| timed_out())?
+                // Classified like HTTP and the batch branch (a bad token id
+                // is INVALID_ARGUMENT, not INTERNAL).
+                .map_err(streams::session_error_status)?,
             ]
         } else {
             let generation_service = live.generation_service.clone();
-            generation_service
-                .execute(move |session| {
+            tokio::time::timeout(
+                timeout,
+                generation_service.execute(move |session| {
                     let _permit = permit;
                     session.embed_batch_flat(&batch, pooling, req.normalize)
-                })
-                .await
-                .map_err(generation_service_status)
-                .map(|matrix| {
-                    (0..matrix.batch_size)
-                        .map(|index| matrix.row(index).to_vec())
-                        .collect::<Vec<_>>()
-                })?
+                }),
+            )
+            .await
+            .map_err(|_| timed_out())?
+            .map_err(generation_service_status)
+            .map(|matrix| {
+                (0..matrix.batch_size)
+                    .map(|index| matrix.row(index).to_vec())
+                    .collect::<Vec<_>>()
+            })?
         };
 
         Ok(Response::new(proto::EmbeddingsResponse {

@@ -1131,6 +1131,13 @@ pub struct NativeModelManifest {
     /// YaRN `beta_slow` (low-frequency correction boundary; default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rope_beta_slow: Option<f32>,
+    /// YaRN `mscale` (attention-scale numerator; default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_mscale: Option<f32>,
+    /// YaRN `mscale_all_dim` (attention-scale denominator; default 0, which
+    /// leaves the `0.1 ln(factor) + 1` scale of openai/gpt-oss).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_mscale_all_dim: Option<f32>,
     /// LLaMA-4 iRoPE: every N-th layer has no RoPE (N=4 for LLaMA4 Scout/Maverick).
     /// 0 means all layers use RoPE.
     #[serde(default)]
@@ -5521,6 +5528,8 @@ pub(crate) fn base_manifest(family: &str, layer_count: u32) -> NativeModelManife
         rope_original_context_len: None,
         rope_beta_fast: None,
         rope_beta_slow: None,
+        rope_mscale: None,
+        rope_mscale_all_dim: None,
         no_rope_layer_interval: 0,
         attn_temperature_floor: None,
         attn_temperature_scale: None,
@@ -5778,6 +5787,8 @@ mod tests {
             rope_original_context_len: None,
             rope_beta_fast: None,
             rope_beta_slow: None,
+            rope_mscale: None,
+            rope_mscale_all_dim: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,

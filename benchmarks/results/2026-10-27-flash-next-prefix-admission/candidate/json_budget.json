@@ -1,0 +1,66 @@
+{
+  "request": {
+    "model": "qwen3.8-flash-next",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return JSON matching the schema. Use true, and an item with an escaped newline or a Unicode letter."
+      }
+    ],
+    "max_tokens": 24,
+    "temperature": 0,
+    "grammar_budget": true,
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "answer",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "http_status": 200,
+  "response": {
+    "id": "chatcmpl-4",
+    "object": "chat.completion",
+    "created": 1793150576,
+    "model": "qwen3.8-flash-next",
+    "system_fingerprint": null,
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"ok\": true}"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 81,
+      "completion_tokens": 5,
+      "total_tokens": 86,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 81,
+        "prefill_time_us": 592093,
+        "decode_tokens": 4,
+        "decode_time_us": 112383
+      }
+    }
+  }
+}

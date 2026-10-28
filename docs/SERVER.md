@@ -150,6 +150,17 @@ every RPC must carry the same `authorization: Bearer <key>` metadata, except
 the `Health` RPC, which stays unauthenticated to mirror the HTTP probe
 exemption. Unauthenticated calls fail with gRPC status `UNAUTHENTICATED`.
 
+### Host and Origin check without an API key
+
+A server running without an API key answers only requests whose `Host` (and
+browser `Origin`, when present) is an IP address, `localhost`, a
+`*.localhost` name or an mDNS `*.local` name. This blocks DNS-rebinding and
+cross-site browser requests from driving a local server. To reach a keyless
+server through another name, list it in `AX_SERVER_ALLOWED_HOSTS`
+(comma-separated, for example `studio.lan,inference.example`); `*` turns the
+check off. With `--api-key` set, the key is the boundary and no Host check
+runs.
+
 ## Resource Limits & Rate Limiting
 
 All of the following are opt-in and disabled by default, preserving today's
@@ -447,6 +458,23 @@ than silently dropped.
   `tokenizer.json` (ByteLevel or Metaspace decoders). Set
   `AX_ENGINE_JSON_CONSTRAINED_DECODING=0` to fall back to post-hoc
   validation only.
+- **`grammar_budget: true`** (native MLX, non-streaming JSON requests): opt in
+  to token masks that admit a token only when a complete JSON continuation
+  fits the remaining output budget. The budget includes reasoning and its
+  closing marker; EOS is blocked until the answer is complete. For example,
+  add `"grammar_budget": true` alongside `"response_format": {"type":
+  "json_object"}` and `"max_tokens": 64`. The default is `false`. This requires
+  the model tokenizer and a fully enforced schema; tool-call envelopes,
+  delegated backends, disabled constrained decoding, and unsupported schemas
+  are rejected. The Rust SDK exposes the same option on `GenerateSampling`.
+  An impossible budget or an exhausted completion-search limit produces an
+  explicit error (a runtime proof failure maps to HTTP 502
+  `generation_failed`; invalid options are rejected at admission). Search is bounded to 128 continuation steps, 4096 states,
+  and one million search-work units per mask; complex schemas can reach these
+  limits even when a valid answer exists. Completing JSON on the last token
+  still reports the usual `length` finish reason. Client stop strings,
+  cancellation, and runtime errors can interrupt generation; post-hoc JSON
+  validation still applies.
 - **`stop`** (completions and chat, all backends): client stop sequences are
   honored everywhere. Delegated backends forward them upstream; the native
   MLX backend enforces them server-side over decoded text with OpenAI

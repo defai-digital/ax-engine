@@ -642,16 +642,31 @@ impl SafetensorsRowReader {
     /// test evidence for row gathers. Fails closed for an unknown tensor or
     /// a failed read.
     pub fn warm_tensor(&self, tensor: &str) -> Result<u64, String> {
+        self.warm_tensor_cancellable(tensor, || false)
+    }
+
+    /// Maximum scratch allocation held by one warm-up reader.
+    pub const WARM_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+    /// Cooperative page-cache warm-up. Check cancellation before allocating
+    /// scratch or starting each read; return bytes already read on cancellation.
+    pub fn warm_tensor_cancellable(
+        &self,
+        tensor: &str,
+        should_stop: impl Fn() -> bool,
+    ) -> Result<u64, String> {
         let meta = self
             .tensors
             .get(tensor)
             .ok_or_else(|| format!("unknown tensor {tensor}"))?;
-        const WARM_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
         let mut scratch: Vec<u8> = Vec::new();
         let mut offset = meta.data_start;
         let mut read_bytes: u64 = 0;
         while offset < meta.data_end {
-            let chunk = WARM_CHUNK_BYTES.min(meta.data_end - offset);
+            if should_stop() {
+                break;
+            }
+            let chunk = (Self::WARM_CHUNK_BYTES as u64).min(meta.data_end - offset);
             let chunk_usize = usize::try_from(chunk)
                 .map_err(|_| format!("warm {tensor}: chunk length {chunk} does not fit usize"))?;
             if scratch.len() < chunk_usize {
@@ -1254,6 +1269,34 @@ mod tests {
         assert!(reader.read_row_into("w", 0, &mut [0u8; 8]).is_err());
         assert_eq!(reader.payload_bytes_read(), before);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn warm_tensor_cancellation_stops_before_the_next_chunk() {
+        let dir = test_dir("warm-cancel");
+        let path = dir.join("t.safetensors");
+        let bytes = SafetensorsRowReader::WARM_CHUNK_BYTES + 4;
+        write_st_file(
+            &path,
+            serde_json::json!({
+                "w": {"dtype":"F32", "shape":[bytes/4, 1], "data_offsets":[0,bytes]}
+            }),
+            &vec![0; bytes],
+        );
+        let reader = SafetensorsRowReader::open(&path).unwrap();
+        assert_eq!(reader.warm_tensor_cancellable("w", || true).unwrap(), 0);
+        let calls = std::cell::Cell::new(0);
+        let read = reader
+            .warm_tensor_cancellable("w", || {
+                let previous = calls.get();
+                calls.set(previous + 1);
+                previous > 0
+            })
+            .unwrap();
+        assert_eq!(read, SafetensorsRowReader::WARM_CHUNK_BYTES as u64);
+        assert_eq!(calls.get(), 2);
+        assert_eq!(reader.payload_bytes_read(), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

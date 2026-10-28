@@ -13,6 +13,14 @@ use super::fixtures::{
 };
 
 #[tokio::test]
+async fn host_pressure_maps_to_a_retryable_http_error() {
+    let (status, body) =
+        crate::errors::admission_error_response(AdmissionError::HostMemoryPressure);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body.0.error.code.as_deref(), Some("host_memory_pressure"));
+}
+
+#[tokio::test]
 async fn concurrency_limit_is_shared_by_http_and_grpc_engine_jobs() {
     let state = llama_cpp_state().with_limits(ServerLimits {
         max_concurrent_requests: Some(1),

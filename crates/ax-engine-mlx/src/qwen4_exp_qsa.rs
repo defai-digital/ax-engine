@@ -7755,13 +7755,21 @@ mod tests {
     }
 
     #[test]
+    fn qsa_tiled_plan_requires_runtime_admission() {
+        with_tiled_score_runtime(false, || {
+            assert!(planned(1, 2048, 4, 128, 8193, MlxDtype::Float32).is_none());
+            assert!(
+                with_tiled_score_runtime(true, || {
+                    planned(1, 2048, 4, 128, 8193, MlxDtype::Float32)
+                })
+                .is_some()
+            );
+            assert!(planned(1, 2048, 4, 128, 8193, MlxDtype::Float32).is_none());
+        });
+    }
+
+    #[test]
     fn qsa_tiled_preserves_signed_zero_order() {
-        // The positive execution contract is limited to admitted GPU/MLX
-        // combinations, just like qsa_tiled_score_bits_match_monolithic.
-        if !tiled_score_runtime_matches() {
-            eprintln!("skipping tiled signed-zero check: GPU/MLX runtime is not admitted");
-            return;
-        }
         let (batch, seq, heads, dim, n_blocks) = (1, 2, 2, 4, 2);
         let queries = cast_tensor(
             &vec![0.0f32; (batch * seq * heads * dim) as usize],
@@ -7773,14 +7781,23 @@ mod tests {
             *value = -0.0;
         }
         let blocks = cast_tensor(&keys, &[batch, n_blocks, dim], MlxDtype::Float32);
-        let plan = with_tile_limits(1, QSA_TILE_WORKSPACE_BUDGET, || {
-            planned(batch, seq, heads, dim, n_blocks, MlxDtype::Float32)
+        let plan = with_tiled_score_runtime(true, || {
+            with_tile_limits(1, QSA_TILE_WORKSPACE_BUDGET, || {
+                planned(batch, seq, heads, dim, n_blocks, MlxDtype::Float32)
+            })
         })
         .unwrap();
         assert_eq!(plan.query_rows, vec![1, 1]);
         let monolithic = score_bits(&queries, &blocks);
-        let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
-        assert_same_bits(&tiled, &monolithic);
+        // Only the tiled execution contract is limited to admitted GPU/MLX
+        // combinations, as in qsa_tiled_score_bits_match_monolithic; the plan
+        // and the host tie-breaks below hold everywhere.
+        if tiled_score_runtime_matches() {
+            let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
+            assert_same_bits(&tiled, &monolithic);
+        } else {
+            eprintln!("skipping tiled signed-zero bits: GPU/MLX runtime is not admitted");
+        }
         let scores: Vec<f32> = monolithic
             .chunks(n_blocks as usize)
             .flat_map(|row| {
@@ -8082,10 +8099,6 @@ mod tests {
 
     #[test]
     fn qsa_tiled_peak_workspace_is_bounded() {
-        if !tiled_score_runtime_matches() {
-            eprintln!("skipping tiled peak measurement: GPU/MLX runtime is not admitted");
-            return;
-        }
         with_isolated_peak_memory(|| {
             let seq = 2048i32;
             let heads = 4i32;
@@ -8093,7 +8106,10 @@ mod tests {
             let n_blocks = 8193i32;
             let monolithic = full_score_workspace_bytes(1, seq, heads, n_blocks as usize).unwrap();
             assert!(monolithic > QSA_SCORE_WORKSPACE_LIMIT);
-            let plan = planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32).unwrap();
+            let plan = with_tiled_score_runtime(true, || {
+                planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32)
+            })
+            .unwrap();
             assert!(plan.query_rows.len() > 1);
             assert!(plan.workspace_bytes <= QSA_TILE_WORKSPACE_BUDGET);
             assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
@@ -8125,6 +8141,12 @@ mod tests {
                 }
                 Err(error) => panic!("monolithic path must reject this chunk, got {error}"),
                 Ok(_) => panic!("monolithic path must reject this chunk"),
+            }
+            // The plan and the rejection above hold on every host; only the
+            // tiled execution and its peak are bound to admitted runtimes.
+            if !tiled_score_runtime_matches() {
+                eprintln!("skipping tiled peak measurement: GPU/MLX runtime is not admitted");
+                return;
             }
             let previous_limit = mlx_sys::set_cache_limit(0);
             let active_before = mlx_sys::mempressure::device_active_bytes().unwrap_or(0);

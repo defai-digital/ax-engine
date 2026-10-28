@@ -122,25 +122,21 @@ module AxEngine
     # Force `stream: true` regardless of the caller's key style: merging a
     # symbol key does not override a string "stream" key in the request hash,
     # which would serialize duplicate JSON keys with an unpredictable winner.
-    # Dup first: for a positional request with no kwargs, `request_body`
-    # returns the caller's own hash, and deleting keys would mutate it (or
-    # raise FrozenError on a frozen input).
     def streaming_body(request, kwargs)
-      body = request_body(request, kwargs).dup
-      body.delete("stream")
-      body.delete(:stream)
-      body.merge(stream: true)
+      request_body(request, kwargs).merge("stream" => true)
     end
 
     # Accept both a positional Hash (Ruby 2.7 style) and true kwargs (Ruby 3+).
+    # Keys are normalized to strings into a fresh hash: `"max_tokens"` and
+    # `:max_tokens` are the same field, and keeping both would serialize a
+    # duplicate JSON key the server rejects instead of applying the override.
+    # Never mutates the caller's hash.
     def request_body(request, kwargs)
-      if request.nil?
-        kwargs
-      elsif kwargs.empty?
-        request
-      else
-        request.merge(kwargs)
+      body = {}
+      [request, kwargs].each do |source|
+        source&.each { |key, value| body[key.to_s] = value }
       end
+      body
     end
 
     # Trim only pathname slashes; a trailing slash inside a query value is data.
@@ -208,7 +204,9 @@ module AxEngine
       done_tag = Object.new
       catch(done_tag) do
         Net::HTTP.start(
-          uri.host,
+          # `hostname` strips IPv6 brackets; `host` keeps them ("[::1]"),
+          # which getaddrinfo cannot resolve.
+          uri.hostname,
           uri.port,
           open_timeout: @timeout,
           read_timeout: @timeout,
@@ -249,7 +247,7 @@ module AxEngine
     end
 
     def execute(uri, req)
-      http = Net::HTTP.new(uri.host, uri.port)
+      http = Net::HTTP.new(uri.hostname, uri.port)
       http.use_ssl = (uri.scheme == "https")
       http.open_timeout = @timeout
       http.read_timeout = @timeout

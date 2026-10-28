@@ -1,0 +1,59 @@
+{
+  "scope": "Functional regression, not throughput or SKU qualification",
+  "baseline": "../2026-10-26-prefix-dflash2-functional/",
+  "server_options": {
+    "mlx": true,
+    "prefill_chunk": 1024,
+    "mlx_mtp_policy": "auto",
+    "max_concurrent_requests": 1
+  },
+  "environment_matrix": [
+    {
+      "AX_MLX_PREFIX_SEMANTIC_CUTS": "0"
+    },
+    {
+      "AX_MLX_PREFIX_SEMANTIC_CUTS": "1"
+    }
+  ],
+  "runs": [
+    {
+      "file": "0-cold.json",
+      "tokens_equal_to_previous_candidate": true,
+      "hits": 0,
+      "restore_source": 0,
+      "runner_reused_tokens": 0,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    },
+    {
+      "file": "0-warm.json",
+      "tokens_equal_to_previous_candidate": true,
+      "hits": 1,
+      "restore_source": 2,
+      "runner_reused_tokens": 1024,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    },
+    {
+      "file": "1-cold.json",
+      "tokens_equal_to_previous_candidate": true,
+      "hits": 0,
+      "restore_source": 0,
+      "runner_reused_tokens": 0,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    },
+    {
+      "file": "1-warm.json",
+      "tokens_equal_to_previous_candidate": true,
+      "hits": 1,
+      "restore_source": 2,
+      "runner_reused_tokens": 1024,
+      "draft_steps": 4,
+      "accepted_drafts": 26
+    }
+  ],
+  "result": "The semantic warm response now retains hits=1 and restore_source=2, where the previous candidate returned zero. Both modes retain 1024 runner-reused tokens. All four output token sequences match the previous candidate.",
+  "counter_contract": "Hit values retain the maximum observed step value, not an additive per-request total of batch deltas. Restore source is latest nonzero; gauges remain last-observation.",
+  "curation": "Request token IDs are stored once in request.json. Output tokens, status, route and performance fields are retained verbatim. Runtime paths/host fields are excluded; full source responses remain in the internal engineering record."
+}

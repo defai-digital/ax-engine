@@ -226,6 +226,29 @@ function normalizeToolChoice(toolChoice) {
   return { type: "function", function: { name: toolChoice } };
 }
 
+// LangChain JS reads `llmOutput.tokenUsage` as camelCase counts and
+// `AIMessage.usage_metadata` as input/output totals; the server's OpenAI
+// snake_case usage object passed through matches neither.
+function langchainTokenUsage(usage) {
+  if (!usage) return undefined;
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+  };
+}
+
+function langchainUsageMetadata(usage) {
+  if (!usage) return undefined;
+  const input = usage.prompt_tokens ?? 0;
+  const output = usage.completion_tokens ?? 0;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: usage.total_tokens ?? input + output,
+  };
+}
+
 function messageAdditionalKwargs(message) {
   const additionalKwargs = {};
   if (Array.isArray(message?.tool_calls)) {
@@ -445,11 +468,12 @@ export class ChatAXEngine extends BaseChatModel {
             additional_kwargs: messageAdditionalKwargs(choice?.message),
             tool_calls: toolCalls,
             invalid_tool_calls: invalidToolCalls,
+            usage_metadata: langchainUsageMetadata(response.usage),
           }),
           generationInfo: { finishReason: choice?.finish_reason },
         },
       ],
-      llmOutput: { tokenUsage: response.usage },
+      llmOutput: { tokenUsage: langchainTokenUsage(response.usage) },
     };
   }
 

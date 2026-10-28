@@ -710,6 +710,48 @@ fn embedding_encoder_rejects_generation_before_admission() {
 }
 
 #[test]
+fn strict_json_failure_is_rejected_before_request_id_or_queue_mutation() {
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: GenerateSampling {
+            json_schema: Some(serde_json::json!({"type":"number", "minimum":3})),
+            json_schema_strict: true,
+            ..Default::default()
+        },
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let before = session.next_request_id;
+    assert!(matches!(
+        session.submit_generate_with_request_id(100, request.clone()),
+        Err(EngineSessionError::InvalidJsonConstraint { .. })
+    ));
+    assert_eq!(session.next_request_id, before);
+    assert!(
+        session
+            .core()
+            .request_manager()
+            .snapshot(RequestId(100))
+            .is_none()
+    );
+    assert!(matches!(
+        EngineSession::validate_generate_request_for_backend(
+            SelectedBackend::LlamaCpp,
+            2048,
+            100,
+            &request
+        ),
+        Err(EngineSessionError::StrictJsonConstraintRequiresNativeMlx)
+    ));
+}
+
+#[test]
 fn caller_chosen_request_ids_do_not_define_arrival_order() {
     // A recycled or deliberately small id must not look older than an
     // already-running request, and a large id must not preempt older ones.
@@ -842,6 +884,90 @@ fn auto_allocation_wraps_past_a_used_max_id() {
         u64::MAX
     );
     assert_eq!(session.submit_generate(request).expect("wrapped auto"), 1);
+}
+
+#[test]
+fn native_stream_reports_a_request_the_engine_never_schedules() {
+    // Advancing steps consume tokens, so the step budget alone can never fire.
+    // A run of empty engine steps without progress must end the stream with
+    // RequestDidNotTerminate instead of spinning forever.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let state = session
+        .stream_generate_state(request)
+        .expect("stream state");
+    let GenerateStreamState::Native(mut native) = state else {
+        panic!("expected a native stream");
+    };
+    let empty = EngineStepReport::default();
+    let mut outcome = Ok(());
+    for _ in 0..NATIVE_STREAM_IDLE_STEP_LIMIT {
+        if let Err(error) = session.apply_native_stream_step(&mut native, empty.clone()) {
+            outcome = Err(error);
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            outcome,
+            Err(EngineSessionError::RequestDidNotTerminate { .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(native.idle_steps, NATIVE_STREAM_IDLE_STEP_LIMIT);
+
+    // A step that ran another request resets the run.
+    native.idle_steps = 5;
+    let busy = EngineStepReport {
+        scheduled_requests: 1,
+        ..EngineStepReport::default()
+    };
+    session
+        .apply_native_stream_step(&mut native, busy)
+        .expect("a busy step is not a hang");
+    assert_eq!(native.idle_steps, 0);
+}
+
+#[test]
+fn every_auto_entry_point_skips_a_retained_max_id() {
+    // Only submit_generate used the wrapping allocator; the stream and
+    // generate entry points reused next_request_id and collided with MAX.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(u64::MAX - 1, request.clone())
+        .expect("explicit max-1 id");
+    session
+        .submit_generate(request.clone())
+        .expect("auto takes MAX");
+    let first = session
+        .stream_generate_state(request.clone())
+        .expect("stream state must skip the retained MAX id");
+    assert_eq!(first.request_id(), 1);
+    let second = session
+        .stream_generate_state(request)
+        .expect("a second stream state gets a fresh id");
+    assert_eq!(second.request_id(), 2);
 }
 
 #[test]
@@ -1945,6 +2071,71 @@ fn llama_cpp_premature_disconnect_does_not_poison_a_batch_sibling() {
 }
 
 #[test]
+fn llama_cpp_failed_lower_id_request_does_not_block_later_siblings() {
+    // Mirror of the test above: the FIRST request (lower id) disconnects
+    // before a stop marker. Its error must still surface, but the later
+    // request has to keep being polled and finish.
+    let (server_url, server_handle) =
+        spawn_llama_cpp_completion_stream_server_with_disconnects(2, |request_index, _payload| {
+            if request_index == 0 {
+                (vec![], false)
+            } else {
+                (
+                    vec![serde_json::json!({
+                        "content": "hello",
+                        "tokens": [4],
+                        "stop": true,
+                        "stop_type": "limit"
+                    })],
+                    true,
+                )
+            }
+        });
+    let mut session = llama_cpp_server_session(server_url);
+    let submit = |session: &mut EngineSession, tokens: Vec<u32>| {
+        session
+            .submit_generate(GenerateRequest {
+                prefill_hints: Default::default(),
+                model_id: "qwen3".to_string(),
+                input_tokens: tokens,
+                input_text: None,
+                multimodal_inputs: Default::default(),
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                stop_sequences: Vec::new(),
+                metadata: None,
+            })
+            .expect("llama.cpp submit should succeed")
+    };
+    let failing = submit(&mut session, vec![1, 2, 3]);
+    let healthy = submit(&mut session, vec![7, 8, 9]);
+    assert!(failing < healthy);
+
+    let step_result = session.step_report();
+    assert!(
+        matches!(
+            step_result,
+            Err(EngineSessionError::LlamaCppStreamEndedBeforeStop { request_id, .. })
+                if request_id == failing
+        ),
+        "the failing request's error must still surface: {step_result:?}"
+    );
+    let healthy_report = session
+        .request_report(healthy)
+        .expect("healthy llama.cpp request should exist");
+    assert_eq!(
+        healthy_report.state,
+        SessionRequestState::Finished,
+        "the later request must be polled despite the earlier failure"
+    );
+    assert_eq!(healthy_report.output_tokens, vec![4]);
+
+    server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+}
+
+#[test]
 fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
     let core = EngineCore::with_runtime_components(
         KvManagerConfig::validated(CacheGroupId(0), 16, 64),
@@ -2903,5 +3094,98 @@ fn resubmitting_a_recycled_request_id_drops_the_previous_route() {
     assert!(
         !session.native_request_routes.contains_key(&7),
         "a recycled request id must start without the previous request's route"
+    );
+}
+
+fn native_probe_request(tokens: Vec<u32>, max_output_tokens: u32) -> GenerateRequest {
+    GenerateRequest {
+        prefill_hints: Default::default(),
+        model_id: "m".to_string(),
+        input_tokens: tokens,
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    }
+}
+
+#[test]
+fn a_decoding_request_does_not_record_a_sibling_prefix_hit() {
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    let shared: Vec<u32> = (100..164).collect();
+    session
+        .generate(native_probe_request(shared.clone(), 2))
+        .expect("seed the prefix cache");
+    let decoding = session
+        .submit_generate(native_probe_request((1..=8).collect(), 30))
+        .expect("submit A");
+    for _ in 0..3 {
+        session.step_report().expect("step");
+    }
+    // B reuses the cached prefix while A decodes in the same step.
+    let reusing = session
+        .submit_generate(native_probe_request(shared, 2))
+        .expect("submit B");
+    while session.has_active_stepwise_requests() {
+        session.step_report().expect("step");
+    }
+    let report = session.request_report(decoding).expect("A report");
+    assert_eq!(
+        report.route.decision("prefix_reused_tokens").unwrap_or(0),
+        0,
+        "A reused nothing: {:?}",
+        report.route
+    );
+    let reused = session.request_report(reusing).expect("B report");
+    assert!(reused.route.decision("prefix_reused_tokens").unwrap_or(0) > 0);
+}
+
+#[test]
+fn cancelling_a_finished_native_request_is_a_no_op() {
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    let response = session
+        .generate(native_probe_request(vec![1, 2, 3], 2))
+        .expect("generate");
+    session
+        .cancel_request(response.request_id)
+        .expect("cancel after completion must not error");
+}
+
+#[test]
+fn auto_request_ids_wrap_instead_of_sticking_at_u64_max() {
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    session
+        .generate_with_request_id(u64::MAX - 1, native_probe_request(vec![1, 2], 1))
+        .expect("explicit id");
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..1200 {
+        let response = session
+            .generate(native_probe_request(vec![1, 2], 1))
+            .expect("generate");
+        ids.insert(response.request_id);
+    }
+    assert_eq!(ids.len(), 1200, "auto ids must stay unique");
+}
+
+#[test]
+fn coalesced_stream_steps_keep_every_folded_steps_model_time() {
+    let mut last = EngineStepReport {
+        cpu_time_us: 700,
+        runner_time_us: 500,
+        scheduled_tokens: 1,
+        ..Default::default()
+    };
+    let folded = EngineStepReport {
+        cpu_time_us: 300,
+        runner_time_us: 200,
+        scheduled_tokens: 1,
+        ..Default::default()
+    };
+    super::fold_step_work(&mut last, &folded);
+    assert_eq!(
+        (last.cpu_time_us, last.runner_time_us, last.scheduled_tokens),
+        (1000, 700, 2)
     );
 }

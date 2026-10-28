@@ -100,6 +100,9 @@ impl PreemptionMetrics {
     }
 }
 
+/// Cancel checkpoints kept for `AX_MLX_CANCEL_KEEP_PREFIX` restores.
+pub(crate) const MAX_CANCEL_CHECKPOINTS: usize = 32;
+
 #[derive(Debug)]
 pub struct EngineCore {
     request_manager: RequestManager,
@@ -370,6 +373,10 @@ impl EngineCore {
         &self,
     ) -> Option<crate::model::NativeModelArtifactsSummary> {
         self.runner.native_model_artifacts_summary()
+    }
+
+    pub fn drafter_identity(&self) -> Option<String> {
+        self.runner.drafter_identity()
     }
 
     pub fn native_model_binding_summary(&self) -> Option<crate::runner::NativeModelBindingSummary> {
@@ -1155,6 +1162,17 @@ impl EngineCore {
                 if !lookup.hit {
                     continue;
                 }
+                // A request restored from a cancel checkpoint already reports
+                // `cut` processed tokens while the KV cache hit covers only its
+                // whole blocks. A hit that does not advance past the processed
+                // prompt adds nothing, and validating it failed every step.
+                let processed = self
+                    .request_manager
+                    .record(item.request_id)
+                    .map_or(0, |record| record.processed_prompt_tokens);
+                if lookup.matched_token_count <= processed {
+                    continue;
+                }
 
                 debug!(
                     request_id = item.request_id.0,
@@ -1167,6 +1185,18 @@ impl EngineCore {
                     .validate_prefix_reuse(item.request_id, lookup.matched_token_count)?;
                 self.kv_manager
                     .validate_prefix_share(item.request_id, &lookup)?;
+                let record = self
+                    .request_manager
+                    .record(item.request_id)
+                    .ok_or(RequestManagerError::UnknownRequest(item.request_id))?;
+                if !self.runner.prepare_prefix_reuse(
+                    record,
+                    lookup.matched_token_count,
+                    self.kv_manager.config().block_size_tokens,
+                    sampling_params_allow_deterministic_argmax_fast_path(&record.sampling_params),
+                ) {
+                    continue;
+                }
                 pending_prefix_reuse.push((item.request_id, lookup));
             }
 
@@ -1584,6 +1614,19 @@ impl EngineCore {
             }
 
             if update.has_output_tokens() {
+                // A multi-token runner update (MTP / n-gram) can overshoot the
+                // output budget. Applying the excess fails the request, and the
+                // step error then failed every later request in the batch.
+                // Keep only what the budget allows; the request finishes at
+                // its limit as usual.
+                let remaining =
+                    self.request_manager
+                        .record(request_id)
+                        .map_or(usize::MAX, |record| {
+                            (record.max_output_tokens as usize)
+                                .saturating_sub(record.generated_tokens.len())
+                        });
+                let batch_start = runner_tokens.len();
                 if let Some(token_id) = update.output_token {
                     runner_tokens.push(SampledToken {
                         request_id,
@@ -1606,6 +1649,9 @@ impl EngineCore {
                             .flatten(),
                         logprob: None,
                     });
+                }
+                if runner_tokens.len() - batch_start > remaining {
+                    runner_tokens.truncate(batch_start + remaining);
                 }
                 continue;
             }
@@ -2318,6 +2364,11 @@ impl EngineCore {
                 "prefix checkpoint was not stored"
             );
         }
+        // Bounded: each entry holds a prompt prefix and its encoded
+        // snapshot, and every submit scans the list. Keep the newest.
+        if self.cancel_checkpoints.len() >= MAX_CANCEL_CHECKPOINTS {
+            self.cancel_checkpoints.remove(0);
+        }
         self.cancel_checkpoints.push(prefix);
     }
 
@@ -2361,6 +2412,16 @@ impl EngineCore {
         let blocked = self.request_manager.memory_blocked_ids();
         let mut retried = Vec::new();
         for request_id in blocked {
+            // Only a pressure spill has a prefix to resume. A request blocked
+            // on KV capacity alone was never spilled: treating it as one
+            // preempted it (a decode-stage request then failed every step
+            // with PreemptDecodeStage and jammed the engine) or left it
+            // blocked after blocks freed. Retry it like the default path.
+            if !self.spill_attempts.contains_key(&request_id) {
+                self.request_manager.unblock_memory_request(request_id)?;
+                retried.push(request_id);
+                continue;
+            }
             if sample.ready_to_resume() {
                 if self.resume_spilled_prefix(request_id)? {
                     self.request_manager.unblock_memory_request(request_id)?;
@@ -2514,6 +2575,15 @@ impl EngineCore {
         else {
             return Ok(());
         };
+        // The restored tokens occupy KV like any processed prompt; charge
+        // them now. Leaving the ledger empty let newer requests take the
+        // capacity, and the post-step reconcile then failed the restored
+        // request. Without room the request simply prefills from zero.
+        let plan = self.kv_manager.allocate(request_id, prefix.cut)?;
+        if !matches!(plan.allocation_status, AllocationStatus::Allocated) {
+            return Ok(());
+        }
+        self.sync_request_block_table(request_id)?;
         self.request_manager
             .apply_prefix_reuse(request_id, prefix.cut)?;
         if self.runner.chunk_sensitive_prefill()
@@ -2855,6 +2925,41 @@ mod tests {
                 request_updates,
                 logits_handles: Vec::new(),
                 logits_outputs,
+                kv_write_summary: crate::runner::KvWriteSummary {
+                    tokens_written: input.execution_batch.total_scheduled_tokens,
+                    blocks_touched: input.block_tables.len() as u32,
+                },
+                route_metadata: input.execution_batch.route_metadata.clone(),
+                execution_status: crate::runner::ExecutionStatus::Success,
+            }
+        }
+    }
+
+    /// Emits four tokens for every scheduled request, as an MTP step would,
+    /// regardless of the request's remaining output budget.
+    #[derive(Debug)]
+    struct OvershootRunner;
+    impl ExecutionRunner for OvershootRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let request_updates = input
+                .execution_batch
+                .items
+                .iter()
+                .map(|item| crate::runner::RequestExecutionUpdate {
+                    request_id: item.request_id,
+                    tokens_executed: item.scheduled_token_count,
+                    output_token: Some(7),
+                    output_tokens: vec![8, 9, 10],
+                    stop_reason: None,
+                    error: None,
+                    diffusion_schedule: None,
+                })
+                .collect::<Vec<_>>();
+            RunnerOutput {
+                step_id: input.execution_batch.step_id,
+                request_updates,
+                logits_handles: Vec::new(),
+                logits_outputs: Vec::new(),
                 kv_write_summary: crate::runner::KvWriteSummary {
                     tokens_written: input.execution_batch.total_scheduled_tokens,
                     blocks_touched: input.block_tables.len() as u32,
@@ -4378,11 +4483,11 @@ mod tests {
     }
 
     #[test]
-    fn step_error_keeps_progress_of_requests_already_resolved() {
-        // Request 20 (max 10) accepts four tokens fine; request 21 (max 1)
-        // cannot, so apply_execution_results errors on it after 20 was
-        // already resolved. 20 must keep its tokens, stay Runnable, and have
-        // its multi-token KV surplus reconciled; 21 must be failed and freed.
+    fn multi_token_overshoot_finishes_at_the_budget_and_keeps_batch_progress() {
+        // Request 20 (max 10) accepts four tokens; request 21 (max 1) receives
+        // four but has room for one. The excess is clamped, so 21 finishes at
+        // its limit instead of failing the step, and 20 keeps its tokens with
+        // its multi-token KV surplus reconciled.
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 4, 16),
             MultiTokenDecodeRunner {
@@ -4395,17 +4500,13 @@ mod tests {
         engine.submit(make_submission(21, 2, 1)).unwrap();
         engine.step(8, true).unwrap();
 
-        let error = engine.step(2, true).unwrap_err();
-        assert!(
-            error.to_string().contains("max_output_tokens"),
-            "unexpected error: {error}"
-        );
+        engine
+            .step(2, true)
+            .expect("an overshoot must not fail the step");
 
         let ok = engine.request_manager().snapshot(RequestId(20)).unwrap();
         assert_eq!(ok.state, RequestState::Runnable);
         assert_eq!(ok.generated_tokens, vec![50, 51, 52, 53]);
-        // The kept request's KV accounting was reconciled despite the error:
-        // one token was allocated before dispatch, two more are surplus.
         let table = engine
             .kv_manager()
             .block_table_snapshot(RequestId(20))
@@ -4414,15 +4515,9 @@ mod tests {
             table.logical_token_count,
             ok.prompt_len + ok.generated_len - 1
         );
-        let failed = engine.request_manager().snapshot(RequestId(21)).unwrap();
-        assert_eq!(failed.state, RequestState::Failed);
-        assert!(
-            engine
-                .kv_manager()
-                .block_table_snapshot(RequestId(21))
-                .is_err(),
-            "the rejected request must not keep a live block table"
-        );
+        let limited = engine.request_manager().snapshot(RequestId(21)).unwrap();
+        assert_eq!(limited.generated_tokens, vec![50]);
+        assert_ne!(limited.state, RequestState::Failed);
     }
 
     #[test]
@@ -4452,6 +4547,34 @@ mod tests {
                 .and_then(|output| output.route_metadata.attention_route.as_deref()),
             Some("qwen3_paged_decode")
         );
+    }
+
+    #[test]
+    fn multi_token_runner_output_is_clamped_to_each_request_budget() {
+        // Request A has a 2-token budget, B a 16-token budget. The runner emits
+        // four tokens each. A's overshoot used to fail A and then every later
+        // request in the batch (B) with "sampled output exceeded
+        // max_output_tokens".
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 16),
+            OvershootRunner,
+            DeterministicSampler,
+        );
+        engine.submit(make_submission(31, 1, 2)).unwrap();
+        engine.submit(make_submission(32, 2, 16)).unwrap();
+        engine
+            .step(8, true)
+            .expect("the overshooting step must not fail");
+        let a = engine.request_manager().snapshot(RequestId(31)).unwrap();
+        let b = engine.request_manager().snapshot(RequestId(32)).unwrap();
+        assert_eq!(a.generated_tokens.len(), 2, "A keeps exactly its budget");
+        assert_ne!(a.state, crate::RequestState::Failed);
+        assert_ne!(
+            b.state,
+            crate::RequestState::Failed,
+            "B must not be failed by A"
+        );
+        assert_eq!(b.generated_tokens.len(), 4);
     }
 
     #[test]
@@ -5402,6 +5525,73 @@ mod tests {
         assert_eq!(item.input_token_slice, vec![7; 8]);
         assert_eq!(item.position_range.start, 0);
         assert_eq!(item.prefix_tokens_reused, 0);
+    }
+
+    #[test]
+    fn runner_admits_only_available_complete_prefixes_before_rescheduling() {
+        #[derive(Debug)]
+        struct ExactPrefixRunner {
+            available: bool,
+            admitted: Arc<Mutex<Vec<(usize, u32)>>>,
+        }
+        impl ExecutionRunner for ExactPrefixRunner {
+            fn run(&self, input: RunnerInput) -> RunnerOutput {
+                DeterministicRunner.run(input)
+            }
+            fn prepare_prefix_reuse(
+                &self,
+                request: &crate::request::RequestRecord,
+                matched_tokens: u32,
+                _block_size_tokens: u32,
+                _deterministic_output: bool,
+            ) -> bool {
+                self.admitted
+                    .lock()
+                    .unwrap()
+                    .push((request.prompt_tokens.len(), matched_tokens));
+                self.available && matched_tokens as usize == request.prompt_tokens.len()
+            }
+        }
+        for (available, extend) in [(false, false), (true, true), (true, false)] {
+            let admitted = Arc::new(Mutex::new(Vec::new()));
+            let runner = ExactPrefixRunner {
+                available,
+                admitted: Arc::clone(&admitted),
+            };
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 4, 16),
+                runner,
+                DeterministicSampler,
+            );
+            let mut prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
+            engine
+                .submit(make_submission_with_prompt(1, 1, prompt.clone(), 1))
+                .unwrap();
+            engine.step(16, true).unwrap();
+            if extend {
+                prompt.push(18);
+            }
+            engine
+                .submit(make_submission_with_prompt(2, 2, prompt.clone(), 1))
+                .unwrap();
+            let outcome = engine.step(16, true).unwrap();
+            let batch = outcome.schedule_plan.execution_batch.as_ref().unwrap();
+            let item = batch
+                .items
+                .iter()
+                .find(|item| item.request_id == RequestId(2))
+                .unwrap();
+            if available && !extend {
+                assert_eq!(item.mode, ExecutionMode::Decode);
+                assert_eq!(item.prefix_tokens_reused, 8);
+            } else {
+                assert_eq!(item.mode, ExecutionMode::Prefill);
+                assert_eq!(item.position_range.start, 0);
+                assert_eq!(item.input_token_slice, prompt);
+                assert_eq!(item.prefix_tokens_reused, 0);
+            }
+            assert!(admitted.lock().unwrap().contains(&(prompt.len(), 8)));
+        }
     }
 
     #[test]

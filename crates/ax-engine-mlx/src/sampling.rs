@@ -425,12 +425,23 @@ pub(crate) fn processed_logits<'a>(
                 recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
             );
         }
+        // The n-gram ban can remove every token the grammar still allows;
+        // an all -inf row then fell back to token 0, which the grammar
+        // forbids. The grammar is the hard constraint: drop the ban for
+        // that step instead.
+        let before_ngram_ban = (sampling.json_grammar_active && sampling.uses_no_repeat_ngram())
+            .then(|| logits_buf.clone());
         logits_with_no_repeat_ngram_in_place(
             logits_buf,
             sampling.no_repeat_ngram_size,
             sampling.ngram_window,
             repetition_tokens,
         );
+        if let Some(before) = before_ngram_ban
+            && logits_buf.iter().all(|value| *value == f32::NEG_INFINITY)
+        {
+            *logits_buf = before;
+        }
         if sampling.uses_presence_frequency_penalty() {
             ax_engine_core::apply_presence_frequency_penalty_in_place(
                 logits_buf,
@@ -488,11 +499,8 @@ pub(crate) fn sample_categorical_into(
                 return i as u32;
             }
         }
-        return probs_buf
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.total_cmp(b))
-            .map(|(i, _)| i as u32)
+        return most_probable(probs_buf.iter().copied().enumerate())
+            .map(|i| i as u32)
             .unwrap_or(0);
     }
 
@@ -534,11 +542,8 @@ pub(crate) fn sample_categorical_into(
             return *i as u32;
         }
     }
-    candidates_buf
-        .iter()
-        .copied()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(i, _)| i as u32)
+    most_probable(candidates_buf.iter().copied())
+        .map(|i| i as u32)
         .unwrap_or(0)
 }
 
@@ -734,11 +739,7 @@ pub(crate) fn sample_indexed_categorical(
             return Some(*idx as u32);
         }
     }
-    candidates
-        .iter()
-        .copied()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(idx, _)| idx as u32)
+    most_probable(candidates.iter().copied()).map(|idx| idx as u32)
 }
 
 #[cfg(test)]
@@ -960,12 +961,7 @@ pub(crate) fn sample_from_token_distribution(
             return Some(token);
         }
     }
-    distribution
-        .entries
-        .iter()
-        .copied()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(token, _)| token)
+    most_probable(distribution.entries.iter().copied())
 }
 
 pub(crate) fn sample_residual_token_distribution(
@@ -973,6 +969,13 @@ pub(crate) fn sample_residual_token_distribution(
     draft: &TokenDistribution,
     rng: &mut Xorshift64,
 ) -> Option<u32> {
+    sample_from_token_distribution(&residual_token_distribution(target, draft), rng)
+}
+
+fn residual_token_distribution(
+    target: &TokenDistribution,
+    draft: &TokenDistribution,
+) -> TokenDistribution {
     let mut residual = BTreeMap::<u32, f32>::new();
     for (token, prob) in target.entries() {
         residual.insert(*token, *prob);
@@ -985,8 +988,7 @@ pub(crate) fn sample_residual_token_distribution(
         .into_iter()
         .filter(|(_, prob)| *prob > 0.0 && prob.is_finite())
         .collect();
-    let distribution = TokenDistribution::new(residual_entries).unwrap_or_else(|| target.clone());
-    sample_from_token_distribution(&distribution, rng)
+    TokenDistribution::new(residual_entries).unwrap_or_else(|| target.clone())
 }
 
 /// GPU-side categorical sampling from logits.
@@ -1077,10 +1079,7 @@ fn sample_indexed_full_probability_categorical(
             return Some(token);
         }
     }
-    candidates
-        .into_iter()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(token, _)| token)
+    most_probable(candidates)
 }
 
 fn logits_with_repetition_penalty_in_place(
@@ -1162,6 +1161,16 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32)
     }
 }
 
+/// Rounding fallback for the stochastic samplers: the most probable token,
+/// with ties going to the lowest token id as in greedy `argmax_f32`.
+/// (`max_by` alone keeps the last of equal maxima.)
+fn most_probable<T: Copy + Ord>(items: impl IntoIterator<Item = (T, f32)>) -> Option<T> {
+    items
+        .into_iter()
+        .max_by(|(token_a, a), (token_b, b)| a.total_cmp(b).then_with(|| token_b.cmp(token_a)))
+        .map(|(token, _)| token)
+}
+
 fn argmax_index_f32(logits: &[f32]) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (index, &logit) in logits.iter().enumerate() {
@@ -1231,6 +1240,22 @@ mod tests {
         assert_eq!(token, 1);
     }
     use super::*;
+
+    #[test]
+    fn sampler_rounding_fallback_breaks_ties_toward_the_lowest_token() {
+        assert_eq!(
+            most_probable([(7u32, 0.5f32), (3, 0.5), (5, 0.25)]),
+            Some(3)
+        );
+        assert_eq!(
+            most_probable([(0usize, 0.25f32), (1, 0.5), (2, 0.5)]),
+            Some(1)
+        );
+        assert_eq!(most_probable([(4u32, 0.1f32), (9, 0.9)]), Some(9));
+        assert_eq!(most_probable(Vec::<(u32, f32)>::new()), None);
+        // Same rule as greedy argmax over equal logits.
+        assert_eq!(argmax_f32(&[0.5, 2.0, 2.0]), 1);
+    }
 
     #[test]
     fn request_rng_marks_only_explicit_seed_as_seeded() {
@@ -1547,6 +1572,36 @@ mod tests {
     }
 
     #[test]
+    fn residual_correction_completes_the_exact_target_probability_law() {
+        for (p, q) in [
+            ([0.4, 0.6, 0.0], [0.8, 0.2, 0.0]),
+            ([0.0, 0.3, 0.7], [0.5, 0.5, 0.0]),
+            ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            ([0.25, 0.5, 0.25], [0.25, 0.5, 0.25]),
+        ] {
+            let distribution = |values: [f32; 3]| {
+                TokenDistribution::new(
+                    values
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, p)| (i as u32, p))
+                        .collect(),
+                )
+                .unwrap()
+            };
+            let target = distribution(p);
+            let draft = distribution(q);
+            let residual = residual_token_distribution(&target, &draft);
+            let accepted: f32 = p.into_iter().zip(q).map(|(p, q)| p.min(q)).sum();
+            for token in 0..3 {
+                let output =
+                    p[token].min(q[token]) + (1.0 - accepted) * residual.probability(token as u32);
+                assert!((output - p[token]).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
     fn residual_distribution_removes_draft_mass() {
         let target = TokenDistribution::new(vec![(1, 0.6), (2, 0.3), (3, 0.1)]).unwrap();
         let draft = TokenDistribution::new(vec![(1, 0.6), (2, 0.4)]).unwrap();
@@ -1675,6 +1730,20 @@ mod tests {
             crate::batched_sampling::batched_sampling_class(greedy, false),
             None
         );
+    }
+
+    #[test]
+    fn grammar_wins_when_the_ngram_ban_would_mask_every_allowed_token() {
+        // History [2, 3, 2]: a 2-gram ban forbids 3 after 2. The grammar
+        // allows only token 3, so the ban would leave an all -inf row and
+        // the fallback used to emit token 0, which the grammar forbids.
+        let logits = vec![4.0, 3.0, 0.0, 1.0];
+        let mut rng = Xorshift64::new(5);
+        let greedy = MlxSamplingParams::greedy()
+            .with_json_grammar_active(true)
+            .with_no_repeat_ngram(2, 128);
+        let _scope = scoped_token_mask(Some(vec![0b1000u64]));
+        assert_eq!(sample_categorical(&logits, greedy, &[2, 3, 2], &mut rng), 3);
     }
 
     #[test]

@@ -612,6 +612,13 @@ struct RequestState {
     /// Request-local DFlash2 drafter state (ADR-045). `None` until a prefill
     /// under an eligible request captured hidden states.
     dflash2: Option<dflash2_decode::Dflash2RequestState>,
+    semantic_cut_tokens: Vec<u32>,
+    semantic_partition_valid: bool,
+    /// Canonical semantic boundary at which the last executed prefill item
+    /// ended. A handoff checkpoint may publish only this position.
+    semantic_checkpoint_cut: Option<usize>,
+    dflash2_prefix_snapshots:
+        std::collections::BTreeMap<usize, Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
     /// Set when the linear DFlash2 verify fence fails after rebind. The cache
     /// is not restored; `run_item` fails this request and drops the state.
     dflash2_verify_fence_error: Option<String>,
@@ -1328,6 +1335,10 @@ impl RequestState {
             mtp_ngram_utility_hysteresis_remaining: 0,
             flash_next_mtp: FlashNextMtpRequestState::default(),
             dflash2: None,
+            semantic_cut_tokens: Vec::new(),
+            semantic_partition_valid: true,
+            semantic_checkpoint_cut: None,
+            dflash2_prefix_snapshots: Default::default(),
             dflash2_verify_fence_error: None,
         }
     }
@@ -1547,8 +1558,8 @@ pub struct MlxRunner {
     cfg: ModelConfig,
     cfg_arc: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
-    /// DFlash2 block drafter (ADR-045), loaded only when `AX_MLX_DFLASH2_DIR`
-    /// names a drafter that matches this target. Greedy text requests only.
+    /// DFlash2 block drafter (ADR-045), from pinned discovery or an explicit
+    /// directory matching this target. Greedy text requests only.
     dflash2: Option<Arc<crate::dflash2::Dflash2Weights>>,
     /// Chunk size used for warm-extend prefill (snapshot restore + suffix).
     /// MLA models force this to `MLA_DEFAULT_PREFILL_CHUNK` (16) so the
@@ -1592,6 +1603,10 @@ pub struct MlxRunner {
     /// stale KV after an in-place checkpoint replacement).
     artifact_fingerprint: Option<String>,
     states: Mutex<HashMap<RequestId, RequestState>>,
+    /// Full direct Flash Next snapshots admitted before scheduler reuse.
+    /// Retaining the Arc prevents eviction from turning a hit into a replay
+    /// with a different prefill partition between admission and execution.
+    prepared_prefixes: Mutex<HashMap<RequestId, Arc<MlxPrefixSnapshot>>>,
     /// Whether this model can use the experimental batched dense-decode path
     /// (computed once from the loaded model capabilities). Gates the `run()`
     /// interception together with `batched_decode_enabled()`.
@@ -1646,6 +1661,7 @@ pub struct MlxRunner {
     /// Runner-local native FA snapshots. Never shared through
     /// `MlxPrefixCacheStore`; live MLX arrays remain bound to this runner.
     native_prefix_cache: Mutex<MlxNativePrefixCache>,
+    last_host_pressure: Mutex<crate::host_pressure::HostPressure>,
     /// Optional L2 file-backed prefix cache (F3). Populated when
     /// `AX_MLX_PREFIX_CACHE_DIR` is set and the disk-disabled kill
     /// switch is not engaged. `None` when off; the L2 paths short-
@@ -1789,6 +1805,7 @@ fn load_dflash2_drafter(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     dir: &std::path::Path,
+    require_pin: bool,
 ) -> Option<Arc<crate::dflash2::Dflash2Weights>> {
     let precision = if crate::fastpath::dflash2_bf16_enabled() {
         crate::dflash2::DrafterPrecision::Bf16
@@ -1806,6 +1823,12 @@ fn load_dflash2_drafter(
             return None;
         }
     };
+    if require_pin && !drafter.is_pinned() {
+        tracing::warn!(
+            "discovered DFlash2 checkpoint does not match the admitted revision and digests; use AX_MLX_DFLASH2_DIR for an explicit override"
+        );
+        return None;
+    }
     let drafter_cfg = drafter.config();
     let fits = drafter_cfg.hidden_size as usize == cfg.hidden_size
         && drafter_cfg.vocab_size as usize == cfg.vocab_size
@@ -1826,6 +1849,7 @@ fn load_dflash2_drafter(
     tracing::info!(
         target: "ax_engine_mlx::runner",
         ?precision,
+        artifact_identity = %drafter.identity(),
         block = drafter.config().block_size,
         dir = %dir.display(),
         "DFlash2 drafter loaded (greedy text requests)"
@@ -2032,6 +2056,7 @@ fn demote_native_prefix_snapshot(
                 &snapshot.tokens,
                 snapshot.greedy_prefill_output_token,
                 false,
+                None,
             );
         if !cache.enabled() || superseded || snapshot.cache.has_unserializable_layers() {
             telemetry.record_demotion_skip();
@@ -2345,7 +2370,7 @@ impl MlxRunner {
             }
             return false;
         };
-        self.dflash2 = load_dflash2_drafter(&self.cfg, &self.weights, &dir);
+        self.dflash2 = load_dflash2_drafter(&self.cfg, &self.weights, &dir, explicit.is_none());
         self.dflash2.is_some()
     }
 
@@ -3345,6 +3370,7 @@ impl MlxRunner {
                 crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
             ),
             states: Mutex::new(HashMap::new()),
+            prepared_prefixes: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
             batched_decode_model_rejections,
             batched_session,
@@ -3370,6 +3396,7 @@ impl MlxRunner {
             ngram_policy_variant,
             prefix_cache,
             native_prefix_cache: Mutex::new(MlxNativePrefixCache::new(native_prefix_cache_policy)),
+            last_host_pressure: Mutex::default(),
             disk_prefix_cache,
             disk_prefix_writer,
             rotating_sliding_decode,
@@ -4524,20 +4551,34 @@ impl MlxRunner {
             } else {
                 &self.terminal_token_ids
             };
+            let ignore_eos = ctx.is_some_and(|c| c.ignore_eos);
             let (sampled, stop_reason) =
                 truncate_sampled_tokens_for_stop(vec![tok], generated_len, max_output, terminal);
-            {
+            let (sampled, stop_reason) = {
                 let mut states = self.states.lock();
+                // Same loop-detection tail as the per-item decode, so a tensor
+                // cohort row stops exactly where its solo decode would.
+                let (sampled, stop_reason) = match states.get(&request_id) {
+                    Some(state) => apply_loop_detection_stop(
+                        sampled,
+                        stop_reason,
+                        &state.generated_tokens,
+                        loop_detection_for_request(ignore_eos, &self.cfg.model_family),
+                    ),
+                    None => (sampled, stop_reason),
+                };
                 if stop_reason.is_none() {
                     if let Some(state) = states.get_mut(&request_id) {
                         for &t in &sampled {
                             state.generated_tokens.push(t);
+                            update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, t);
                         }
                     }
                 } else {
                     states.remove(&request_id);
                 }
-            }
+                (sampled, stop_reason)
+            };
             if stop_reason.is_some() {
                 session.remove(id);
             }
@@ -4584,6 +4625,15 @@ impl MlxRunner {
             let (token, _, _) = finish_pending_token(&pending);
             let (sampled, stop_reason) =
                 truncate_sampled_tokens_for_stop(vec![token], generated_len, max_output, terminal);
+            let (sampled, stop_reason) = apply_loop_detection_stop(
+                sampled,
+                stop_reason,
+                &state.generated_tokens,
+                loop_detection_for_request(
+                    ctx.is_some_and(|ctx| ctx.ignore_eos),
+                    &self.cfg.model_family,
+                ),
+            );
             if stop_reason.is_none() {
                 clear_private_decode_latches_for_batched_session(state);
                 seed_batched_session_and_reclaim_private_cache(
@@ -4593,7 +4643,10 @@ impl MlxRunner {
                     token,
                     None,
                 );
-                state.generated_tokens.extend_from_slice(&sampled);
+                for &t in &sampled {
+                    state.generated_tokens.push(t);
+                    update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, t);
+                }
             } else {
                 states.remove(&request_id);
             }
@@ -4745,6 +4798,53 @@ fn warn_prefix_checkpoint_write_errors(
 /// A checkpoint is committed when L1 or the disk tier accepted the snapshot.
 /// `ssd_hit` is set only when the disk tier accepted. Write errors stay
 /// visible through the counter even when L1 succeeded.
+/// Order-independent signature of a step's request ids (FNV-1a over the
+/// sorted ids). Zero only for an empty step.
+fn step_request_set_signature(ids: impl Iterator<Item = u64>) -> u32 {
+    let mut ids: Vec<u64> = ids.collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    let mut hash: u32 = 0x811c_9dc5;
+    for id in ids {
+        for byte in id.to_le_bytes() {
+            hash ^= u32::from(byte);
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+    }
+    hash.max(1)
+}
+
+/// Stack the full softmax rows kept for the min_p survivor mass, if any.
+fn stack_survivor_rows(rows: &[MlxArray], vocab: i32) -> Option<(MlxArray, i32)> {
+    if rows.is_empty() {
+        return None;
+    }
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    let stacked = stack(&refs, 0, None);
+    let flat = mlx_sys::reshape(&stacked, &[rows.len() as i32, vocab], None);
+    Some((flat, vocab))
+}
+
+/// Probability mass that survives `min_p` over one full softmax row: tokens
+/// with `p >= min_p * max(p)`. The primary sampler cuts top-p against it.
+fn min_p_survivor_mass(row: &[f32], min_p: f32) -> f32 {
+    let max_prob = row
+        .iter()
+        .copied()
+        .filter(|p| p.is_finite())
+        .fold(0.0_f32, f32::max);
+    let cutoff = min_p * max_prob;
+    let mass: f32 = row
+        .iter()
+        .copied()
+        .filter(|p| p.is_finite() && *p >= cutoff)
+        .sum();
+    if mass > 0.0 { mass } else { 1.0 }
+}
+
 fn checkpoint_receipt_from_prefix_store(
     request_id: RequestId,
     cut: u32,
@@ -4785,6 +4885,45 @@ fn restore_value_decision(
 }
 
 impl ExecutionRunner for MlxRunner {
+    fn prepare_prefix_reuse(
+        &self,
+        request: &ax_engine_core::RequestRecord,
+        matched_tokens: u32,
+        block_size_tokens: u32,
+        deterministic_output: bool,
+    ) -> bool {
+        if !self.flash_next_exact_prefix_only() {
+            return true;
+        }
+        if matched_tokens as usize != request.prompt_tokens.len()
+            || request.processed_prompt_tokens != 0
+            || !deterministic_output
+            || !request.multimodal_inputs.is_empty()
+            || !request.prefill_hints.is_empty()
+            || crate::fastpath::prefix_semantic_cuts_enabled()
+            || crate::fastpath::prefix_restore_value_enabled()
+        {
+            return false;
+        }
+        let key = self.prefix_cache_key_with_media(
+            &request.model_id.0,
+            block_size_tokens,
+            &request.prompt_tokens,
+            "",
+        );
+        let snapshot = self.prefix_cache.lock().get(&key, &request.prompt_tokens);
+        let Some(snapshot) = snapshot.filter(|snapshot| {
+            snapshot.token_count == request.prompt_tokens.len()
+                && snapshot.greedy_prefill_output_token.is_some()
+        }) else {
+            return false;
+        };
+        self.prepared_prefixes
+            .lock()
+            .insert(request.request_id, snapshot);
+        true
+    }
+
     fn checkpoint_request(
         &self,
         request_id: ax_engine_core::RequestId,
@@ -4814,7 +4953,12 @@ impl ExecutionRunner for MlxRunner {
                 committed_limit,
             );
         };
-        if state.rotating_sliding_latch.is_some() || state.cache.has_unserializable_layers() {
+        // Every prefill latches its rotation decision; only an engaged ring is
+        // request-local slot order that another request cannot restore.
+        if matches!(state.rotating_sliding_latch, Some((true, _)))
+            || state.cache.has_rotated_sliding_layers()
+            || state.cache.has_unserializable_layers()
+        {
             return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
                 request_id,
                 committed_limit,
@@ -4830,6 +4974,17 @@ impl ExecutionRunner for MlxRunner {
         // `cut`. `trim_to` cannot roll that state back, so a longer cache
         // must be a counted miss instead of a trimmed store.
         if state.cache.seq_len() != cut && state.cache.recurrent_capture_requires_exact_prefix() {
+            self.checkpoint_unsupported
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        // Semantic keys bind the canonical partition. A scheduler split off
+        // that partition, or after it was invalidated, would publish state
+        // that a cold run of the same prompt does not compute.
+        if self.semantic_prefix_enabled() && state.semantic_checkpoint_cut != Some(cut) {
             self.checkpoint_unsupported
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
@@ -4857,7 +5012,9 @@ impl ExecutionRunner for MlxRunner {
                 .fetch_add(errors, std::sync::atomic::Ordering::Relaxed);
         }
         let tokens = &state.prompt_prefix_tokens[..cut];
-        let key = self.prefix_cache_key_with_media(&model_id, block_size, tokens, "");
+        let mut key = self.prefix_cache_key_with_media(&model_id, block_size, tokens, "");
+        // Match the key `store_at_cut` used, or a resident entry reads as a miss.
+        self.bind_semantic_partition(&mut key, cut, &state.semantic_cut_tokens);
         let l1_resident = self.prefix_cache.lock().contains_exact_tokens(&key, tokens);
         checkpoint_receipt_from_prefix_store(request_id, committed_limit, &telemetry, l1_resident)
     }
@@ -4908,6 +5065,26 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        let pressure = crate::host_pressure::sample();
+        let previous_pressure = std::mem::replace(&mut *self.last_host_pressure.lock(), pressure);
+        if pressure != crate::host_pressure::HostPressure::Normal {
+            let portable = self.prefix_cache.lock().reclaim_unborrowed();
+            let retired = self.native_prefix_cache.lock().reclaim_unborrowed();
+            let native = retired.len();
+            drop(retired);
+            if pressure > previous_pressure || portable > 0 || native > 0 {
+                clear_cache();
+                tracing::info!(
+                    ?pressure,
+                    portable,
+                    native,
+                    "reclaimed unborrowed prefix state under host pressure"
+                );
+            }
+        }
+        // A failure recorded outside a step (warmup, a contained panic) must
+        // not fail this step's unrelated requests.
+        let _ = crate::expert_stream::take_paging_failure();
         *self.last_prefix_model_id.lock() = input.execution_batch.model_id.clone();
         self.last_block_size_tokens.store(
             input.block_size_tokens,
@@ -5616,6 +5793,19 @@ impl ExecutionRunner for MlxRunner {
             let mut route_decisions =
                 IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
             decode_telemetry.append_route_decisions(&mut route_decisions);
+            // Request-cumulative counters (prefill wall time, MTP totals) are
+            // re-emitted every step; the server needs to see which requests a
+            // step served to tell a new request from a continuation.
+            route_decisions.upsert_route_decision(
+                "ax_mlx_step_request_set",
+                step_request_set_signature(
+                    input
+                        .execution_batch
+                        .items
+                        .iter()
+                        .map(|item| item.request_id.0),
+                ),
+            );
             let selected_reads = crate::expert_stream::take_selected_expert_read_stats();
             route_decisions.upsert_route_decision(
                 "ax_mlx_flash_next_selected_expert_gathers",
@@ -5724,6 +5914,10 @@ impl ExecutionRunner for MlxRunner {
         }
     }
 
+    fn drafter_identity(&self) -> Option<String> {
+        self.dflash2.as_ref().map(|weights| weights.identity())
+    }
+
     fn native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
         Some(self.binding_summary)
     }
@@ -5737,6 +5931,7 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn release_request_state(&self, request_id: RequestId) {
+        self.prepared_prefixes.lock().remove(&request_id);
         // Terminal cleanup for requests that never reach a runner-observed stop
         // (cancelled while waiting/blocked, or cancelled by the engine after a
         // step reinserted state). Without this the per-request KV cache, MTP,
@@ -6030,15 +6225,14 @@ fn bf16_mean_pool(hidden: &MlxArray, actual_lens: &[usize], batch_size: i32) -> 
     );
     let masked = multiply(hidden, &mask_arr, None);
     let sums = sum_axis(&masked, 1, false, None);
-    let mut scale_data = vec![zero_bf16; actual_lens.len()];
-    for (i, &l) in actual_lens.iter().enumerate() {
-        scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
-    }
-    let scale_arr = MlxArray::from_raw_data(
-        scale_data.as_ptr() as *const u8,
-        scale_data.len() * std::mem::size_of::<u16>(),
+    // f32 scale, as the single-item path uses: truncating 1/len to bf16
+    // shrank every mean-pooled row by up to ~0.8%, so the same input came
+    // back with a different magnitude batched vs alone (normalize=false).
+    let scale_data: Vec<f32> = actual_lens.iter().map(|&l| 1.0 / l as f32).collect();
+    let scale_arr = mlx_sys::reshape(
+        &MlxArray::from_f32_slice(&scale_data),
         &[batch_size, 1_i32],
-        MlxDtype::Bfloat16,
+        None,
     );
     multiply(&sums, &scale_arr, None)
 }
@@ -6508,7 +6702,8 @@ impl MlxRunner {
             &self.weights,
             batch_token_ids,
         );
-        let bidir_mask = crate::model::build_bidirectional_padding_mask(
+        let masks = crate::model::build_embedding_gemma3_masks(
+            &self.cfg,
             batch,
             max_len,
             &actual_lens,
@@ -6527,7 +6722,7 @@ impl MlxRunner {
             match crate::model::build_embedding_gemma3_batch_forward_closure(
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
-                bidir_mask,
+                masks,
             ) {
                 Ok(cls) => {
                     embed_compile_cache_evict_if_full(&mut cache);
@@ -6618,7 +6813,8 @@ impl MlxRunner {
                     &actual_lens,
                 )
             } else {
-                let bidir_mask = crate::model::build_bidirectional_padding_mask(
+                let masks = crate::model::build_embedding_gemma3_masks(
+                    &self.cfg,
                     batch,
                     max_len,
                     &actual_lens,
@@ -6629,7 +6825,7 @@ impl MlxRunner {
                 crate::model::build_embedding_gemma3_pooled_batch_forward_closure(
                     Arc::clone(&self.cfg_arc),
                     Arc::clone(&self.weights),
-                    bidir_mask,
+                    masks,
                     pool_mask,
                     pool_scale,
                 )
@@ -7065,24 +7261,40 @@ impl MlxRunner {
         {
             state.json_grammar = Some(grammar::RequestGrammar::new(grammar.clone()));
         }
-        let _token_mask_scope = crate::sampling::scoped_token_mask(
-            grammar_vocab
-                .zip(state.json_grammar.as_ref())
-                .and_then(|(vocab, request_grammar)| {
-                    // A prefill samples after the whole prompt; decode
-                    // continues from the tracked think state.
-                    let in_think = if is_prefill {
-                        let before =
-                            compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
-                        compute_think_state(&self.cfg, before, token_ids)
-                    } else {
-                        state.ngram_in_think
-                    };
-                    request_grammar
-                        .cursor(vocab, self.think_token_ids(), in_think, terminal_token_ids)
-                        .mask()
-                }),
-        );
+        if let Some(grammar) = state.json_grammar.as_mut() {
+            grammar.set_remaining(
+                ctx.map_or(0, |c| c.max_output_tokens.saturating_sub(c.generated_len)),
+            );
+        }
+        if json_grammar.is_some_and(|grammar| grammar.completion_budget())
+            && grammar_vocab.is_none()
+        {
+            return errored_item_run(
+                item.request_id,
+                "grammar_budget requires the model tokenizer vocabulary",
+            );
+        }
+        let token_mask = grammar_vocab
+            .zip(state.json_grammar.as_ref())
+            .map(|(vocab, request_grammar)| {
+                // A prefill samples after the whole prompt; decode
+                // continues from the tracked think state.
+                let in_think = if is_prefill {
+                    let before = compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
+                    compute_think_state(&self.cfg, before, token_ids)
+                } else {
+                    state.ngram_in_think
+                };
+                request_grammar
+                    .cursor(vocab, self.think_token_ids(), in_think, terminal_token_ids)
+                    .mask_checked()
+            })
+            .transpose();
+        let token_mask = match token_mask {
+            Ok(mask) => mask.flatten(),
+            Err(error) => return errored_item_run(item.request_id, error.to_string()),
+        };
+        let _token_mask_scope = crate::sampling::scoped_token_mask(token_mask);
         // A fresh media request must project its media before decode, regardless
         // of the reuse flag or a token-only scheduler claim. A cache miss here
         // must never fall through to text-only prefix warmup.
@@ -7112,14 +7324,19 @@ impl MlxRunner {
         };
         // DFlash2 conditions on hidden states captured while the prompt runs
         // through the target. A request whose prefix is restored from a snapshot
-        // has no such rows and decodes on the normal routes: prefix reuse keeps
-        // its time to first token.
+        // resumes capture when its RAM snapshot carries a compatible tail.
+        // Trunk-only snapshots retain the normal decode fallback.
         let dflash2_prefill = is_prefill
             && !has_native_multimodal_prefill
             && self.dflash2_request_eligible(sampling, is_greedy, false);
         let mut prefix_cache =
             if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
                 MlxPrefixCacheTelemetry::default()
+            } else if self.flash_next_exact_prefix_only() {
+                match self.restore_prepared_flash_prefix(&mut state, item, ctx, sampling) {
+                    Ok(telemetry) => telemetry,
+                    Err(error) => return errored_item_run(item.request_id, error),
+                }
             } else {
                 self.restore_reused_prefix_state(
                     &mut state,
@@ -7591,26 +7808,108 @@ impl MlxRunner {
                             crate::fastpath::PrefillChunkMode::WarmExtend
                         ),
                     );
-                    // Linear-attention conv/recurrent state cannot be trimmed
-                    // at snapshot-store time, so an unaligned prompt can only
-                    // get a prefix snapshot if the cache is captured
-                    // mid-prefill exactly at the largest block-aligned
-                    // boundary. Split the prefill there: run the aligned head
-                    // through the no-logits/no-sampling continuation API,
-                    // stash a lazy cache clone for
-                    // `store_prompt_prefix_snapshots`, and let the normal path
-                    // below prefill the remainder. The clone is handle-only;
-                    // its one real cost is a single non-donated full-attention
-                    // K/V append on the following chunk.
-                    // Restore floors a multi-token warm extension to the
-                    // prefill-chunk grid, and linear state cannot be trimmed
-                    // down to it, so the block-aligned boundary snapshot
-                    // alone never serves a sibling prompt or a follow-up
-                    // turn. Split once more at the last grid rung of the
-                    // completed prompt: the head is whole chunks the cold
-                    // trajectory already runs, so no chunk shape changes and
-                    // a warm restore at the rung replays the same tail.
-                    let rung_head = if self.cfg.linear_attention.is_some()
+                    // Execute all semantic boundaries, even those no longer retained,
+                    // so extending a conversation preserves the earlier partition.
+                    let semantic_capture = self.semantic_prefix_enabled();
+                    if semantic_capture {
+                        state.semantic_cut_tokens = prefill_hints
+                            .map(|h| h.semantic_cut_tokens.clone())
+                            .unwrap_or_default();
+                    }
+                    let mut semantic_cut_snapshots: Vec<(usize, MlxKVCache)> = Vec::new();
+                    let prefill_tokens = if semantic_capture {
+                        let start = state.cache.seq_len();
+                        let end = start + prefill_tokens.len();
+                        let prompt_len = ctx.map_or(end, |ctx| ctx.prompt_len as usize);
+                        let starts = prefill_hints
+                            .map(|h| h.semantic_cut_tokens.as_slice())
+                            .unwrap_or(&[]);
+                        let retained = snapshot_cut_plan(
+                            prompt_len,
+                            block_size_tokens as usize,
+                            starts,
+                            true,
+                            &self.prefix_execution_signature(),
+                        );
+                        let rung = prompt_len.saturating_sub(1) / self.prefill_chunk.max(1)
+                            * self.prefill_chunk.max(1);
+                        let cuts = semantic_execution_cuts(
+                            start,
+                            end,
+                            prompt_len,
+                            self.prefill_chunk.max(1),
+                            starts,
+                        );
+                        if start == 0 {
+                            state.semantic_partition_valid = true;
+                        }
+                        let ends_at_boundary = cuts.contains(&end);
+                        let mut cursor = 0;
+                        for cut in cuts {
+                            let offset = cut - start;
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                &prefill_tokens[cursor..offset],
+                                &mut state.cache,
+                                self.prefill_chunk.max(1),
+                                CacheOnlyPrefillLayout::Batched,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                            if state.semantic_partition_valid
+                                && self.prefix_cache.lock().enabled()
+                                && (retained.cuts.contains(&cut) || cut == rung)
+                            {
+                                self.capture_dflash2_prefix(&mut state);
+                                if cut == rung {
+                                    state.prefill_grid_snapshot = Some((cut, state.cache.clone()));
+                                } else {
+                                    semantic_cut_snapshots.push((cut, state.cache.clone()));
+                                }
+                            }
+                            cursor = offset;
+                        }
+                        // A scheduler split inside a canonical segment changes
+                        // its arithmetic. Do not publish later recurrent state
+                        // under the canonical partition identity.
+                        // An empty item executes nothing and keeps the partition.
+                        if start < end && end < prompt_len && !ends_at_boundary {
+                            state.semantic_partition_valid = false;
+                        }
+                        if start < end {
+                            state.semantic_checkpoint_cut =
+                                (state.semantic_partition_valid && ends_at_boundary).then_some(end);
+                        }
+                        &prefill_tokens[cursor..]
+                    } else {
+                        prefill_tokens
+                    };
+                    // Cold and warm runs share the tail after the last semantic
+                    // boundary, not the item length; scale the tail's chunk by it.
+                    let prefill_chunk_for_request = if semantic_capture {
+                        let tail_chunk = ax_engine_core::prefill_handoff::effective_prefill_chunk(
+                            requested_quantum.and_then(|chunk| u32::try_from(chunk).ok()),
+                            u32::try_from(base_prefill_chunk).unwrap_or(u32::MAX),
+                            warm_extend,
+                            u32::try_from(
+                                crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+                                    base_prefill_chunk,
+                                    prefill_tokens.len(),
+                                    &self.cfg.model_family,
+                                ),
+                            )
+                            .unwrap_or(u32::MAX),
+                        ) as usize;
+                        state
+                            .decode_telemetry
+                            .record_prefill_chunk_selection(tail_chunk, warm_extend);
+                        tail_chunk
+                    } else {
+                        prefill_chunk_for_request
+                    };
+                    // The disabled path keeps its existing grid and final-token schedule.
+                    let rung_head = if !semantic_capture
+                        && self.cfg.linear_attention.is_some()
                         && !flash_next_mtp_prefill
                         && prefill_completes_prompt
                         && crate::fastpath::linear_prefix_grid_rung_enabled()
@@ -7640,80 +7939,15 @@ impl MlxRunner {
                                 crate::generate::CacheOnlyBarrier::Blocking,
                             );
                         }
+                        self.capture_dflash2_prefix(&mut state);
                         state.prefill_grid_snapshot =
                             Some((state.cache.seq_len(), state.cache.clone()));
                         &prefill_tokens[head..]
                     } else {
                         prefill_tokens
                     };
-                    // Semantic cut capture (`AX_MLX_PREFIX_SEMANTIC_CUTS`)
-                    // runs *after* the grid-rung capture above and before the
-                    // boundary capture below. The rung is the prefix a warm
-                    // request claims, so its snapshot must be taken from the
-                    // whole item; capturing cuts first would advance the cache
-                    // past the rung, and `linear_grid_rung_head_len` would
-                    // then report the rung as inside prior context and drop
-                    // the claim snapshot. Running the cuts on the post-rung
-                    // remainder still reaches every assistant-turn cut inside
-                    // the prompt body, so cut snapshots are stored in
-                    // addition to the block-aligned ones, never instead.
-                    // A semantic cut is an assistant-turn start, so it is not
-                    // block-aligned and `trim_to` cannot produce it: linear
-                    // conv/recurrent (GDN), QSA and PLE state cannot be rolled
-                    // back at store time. Split the prefill at every planned
-                    // cut and capture the live cache in place at that token
-                    // position, so the stored snapshot is exact rather than
-                    // trimmed. The plan is built from the same prompt, block
-                    // size and execution signature the restore side uses
-                    // (`snapshot_cut_plan`), so a cold store and a warm
-                    // restore agree on the partition.
-                    let mut semantic_cut_snapshots: Vec<(usize, MlxKVCache)> = Vec::new();
-                    let prefill_tokens = if self.cfg.linear_attention.is_some()
-                        && !flash_next_mtp_prefill
-                        && crate::fastpath::prefix_semantic_cuts_enabled()
-                        && self.prefix_cache.lock().enabled()
-                        && !prefill_tokens.is_empty()
-                    {
-                        let cut_start = state.cache.seq_len();
-                        let cut_end = cut_start + prefill_tokens.len();
-                        let plan = snapshot_cut_plan(
-                            cut_end,
-                            block_size_tokens as usize,
-                            prefill_hints
-                                .map(|hints| hints.semantic_cut_tokens.as_slice())
-                                .unwrap_or(&[]),
-                            true,
-                            &self.prefix_execution_signature(),
-                        );
-                        let mut cursor = 0usize;
-                        for cut in plan
-                            .cuts
-                            .iter()
-                            .filter(|cut| **cut > cut_start && **cut < cut_end)
-                        {
-                            let offset = cut - cut_start;
-                            if offset <= cursor {
-                                continue;
-                            }
-                            chunked_prefill_cache_only(
-                                &self.cfg,
-                                &self.weights,
-                                &prefill_tokens[cursor..offset],
-                                &mut state.cache,
-                                prefill_chunk_for_request,
-                                CacheOnlyPrefillLayout::Batched,
-                                crate::generate::CacheOnlyBarrier::Blocking,
-                            );
-                            if state.cache.seq_len() == *cut {
-                                semantic_cut_snapshots.push((*cut, state.cache.clone()));
-                            }
-                            cursor = offset;
-                        }
-                        &prefill_tokens[cursor..]
-                    } else {
-                        prefill_tokens
-                    };
-                    let prefill_tokens = if self.cfg.linear_attention.is_some()
+                    let prefill_tokens = if !semantic_capture
+                        && self.cfg.linear_attention.is_some()
                         && self.prefix_cache.lock().enabled()
                         && let Some(head) = Self::linear_boundary_capture_head_len(
                             block_size_tokens as usize,
@@ -7741,6 +7975,7 @@ impl MlxRunner {
                                 crate::generate::CacheOnlyBarrier::Blocking,
                             );
                         }
+                        self.capture_dflash2_prefix(&mut state);
                         state.prefill_boundary_snapshot =
                             Some((state.cache.seq_len(), state.cache.clone()));
                         &prefill_tokens[head..]
@@ -7975,8 +8210,18 @@ impl MlxRunner {
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
                     if let Some(capture) = dflash2_capture {
-                        // Read the rows while the scope is still open.
+                        // Retain prompt rows for decode, but detach a RAM tail
+                        // only if the final boundary can actually be stored.
                         self.dflash2_finish_prefill_capture(&mut state);
+                        if !semantic_capture
+                            && block_size_tokens > 0
+                            && state
+                                .cache
+                                .seq_len()
+                                .is_multiple_of(block_size_tokens as usize)
+                        {
+                            self.capture_dflash2_prefix(&mut state);
+                        }
                         drop(capture);
                     }
                     let prefill_token_count = effective_prefill_token_count;
@@ -8008,21 +8253,23 @@ impl MlxRunner {
                         .decode_telemetry
                         .prefill_wall_us
                         .saturating_add(elapsed_us(prefill_started));
-                    prefix_cache.merge_from(
-                        self.store_prompt_prefix_snapshots(
-                            model_id,
-                            block_size_tokens,
-                            &state,
-                            PromptPrefixSnapshotStoreOptions {
-                                linear_boundary_snapshot: linear_boundary_snapshot.as_ref(),
-                                prefill_completes_prompt,
-                                greedy_prefill_output_token: prefill_output_token
-                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
-                                cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: media_key.as_deref(),
-                            },
-                        ),
-                    );
+                    if !semantic_capture {
+                        prefix_cache.merge_from(
+                            self.store_prompt_prefix_snapshots(
+                                model_id,
+                                block_size_tokens,
+                                &state,
+                                PromptPrefixSnapshotStoreOptions {
+                                    linear_boundary_snapshot: linear_boundary_snapshot.as_ref(),
+                                    prefill_completes_prompt,
+                                    greedy_prefill_output_token: prefill_output_token
+                                        .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
+                                    cold_prefill_us: u64::from(cold_prefill_us),
+                                    media_key: media_key.as_deref(),
+                                },
+                            ),
+                        );
+                    }
                     if let Some((rung_len, rung_cache)) = state.prefill_grid_snapshot.take()
                         && let Some(media_key) = media_key.as_deref()
                         && rung_cache.seq_len() == rung_len
@@ -8067,6 +8314,7 @@ impl MlxRunner {
                         }
                         prefix_cache.merge_from(stored);
                     }
+                    state.dflash2_prefix_snapshots.clear();
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
                     // Record pure prefill wall time before initialize_generation_state.
                     // MTP warmup and generation-state init are decode preparation, not
@@ -8232,6 +8480,13 @@ impl MlxRunner {
         } else {
             (sampled_tokens, stop_reason)
         };
+        if let Some(error) = state
+            .json_grammar
+            .as_ref()
+            .and_then(|grammar| grammar.take_budget_error())
+        {
+            return errored_item_run(item.request_id, error.to_string());
+        }
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
             // Credit the think-token budget per token, not per step: an MTP
@@ -8435,6 +8690,38 @@ impl MlxRunner {
         restored.clone_repage_into_shared_fa_pool(pool.clone())
     }
 
+    fn bind_semantic_partition(
+        &self,
+        key: &mut MlxPrefixCacheKey,
+        prefix_len: usize,
+        starts: &[u32],
+    ) {
+        if !self.semantic_prefix_enabled() {
+            return;
+        }
+        let cuts: Vec<u32> = semantic_execution_cuts(
+            0,
+            prefix_len,
+            prefix_len.saturating_add(1),
+            self.prefill_chunk.max(1),
+            starts,
+        )
+        .into_iter()
+        .map(saturating_u32)
+        .collect();
+        key.route_policy = format!(
+            "{};partition={:016x}",
+            self.prefix_cache_route_policy(),
+            hash_prefix_tokens(&cuts)
+        );
+    }
+
+    fn semantic_prefix_enabled(&self) -> bool {
+        self.cfg.linear_attention.is_some()
+            && !self.flash_next_mtp_session()
+            && crate::fastpath::prefix_semantic_cuts_enabled()
+    }
+
     fn prefix_cache_route_policy(&self) -> String {
         let decode_policy = if self.disable_ngram_acceleration {
             "direct"
@@ -8463,6 +8750,14 @@ impl MlxRunner {
                 "layers={};ordered-prefix-v2;root={}",
                 self.cfg.layer_count, self.model_artifacts_root
             )
+        };
+        let base = if crate::fastpath::prefix_semantic_cuts_enabled() {
+            format!(
+                "{base};semantic-plan=2;grid={};cold={}",
+                self.prefill_chunk, self.cold_prefill_chunk
+            )
+        } else {
+            base
         };
         // Empty at shipped defaults, so the L1 key bytes stay unchanged.
         // A non-empty tier misses both this layout and the disk signature.
@@ -8512,7 +8807,11 @@ impl MlxRunner {
             self.prefix_cache_route_policy(),
             self.prefill_chunk,
             self.cold_prefill_chunk,
-            u8::from(crate::fastpath::prefix_semantic_cuts_enabled()),
+            if crate::fastpath::prefix_semantic_cuts_enabled() {
+                2
+            } else {
+                0
+            },
             MLX_PIN.trim(),
             hardware.silicon_generation,
             self.cfg.layer_count,
@@ -8711,6 +9010,7 @@ impl MlxRunner {
         block_size_tokens: u32,
         input: &[u32],
         media_key: &str,
+        semantic_starts: &[u32],
     ) -> Option<Vec<u32>> {
         let mut probe_key =
             self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
@@ -8742,11 +9042,14 @@ impl MlxRunner {
             Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
                 probe_key.token_count = saturating_u32(prefix.len());
                 probe_key.token_hash = block_hashes[prefix.len() / block_size_tokens as usize - 1];
+                self.bind_semantic_partition(&mut probe_key, prefix.len(), semantic_starts);
                 self.prefix_snapshot_present(&probe_key, prefix)
             });
-        // The bound itself: the `probe_key` built above already carries the
-        // whole-input length and hash, so this is one lookup, and it is the
-        // longest prefix the probe can ever return.
+        // Reset the key after the aligned walk: the exact unaligned bound
+        // needs its own length, token hash and partition identity.
+        probe_key.token_count = saturating_u32(input.len());
+        probe_key.token_hash = hash_prefix_tokens(input);
+        self.bind_semantic_partition(&mut probe_key, input.len(), semantic_starts);
         let exact_bound = (probe_exact_bound_needed(input.len(), block_size_tokens as usize)
             && self.prefix_snapshot_present(&probe_key, input))
         .then(|| input.to_vec());
@@ -8860,6 +9163,7 @@ impl MlxRunner {
                 let prefix = &input[..len];
                 key.token_count = saturating_u32(len);
                 key.token_hash = hash;
+                self.bind_semantic_partition(&mut key, len, &cut_plan.semantic_starts);
                 if l1_enabled && self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
                     return true;
                 }
@@ -8883,6 +9187,7 @@ impl MlxRunner {
             let prefix = &input[..len];
             key.token_count = saturating_u32(len);
             key.token_hash = prefix_hash(len);
+            self.bind_semantic_partition(&mut key, len, &cut_plan.semantic_starts);
             // Prefer a resident RAM snapshot: rehydration from L1 is strictly
             // cheaper than a durable read, and semantic cuts are stored in L1
             // even when no disk layer is open.
@@ -9071,6 +9376,51 @@ impl MlxRunner {
         }
     }
 
+    fn flash_next_exact_prefix_only(&self) -> bool {
+        self.cfg.model_family == "qwen4_exp" && !self.mtp_requested
+    }
+
+    fn restore_prepared_flash_prefix(
+        &self,
+        state: &mut RequestState,
+        item: &ax_engine_core::ExecutionItem,
+        ctx: Option<&RunnerRequestContext>,
+        sampling: MlxSamplingParams,
+    ) -> Result<MlxPrefixCacheTelemetry, String> {
+        if item.reused_prefix_token_slice.is_empty() {
+            self.prepared_prefixes.lock().remove(&item.request_id);
+            return Ok(MlxPrefixCacheTelemetry::default());
+        }
+        if state.cache.seq_len() != 0 {
+            // Decode's slice includes its feed token; the live cache can be
+            // one token behind it. Only an empty cache needs prefix restore.
+            return Ok(MlxPrefixCacheTelemetry::default());
+        }
+        let snapshot = self.prepared_prefixes.lock().remove(&item.request_id);
+        let Some(snapshot) = snapshot else {
+            return Err("Flash Next prefix was not admitted before scheduling".into());
+        };
+        if snapshot.tokens != item.reused_prefix_token_slice
+            || ctx.is_none_or(|ctx| ctx.prompt_len as usize != snapshot.token_count)
+            || !prefill_output_token_cacheable(ctx, sampling)
+        {
+            return Err("Flash Next admitted prefix does not match the request".into());
+        }
+        let mut cache = snapshot.rehydrate_cache().map_err(|e| e.to_string())?;
+        self.verify_restored_prefix_snapshot(&mut cache, snapshot.token_count)
+            .map_err(|e| e.to_string())?;
+        state.cache = cache;
+        state.prompt_prefix_tokens = snapshot.tokens.clone();
+        state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+        let mut telemetry = MlxPrefixCacheTelemetry {
+            hits: 1,
+            reused_tokens: saturating_u32(snapshot.token_count),
+            ..MlxPrefixCacheTelemetry::default()
+        };
+        telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+        Ok(telemetry)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn restore_reused_prefix_state(
         &self,
@@ -9085,6 +9435,11 @@ impl MlxRunner {
         prefill_hints: Option<&ax_engine_core::PrefillHints>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
+        // Live request KV needs no restore. In particular, opt-in value
+        // decisions must not emit an empty cache event on every decode step.
+        if state.cache.seq_len() != 0 {
+            return telemetry;
+        }
         // Media present but no digest: never touch the prefix-cache
         // keyspace (a text-only key would alias prompts with different
         // media). Runs before the probe so an unidentifiable request
@@ -9093,7 +9448,7 @@ impl MlxRunner {
         let Some(media_key) = media_identity else {
             telemetry.record_blocked_media_identity();
             let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
-            if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
+            if !reused_tokens.is_empty() {
                 let capture_prefill_output = item.mode == ExecutionMode::Decode
                     && ctx.is_some_and(|ctx| ctx.generated_len == 0);
                 if item.mode != ExecutionMode::Prefill {
@@ -9175,6 +9530,9 @@ impl MlxRunner {
                     block_size_tokens,
                     default_probe_bound,
                     media_key,
+                    prefill_hints
+                        .map(|h| h.semantic_cut_tokens.as_slice())
+                        .unwrap_or(&[]),
                 )
                 .unwrap_or_default()
             } else {
@@ -9225,9 +9583,6 @@ impl MlxRunner {
         } else {
             &item.reused_prefix_token_slice
         };
-        if state.cache.seq_len() != 0 {
-            return telemetry;
-        }
         // Shape-exact warm extension: a multi-token extension chunk whose
         // (offset, len) is off the cold chunk grid dispatches different
         // SDPA kernels than the cold baseline at the same absolute
@@ -9289,8 +9644,15 @@ impl MlxRunner {
             return telemetry;
         }
 
-        let key =
+        let mut key =
             self.prefix_cache_key_with_media(model_id, block_size_tokens, reused_tokens, media_key);
+        self.bind_semantic_partition(
+            &mut key,
+            reused_tokens.len(),
+            prefill_hints
+                .map(|h| h.semantic_cut_tokens.as_slice())
+                .unwrap_or(&[]),
+        );
         let native_hit = if self.native_fa_prefix_sharing_enabled() {
             self.native_prefix_cache
                 .lock()
@@ -9422,6 +9784,16 @@ impl MlxRunner {
                                     state.flash_next_mtp.pending_restored_cursor =
                                         pending_restored_cursor;
                                     state.cache = restored_cache;
+                                    if self.dflash2_request_eligible(
+                                        sampling,
+                                        sampling.temperature <= 0.0,
+                                        !media_key.is_empty(),
+                                    ) {
+                                        self.restore_dflash2_prefix(
+                                            state,
+                                            snapshot.dflash2.as_deref(),
+                                        );
+                                    }
                                     state.prompt_prefix_tokens = reused_tokens.to_vec();
                                     // Only inherit the producer's greedy token when this request
                                     // would compute it too; otherwise leave it unset so the
@@ -9831,9 +10203,20 @@ impl MlxRunner {
         cold_prefill_us: u64,
         media_key: &str,
     ) -> MlxPrefixCacheTelemetry {
+        if crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal {
+            return MlxPrefixCacheTelemetry::default();
+        }
+
         let mut telemetry = MlxPrefixCacheTelemetry::default();
+        // An expert paging failure this step replaced an MoE output with
+        // zeros; the resulting KV is wrong and must not be reused.
+        if crate::expert_stream::paging_failure_pending() {
+            return telemetry;
+        }
         let tokens = &state.prompt_prefix_tokens[..prefix_len];
-        let key = self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
+        self.bind_semantic_partition(&mut key, prefix_len, &state.semantic_cut_tokens);
         // The boundary snapshot is by construction the largest aligned
         // prefix, so it follows the main store path's disk policy: mirror it
         // to the L2 disk layer when one is open. Compute the disk key up
@@ -9851,7 +10234,16 @@ impl MlxRunner {
         // reason (matches the pattern in `store_prompt_prefix_snapshots`).
         let l1_superseding = {
             let cache = self.prefix_cache.lock();
-            let superseding = cache.contains_superseding_snapshot(&key, tokens, None, false);
+            let superseding = cache.contains_superseding_snapshot(
+                &key,
+                tokens,
+                None,
+                false,
+                state
+                    .dflash2_prefix_snapshots
+                    .get(&prefix_len)
+                    .map(Arc::as_ref),
+            );
             if superseding {
                 telemetry.record_stats(cache.stats());
             }
@@ -9867,9 +10259,14 @@ impl MlxRunner {
             }
         }
         if !l1_superseding {
+            let sidecar_bytes = state
+                .dflash2_prefix_snapshots
+                .get(&prefix_len)
+                .map_or(0, |s| s.bytes());
             let lower_bound = snapshot_cache
                 .usage_snapshot()
                 .logical_bytes
+                .saturating_add(sidecar_bytes)
                 .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
             if !self
                 .prefix_cache
@@ -9913,7 +10310,8 @@ impl MlxRunner {
                     prefix_len,
                     None,
                     None,
-                ),
+                )
+                .with_dflash2(state.dflash2_prefix_snapshots.get(&prefix_len).cloned()),
             );
             telemetry.record_stats(cache.stats());
             outcome
@@ -9952,6 +10350,13 @@ impl MlxRunner {
         state: &RequestState,
         options: PromptPrefixSnapshotStoreOptions<'_>,
     ) -> MlxPrefixCacheTelemetry {
+        if crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal {
+            return MlxPrefixCacheTelemetry::default();
+        }
+
+        if crate::expert_stream::paging_failure_pending() {
+            return MlxPrefixCacheTelemetry::default();
+        }
         let PromptPrefixSnapshotStoreOptions {
             linear_boundary_snapshot,
             prefill_completes_prompt,
@@ -10154,6 +10559,10 @@ impl MlxRunner {
                     tokens,
                     snapshot_prefill_output_token,
                     mtp_cursor_payload.is_some(),
+                    state
+                        .dflash2_prefix_snapshots
+                        .get(&prefix_len)
+                        .map(Arc::as_ref),
                 );
                 if superseding {
                     telemetry.record_stats(cache.stats());
@@ -10248,6 +10657,12 @@ impl MlxRunner {
                 let lower_bound = snapshot_cache
                     .usage_snapshot()
                     .logical_bytes
+                    .saturating_add(
+                        state
+                            .dflash2_prefix_snapshots
+                            .get(&prefix_len)
+                            .map_or(0, |s| s.bytes()),
+                    )
                     .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64))
                     // Account for the optional MTP draft-cursor sidecar up
                     // front: an entry that only fits without the cursor must
@@ -10314,7 +10729,8 @@ impl MlxRunner {
                         prefix_len,
                         snapshot_prefill_output_token,
                         mtp_cursor_payload,
-                    ),
+                    )
+                    .with_dflash2(state.dflash2_prefix_snapshots.get(&prefix_len).cloned()),
                 );
                 telemetry.record_stats(cache.stats());
                 outcome
@@ -15551,6 +15967,8 @@ impl MlxRunner {
             && !think_close_due_at_first_token
             && !gemma_moe_long_mt_singleton
             && !flash_next_cursor_owns_decode
+            && !(self.dflash2_request_eligible(sampling, is_greedy, false)
+                && self.dflash2_prompt_ready(state))
             && !sampling.uses_logits_processors()
             && (is_greedy || (self.disable_ngram_acceleration && sampling.temperature <= 0.0))
             && max_output > 1
@@ -16594,6 +17012,10 @@ enum LazyTargetProbs {
         k: u32,
         top_p: f32,
         min_p: Option<f32>,
+        /// Full softmax rows `[pending_len, vocab]`, present only with min_p.
+        /// The primary sampler cuts top-p at `top_p * mass surviving min_p`
+        /// over the whole vocabulary, which the gathered top-k cannot give.
+        survivor_rows: Option<(MlxArray, i32)>,
     },
 }
 
@@ -16602,9 +17024,17 @@ impl LazyTargetProbs {
         match self {
             LazyTargetProbs::Full(arr) => targets.push(arr),
             LazyTargetProbs::FullRows { probs, .. } => targets.push(probs),
-            LazyTargetProbs::TopK { indices, probs, .. } => {
+            LazyTargetProbs::TopK {
+                indices,
+                probs,
+                survivor_rows,
+                ..
+            } => {
                 targets.push(indices);
                 targets.push(probs);
+                if let Some((rows, _)) = survivor_rows {
+                    targets.push(rows);
+                }
             }
         }
     }
@@ -16642,10 +17072,14 @@ impl LazyTargetProbs {
                 k,
                 top_p,
                 min_p,
+                survivor_rows,
             } => {
                 let k_val = *k as usize;
                 let indices_data = indices.data_u32();
                 let probs_data = probs.data_f32();
+                let survivor_data = survivor_rows
+                    .as_ref()
+                    .map(|(rows, vocab)| (rows.data_f32(), *vocab as usize));
                 workspace.target_probs.reserve(pending.len());
                 for (i, &needle) in pending.iter().enumerate() {
                     let row_start = i * k_val;
@@ -16685,12 +17119,22 @@ impl LazyTargetProbs {
                         },
                     );
                     if top_p.is_finite() && *top_p > 0.0 && *top_p < 1.0 {
+                        // Same law as the primary sampler: the cutoff is
+                        // relative to the mass that survives min_p over the
+                        // whole vocabulary (1.0 without min_p).
+                        let survivor_mass = match (&survivor_data, *min_p) {
+                            (Some((data, vocab)), Some(min_p)) => data
+                                .get(i * vocab..(i + 1) * vocab)
+                                .map_or(1.0, |row| min_p_survivor_mass(row, min_p)),
+                            _ => 1.0,
+                        };
+                        let cutoff = *top_p * survivor_mass;
                         let mut cumulative = 0.0_f32;
                         let mut keep = 0_usize;
                         for (_, prob) in &workspace.target_candidates {
                             cumulative += *prob;
                             keep += 1;
-                            if cumulative >= *top_p {
+                            if cumulative >= cutoff {
                                 break;
                             }
                         }
@@ -16749,17 +17193,21 @@ fn filtered_target_token_probability(
             return 0.0;
         }
     }
+    // The primary sampler cuts top-p relative to the mass that survives
+    // min_p (`apply_top_k_top_p`), before the top-k truncation.
+    let survivor_mass: f32 = candidates.iter().map(|(_, p)| *p).sum();
     candidates.sort_by(|(lt, lp), (rt, rp)| rp.total_cmp(lp).then_with(|| lt.cmp(rt)));
     if top_k > 0 && (top_k as usize) < candidates.len() {
         candidates.truncate(top_k as usize);
     }
     if top_p.is_finite() && top_p > 0.0 && top_p < 1.0 {
+        let cutoff = top_p * survivor_mass;
         let mut cumulative = 0.0_f32;
         let mut keep = 0_usize;
         for (_, prob) in &candidates {
             cumulative += *prob;
             keep += 1;
-            if cumulative >= top_p {
+            if cumulative >= cutoff {
                 break;
             }
         }
@@ -16827,6 +17275,7 @@ fn compute_mtp_target_probs(
 
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
+        let mut all_full_probs = Vec::new();
         // logits_all shape: [1 + pending.len(), vocab].
         // verify_input = [last_token, pending[0], ..., pending[n-1]], so
         // logits_all[i] = prediction after position i = target for pending[i].
@@ -16839,6 +17288,9 @@ fn compute_mtp_target_probs(
             let top_p = take_along_axis(&full_probs, &top_idx, -1, None);
             all_top_indices.push(top_idx);
             all_top_probs.push(top_p);
+            if target_sampling.uses_min_p() {
+                all_full_probs.push(full_probs);
+            }
         }
         let idx_refs: Vec<&MlxArray> = all_top_indices.iter().collect();
         let prob_refs: Vec<&MlxArray> = all_top_probs.iter().collect();
@@ -16851,6 +17303,7 @@ fn compute_mtp_target_probs(
             k,
             top_p: target_sampling.top_p,
             min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
+            survivor_rows: stack_survivor_rows(&all_full_probs, vocab),
         })
     } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
         // Draft-path filter applied to target probs for rejection-sampling parity.
@@ -16862,6 +17315,7 @@ fn compute_mtp_target_probs(
         };
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
+        let mut all_full_probs = Vec::new();
         // logits_all shape: [1 + pending.len(), vocab].
         // verify_input = [last_token, pending[0], ..., pending[n-1]], so
         // logits_all[i] = prediction after position i = target for pending[i].
@@ -16872,9 +17326,15 @@ fn compute_mtp_target_probs(
                 let top_idx = slice(&part, &[0, vocab - dk_i32], &[1, vocab], &[1, 1], None);
                 let full_probs = softmax(&row_logits, -1, None);
                 let top_p = take_along_axis(&full_probs, &top_idx, -1, None);
+                if target_sampling.uses_min_p() {
+                    all_full_probs.push(full_probs);
+                }
                 (top_idx, top_p)
             } else {
                 let top_p = softmax(&row_logits, -1, None);
+                if target_sampling.uses_min_p() {
+                    all_full_probs.push(top_p.clone());
+                }
                 let idx = MlxArray::from_raw_data(
                     (0..vocab).map(|i| i as u32).collect::<Vec<u32>>().as_ptr() as *const u8,
                     vocab as usize * 4,
@@ -16897,6 +17357,7 @@ fn compute_mtp_target_probs(
             k: dk_i32 as u32,
             top_p: draft_filter.top_p,
             min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
+            survivor_rows: stack_survivor_rows(&all_full_probs, vocab),
         })
     } else if target_sampling.uses_min_p() {
         // DeepSeek thinking defaults min_p=0.05. Materialize draft-target
@@ -17330,8 +17791,8 @@ fn mtp_accept_count(
     target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
-    draft_temperature: f32,
-    target_temperature: f32,
+    _draft_temperature: f32,
+    _target_temperature: f32,
     model_acceptance_mode: MtpModelAcceptanceMode,
     ngram_acceptance_mode: MtpNgramAcceptanceMode,
 ) -> MtpAcceptOutcome {
@@ -17376,29 +17837,16 @@ fn mtp_accept_count(
 
         if let (true, Some(tprobs)) = (can_rejection_sample, target_probs_cpu) {
             let p_target_d = tprobs[i].max(0.0_f32);
-            // Rescale draft log-prob when draft and target temperatures differ.
-            // The standard rejection-sampling formula min(1, p_target / p_draft)
-            // assumes p and q over the same effective sample space.  When draft
-            // and target use different temperatures, the unscaled ratio
-            // systematically rejects drafts even when both models agree on the
-            // token.  Empirically, log_p * (T_draft / T_target) acts as a
-            // re-temperaturing approximation that aligns AX output with the
-            // MTPLX reference (tokenwise-identical for ~87 tokens at default
-            // T_draft=0.7, T_target=0.6).  Skipped for n-gram delta log-probs
-            // (0.0) because they are not derived from softmax(logits/T_draft).
-            let log_p_draft = pending_log_probs[i];
-            let is_mtp_source = !matches!(source, MtpDraftSource::Ngram);
-            let log_p_scaled = if is_mtp_source
-                && draft_temperature > 0.0
-                && target_temperature > 0.0
-                && (draft_temperature - target_temperature).abs() > 1e-6
-            {
-                log_p_draft * (draft_temperature / target_temperature)
+            // Acceptance and residual correction must use the same actual
+            // proposal distribution. Changing q for the target temperature
+            // biases the output, even if the changed q is renormalized.
+            // Work in log space so tiny proposal probabilities are not
+            // clamped to an unrelated floor before computing the ratio.
+            let accept_prob = if p_target_d > 0.0 {
+                (p_target_d.ln() - pending_log_probs[i]).min(0.0).exp()
             } else {
-                log_p_draft
+                0.0
             };
-            let p_draft = log_p_scaled.exp().max(1e-37_f32);
-            let accept_prob = (p_target_d / p_draft).min(1.0_f32);
             if rng.next_f32() < accept_prob {
                 ac += 1;
                 if has_draft_distribution {

@@ -1131,6 +1131,47 @@ fn flash_next_mtp_greedy_token(output: &qwen4_exp::Qwen4ExpOutput) -> u32 {
     token.data_u32()[0]
 }
 
+/// Direct-decode gap from the expected token to the emitted candidate. A
+/// near-tie is only between those two tokens: the top-1 minus top-2 margin
+/// would accept a candidate far below the top. Unknown means not a tie.
+fn candidate_gap(logits: &MlxArray, expected: u32, actual: u32) -> f32 {
+    let row = mlx_sys::astype(logits, MlxDtype::Float32, None);
+    mlx_sys::eval(&[&row]);
+    let data = row.data_f32();
+    let (Some(&expected), Some(&actual)) = (data.get(expected as usize), data.get(actual as usize))
+    else {
+        return f32::INFINITY;
+    };
+    let gap = expected - actual;
+    if expected.is_finite() && actual.is_finite() && gap.is_finite() && gap >= 0.0 {
+        gap
+    } else {
+        f32::INFINITY
+    }
+}
+
+/// `observe_greedy_mismatch` with the tie margin taken between the expected
+/// and emitted tokens of the direct logits (row 0).
+#[allow(clippy::too_many_arguments)]
+fn observe_greedy_mismatch_at(
+    identity: &mut crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport,
+    comparing: &mut bool,
+    position: usize,
+    expected: u32,
+    actual: u32,
+    direct_logits: &MlxArray,
+    tie_margin: f32,
+) {
+    let margin = if expected == actual {
+        0.0
+    } else {
+        candidate_gap(direct_logits, expected, actual)
+    };
+    observe_greedy_mismatch(
+        identity, comparing, position, expected, actual, margin, tie_margin,
+    );
+}
+
 fn observe_greedy_mismatch(
     identity: &mut crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport,
     comparing: &mut bool,
@@ -1252,7 +1293,11 @@ fn assert_verify_one_greedy_within_tie(
     position: &'static str,
     tie_margin: f32,
 ) -> VerifyOneGreedyDecision {
-    let margin = crate::model::qwen4_exp_mtp::top_two_margin(sequential_logits, 0).unwrap();
+    let margin = if batched == sequential {
+        0.0
+    } else {
+        candidate_gap(sequential_logits, sequential, batched)
+    };
     classify_verify_one_greedy(batched, sequential, margin, tie_margin, position)
         .unwrap_or_else(|error| panic!("{error}"))
 }
@@ -1295,9 +1340,7 @@ fn flash_next_mtp_permute_draft_head(
 #[test]
 #[ignore = "requires synthetic Flash Next MTP artifacts or an explicit real selected-prefill pack"]
 fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
-    use crate::model::qwen4_exp_mtp::{
-        CandidateSession, head_forward, mtp_parity, top_two_margin, verify_one,
-    };
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, verify_one};
     let (artifacts, tokens, mode, budget) =
         if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
             let artifacts = NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap();
@@ -1552,13 +1595,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         assert!(!committed.is_empty() && committed.len() <= budget - generated.len());
         for token in &committed {
             if comparing {
-                observe_greedy_mismatch(
+                observe_greedy_mismatch_at(
                     &mut identity,
                     &mut comparing,
                     generated.len(),
                     greedy(&direct),
                     *token,
-                    top_two_margin(&direct.logits, 0).unwrap(),
+                    &direct.logits,
                     tie_margin,
                 );
             }
@@ -1587,13 +1630,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             // Accepted steps read next_primary from the batched bonus row;
             // rejection is a singleton forward and stays bit-exact.
             if committed.len() > 1 {
-                observe_greedy_mismatch(
+                observe_greedy_mismatch_at(
                     &mut identity,
                     &mut comparing,
                     generated.len(),
                     greedy(&direct),
                     session.primary,
-                    top_two_margin(&direct.logits, 0).unwrap(),
+                    &direct.logits,
                     tie_margin,
                 );
             } else {
@@ -1807,7 +1850,7 @@ fn qwen4_exp_mtp_candidate_io_failure_restores_both_states() {
 #[test]
 #[ignore = "requires an isolated real Flash Next pack with the MTP sidecar"]
 fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, top_two_margin};
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity};
     let root = PathBuf::from(
         std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR")
             .or_else(|| std::env::var_os("AX_FLASH_NEXT_REAL_PACK"))
@@ -1895,13 +1938,13 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     while generated.len() < expected.len() {
         if terminal_ids.contains(&session.primary) {
             if comparing {
-                observe_greedy_mismatch(
+                observe_greedy_mismatch_at(
                     &mut identity,
                     &mut comparing,
                     generated.len(),
                     flash_next_mtp_greedy_token(&direct),
                     session.primary,
-                    top_two_margin(&direct.logits, 0).unwrap(),
+                    &direct.logits,
                     tie_margin,
                 );
             }
@@ -1945,13 +1988,13 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         );
         for token in &committed {
             if comparing {
-                observe_greedy_mismatch(
+                observe_greedy_mismatch_at(
                     &mut identity,
                     &mut comparing,
                     generated.len(),
                     flash_next_mtp_greedy_token(&direct),
                     *token,
-                    top_two_margin(&direct.logits, 0).unwrap(),
+                    &direct.logits,
                     tie_margin,
                 );
             }
@@ -2317,7 +2360,7 @@ fn flash_next_mtp_oracle_generate(
     draft_owner: u64,
     terminal_ids: &[u32],
 ) -> FlashNextMtpOracleRun {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, top_two_margin};
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity};
     assert!(!tokens.is_empty());
     let mut session = CandidateSession::prefill(trunk, head, tokens, owner, draft_owner).unwrap();
     let prefix_state = if tokens.len() > 1 {
@@ -2354,13 +2397,13 @@ fn flash_next_mtp_oracle_generate(
     while generated.len() < max_new {
         if terminal_ids.contains(&session.primary) {
             if comparing {
-                observe_greedy_mismatch(
+                observe_greedy_mismatch_at(
                     &mut identity,
                     &mut comparing,
                     generated.len(),
                     flash_next_mtp_greedy_token(&direct),
                     session.primary,
-                    top_two_margin(&direct.logits, 0).unwrap(),
+                    &direct.logits,
                     tie_margin,
                 );
             }
@@ -2401,13 +2444,13 @@ fn flash_next_mtp_oracle_generate(
         );
         for token in &committed {
             if comparing {
-                observe_greedy_mismatch(
+                observe_greedy_mismatch_at(
                     &mut identity,
                     &mut comparing,
                     generated.len(),
                     flash_next_mtp_greedy_token(&direct),
                     *token,
-                    top_two_margin(&direct.logits, 0).unwrap(),
+                    &direct.logits,
                     tie_margin,
                 );
             }
@@ -2433,13 +2476,13 @@ fn flash_next_mtp_oracle_generate(
             break;
         }
         if comparing && generated.len() < max_new {
-            observe_greedy_mismatch(
+            observe_greedy_mismatch_at(
                 &mut identity,
                 &mut comparing,
                 generated.len(),
                 flash_next_mtp_greedy_token(&direct),
                 session.primary,
-                top_two_margin(&direct.logits, 0).unwrap(),
+                &direct.logits,
                 tie_margin,
             );
         }
@@ -3613,4 +3656,17 @@ fn qwen4_exp_block_window_shape_differential_real_pack() {
         serde_json::to_vec_pretty(&result).unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn candidate_gap_measures_the_emitted_token_not_the_runner_up() {
+    let logits = MlxArray::from_f32_slice(&[5.0, 4.9, 1.0]);
+    assert_eq!(candidate_gap(&logits, 0, 2), 4.0);
+    assert!((candidate_gap(&logits, 0, 1) - 0.1).abs() < 1e-6);
+    assert_eq!(candidate_gap(&logits, 0, 9), f32::INFINITY);
+    assert_eq!(
+        candidate_gap(&logits, 2, 0),
+        f32::INFINITY,
+        "candidate above expected"
+    );
 }

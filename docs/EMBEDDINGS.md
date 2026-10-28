@@ -52,7 +52,7 @@ AX does not silently add them.
 
 | Encoder | Runtime contract | Pack coverage |
 | --- | --- | --- |
-| EmbeddingGemma 300M | Bidirectional Gemma 3 encoder, masked mean pooling, two Dense projections; single and batch APIs share the same pooling path | Pinned `mlx-community/embeddinggemma-300m-8bit` regression pack. The legacy AutomatosX 300M repository returned 404 during the 2026-10-25 inventory; its alias retains its original identity. No live 300M MX pack was available for qualification. |
+| EmbeddingGemma 300M | Bidirectional Gemma 3 encoder (sliding layers attend within `sliding_window / 2` tokens on each side, as in Hugging Face Gemma 3; full layers see every token), masked mean pooling, two Dense projections; single and batch APIs share the same pooling path | Pinned `mlx-community/embeddinggemma-300m-8bit` regression pack. The legacy AutomatosX 300M repository returned 404 during the 2026-10-25 inventory; its alias retains its original identity. No live 300M MX pack was available for qualification. |
 | EmbeddingGemma 2 | Dedicated `embedding_gemma2` encoder, projection-only per-layer inputs, local/full bidirectional attention, token-wise output projection then masked mean pooling | Explicit, revision-pinned AutomatosX MXFP4 and MXFP8 aliases; experimental text-only support. Image, audio and video inputs are unsupported; media sentinel token IDs are rejected. No chat generation. |
 
 The 300M runtime also accepts MXFP4 and MXFP8 linear weights in prepared

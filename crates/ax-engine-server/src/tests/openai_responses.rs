@@ -14,6 +14,36 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[test]
+fn parsed_tool_calls_do_not_hide_interrupted_non_stream_responses() {
+    for tail in ["", "<tool_call>{\"name\":\"unfinished\",\"arguments\":{"] {
+        for (reason, expected) in [
+            (GenerateFinishReason::MaxOutputTokens, "length"),
+            (GenerateFinishReason::ContentFilter, "content_filter"),
+        ] {
+            let text =
+                format!("<tool_call>{{\"name\":\"lookup\",\"arguments\":{{}}}}</tool_call>{tail}");
+            let mut response = sample_generate_response(&text, Vec::new(), Vec::new());
+            response.finish_reason = Some(reason);
+            let chat = openai_chat_completion_response(
+                &response,
+                "chatcmpl-interrupted".into(),
+                OpenAiResponseOptions {
+                    parse_tool_calls: true,
+                    ..Default::default()
+                },
+                None,
+                None,
+            );
+            assert_eq!(chat.choices[0].finish_reason, Some(expected));
+            assert_eq!(
+                chat.choices[0].message.tool_calls.as_ref().unwrap().len(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
 fn finish_reason_maps_terminal_labels_without_hiding_cancellations() {
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Stop)),
@@ -36,6 +66,56 @@ fn finish_reason_maps_terminal_labels_without_hiding_cancellations() {
         None
     );
     assert_eq!(openai_finish_reason(None), None);
+}
+
+#[test]
+fn completion_logprob_offsets_stay_on_character_boundaries_for_byte_tokens() {
+    // Four byte-fallback tokens spell one 4-byte emoji. Partial prefixes decode
+    // to U+FFFD, which the completion text never contains, so no offset may
+    // point inside the emoji and the tokens must join back to the text.
+    let dir = std::env::temp_dir().join(format!(
+        "ax-engine-server-byte-logprobs-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("config.json"), r#"{"eos_token_id":4}"#).expect("config");
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+  "normalizer": null, "pre_tokenizer": null, "post_processor": null,
+  "decoder": {"type": "Sequence", "decoders": [{"type": "ByteFallback"}, {"type": "Fuse"}]},
+  "model": {"type": "WordLevel",
+    "vocab": {"<0xF0>": 0, "<0x9F>": 1, "<0x98>": 2, "<0x80>": 3, "[UNK]": 4},
+    "unk_token": "[UNK]"}
+}"#,
+    )
+    .expect("tokenizer");
+    let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("byte tokenizer should load");
+    let text = "\u{1F600}";
+    let response = sample_generate_response(text, vec![0, 1, 2, 3], vec![Some(-0.1); 4]);
+    let openai = openai_completion_response(
+        &response,
+        "cmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_logprobs: true,
+            ..Default::default()
+        },
+        Some(&tokenizer),
+    );
+    let logprobs = openai.choices[0].logprobs.as_ref().expect("logprobs");
+    assert_eq!(logprobs.tokens.concat(), text);
+    for offset in &logprobs.text_offset {
+        assert!(
+            text.is_char_boundary(*offset as usize),
+            "offset {offset} splits a character: {:?}",
+            logprobs.text_offset
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -269,6 +349,24 @@ fn chat_response_routes_unclosed_qwen_think_block_to_reasoning() {
     );
     assert_eq!(kept.choices[0].message.content, "plain answer");
     assert!(kept.choices[0].message.reasoning_content.is_none());
+
+    // A delegated server already split its reasoning out: a marker-free Qwen
+    // answer from llama-server is the answer, not reasoning.
+    let mut delegated = sample_generate_response("4", Vec::new(), Vec::new());
+    delegated.model_id = "qwen3.6-35b-a3b".to_string();
+    delegated.runtime.selected_backend = SelectedBackend::LlamaCpp;
+    let delegated = openai_chat_completion_response(
+        &delegated,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    assert_eq!(delegated.choices[0].message.content, "4");
+    assert!(delegated.choices[0].message.reasoning_content.is_none());
 }
 
 #[test]
@@ -338,6 +436,47 @@ fn chat_response_extracts_tool_call_when_tool_contract_requested() {
         .expect("tool call should be parsed")[0];
     assert_eq!(tool_call.function.name, "lookup");
     assert_eq!(tool_call.function.arguments, r#"{"query":"ax"}"#);
+}
+
+#[test]
+fn chat_response_stop_before_a_tool_call_ends_the_turn_like_the_stream() {
+    let options = || OpenAiResponseOptions {
+        parse_tool_calls: true,
+        client_stop_sequences: vec!["STOP".to_string()],
+        ..Default::default()
+    };
+    // The stop precedes the opener: generation would have ended there.
+    let response = sample_generate_response(
+        r#"AAA STOP <tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        options(),
+        None,
+        None,
+    );
+    assert_eq!(openai.choices[0].message.content, "AAA ");
+    assert!(openai.choices[0].message.tool_calls.is_none());
+    assert_eq!(openai.choices[0].finish_reason, Some("stop"));
+
+    // A stop inside the call's arguments never truncates the call.
+    let response = sample_generate_response(
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"STOP"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        options(),
+        None,
+        None,
+    );
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+    assert!(openai.choices[0].message.tool_calls.is_some());
 }
 
 #[test]
@@ -1230,6 +1369,9 @@ fn chat_response_truncates_at_client_stop_and_reports_stop_finish() {
     let choice = &openai.choices[0];
     assert_eq!(choice.message.content, "hello ");
     assert_eq!(choice.finish_reason, Some("stop"));
+    // The matched stop string rides along (vLLM `stop_reason`); the Anthropic
+    // bridge reports it as `stop_sequence`.
+    assert_eq!(choice.stop_reason.as_deref(), Some("STOP"));
     // Sampled logprobs cover the full generation and would misalign with the
     // truncated content, so they are omitted on a stop truncation.
     assert!(choice.logprobs.is_none());

@@ -65,6 +65,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
     .await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     validate_openai_response_format(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
@@ -95,6 +96,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
             live,
             chat_request,
             response_options.include_stream_usage,
+            response_options.include_reasoning,
         )
         .await;
     }
@@ -103,18 +105,21 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
     let runtime = live.runtime_report.clone();
     let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
     let permit = state.try_admit(&live).map_err(admission_error_response)?;
-    let response = run_blocking_session_task(move || {
+    let (response, reasoning) = run_blocking_session_task(move || {
         let _permit = permit;
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
     .await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     validate_openai_response_format(&response, &response_options)?;
 
+    // mlx-lm returns a thinking model's reasoning beside the answer; it
+    // reaches `reasoning_content` when thinking is on, like the native path.
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
         &response,
         request_id,
         response_options,
-        None,
+        reasoning,
         response_decode_tokenizer(&live),
     ))
 }
@@ -276,7 +281,12 @@ async fn stream_buffered_openai_tool_chat_response(
     } else {
         // The buffered choice already applied client stop sequences, so its
         // finish_reason is the same contract the non-stream response reports.
-        chat_final_chunk_with_finish_reason(request_id, chat_response.model, choice.finish_reason)
+        chat_final_chunk_with_finish_reason(
+            request_id,
+            chat_response.model,
+            choice.finish_reason,
+            choice.stop_reason,
+        )
     };
     send_openai_chunk_async(&tx, &final_chunk).await;
     if include_stream_usage && let Some(usage) = chat_response.usage.clone() {

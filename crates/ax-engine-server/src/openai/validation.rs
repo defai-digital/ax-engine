@@ -22,7 +22,7 @@ pub(crate) fn select_model(
     state: &AppState,
     requested_model: Option<&str>,
 ) -> Result<LiveState, (StatusCode, Json<ErrorResponse>)> {
-    state.snapshot_for_model(requested_model).ok_or_else(|| {
+    let live = state.snapshot_for_model(requested_model).ok_or_else(|| {
         let requested = requested_model.unwrap_or_default();
         let loaded = state.model_ids().join(", ");
         error_response(
@@ -30,7 +30,12 @@ pub(crate) fn select_model(
             "model_not_found",
             format!("requested model_id {requested} is not loaded; loaded models: {loaded}"),
         )
-    })
+    })?;
+    // A request resolving its model is activity even before admission:
+    // media preprocessing and prompt rendering run first, and the idle
+    // evictor must not retire the model underneath them.
+    live.mark_used();
+    Ok(live)
 }
 
 pub(crate) fn select_openai_model(

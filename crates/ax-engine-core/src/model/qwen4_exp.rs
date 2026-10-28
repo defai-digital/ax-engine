@@ -1540,6 +1540,8 @@ mod tests {
             rope_original_context_len: None,
             rope_beta_fast: None,
             rope_beta_slow: None,
+            rope_mscale: None,
+            rope_mscale_all_dim: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,

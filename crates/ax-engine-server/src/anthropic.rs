@@ -242,6 +242,7 @@ impl AnthropicMessagesRequest {
             metadata: None,
             multimodal_inputs: Default::default(),
             response_format: None,
+            grammar_budget: false,
             tools: None,
             tool_choice: None,
             parallel_tool_calls: None,
@@ -261,17 +262,19 @@ impl AnthropicContent {
             {
                 Ok(String::new())
             }
-            Self::Blocks(blocks) => Self::Blocks(
-                blocks
-                    .into_iter()
-                    .filter(|block| {
-                        !block.text.as_deref().is_some_and(|text| {
-                            text.starts_with(crate::anthropic_bridge::BILLING_HEADER_PREFIX)
-                        })
+            // Join system blocks with a newline, as the bridge does, so
+            // count_tokens and the streaming and non-streaming paths all
+            // render the same prompt.
+            Self::Blocks(blocks) => blocks
+                .into_iter()
+                .filter(|block| {
+                    !block.text.as_deref().is_some_and(|text| {
+                        text.starts_with(crate::anthropic_bridge::BILLING_HEADER_PREFIX)
                     })
-                    .collect(),
-            )
-            .into_text("system"),
+                })
+                .map(|block| Self::Blocks(vec![block]).into_text("system"))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|parts| parts.join("\n")),
             other => other.into_text("system"),
         }
     }
@@ -320,11 +323,14 @@ async fn run_anthropic_messages_generation(
         let runtime = live.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
         let permit = state.try_admit(&live).map_err(admission_error_response)?;
-        let response = run_blocking_session_task(move || {
+        // The plain-text Messages path carries no thinking blocks (those
+        // requests take the bridge), so reasoning is not surfaced here.
+        let (response, _reasoning) = run_blocking_session_task(move || {
             let _permit = permit;
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         return Ok((request_id, response, None));
     }
 
@@ -344,6 +350,7 @@ async fn run_anthropic_messages_generation(
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
+        reject_failed_generate_status(response.status, response.finish_reason)?;
         return Ok((request_id, response, None));
     }
 
@@ -383,9 +390,12 @@ fn anthropic_message_response(
     response: &GenerateResponse,
     stop_sequence: Option<String>,
 ) -> AnthropicMessageResponse {
-    let (input_tokens, output_tokens) = response
-        .known_usage()
-        .unwrap_or((0, response.output_tokens.len() as u32));
+    // Report each count on its own: an empty native output has no known output
+    // count, which must not also zero the known prompt count.
+    let input_tokens = response.prompt_tokens_used().unwrap_or(0);
+    let output_tokens = response
+        .known_output_token_count()
+        .unwrap_or(response.output_tokens.len() as u32);
     AnthropicMessageResponse {
         id: format!("msg-{request_id}"),
         response_type: "message",
@@ -476,6 +486,63 @@ pub(crate) fn map_anthropic_generation_error(
 mod feature_gate_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn empty_native_output_keeps_the_known_prompt_token_count() {
+        use ax_engine_sdk::{
+            CapabilityReport, GenerateStatus, ResolutionPolicy, RuntimeReport, SelectedBackend,
+            SupportTier,
+        };
+        let response = GenerateResponse {
+            request_id: 3,
+            model_id: "qwen3".to_string(),
+            prompt_tokens: vec![1, 2, 3],
+            prompt_text: None,
+            output_tokens: Vec::new(),
+            output_token_logprobs: Vec::new(),
+            output_text: Some(String::new()),
+            prompt_token_count: None,
+            output_token_count: None,
+            status: GenerateStatus::Finished,
+            finish_reason: Some(GenerateFinishReason::Stop),
+            step_count: 1,
+            ttft_step: None,
+            route: Default::default(),
+            runtime: RuntimeReport {
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
+                fallback_reason: None,
+                host: Default::default(),
+                metal_toolchain: Default::default(),
+                mlx_runtime: None,
+                mlx_model: None,
+                delegated_runtime: None,
+            },
+            performance: Default::default(),
+        };
+        let message = serde_json::to_value(anthropic_message_response(3, &response, None))
+            .expect("serialize message");
+        assert_eq!(message["usage"]["input_tokens"], json!(3));
+        assert_eq!(message["usage"]["output_tokens"], json!(0));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn plain_and_bridged_paths_render_multi_block_system_alike() {
+        let system = json!([
+            {"type": "text", "text": "You are terse."},
+            {"type": "text", "text": "Answer in English."}
+        ]);
+        let plain: AnthropicContent =
+            serde_json::from_value(system.clone()).expect("system blocks");
+        let plain = plain.into_system_text().expect("plain system text");
+        let bridged = crate::anthropic_bridge::system_text(&system).expect("bridged system text");
+        assert_eq!(plain, bridged);
+        assert_eq!(plain, "You are terse.\nAnswer in English.");
+    }
 
     #[test]
     fn context_length_exceeded_is_remapped_to_anthropic_invalid_request() {

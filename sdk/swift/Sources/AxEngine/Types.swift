@@ -585,6 +585,32 @@ public struct OpenAiEmbeddingObject: Decodable, Sendable {
     public var object: String
     public var embedding: [Double]
     public var index: Int
+
+    private enum CodingKeys: String, CodingKey { case object, embedding, index }
+
+    /// Accepts both server encodings: a number array (`encodingFormat`
+    /// "float") and a base64 string of little-endian float32 values
+    /// ("base64"). Either way the vector lands in `embedding`.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        object = try container.decode(String.self, forKey: .object)
+        index = try container.decode(Int.self, forKey: .index)
+        if let encoded = try? container.decode(String.self, forKey: .embedding) {
+            guard let bytes = Data(base64Encoded: encoded), bytes.count % 4 == 0 else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .embedding, in: container,
+                    debugDescription: "embedding is not base64 float32 data")
+            }
+            embedding = stride(from: 0, to: bytes.count, by: 4).map { offset in
+                let bits = bytes[bytes.startIndex + offset ..< bytes.startIndex + offset + 4]
+                    .enumerated()
+                    .reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * UInt32($1.offset)) }
+                return Double(Float(bitPattern: bits))
+            }
+        } else {
+            embedding = try container.decode([Double].self, forKey: .embedding)
+        }
+    }
 }
 
 public struct OpenAiEmbeddingUsage: Decodable, Sendable {

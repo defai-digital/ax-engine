@@ -331,6 +331,19 @@ impl EmbeddingMatrix {
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn run(&self, input: RunnerInput) -> RunnerOutput;
 
+    /// Admit a logical prefix before the scheduler skips its tokens. Runners
+    /// with partition-sensitive state may reject it or retain the physical
+    /// snapshot until `run`. Reservations must be released with request state.
+    fn prepare_prefix_reuse(
+        &self,
+        _request: &crate::request::RequestRecord,
+        _matched_tokens: u32,
+        _block_size_tokens: u32,
+        _deterministic_output: bool,
+    ) -> bool {
+        true
+    }
+
     /// Compute a dense embedding for `token_ids` and return it as a `Vec<f32>`.
     ///
     /// When `normalize` is true the returned vector is L2-normalized (unit
@@ -433,6 +446,11 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     }
 
     fn native_model_artifacts_summary(&self) -> Option<NativeModelArtifactsSummary> {
+        None
+    }
+
+    /// Content identity of an attached speculative model, when present.
+    fn drafter_identity(&self) -> Option<String> {
         None
     }
 

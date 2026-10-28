@@ -840,3 +840,36 @@ func TestNativeStreamsStopReadingAtDone(t *testing.T) {
 		}
 	}
 }
+
+func TestNegativeRequestIDsFailBeforeHTTP(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("negative request id reached the server: %s", r.URL.Path)
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		if _, err := client.RequestSnapshot(context.Background(), -1); err == nil {
+			t.Fatal("RequestSnapshot(-1) must fail")
+		}
+		if _, err := client.Cancel(context.Background(), -1); err == nil {
+			t.Fatal("Cancel(-1) must fail")
+		}
+	})
+}
+
+func TestEmbeddingObjectDecodesBase64AndFloatEncodings(t *testing.T) {
+	// [1.0, -2.5] as little-endian float32.
+	for _, body := range []string{
+		`{"object":"embedding","embedding":"AACAPwAAIMA=","index":3}`,
+		`{"object":"embedding","embedding":[1,-2.5],"index":3}`,
+	} {
+		var object OpenAiEmbeddingObject
+		if err := json.Unmarshal([]byte(body), &object); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		if object.Index != 3 || len(object.Embedding) != 2 ||
+			object.Embedding[0] != 1.0 || object.Embedding[1] != -2.5 {
+			t.Fatalf("decode %s: got %+v", body, object)
+		}
+	}
+}

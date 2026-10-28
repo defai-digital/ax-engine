@@ -44,6 +44,7 @@ use native::{build_native_core_with_mlx_shares, load_native_whisper_model};
 use routes::{
     apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
     native_step_needs_route_capture, native_step_read_deltas, route_has_decode_path_work,
+    strip_prefix_reuse_telemetry,
 };
 pub use stream::{GenerateStream, GenerateStreamPerformance, GenerateStreamState};
 use stream::{
@@ -59,6 +60,9 @@ const MAX_NATIVE_ROUTE_REPORTS: usize = 1024;
 // Native streaming advances through prompt prefill, decode, and occasional scheduler
 // bookkeeping steps; keep the guard explicit so it is not an unexplained literal.
 const NATIVE_STREAM_STEP_GUARD_BUFFER: u64 = 256;
+/// Consecutive empty engine steps a native stream tolerates while its request
+/// makes no progress before reporting `RequestDidNotTerminate`.
+const NATIVE_STREAM_IDLE_STEP_LIMIT: u64 = 4096;
 
 /// Text and detected/resolved language returned by a native speech model.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +276,15 @@ pub struct EngineSession {
     llama_terminal_request_order: VecDeque<u64>,
 }
 
+/// Add a coalesced step's model work to the step event that represents it.
+fn fold_step_work(into: &mut EngineStepReport, folded: &EngineStepReport) {
+    into.cpu_time_us = into.cpu_time_us.saturating_add(folded.cpu_time_us);
+    into.runner_time_us = into.runner_time_us.saturating_add(folded.runner_time_us);
+    into.scheduled_tokens = into
+        .scheduled_tokens
+        .saturating_add(folded.scheduled_tokens);
+}
+
 impl EngineSession {
     /// Clear process-global native compiled closures after all work for the
     /// current model has drained and before constructing a replacement model.
@@ -292,6 +305,20 @@ impl EngineSession {
     pub fn trim_native_allocator_cache() {
         #[cfg(feature = "mlx-native")]
         mlx_sys::clear_cache();
+    }
+
+    /// Refuse new native work at critical host pressure. Existing requests
+    /// retain ownership and can finish or cancel normally.
+    pub fn native_host_pressure_blocks_admission() -> bool {
+        #[cfg(feature = "mlx-native")]
+        {
+            ax_engine_mlx::host_pressure::sample()
+                == ax_engine_mlx::host_pressure::HostPressure::Critical
+        }
+        #[cfg(not(feature = "mlx-native"))]
+        {
+            false
+        }
     }
 
     /// Flag whether a sibling model's work is active in this process so
@@ -394,6 +421,17 @@ impl EngineSession {
         request: &GenerateRequest,
     ) -> Result<(), EngineSessionError> {
         Self::validate_generate_request(request_id, request)?;
+        if request.sampling.grammar_budget && !selected_backend.is_mlx() {
+            return Err(EngineSessionError::InvalidJsonConstraint {
+                message: "grammar_budget requires native MLX".to_string(),
+            });
+        }
+        if request.sampling.json_schema_strict
+            && request.sampling.json_schema.is_some()
+            && !selected_backend.is_mlx()
+        {
+            return Err(EngineSessionError::StrictJsonConstraintRequiresNativeMlx);
+        }
         if !selected_backend.is_mlx() && !request.multimodal_inputs.is_empty() {
             return Err(EngineSessionError::MultimodalInputsRequireNativeMlx { selected_backend });
         }
@@ -808,6 +846,16 @@ impl EngineSession {
             }
             return Ok(());
         }
+        // Cancelling a request that already finished is a no-op, as on the
+        // delegated path: a cancel racing completion must not error.
+        if self
+            .core
+            .request_manager()
+            .snapshot(RequestId(request_id))
+            .is_some_and(|snapshot| snapshot.state.is_terminal())
+        {
+            return Ok(());
+        }
         self.cancel(RequestId(request_id))
     }
 
@@ -838,6 +886,12 @@ impl EngineSession {
             let selected_backend = self.config.resolved_backend.selected_backend;
             let mut aggregate = EngineStepReport::default();
             let mut selected_request_ids = Vec::new();
+            // A failing request must not starve the ones after it: returning
+            // on the first error left every higher-id request unpolled, so a
+            // request whose stream already ended (re-erroring on every poll)
+            // blocked its siblings forever. Step everyone, then surface the
+            // first error.
+            let mut first_error = None;
 
             for request_id in active_request_ids {
                 // Persist a terminal transition immediately, in the same
@@ -858,7 +912,13 @@ impl EngineSession {
                     let LlamaCppLifecycleRequestSlot::Active(request) = slot else {
                         continue;
                     };
-                    let step = request.step_report(selected_backend)?;
+                    let step = match request.step_report(selected_backend) {
+                        Ok(step) => step,
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                            continue;
+                        }
+                    };
                     if step.scheduled_requests > 0 {
                         selected_request_ids.push(request_id);
                     }
@@ -875,6 +935,9 @@ impl EngineSession {
                 }
             }
 
+            if let Some(error) = first_error {
+                return Err(error);
+            }
             return Ok((aggregate, selected_request_ids));
         }
 
@@ -955,8 +1018,34 @@ impl EngineSession {
                 }
                 // Always merge when we paid to materialise the route: decode
                 // counters are max-merged into any prefill-only store.
+                //
+                // Prefix reuse counters in the step route are batch sums, and
+                // only a prefill can hit the prefix cache: a request decoding
+                // in the same step must not record a sibling's hit as its own
+                // (it surfaced as that request's usage cached_tokens).
+                let decode_request_ids: Vec<u64> = outcome
+                    .schedule_plan
+                    .execution_batch
+                    .as_ref()
+                    .map(|batch| {
+                        batch
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                item.mode == ax_engine_core::ExecutionMode::Decode
+                                    && item.prefix_tokens_reused == 0
+                            })
+                            .map(|item| item.request_id.0)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let multi_request = batch_request_ids.len() > 1;
                 for request_id in batch_request_ids {
-                    self.store_native_request_route(request_id, route.clone(), &keep);
+                    let mut request_route = route.clone();
+                    if multi_request && decode_request_ids.contains(&request_id) {
+                        strip_prefix_reuse_telemetry(&mut request_route);
+                    }
+                    self.store_native_request_route(request_id, request_route, &keep);
                 }
             }
             report
@@ -1037,7 +1126,7 @@ impl EngineSession {
     /// Next auto id not retained or live. Caller-chosen ids can reserve any
     /// u64, including MAX, so the allocator wraps and skips used entries
     /// instead of stalling on a duplicate.
-    fn next_free_auto_request_id(&self) -> u64 {
+    fn next_free_auto_request_id(&mut self) -> u64 {
         const SCAN_LIMIT: u64 = 1024;
         let mut candidate = self.next_request_id;
         for _ in 0..SCAN_LIMIT {
@@ -1046,7 +1135,15 @@ impl EngineSession {
                 .request_manager()
                 .snapshot(RequestId(candidate))
                 .is_none()
+                && !self.llama_requests.contains_key(&candidate)
             {
+                // `advance_request_id` cannot move past u64::MAX: once an
+                // explicit id pushed the counter there, every auto allocation
+                // restarted at MAX and handed it out again as soon as its
+                // snapshot was pruned. Wrap after allocating MAX.
+                if candidate == u64::MAX {
+                    self.next_request_id = 1;
+                }
                 return candidate;
             }
             candidate = candidate.checked_add(1).unwrap_or(1);
@@ -1057,7 +1154,7 @@ impl EngineSession {
     pub fn submit_generate_with_request_id(
         &mut self,
         request_id: u64,
-        request: GenerateRequest,
+        mut request: GenerateRequest,
     ) -> Result<u64, EngineSessionError> {
         if self.core.generation_kind() == ax_engine_core::GenerationKind::EncoderEmbed {
             return Err(EngineSessionError::EncoderTextGenerationUnsupported);
@@ -1099,6 +1196,10 @@ impl EngineSession {
             );
         }
 
+        request
+            .sampling
+            .prepare_json_constraint()
+            .map_err(|message| EngineSessionError::InvalidJsonConstraint { message })?;
         let request_id = RequestId(request_id);
         self.advance_request_id(request_id.0);
         // Caller-chosen ids are not an arrival order: a recycled or
@@ -1113,7 +1214,10 @@ impl EngineSession {
             model_id: ModelId(request.model_id),
             input_tokens: request.input_tokens,
             multimodal_inputs: request.multimodal_inputs,
-            sampling_params: request.sampling.into_core(self.config.deterministic),
+            sampling_params: request
+                .sampling
+                .into_core(self.config.deterministic)
+                .map_err(|message| EngineSessionError::InvalidJsonConstraint { message })?,
             max_output_tokens: request.max_output_tokens,
             arrival_sequence,
             metadata: request.metadata,
@@ -1163,7 +1267,8 @@ impl EngineSession {
         &mut self,
         request: GenerateRequest,
     ) -> Result<GenerateStream<'_>, EngineSessionError> {
-        self.stream_generate_with_request_id(self.next_request_id, request)
+        let request_id = self.next_free_auto_request_id();
+        self.stream_generate_with_request_id(request_id, request)
     }
 
     pub fn stream_generate_with_request_id(
@@ -1189,7 +1294,8 @@ impl EngineSession {
         &mut self,
         request: GenerateRequest,
     ) -> Result<GenerateResponse, EngineSessionError> {
-        self.generate_with_request_id(self.next_request_id, request)
+        let request_id = self.next_free_auto_request_id();
+        self.generate_with_request_id(request_id, request)
     }
 
     pub fn generate_with_request_id(
@@ -1289,7 +1395,8 @@ impl EngineSession {
         &mut self,
         request: GenerateRequest,
     ) -> Result<GenerateStreamState, EngineSessionError> {
-        self.stream_generate_state_with_request_id(self.next_request_id, request)
+        let request_id = self.next_free_auto_request_id();
+        self.stream_generate_state_with_request_id(request_id, request)
     }
 
     pub fn stream_generate_state_with_request_id(
@@ -1442,7 +1549,12 @@ impl EngineSession {
                         };
                         batch_tokens.extend(next_step.delta_tokens);
                         batch_logprobs.extend(next_step.delta_token_logprobs);
-                        last_step = next_step.step;
+                        // The coalesced event stands for every folded step:
+                        // carry their work, or `GenerateStreamPerformance`
+                        // (which observes each event once) undercounts model
+                        // time and inflates decode tokens/s.
+                        let folded = std::mem::replace(&mut last_step, next_step.step);
+                        fold_step_work(&mut last_step, &folded);
                         if is_terminal_request_state(state.current_report.state) {
                             break;
                         }
@@ -1481,12 +1593,29 @@ impl EngineSession {
             || progress.terminal;
         if advanced {
             state.step_count += 1;
+            state.idle_steps = 0;
             if state.step_count >= state.max_steps {
                 return Err(EngineSessionError::RequestDidNotTerminate {
                     request_id: state.request_id,
                     max_steps: state.max_steps,
                 });
             }
+        } else if step.scheduled_requests == 0 {
+            // Advancing steps consume prompt or output tokens, so they can never
+            // exceed `max_steps`. A request the engine never schedules again
+            // (nothing else running either) would spin here forever; bound the
+            // run of empty steps instead.
+            state.idle_steps += 1;
+            if state.idle_steps >= NATIVE_STREAM_IDLE_STEP_LIMIT {
+                return Err(EngineSessionError::RequestDidNotTerminate {
+                    request_id: state.request_id,
+                    max_steps: state.max_steps,
+                });
+            }
+        } else {
+            // Another request ran this step: waiting behind it is progress
+            // for the session, not a hang.
+            state.idle_steps = 0;
         }
 
         if state.ttft_step.is_none()

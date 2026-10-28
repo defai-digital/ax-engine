@@ -84,6 +84,8 @@ pub(crate) struct AppState {
     /// Loaded model states — take a snapshot at the start of each handler.
     pub(crate) live: Arc<parking_lot::RwLock<LiveModelRegistry>>,
     pub(crate) api_key: Option<Arc<String>>,
+    /// Hosts a server without an API key answers (DNS-rebinding guard).
+    pub(crate) allowed_hosts: Arc<crate::routes::HostAllowlist>,
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Start-up-resolved process-environment configuration (parsed once in
     /// `main`); request-path code reads these fields instead of the
@@ -121,6 +123,7 @@ impl AppState {
                 models,
             })),
             api_key: None,
+            allowed_hosts: Arc::new(crate::routes::HostAllowlist::default()),
             metrics,
             env: Arc::new(env),
             loading: Arc::new(AtomicBool::new(false)),
@@ -297,7 +300,9 @@ impl AppState {
         // Acquire the narrow scope first so a draining/saturated model does
         // not transiently consume process capacity. Both leases are merged
         // into one permit and therefore follow the actual engine-job lifetime.
-        let model_permit = live.admission.try_admit()?;
+        let blocked = live.runtime_report.selected_backend == ax_engine_sdk::SelectedBackend::Mlx
+            && ax_engine_sdk::EngineSession::native_host_pressure_blocks_admission();
+        let model_permit = live.admission.try_admit_with_host_pressure(blocked)?;
         let global_permit = self.admission.try_admit()?;
         let current_generation = self
             .live
@@ -399,6 +404,12 @@ impl AppState {
         self
     }
 
+    /// `AX_SERVER_ALLOWED_HOSTS`, resolved once at start-up.
+    pub(crate) fn with_allowed_hosts(mut self, raw: Option<&str>) -> Self {
+        self.allowed_hosts = Arc::new(crate::routes::HostAllowlist::from_env(raw));
+        self
+    }
+
     pub(crate) fn with_discovery(mut self, discovery: DiscoveryMeta) -> Self {
         self.discovery = Arc::new(discovery);
         self
@@ -439,6 +450,11 @@ impl AppState {
 }
 
 impl LiveState {
+    /// Record activity for the idle evictor (admission records it too).
+    pub(crate) fn mark_used(&self) {
+        self.last_used.store(unix_now_secs(), Ordering::Relaxed);
+    }
+
     pub(crate) async fn retire(
         self,
     ) -> Result<(), crate::generation::service::GenerationServiceError> {
@@ -714,6 +730,9 @@ struct EngineStepStats {
     /// direct decode, in `FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS` order.
     flash_next_mtp_fallback_by_reason_total: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
     flash_next_mtp_fallback_by_reason_last: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
+    /// Signature of the request set the last step served
+    /// (`ax_mlx_step_request_set`). A change is a request boundary.
+    step_request_set_last: Option<u32>,
     /// Latest cascade-corrected MTP-only acceptance EWMA (x1000). This is the
     /// rate the low-acceptance bypass watches; expose it so operators can see
     /// speculation paying for itself (or not) without bench tooling.
@@ -1072,6 +1091,17 @@ impl ServerMetrics {
         entry.request_terminal_snapshot_order = report.request_terminal_snapshot_order;
         entry.request_terminal_snapshot_bytes = report.request_terminal_snapshot_bytes;
         if let Some(route) = report.route.as_ref() {
+            // The cumulative counters below are request running totals. A new
+            // request is only visible as a drop unless the step says which
+            // requests it served: a larger first snapshot from the next
+            // request would otherwise lose the previous request's final value.
+            let request_set = route.decision("ax_mlx_step_request_set");
+            if request_set.is_some() && request_set != entry.step_request_set_last {
+                entry.reset_request_cumulative_lasts();
+            }
+            if request_set.is_some() {
+                entry.step_request_set_last = request_set;
+            }
             // MtpTelemetry re-emits the request's running draft/accept totals
             // on every decode step. Adding those snapshots as if they were
             // per-step deltas over-counts a request as the triangular series
@@ -1547,6 +1577,32 @@ fn route_kib_as_bytes(route: &ax_engine_sdk::GenerateRouteReport, key: &str) -> 
 /// runner re-emits on every step. A rising value is the same request's
 /// running total; a drop is a new request (or a reset) and starts a fresh
 /// contribution.
+impl EngineStepStats {
+    /// Forget the previous request's cumulative snapshots, so the next
+    /// request's first snapshot counts in full.
+    fn reset_request_cumulative_lasts(&mut self) {
+        self.mtp_draft_tokens_last = 0;
+        self.mtp_accepted_tokens_last = 0;
+        self.mtp_direct_fallback_steps_last = 0;
+        self.flash_next_mtp_cursor_initialized_last = 0;
+        self.flash_next_mtp_cursor_restored_last = 0;
+        self.flash_next_mtp_resumed_without_cursor_last = 0;
+        self.flash_next_mtp_prefill_absorb_failures_last = 0;
+        self.flash_next_mtp_cursor_dropped_last = 0;
+        self.flash_next_mtp_cursor_paused_steps_last = 0;
+        self.flash_next_mtp_cursor_resumed_last = 0;
+        self.flash_next_mtp_cursor_pause_overflows_last = 0;
+        self.flash_next_mtp_verified_steps_last = 0;
+        self.flash_next_mtp_accepted_steps_last = 0;
+        self.flash_next_mtp_step_errors_last = 0;
+        self.mlx_prefill_wall_us_last = 0;
+        self.mlx_prefill_forward_wall_us_last = 0;
+        self.mlx_prefill_prefix_cache_wall_us_last = 0;
+        self.mlx_prefill_generation_state_wall_us_last = 0;
+        self.flash_next_mtp_fallback_by_reason_last = [0; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT];
+    }
+}
+
 fn accumulate_cumulative_route_counter(total: &mut u64, last: &mut u64, observed: u64) {
     if observed >= *last {
         *total = total.saturating_add(observed - *last);
@@ -1843,6 +1899,33 @@ mod step_metrics_tests {
             metal_dispatch: None,
             ..EngineStepReport::default()
         }
+    }
+
+    #[test]
+    fn a_larger_first_snapshot_from_the_next_request_counts_in_full() {
+        // Request A prefills in 5000 us, then request B in 8000 us. Without a
+        // request boundary B's snapshot looked like A's running total and only
+        // the 3000 us difference was counted.
+        let report = |request_set: u32, wall_us: u32| EngineStepReport {
+            route: Some(ax_engine_sdk::GenerateRouteReport {
+                crossover_decisions: [
+                    ("ax_mlx_step_request_set".to_string(), request_set),
+                    ("ax_mlx_prefill_wall_us".to_string(), wall_us),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            }),
+            ..step_report(8, 0)
+        };
+        let metrics = ServerMetrics::default();
+        metrics.record_step_report("m", &report(11, 2000));
+        metrics.record_step_report("m", &report(11, 5000));
+        metrics.record_step_report("m", &report(22, 8000));
+        metrics.record_step_report("m", &report(22, 8000));
+        let stats = metrics.engine_step_stats.lock().expect("stats lock");
+        let entry = stats.get("m").expect("model stats");
+        assert_eq!(entry.mlx_prefill_wall_us_total, 13_000);
     }
 
     #[test]

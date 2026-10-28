@@ -11,6 +11,107 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn flash_next_prefix_admission_pins_only_complete_greedy_snapshots() {
+    use ax_engine_core::{
+        BlockTable, CacheGroupId, ModelId, RequestRecord, RequestSubmission, SequenceNo,
+    };
+
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
+    // Admission depends on family and snapshot identity, not tensor execution.
+    runner.cfg.model_family = "qwen4_exp".into();
+    runner.mtp_requested = false;
+    let mut request = RequestRecord::new(
+        RequestSubmission {
+            request_id: RequestId(801),
+            model_id: ModelId("flash-test".into()),
+            input_tokens: vec![1, 2, 3, 4],
+            multimodal_inputs: Default::default(),
+            sampling_params: Default::default(),
+            max_output_tokens: 4,
+            arrival_sequence: SequenceNo(1),
+            metadata: None,
+            prefill_hints: Default::default(),
+        },
+        BlockTable::empty(CacheGroupId(1)),
+    );
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    let key = runner.prefix_cache_key_with_media("flash-test", 4, &request.prompt_tokens, "");
+    runner.prefix_cache.lock().insert(
+        key.clone(),
+        MlxPrefixSnapshot::from_shared_payload(
+            Arc::from([0u8]),
+            request.prompt_tokens.clone(),
+            4,
+            Some(5),
+            None,
+        ),
+    );
+    assert!(!runner.prepare_prefix_reuse(&request, 2, 4, true));
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, false));
+    request.prefill_hints.semantic_cut_tokens.push(2);
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    request.prefill_hints.semantic_cut_tokens.clear();
+    assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
+    assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
+    assert_eq!(runner.prepared_prefixes.lock().len(), 1);
+    assert_eq!(runner.prefix_cache.lock().reclaim_unborrowed(), 0);
+    let mut state = RequestState::new(1, 801, None);
+    let mut item = ax_engine_core::ExecutionItem {
+        request_id: request.request_id,
+        mode: ExecutionMode::Prefill,
+        planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+        input_token_slice: request.prompt_tokens.clone(),
+        reused_prefix_token_slice: Vec::new(),
+        position_range: PositionRange {
+            start: 0,
+            end_exclusive: 4,
+        },
+        scheduled_token_count: 4,
+        block_table_ref: request.request_id,
+        prefix_tokens_reused: 0,
+        prefix_blocks_reused: 0,
+    };
+    // A cold replan releases its earlier admission instead of treating the
+    // unused reservation as a malformed restore.
+    runner
+        .restore_prepared_flash_prefix(&mut state, &item, None, MlxSamplingParams::greedy())
+        .unwrap();
+    assert!(runner.prepared_prefixes.lock().is_empty());
+    item.reused_prefix_token_slice = request.prompt_tokens.clone();
+    assert!(
+        runner
+            .restore_prepared_flash_prefix(&mut state, &item, None, MlxSamplingParams::greedy())
+            .unwrap_err()
+            .contains("not admitted")
+    );
+    // The decode slice includes the next feed token, which is not in KV yet.
+    // It must not be mistaken for a failed snapshot restore.
+    state.cache.advance(3);
+    item.mode = ExecutionMode::Decode;
+    item.input_token_slice = vec![4];
+    runner
+        .restore_prepared_flash_prefix(&mut state, &item, None, MlxSamplingParams::greedy())
+        .unwrap();
+    assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
+    runner.release_request_state(request.request_id);
+    assert!(runner.prepared_prefixes.lock().is_empty());
+    assert_eq!(runner.prefix_cache.lock().reclaim_unborrowed(), 1);
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    runner.prefix_cache.lock().insert(
+        key,
+        MlxPrefixSnapshot::from_shared_payload(
+            Arc::from([0u8]),
+            request.prompt_tokens.clone(),
+            4,
+            None,
+            None,
+        ),
+    );
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    let _ = fs::remove_dir_all(artifacts.root_dir());
+}
+
+#[test]
 fn request_states_share_only_the_runner_owned_fa_pool() {
     let config = FaBlockPoolConfig {
         block_size_tokens: 4,
@@ -197,6 +298,32 @@ fn demote_test_snapshot(pool: &SharedFaBlockPool, tokens: Vec<u32>) -> MlxNative
     let _ = cache.append(0, k, v);
     cache.advance(3);
     MlxNativePrefixSnapshot::new(cache, tokens, 64, Some(11))
+}
+
+#[test]
+fn host_pressure_retains_borrowed_native_prefix_until_release() {
+    let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+        block_size_tokens: 4,
+        max_blocks: 2,
+        hard_cap: true,
+    })
+    .unwrap();
+    let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 4096,
+        max_entries: 4,
+    });
+    let key = demote_test_key(1);
+    let inserted = cache.insert(key.clone(), demote_test_snapshot(&pool, vec![1, 2, 3]));
+    assert!(inserted.stored);
+    drop(inserted);
+    let (borrowed, _) = cache.get_longest_prefix(&key, &[1, 2, 3]).unwrap();
+    assert!(cache.reclaim_unborrowed().is_empty());
+    assert_eq!(borrowed.cache.seq_len(), 3);
+    drop(borrowed);
+    let retired = cache.reclaim_unborrowed();
+    assert_eq!(retired.len(), 1);
+    assert!(cache.is_empty());
+    drop(retired);
 }
 
 #[test]
@@ -664,7 +791,11 @@ fn mtp_telemetry_tracks_acceptance_step_classes() {
     assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_steps".into(), 1)));
     assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_emitted_tokens".into(), 4)));
     assert!(decisions.contains(&("ax_mtp_ngram_utility_stacked_steps".into(), 0)));
-    assert!(decisions.contains(&("ax_mtp_ngram_acceptance_mode".into(), 0)));
+    // Default is Delta: the exact law for a deterministic n-gram proposal.
+    assert!(decisions.contains(&(
+        "ax_mtp_ngram_acceptance_mode".into(),
+        MtpNgramAcceptanceMode::Delta.route_code()
+    )));
 }
 
 #[test]
@@ -2537,10 +2668,45 @@ fn mtp_accept_count_aligns_hybrid_tail_distribution_after_ngram_prefix() {
 }
 
 #[test]
-fn mtp_accept_count_temperature_rescaling() {
-    // Draft at T=0.7, target at T=0.6 → ratio=7/6≈1.167.
-    // log_p_draft = ln(0.8) ≈ -0.223; scaled = -0.223*1.167 ≈ -0.260 → p_scaled ≈ 0.771.
-    // target_prob = 1.0 → accept_prob = 1.0/0.771 capped at 1.0 → always accept.
+fn sampled_mtp_preserves_target_law_with_different_draft_temperature() {
+    let draft = TokenDistribution::new(vec![(0, 0.8), (1, 0.2)]).unwrap();
+    let target = TokenDistribution::new(vec![(0, 0.4), (1, 0.6)]).unwrap();
+    let mut rng = Xorshift64::new(93);
+    let mut count = [0usize; 2];
+    for _ in 0..40_000 {
+        let proposed = crate::sampling::sample_from_token_distribution(&draft, &mut rng).unwrap();
+        let outcome = mtp_accept_count(
+            &[proposed],
+            &[draft.probability(proposed).ln()],
+            std::slice::from_ref(&draft),
+            &[MtpDraftSource::Mtp],
+            Some(&[target.probability(proposed)]),
+            Some(std::slice::from_ref(&target)),
+            &[1],
+            &mut rng,
+            2.0,
+            1.0,
+            MtpModelAcceptanceMode::RejectionSampling,
+            MtpNgramAcceptanceMode::Delta,
+        );
+        let token = if outcome.all_accepted {
+            proposed
+        } else {
+            outcome.rejection_correction.unwrap()
+        };
+        count[token as usize] += 1;
+    }
+    let observed = count[0] as f64 / 40_000.0;
+    assert!(
+        (observed - 0.4).abs() < 0.015,
+        "target probability 0.4, observed {observed}"
+    );
+}
+
+#[test]
+fn mtp_accept_count_uses_proposal_probabilities_at_any_temperature() {
+    // A target probability of one accepts this proposal independently of
+    // the temperatures that produced the target and proposal distributions.
     let mut rng = Xorshift64::new(1);
     let accept = mtp_accept_count(
         &[5],
@@ -2558,7 +2724,7 @@ fn mtp_accept_count_temperature_rescaling() {
     );
     assert_eq!(accept.accept_count, 1);
 
-    // When temperatures match, no rescaling occurs.
+    // Matching temperatures obey the same proposal law.
     let mut rng2 = Xorshift64::new(1);
     let accept2 = mtp_accept_count(
         &[5],
@@ -3262,6 +3428,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
 fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
     let payload = MlxKVCache::new(2).serialize_to_bytes();
     MlxPrefixSnapshot {
+        dflash2: None,
         kv_cache_payload: Arc::from(payload.into_boxed_slice()),
         tokens: vec![token; token_count],
         token_count,
@@ -3269,6 +3436,24 @@ fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefix
         greedy_prefill_output_token: Some(7),
         mtp_cursor_payload: None,
     }
+}
+
+#[test]
+fn host_pressure_reclaims_only_unborrowed_portable_prefix_snapshots() {
+    let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1024,
+        max_entries: 4,
+    });
+    cache.insert(test_prefix_key(1), test_prefix_snapshot(1, 4, 100));
+    cache.insert(test_prefix_key(2), test_prefix_snapshot(2, 4, 200));
+    let borrowed = cache.get(&test_prefix_key(1), &[1; 4]).unwrap();
+    assert_eq!(cache.reclaim_unborrowed(), 1);
+    assert_eq!(cache.stats().bytes, 100);
+    assert_eq!(borrowed.tokens, vec![1; 4]);
+    drop(borrowed);
+    assert_eq!(cache.reclaim_unborrowed(), 1);
+    assert_eq!(cache.stats().bytes, 0);
+    assert!(cache.lru.is_empty());
 }
 
 #[test]
@@ -3411,6 +3596,7 @@ fn portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder() {
                 key.token_count = len as u32;
                 key.token_hash = len as u64;
                 let snapshot = MlxPrefixSnapshot {
+                    dflash2: None,
                     kv_cache_payload: Arc::from(Vec::<u8>::new().into_boxed_slice()),
                     tokens: vec![1; len],
                     token_count: len,
@@ -4070,7 +4256,7 @@ fn planned_cut_is_not_refloored_onto_the_prefill_grid() {
 }
 
 #[test]
-fn grid_rung_snapshot_must_be_captured_before_semantic_cuts_advance_the_cache() {
+fn legacy_grid_rung_requires_the_original_item_start() {
     // Regression (WP07): a 1930-token linear-attention prompt with block 32
     // and a 1024-token prefill chunk. The prefix a warm request claims, and
     // therefore the entry it looks up, is the grid rung at 1024.
@@ -4079,17 +4265,13 @@ fn grid_rung_snapshot_must_be_captured_before_semantic_cuts_advance_the_cache() 
         Some(1024),
         "a whole-item prefill splits at the rung a warm request restores"
     );
-    // Capturing the semantic cuts first advances the cache to 1898 (the last
-    // assistant-turn start below the terminal anchor). From there the same
-    // rung sits *inside* prior context, so the head is `None` and the claim
-    // snapshot is never captured: the warm request then looks up a 1024 entry
-    // that does not exist and recomputes the whole prompt. Cut snapshots must
-    // therefore be stored in addition to the block-aligned ones, never
-    // instead of them.
+    // This helper cannot capture a rung already inside prior context.
+    // The semantic path therefore walks grid and semantic boundaries together
+    // in chronological order; it does not call this helper after that walk.
     assert_eq!(
         MlxRunner::linear_grid_rung_head_len(32, 1024, 1024, 1898, 32),
         None,
-        "cut capture must not precede the grid-rung capture"
+        "the legacy helper cannot reconstruct an earlier rung"
     );
     // The rung is exactly the length the warm restore is floored onto, so a
     // missing capture is a missing restore (hits 0 / reused 0 in the
@@ -5120,6 +5302,8 @@ fn dense_manifest() -> NativeModelManifest {
         rope_original_context_len: None,
         rope_beta_fast: None,
         rope_beta_slow: None,
+        rope_mscale: None,
+        rope_mscale_all_dim: None,
         no_rope_layer_interval: 0,
         attn_temperature_floor: None,
         attn_temperature_scale: None,
@@ -8967,6 +9151,35 @@ fn probe_exact_bound_covers_unaligned_bounds() {
 }
 
 #[test]
+fn processor_histories_match_cold_partial_and_full_restores_without_draft_leaks() {
+    let prompt: Vec<u32> = (0..12).collect();
+    let sampling = MlxSamplingParams::new(0.7, 1.0, 0).with_repetition_penalty(1.1, Some(8));
+    for (claim, restored) in [(0, 0), (4, 4), (4, 8), (12, 12)] {
+        for accepted in 0..=3 {
+            let mut state = RequestState::new(2, 100, None);
+            state.prompt_prefix_tokens = prompt[..restored].to_vec();
+            let item = prefill_item_with_claim(claim, 12 - claim);
+            extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+            state.mtp_pending_draft = vec![20, 21, 22];
+            state.generated_tokens = state.mtp_pending_draft[..accepted].to_vec();
+            state.generated_tokens.push(30); // Correction or all-accepted bonus.
+            let mut expected = prompt.clone();
+            expected.extend_from_slice(&state.generated_tokens);
+            expected = expected[expected.len() - 8..].to_vec();
+            assert_eq!(state.repetition_history(&[], sampling), expected);
+            let presence = MlxSamplingParams::greedy().with_presence_frequency_penalty(1.0, 0.5);
+            assert_eq!(
+                state.repetition_history(&[], presence),
+                state.generated_tokens
+            );
+            // Another request with a different penalty view sees no history.
+            let other = RequestState::new(2, 101, None);
+            assert!(other.repetition_history(&[], presence).is_empty());
+        }
+    }
+}
+
+#[test]
 fn presence_penalty_history_holds_generated_tokens_only() {
     let mut state = RequestState::new(2, 1, None);
     state.prompt_prefix_tokens = vec![10, 11, 12];
@@ -9305,18 +9518,7 @@ fn decode_claim(id: u64, token: u32) -> ax_engine_core::ExecutionItem {
     }
 }
 
-#[test]
-fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
-    assert!(
-        !crate::fastpath::tree_verify_enabled(),
-        "the linear fence is not on the tree-verify route"
-    );
-    assert!(
-        crate::fastpath::mtp_relaxed_target_verify_enabled()
-            && crate::fastpath::mtp_linear_projected_replay_enabled(),
-        "linear verify is off, so this request never reaches the fence"
-    );
-
+fn tiny_linear_dflash_runner(layer_count: u32) -> (MlxRunner, NativeModelArtifacts) {
     let mut manifest = qwen35_linear_manifest();
     manifest.hidden_size = 8;
     manifest.intermediate_size = 8;
@@ -9339,10 +9541,30 @@ fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
             _ => tensor.shape.clone(),
         };
     }
+    let layer_tensors: Vec<_> = manifest
+        .tensors
+        .iter()
+        .filter(|t| t.layer_index == Some(0))
+        .cloned()
+        .collect();
+    for index in 1..layer_count {
+        for mut tensor in layer_tensors.clone() {
+            tensor.layer_index = Some(index);
+            tensor.name = tensor
+                .name
+                .replace("layers.0.", &format!("layers.{index}."));
+            manifest.tensors.push(tensor);
+        }
+    }
+    manifest.layer_count = layer_count;
     let artifacts = write_artifacts(manifest);
     let shared_weights = MlxSharedWeightsCell::new();
-    shared_weights.publish(Arc::new(tiny_linear_dflash_weights()));
-    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+    let mut weights = tiny_linear_dflash_weights();
+    for _ in 1..layer_count {
+        weights.layers.extend(tiny_linear_dflash_weights().layers);
+    }
+    shared_weights.publish(Arc::new(weights));
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
         &artifacts,
         8,
         true,
@@ -9351,6 +9573,512 @@ fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
         Some(&shared_weights),
     )
     .expect("runner");
+
+    (runner, artifacts)
+}
+
+#[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1 or AX_MLX_PREFIX_RESTORE_VALUE=1"]
+fn populated_request_cache_does_not_emit_restore_events() {
+    assert!(
+        crate::fastpath::prefix_semantic_cuts_enabled()
+            || crate::fastpath::prefix_restore_value_enabled()
+    );
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    let mut state = RequestState::new(2, 1, None);
+    state.cache.advance(32);
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![16],
+    };
+    for mode in [ExecutionMode::Prefill, ExecutionMode::Decode] {
+        for media_identity in [Some(""), None] {
+            let mut item = decode_claim(1, 3);
+            item.mode = mode;
+            item.reused_prefix_token_slice = vec![3; 32];
+            let telemetry = runner.restore_reused_prefix_state(
+                &mut state,
+                &item,
+                Some(&ctx_with_argmax(true)),
+                "qwen3_5",
+                4,
+                MlxSamplingParams::greedy(),
+                false,
+                media_identity,
+                Some(&hints),
+            );
+            assert_eq!(
+                telemetry,
+                MlxPrefixCacheTelemetry::default(),
+                "live KV needs no restore event: {mode:?}, media={media_identity:?}"
+            );
+            let mut decisions = Vec::new();
+            telemetry.append_route_decisions(&mut decisions);
+            assert!(decisions.is_empty());
+            assert_eq!(state.cache.seq_len(), 32);
+        }
+    }
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
+fn semantic_runner_captures_early_cuts_and_binds_partition_identity() {
+    assert!(crate::fastpath::prefix_semantic_cuts_enabled());
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.prefill_chunk = 1024;
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![700, 1400, 1800],
+    };
+    let run = |id: u64, claim: usize, len: usize, hints: &ax_engine_core::PrefillHints| {
+        let mut item = prefill_item_with_claim(claim, len);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; len];
+        item.reused_prefix_token_slice = vec![3; claim];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = 1930;
+        ctx.processed_prompt_tokens = claim as u32;
+        ctx.max_output_tokens = 16;
+        ctx.ignore_eos = true;
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            4,
+            None,
+            Some(hints),
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        result
+    };
+    let cold = run(110, 0, 1930, &hints);
+    let entries: Vec<_> = runner
+        .prefix_cache
+        .lock()
+        .entries
+        .values()
+        .map(|e| e.snapshot.token_count)
+        .collect();
+    for cut in [700, 1024, 1400, 1800] {
+        assert!(entries.contains(&cut), "missing {cut}: {entries:?}");
+    }
+    let warm = run(111, 1800, 130, &hints);
+    assert!(warm.prefix_cache.hits > 0);
+    assert_eq!(cold.update.output_token, warm.update.output_token);
+    {
+        let states = runner.states.lock();
+        assert_eq!(
+            states[&RequestId(110)].cache.serialize_to_bytes(),
+            states[&RequestId(111)].cache.serialize_to_bytes()
+        );
+    }
+    let different = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![600, 1400, 1800],
+    };
+    let miss = run(112, 1800, 130, &different);
+    assert_eq!(
+        miss.prefix_cache.hits, 0,
+        "different preceding partition must miss"
+    );
+    runner.prefix_cache.lock().entries.clear();
+    // A non-canonical scheduler boundary may not publish later state.
+    let checkpoint = |id: u64, cut: u32| {
+        ax_engine_core::ExecutionRunner::checkpoint_request(
+            &runner,
+            RequestId(id),
+            ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+            cut,
+        )
+    };
+    let unsupported = || {
+        runner
+            .checkpoint_unsupported
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    *runner.last_prefix_model_id.lock() = "qwen3_5".to_string();
+    runner
+        .last_block_size_tokens
+        .store(4, std::sync::atomic::Ordering::Relaxed);
+    run(113, 0, 900, &hints);
+    // Nor may a handoff checkpoint publish that split position itself.
+    let before = unsupported();
+    assert!(!checkpoint(113, 900).committed);
+    assert_eq!(unsupported(), before + 1);
+    run(113, 900, 1030, &hints);
+    let entries: Vec<_> = runner
+        .prefix_cache
+        .lock()
+        .entries
+        .values()
+        .map(|e| e.snapshot.token_count)
+        .collect();
+    assert_eq!(entries, vec![700]);
+    run(114, 0, 1024, &hints);
+    let before = unsupported();
+    let canonical = checkpoint(114, 1024);
+    assert_eq!(
+        unsupported(),
+        before,
+        "a canonical grid boundary may checkpoint"
+    );
+    assert!(canonical.committed);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
+fn semantic_empty_prefill_item_keeps_partition_validity() {
+    assert!(crate::fastpath::prefix_semantic_cuts_enabled());
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.prefill_chunk = 1024;
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: vec![700],
+    };
+    let run = |id: u64, claim: usize, len: usize| {
+        let mut item = prefill_item_with_claim(claim, len);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; len];
+        item.reused_prefix_token_slice = vec![3; claim];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = 1930;
+        ctx.processed_prompt_tokens = claim as u32;
+        ctx.max_output_tokens = 16;
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            4,
+            None,
+            Some(&hints),
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        result
+    };
+    let partition = |runner: &MlxRunner, id: u64| {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(id)];
+        (
+            state.cache.seq_len(),
+            state.semantic_partition_valid,
+            state.semantic_checkpoint_cut,
+        )
+    };
+    run(140, 0, 700);
+    assert_eq!(partition(&runner, 140), (700, true, Some(700)));
+    // The runner probe restores the stored cut, so the item executes nothing.
+    let over_claimed = run(141, 0, 700);
+    assert!(over_claimed.prefix_cache.hits > 0);
+    assert_eq!(
+        partition(&runner, 141),
+        (700, true, None),
+        "an item that executes nothing cannot leave the partition"
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+#[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1"]
+fn semantic_tail_chunk_ignores_preceding_segments() {
+    // The long-prompt clamp must see the tail after the last boundary, which
+    // cold and warm runs share, not the whole item length.
+    assert!(crate::fastpath::prefix_semantic_cuts_enabled());
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.cfg.model_family = "qwen3_next".into();
+    assert!(crate::fastpath::long_prompt_prefill_clamp_applies(
+        &runner.cfg.model_family
+    ));
+    runner.prefill_chunk = 1024;
+    runner.cold_prefill_chunk = 1024;
+    let hints = ax_engine_core::PrefillHints {
+        semantic_cut_tokens: Vec::new(),
+    };
+    let prompt_len = 3000;
+    let run = |id: u64, claim: usize| {
+        let len = prompt_len - claim;
+        let mut item = prefill_item_with_claim(claim, len);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; len];
+        item.reused_prefix_token_slice = vec![3; claim];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = prompt_len as u32;
+        ctx.processed_prompt_tokens = claim as u32;
+        ctx.max_output_tokens = 16;
+        ctx.ignore_eos = true;
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_next",
+            4,
+            None,
+            Some(&hints),
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        result
+    };
+    let cold = run(130, 0);
+    let warm = run(131, 2048);
+    assert!(warm.prefix_cache.hits > 0);
+    assert_eq!(cold.update.output_token, warm.update.output_token);
+    let states = runner.states.lock();
+    assert_eq!(
+        states[&RequestId(130)]
+            .decode_telemetry
+            .prefill_chunk_selected,
+        states[&RequestId(131)]
+            .decode_telemetry
+            .prefill_chunk_selected,
+        "the shared tail must use one chunk size"
+    );
+    assert_eq!(
+        states[&RequestId(130)].cache.serialize_to_bytes(),
+        states[&RequestId(131)].cache.serialize_to_bytes()
+    );
+    drop(states);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn paging_failure_blocks_prefix_snapshot_publication() {
+    // A paging failure replaces an MoE output with zeros for the rest of the
+    // forward; KV computed after it must not reach the prefix cache, where a
+    // later request would silently restore it.
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    let run = |id: u64| {
+        let mut item = prefill_item_with_claim(0, 8);
+        item.request_id = RequestId(id);
+        item.input_token_slice = vec![3; 8];
+        let mut ctx = ctx_with_argmax(true);
+        ctx.request_id = item.request_id;
+        ctx.prompt_len = 8;
+        ctx.max_output_tokens = 4;
+        runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            4,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    crate::expert_stream::record_paging_failure("injected paging failure".to_string());
+    run(150);
+    assert_eq!(
+        runner.prefix_cache.lock().stats().entries,
+        0,
+        "a step with a paging failure must not publish snapshots"
+    );
+    assert!(crate::expert_stream::take_paging_failure().is_some());
+    run(151);
+    assert!(
+        runner.prefix_cache.lock().stats().entries > 0,
+        "a clean step publishes as before"
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn checkpoint_after_ordered_prefill_commits() {
+    // Every prefill latches its rotation decision. An ordered latch must not
+    // turn every later handoff checkpoint into a miss.
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    *runner.last_prefix_model_id.lock() = "qwen3_5".to_string();
+    runner
+        .last_block_size_tokens
+        .store(4, std::sync::atomic::Ordering::Relaxed);
+    let mut item = prefill_item_with_claim(0, 8);
+    item.request_id = RequestId(120);
+    item.input_token_slice = vec![3; 8];
+    let mut ctx = ctx_with_argmax(true);
+    ctx.request_id = item.request_id;
+    ctx.prompt_len = 16;
+    ctx.max_output_tokens = 4;
+    let result = runner.run_item(
+        &item,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(result.update.error.is_none(), "{:?}", result.update.error);
+    {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(120)];
+        assert_eq!(
+            state.rotating_sliding_latch.map(|(rotate, _)| rotate),
+            Some(false)
+        );
+        assert_eq!(state.cache.seq_len(), 8);
+    }
+    let receipt = ax_engine_core::ExecutionRunner::checkpoint_request(
+        &runner,
+        RequestId(120),
+        ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+        8,
+    );
+    assert!(receipt.committed, "{receipt:?}");
+    assert!(receipt.adopts_cursor(8));
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn prefix_probe_restores_exact_bound_key_after_aligned_scan() {
+    let (runner, artifacts) = tiny_linear_dflash_runner(2);
+    let tokens = vec![3; 7];
+    for len in [4, 7] {
+        let mut key = runner.prefix_cache_key_with_media("qwen3_5", 4, &tokens[..len], "");
+        runner.bind_semantic_partition(&mut key, len, &[]);
+        runner.prefix_cache.lock().insert(
+            key,
+            MlxPrefixSnapshot::from_shared_payload(
+                Arc::from([]),
+                tokens[..len].to_vec(),
+                len,
+                None,
+                None,
+            ),
+        );
+    }
+    assert_eq!(
+        runner.probe_runner_snapshot_for_prefix("qwen3_5", 4, &tokens, "", &[]),
+        Some(tokens)
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn dflash2_prefix_hit_restores_prompt_capture_and_runs_the_next_round() {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner.mtp_requested = true;
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    runner.dflash2 = Some(drafter);
+    let mut cold = prefill_item_with_claim(0, 29);
+    cold.request_id = RequestId(100);
+    cold.input_token_slice = vec![3; 29];
+    let mut ctx = ctx_with_argmax(true);
+    ctx.request_id = cold.request_id;
+    ctx.prompt_len = 29;
+    ctx.ignore_eos = true;
+    let first = runner.run_item(
+        &cold,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(first.update.error.is_none(), "{:?}", first.update.error);
+    assert!(first.prefix_cache.stores > 0);
+    assert!(
+        runner
+            .states
+            .lock()
+            .get(&cold.request_id)
+            .unwrap()
+            .dflash2
+            .is_some(),
+        "cold capture missing"
+    );
+    let mut warm = prefill_item_with_claim(24, 5);
+    warm.request_id = RequestId(101);
+    warm.reused_prefix_token_slice = vec![3; 24];
+    warm.input_token_slice = vec![3; 5];
+    ctx.request_id = warm.request_id;
+    ctx.processed_prompt_tokens = 24;
+    let repeated = runner.run_item(
+        &warm,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(
+        repeated.update.error.is_none(),
+        "{:?}",
+        repeated.update.error
+    );
+    assert!(repeated.prefix_cache.hits > 0);
+    assert_eq!(first.update.output_token, repeated.update.output_token);
+    assert!(
+        runner
+            .states
+            .lock()
+            .get(&warm.request_id)
+            .unwrap()
+            .dflash2
+            .is_some()
+    );
+    let mut decode = decode_claim(101, repeated.update.output_token.unwrap());
+    decode.position_range = PositionRange {
+        start: 29,
+        end_exclusive: 30,
+    };
+    ctx.generated_len = 1;
+    ctx.processed_prompt_tokens = 29;
+    let next = runner.run_item(
+        &decode,
+        Some(&ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(next.update.error.is_none(), "{:?}", next.update.error);
+    assert!(
+        runner
+            .states
+            .lock()
+            .get(&warm.request_id)
+            .unwrap()
+            .dflash2
+            .as_ref()
+            .unwrap()
+            .rounds
+            > 0
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
+    assert!(
+        !crate::fastpath::tree_verify_enabled(),
+        "the linear fence is not on the tree-verify route"
+    );
+    assert!(
+        crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled(),
+        "linear verify is off, so this request never reaches the fence"
+    );
+
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
 
     let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
     let width = drafter.config().target_hidden_width();
@@ -9531,4 +10259,72 @@ fn cross_tier_prefix_probe_misses() {
     assert!(!disk.contains(&exact_disk), "cross-tier disk probe misses");
     assert!(disk.get(&exact_disk).expect("disk get").is_none());
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn step_request_set_signature_is_order_independent_and_changes_with_membership() {
+    let a = step_request_set_signature([3u64, 7].into_iter());
+    assert_eq!(a, step_request_set_signature([7u64, 3].into_iter()));
+    assert_ne!(a, step_request_set_signature([3u64].into_iter()));
+    assert_ne!(
+        step_request_set_signature([1u64].into_iter()),
+        step_request_set_signature([2u64].into_iter())
+    );
+    assert_eq!(step_request_set_signature(std::iter::empty()), 0);
+    assert_ne!(step_request_set_signature([0u64].into_iter()), 0);
+}
+
+#[test]
+fn mtp_accept_probability_cuts_top_p_against_the_min_p_survivor_mass() {
+    // min_p 0.2 removes 0.08 of the mass; the primary sampler then cuts top-p
+    // at 0.85 * 0.92 = 0.782 and keeps two tokens, so p(token 0) = 0.5 / 0.8.
+    // The accept path used an absolute 0.85 cut and kept three tokens.
+    let row = [0.5_f32, 0.3, 0.12, 0.05, 0.03];
+    let full = MlxArray::from_f32_slice(&row);
+    let full = mlx_sys::reshape(&full, &[1, 5], None);
+    let indices = MlxArray::from_raw_data(
+        [0u32, 1, 2, 3, 4].as_ptr() as *const u8,
+        5 * 4,
+        &[1, 5],
+        MlxDtype::Uint32,
+    );
+    let lazy = LazyTargetProbs::TopK {
+        indices,
+        probs: full.clone(),
+        k: 5,
+        top_p: 0.85,
+        min_p: Some(0.2),
+        survivor_rows: Some((full, 5)),
+    };
+    let mut targets = Vec::new();
+    lazy.push_eval_targets(&mut targets);
+    mlx_sys::eval(&targets);
+    let mut workspace = MtpTargetProbWorkspace::default();
+    let probability = lazy
+        .extract_cpu_into(&[0], &mut workspace)
+        .expect("probability")[0];
+    let sampler_law = filtered_target_token_probability(&row, 0, Some(0.2), 0.85, 0);
+    assert!(
+        (probability - sampler_law).abs() < 1e-6,
+        "{probability} vs {sampler_law}"
+    );
+    assert!((probability - 0.625).abs() < 1e-6, "{probability}");
+}
+
+#[test]
+fn batched_mean_pool_divides_by_the_exact_length() {
+    // Rows of 2.0 over lengths 3 and 5 (padded to 5): the mean is exactly 2.0.
+    // A bf16-truncated 1/len scaled it to ~1.992.
+    let hidden = mlx_sys::astype(
+        &mlx_sys::reshape(&MlxArray::from_f32_slice(&[2.0; 10]), &[2, 5, 1], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let pooled = mlx_sys::astype(
+        &bf16_mean_pool(&hidden, &[3, 5], 2),
+        MlxDtype::Float32,
+        None,
+    );
+    mlx_sys::eval(&[&pooled]);
+    assert_eq!(pooled.data_f32(), &[2.0, 2.0]);
 }

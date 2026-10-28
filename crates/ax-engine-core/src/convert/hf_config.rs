@@ -191,6 +191,44 @@ pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
     )
 }
 
+/// Reject second-generation sparse attention before the v1 mapper can drop
+/// routing weights and produce a plausible but semantically different graph.
+pub(crate) fn validate_unlimited_ocr_attention(
+    config: &serde_json::Value,
+    model_type: &str,
+    tensor_names: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<(), ConvertError> {
+    if !is_unlimited_ocr(model_type) {
+        return Ok(());
+    }
+    let sparse_config = [
+        Some(config),
+        config.get("language_config"),
+        config.get("text_config"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|scope| {
+        scope
+            .get("sparse_attention_config")
+            .is_some_and(|v| !v.is_null())
+    });
+    let sparse_weights = tensor_names.into_iter().any(|name| {
+        let name = name.as_ref();
+        name.contains(".self_attn.dash_router.") || name.contains(".self_attn.indexer.")
+    });
+    if sparse_config || sparse_weights {
+        return Err(ConvertError::InvalidModelContract {
+            model_type: model_type.to_string(),
+            message: "Unlimited-OCR-2 SR-SWA is not implemented: native DASH routing, \
+                page-aware rotary positions and multi-page KV lifecycle are required; \
+                the Unlimited-OCR v1 protected-prefix attention path cannot run this checkpoint"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     matches!(
         model_type,
@@ -597,12 +635,19 @@ pub(crate) fn qwen4_exp_config(
         .transpose()?
         .unwrap_or(1234);
     Ok(NativeQwen4ExpConfig {
+        // Reference config: `output_gate_type or hidden_act`, and hidden_act
+        // defaults to silu. A missing gate type is not sigmoid.
         output_gate_type: Some(
             field("output_gate_type")
                 .filter(|value| !value.is_null())
                 .map(|value| value.as_str().ok_or_else(|| error("output_gate_type")))
                 .transpose()?
-                .unwrap_or("sigmoid")
+                .filter(|gate| !gate.is_empty())
+                .or(field("hidden_act")
+                    .filter(|value| !value.is_null())
+                    .map(|value| value.as_str().ok_or_else(|| error("hidden_act")))
+                    .transpose()?)
+                .unwrap_or("silu")
                 .to_string(),
         ),
         ple_layer_ids,
@@ -955,6 +1000,53 @@ pub(crate) fn parse_rope_params(
     (theta, None, partial_rotary)
 }
 
+/// The rope scaling dict: `rope_scaling`, or the transformers v5
+/// `rope_parameters` block (Nemotron 3 Embed, Ministral 3 `text_config`).
+/// A `rope_type: "default"` block is plain RoPE and counts as absent.
+fn rope_scaling_dict<'a>(
+    config: &'a serde_json::Value,
+    model_type: &str,
+) -> Option<&'a serde_json::Value> {
+    let scope = if uses_text_config(model_type) {
+        config
+            .get("text_config")
+            .or_else(|| config.get("language_config"))
+            .or_else(|| config.get("llm_config"))
+    } else {
+        Some(config)
+    };
+    let rs = scope
+        .and_then(|scope| scope.get("rope_scaling"))
+        .filter(|value| !value.is_null())
+        .or_else(|| scope.and_then(|scope| scope.get("rope_parameters")))
+        .or_else(|| {
+            (is_nemotron_embed_model_type(model_type)
+                || is_nemotron_embed_config(config, model_type))
+            .then(|| config.get("rope_parameters"))
+            .flatten()
+        })?;
+    let rope_type = rs
+        .get("rope_type")
+        .or_else(|| rs.get("type"))
+        .and_then(|v| v.as_str());
+    (rs.is_object() && rope_type != Some("default")).then_some(rs)
+}
+
+/// YaRN `mscale` / `mscale_all_dim` from the rope scaling dict. The attention
+/// scale is `get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim)`
+/// (mlx-lm `YarnRoPE`); Nemotron 3 Embed ships `mscale_all_dim: 1`, which
+/// makes it 1.0 rather than the `0.1 ln(factor) + 1` the absent keys give.
+pub(crate) fn parse_rope_mscale(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> (Option<f32>, Option<f32>) {
+    let Some(rs) = rope_scaling_dict(config, model_type) else {
+        return (None, None);
+    };
+    let read = |key: &str| rs.get(key).and_then(|v| v.as_f64()).map(|f| f as f32);
+    (read("mscale"), read("mscale_all_dim"))
+}
+
 /// Parse LLaMA 3 / LLaMA 4 / YaRN rope_scaling dict from config.json.
 #[allow(clippy::type_complexity)]
 pub(crate) fn parse_rope_scaling(
@@ -969,26 +1061,7 @@ pub(crate) fn parse_rope_scaling(
     Option<f32>,
     Option<f32>,
 ) {
-    let rs = if uses_text_config(model_type) {
-        config
-            .get("text_config")
-            .or_else(|| config.get("language_config"))
-            .or_else(|| config.get("llm_config"))
-            .and_then(|tc| tc.get("rope_scaling"))
-    } else {
-        config.get("rope_scaling")
-    };
-    // Nemotron 3 Embed (and some Ministral encoder packs) put YaRN under
-    // top-level `rope_parameters` instead of `rope_scaling`.
-    let rs = rs.or_else(|| {
-        if is_nemotron_embed_model_type(model_type) || is_nemotron_embed_config(config, model_type)
-        {
-            config.get("rope_parameters")
-        } else {
-            None
-        }
-    });
-    let Some(rs) = rs else {
+    let Some(rs) = rope_scaling_dict(config, model_type) else {
         return (None, None, None, None, None, None, None);
     };
     let rope_type = rs

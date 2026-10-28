@@ -683,6 +683,17 @@ pub(crate) fn per_layer_input_gate_project(
     qw(&per_layer_input_gate(gate, per_layer_input), proj_w)
 }
 
+static SWIGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<std::thread::ThreadId, MlxClosure>>> =
+    OnceLock::new();
+
+/// Release the SwiGLU graphs a retiring worker compiled.
+pub(crate) fn clear_worker_mlp_compile_caches(thread: std::thread::ThreadId) {
+    crate::per_layer_compile::remove_worker_entries(&SWIGLU_COMPILE_CACHE, |key| *key == thread);
+    crate::per_layer_compile::remove_worker_entries(&V4_CLAMPED_SWIGLU_COMPILE, |key| {
+        key.3 == thread
+    });
+}
+
 /// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.
 /// Wraps `silu(gate) * up` in a per-thread `Mutex<HashMap<ThreadId,
 /// MlxClosure>>` compile cache. Same thread-locality + fail-closed
@@ -691,9 +702,7 @@ pub(crate) fn per_layer_input_gate_project(
 /// `thread_local!`) for the same SIGSEGV-at-drop reason documented on
 /// `geglu()`.
 pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
-    use std::collections::HashMap;
     use std::collections::hash_map::Entry;
-    use std::thread::ThreadId;
 
     // SwiGLU's `silu(gate) * up` op tree empirically tolerates 3D and 4D
     // inputs under the same compiled closure (verified on Qwen 3.6 35B-A3B,
@@ -701,8 +710,6 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
     // unlike the `gelu_approx + multiply` tree that ABORTS — see the
     // companion comment on `geglu()`. A single per-thread closure is
     // sufficient here.
-    static SWIGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<ThreadId, MlxClosure>>> = OnceLock::new();
-
     let cache = SWIGLU_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
     // Graceful degradation on mutex poison: skip the compiled path and fall

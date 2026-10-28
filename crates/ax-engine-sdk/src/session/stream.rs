@@ -38,6 +38,9 @@ pub struct NativeGenerateStreamState {
     pub(super) emitted_output_len: usize,
     pub(super) max_steps: u64,
     pub(super) step_count: u64,
+    /// Consecutive engine steps that scheduled nothing while this request
+    /// made no progress: the hang backstop `max_steps` can no longer provide.
+    pub(super) idle_steps: u64,
     pub(super) ttft_step: Option<u64>,
     pub(super) phase: GenerateStreamPhase,
 }
@@ -381,6 +384,7 @@ impl GenerateStreamState {
             current_report,
             max_steps,
             step_count: 0,
+            idle_steps: 0,
             ttft_step: None,
             phase: GenerateStreamPhase::Request,
         }))

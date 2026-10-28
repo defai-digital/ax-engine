@@ -47,6 +47,22 @@ fn parse_stream_experts_mode(raw: &str) -> Result<ax_engine_sdk::MlxStreamExpert
     }
 }
 
+/// Effective expert-stream mode: the flag, else `AX_STREAM_EXPERTS` (blank is
+/// unset; an invalid value fails closed), else `auto`.
+pub(crate) fn effective_stream_experts_mode(
+    flag: Option<ax_engine_sdk::MlxStreamExpertsMode>,
+    env: Option<&str>,
+) -> Result<ax_engine_sdk::MlxStreamExpertsMode, String> {
+    if let Some(mode) = flag {
+        return Ok(mode);
+    }
+    match env.map(str::trim).filter(|raw| !raw.is_empty()) {
+        Some(raw) => parse_stream_experts_mode(raw)
+            .map_err(|_| format!("invalid AX_STREAM_EXPERTS {raw:?} (expected off, auto, or on)")),
+        None => Ok(ax_engine_sdk::MlxStreamExpertsMode::Auto),
+    }
+}
+
 fn parse_mlx_numerics_mode(raw: &str) -> Result<ax_engine_sdk::MlxNumericsMode, String> {
     ax_engine_sdk::MlxNumericsMode::parse(raw)
 }
@@ -242,17 +258,18 @@ pub struct ServerArgs {
     pub prefill_chunk: Option<usize>,
 
     /// SSD expert streaming: `off`, `auto` (default), or `on`.
-    /// Bare `--stream-experts` means `on`. Auto pages required packs and
-    /// packs that cannot fit in unified memory; smaller Flash packs stay
-    /// resident. `AX_STREAM_EXPERT_LAYERS` (default 1) is the cache budget.
+    /// Bare `--stream-experts` means `on`. Without the flag,
+    /// `AX_STREAM_EXPERTS` applies (as in the Python package and doctor),
+    /// then `auto`. Auto pages required packs and packs that cannot fit in
+    /// unified memory; smaller Flash packs stay resident.
+    /// `AX_STREAM_EXPERT_LAYERS` (default 1) is the cache budget.
     #[arg(
         long = "stream-experts",
         num_args = 0..=1,
-        default_value = "auto",
         default_missing_value = "on",
         value_parser = parse_stream_experts_mode
     )]
-    pub stream_experts: ax_engine_sdk::MlxStreamExpertsMode,
+    pub stream_experts: Option<ax_engine_sdk::MlxStreamExpertsMode>,
 
     /// Opt into fair multi-prefill progress under residual budget (default OFF).
     /// Improves progress fairness among concurrent text prefills; does **not**

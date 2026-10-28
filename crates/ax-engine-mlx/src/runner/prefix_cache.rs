@@ -24,6 +24,7 @@ pub(crate) struct MlxPrefixCacheKey {
 
 #[derive(Clone)]
 pub(crate) struct MlxPrefixSnapshot {
+    pub(crate) dflash2: Option<Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
     pub(crate) kv_cache_payload: Arc<[u8]>,
     pub(crate) tokens: Vec<u32>,
     pub(crate) token_count: usize,
@@ -63,6 +64,7 @@ impl MlxPrefixSnapshot {
         let bytes = snapshot_charge_bytes(payload.len() as u64, tokens.len())
             .saturating_add(mtp_cursor_bytes);
         Self {
+            dflash2: None,
             kv_cache_payload: payload,
             tokens,
             token_count,
@@ -70,6 +72,17 @@ impl MlxPrefixSnapshot {
             greedy_prefill_output_token,
             mtp_cursor_payload,
         }
+    }
+
+    pub(crate) fn with_dflash2(
+        mut self,
+        snapshot: Option<Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
+    ) -> Self {
+        self.bytes = self
+            .bytes
+            .saturating_add(snapshot.as_ref().map_or(0, |s| s.bytes()));
+        self.dflash2 = snapshot;
+        self
     }
 
     pub(crate) fn rehydrate_cache(
@@ -247,6 +260,21 @@ pub(crate) struct MlxPrefixCache {
 }
 
 impl MlxPrefixCache {
+    pub(crate) fn reclaim_unborrowed(&mut self) -> u32 {
+        let before = self.entries.len();
+        let mut reclaimed = 0u64;
+        self.entries.retain(|_, entry| {
+            if Arc::strong_count(&entry.snapshot) != 1 {
+                return true;
+            }
+            reclaimed = reclaimed.saturating_add(entry.snapshot.bytes);
+            false
+        });
+        self.bytes = self.bytes.saturating_sub(reclaimed);
+        self.lru.retain(|(key, _)| self.entries.contains_key(key));
+        saturating_u32(before - self.entries.len())
+    }
+
     pub(crate) fn new(policy: MlxPrefixCachePolicy) -> Self {
         Self {
             policy,
@@ -320,6 +348,7 @@ impl MlxPrefixCache {
         tokens: &[u32],
         prefill_output_token: Option<u32>,
         has_mtp_cursor_payload: bool,
+        dflash2: Option<&dflash2_decode::Dflash2PrefixSnapshot>,
     ) -> bool {
         self.policy.enabled()
             && self.entries.get(key).is_some_and(|entry| {
@@ -327,6 +356,13 @@ impl MlxPrefixCache {
                     && (prefill_output_token.is_none()
                         || entry.snapshot.greedy_prefill_output_token.is_some())
                     && (!has_mtp_cursor_payload || entry.snapshot.mtp_cursor_payload.is_some())
+                    && dflash2.is_none_or(|required| {
+                        entry
+                            .snapshot
+                            .dflash2
+                            .as_ref()
+                            .is_some_and(|stored| stored.same_contract(required))
+                    })
             })
     }
 
@@ -388,6 +424,7 @@ impl MlxPrefixCache {
             &snapshot.tokens,
             snapshot.greedy_prefill_output_token,
             snapshot.mtp_cursor_payload.is_some(),
+            snapshot.dflash2.as_deref(),
         ) {
             return None;
         }
@@ -524,6 +561,28 @@ pub(crate) struct MlxNativePrefixCache {
 }
 
 impl MlxNativePrefixCache {
+    /// Remove cache-owned snapshots only. The caller drops these after
+    /// releasing this mutex because KV retirement locks the shared pool.
+    pub(crate) fn reclaim_unborrowed(&mut self) -> Vec<Arc<MlxNativePrefixSnapshot>> {
+        let keys: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| Arc::strong_count(&entry.snapshot) == 1)
+            .map(|(key, _)| Arc::clone(key))
+            .collect();
+        let mut retired = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.logical_bytes = self
+                    .logical_bytes
+                    .saturating_sub(entry.snapshot.logical_bytes);
+                retired.push(entry.snapshot);
+            }
+        }
+        self.lru.retain(|(key, _)| self.entries.contains_key(key));
+        retired
+    }
+
     pub(crate) fn new(policy: MlxPrefixCachePolicy) -> Self {
         Self {
             policy,

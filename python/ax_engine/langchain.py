@@ -95,6 +95,12 @@ _FORWARDED_REQUEST_KEYS = frozenset(
         "user",
         "metadata",
         "n",
+        # The server applies these (OpenAI penalties, logit_bias, and the
+        # max_completion_tokens alias of max_tokens).
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "max_completion_tokens",
     }
 )
 _SUPPORTED_KWARG_KEYS = sorted(set(_SAMPLING_PARAM_KEYS) | _FORWARDED_REQUEST_KEYS)
@@ -335,6 +341,21 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
     raise RuntimeError("ax-engine stream ended prematurely")
 
 
+def _usage_metadata(usage: Any) -> Any:
+    """OpenAI ``usage`` as LangChain ``usage_metadata`` (callbacks and tracing
+    read token counts there, not from ``llm_output``)."""
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    total = usage.get("total_tokens")
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": int(total) if total is not None else input_tokens + output_tokens,
+    }
+
+
 class AXEngineChatModel(BaseChatModel):
     """
     LangChain ``BaseChatModel`` that calls ax-engine-server ``/v1/chat/completions``.
@@ -463,6 +484,7 @@ class AXEngineChatModel(BaseChatModel):
                     message=AIMessage(
                         content=text,
                         additional_kwargs=_message_additional_kwargs(response_message),
+                        usage_metadata=_usage_metadata(resp.get("usage")),
                     ),
                     generation_info={"finish_reason": choice.get("finish_reason")},
                 )
@@ -488,6 +510,9 @@ class AXEngineChatModel(BaseChatModel):
                     content=text,
                     additional_kwargs=_message_additional_kwargs(delta),
                     tool_call_chunks=_tool_call_chunks(delta),
+                    # The include_usage chunk has no choices; its counts are
+                    # summed into the aggregated message's usage_metadata.
+                    usage_metadata=_usage_metadata(chunk_data.get("usage")),
                 ),
                 generation_info={"finish_reason": choice.get("finish_reason")},
             )

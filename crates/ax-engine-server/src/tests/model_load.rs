@@ -404,3 +404,50 @@ async fn unload_finishes_retirement_after_caller_disconnects() {
     assert!(sibling.is_ready());
     sibling.shutdown().await.expect("fixture shutdown");
 }
+
+#[tokio::test]
+async fn background_eviction_never_retires_the_current_default_model() {
+    use crate::model_load::{UnloadWaitPolicy, perform_unload};
+    let state = llama_cpp_state();
+    let extra = crate::app_state::build_live_state(
+        "extra".to_string(),
+        state.snapshot().session_config.as_ref().clone(),
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("fixture model builds");
+    // The evictor's candidate became the default after its sweep snapshot.
+    state.publish_live(extra, true);
+    assert_eq!(state.snapshot().model_id.as_ref(), "extra");
+    let result = perform_unload(&state, "extra".to_string(), UnloadWaitPolicy::AbortIfBusy).await;
+    assert!(result.is_err(), "eviction of the default must be refused");
+    assert!(state.snapshot_for_model(Some("extra")).is_some());
+    // An operator unload of the same model still works.
+    perform_unload(&state, "extra".to_string(), UnloadWaitPolicy::WaitForIdle)
+        .await
+        .expect("operator unload succeeds");
+    for live in state.snapshots() {
+        live.generation_service
+            .shutdown()
+            .await
+            .expect("fixture shutdown");
+    }
+}
+
+#[tokio::test]
+async fn resolving_a_model_for_a_request_counts_as_activity() {
+    use std::sync::atomic::Ordering;
+    let state = llama_cpp_state();
+    let live = state.snapshot();
+    // Idle for a long time, as the evictor would see it.
+    live.last_used.store(0, Ordering::Relaxed);
+    let resolved =
+        crate::openai::validation::select_model(&state, None).expect("default model resolves");
+    assert!(
+        resolved.last_used.load(Ordering::Relaxed) > 0,
+        "a request still preparing (media, prompt render) must not look idle"
+    );
+    live.generation_service
+        .shutdown()
+        .await
+        .expect("fixture shutdown");
+}

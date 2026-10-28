@@ -2318,6 +2318,142 @@ fn cumsum_inclusive_and_exclusive() {
 }
 
 #[test]
+fn cumsum_sliced_columns_preserves_storage_and_scan_modes() {
+    let _guard = lock_process_global();
+    for (rows, cols, start) in [(1, 191, 173), (5, 71, 57), (3, 43, 39), (1, 4097, 4081)] {
+        let data: Vec<f32> = (0..rows * cols).map(|i| (i % 23) as f32 - 11.0).collect();
+        let base = reshape(&MlxArray::from_f32_slice(&data), &[rows, cols], None);
+        let sentinels: Vec<_> = (0..16)
+            .map(|i| MlxArray::from_f32_slice(&[i as f32 + 0.25; 29]))
+            .collect();
+        let mut live = vec![&base];
+        live.extend(sentinels.iter());
+        eval(&live);
+        for (i, sentinel) in sentinels.iter().enumerate() {
+            assert_eq!(sentinel.data_f32(), &[i as f32 + 0.25; 29], "before scan");
+        }
+        let view = slice(&base, &[0, start], &[rows, cols], &[1, 1], None);
+        for reverse in [false, true] {
+            for inclusive in [false, true] {
+                let result = cumsum(&view, 0, reverse, inclusive, None);
+                eval(&[&result]);
+                let mut expected: Vec<f32> = Vec::new();
+                for row in 0..rows {
+                    for col in start..cols {
+                        let indices = (0..rows).filter(|&r| {
+                            if reverse {
+                                r > row || (inclusive && r == row)
+                            } else {
+                                r < row || (inclusive && r == row)
+                            }
+                        });
+                        expected.push(indices.map(|r| data[(r * cols + col) as usize]).sum());
+                    }
+                }
+                assert_eq!(
+                    result.data_f32(),
+                    expected,
+                    "{rows}x{cols}, {reverse}, {inclusive}"
+                );
+                assert_eq!(base.data_f32(), data);
+                for (i, sentinel) in sentinels.iter().enumerate() {
+                    assert_eq!(
+                        sentinel.data_f32(),
+                        &[i as f32 + 0.25; 29],
+                        "canary {i}, {rows}x{cols}, {reverse}, {inclusive}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cumsum_singleton_preserves_dtype_promotion_and_empty_shapes() {
+    let _guard = lock_process_global();
+    for dtype in [MlxDtype::Bool, MlxDtype::Int8, MlxDtype::Float32] {
+        let source = astype(
+            &reshape(&MlxArray::from_f32_slice(&[1.0, 0.0, 1.0]), &[1, 3], None),
+            dtype,
+            None,
+        );
+        for reverse in [false, true] {
+            for inclusive in [false, true] {
+                let out = cumsum(&source, -2, reverse, inclusive, None);
+                assert_eq!(
+                    out.dtype(),
+                    if dtype == MlxDtype::Bool {
+                        MlxDtype::Int32
+                    } else {
+                        dtype
+                    }
+                );
+                let values = astype(&out, MlxDtype::Float32, None);
+                eval(&[&values]);
+                assert_eq!(
+                    values.data_f32(),
+                    if inclusive {
+                        &[1.0, 0.0, 1.0]
+                    } else {
+                        &[0.0; 3]
+                    }
+                );
+            }
+        }
+    }
+    for axis in [0, 1] {
+        let empty = zeros(&[0, 1], MlxDtype::Float32, None);
+        let out = cumsum(&empty, axis, false, false, None);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![0, 1]);
+    }
+}
+
+#[test]
+fn cumsum_transposed_negative_axes_preserves_scan_semantics() {
+    let _guard = lock_process_global();
+    let source: Vec<f32> = (0..24).map(|i| i as f32 - 12.0).collect();
+    let base = reshape(&MlxArray::from_f32_slice(&source), &[2, 3, 4], None);
+    let view = transpose(&base, &[2, 0, 1], None);
+    let shape = [4usize, 2, 3];
+    let at = |index: [usize; 3]| source[(index[1] * 3 + index[2]) * 4 + index[0]];
+    for axis in 0..3 {
+        for reverse in [false, true] {
+            for inclusive in [false, true] {
+                let mut expected = Vec::new();
+                for x in 0..4 {
+                    for y in 0..2 {
+                        for z in 0..3 {
+                            let index = [x, y, z];
+                            let total = (0..shape[axis])
+                                .filter(|&i| {
+                                    (inclusive && i == index[axis])
+                                        || if reverse {
+                                            i > index[axis]
+                                        } else {
+                                            i < index[axis]
+                                        }
+                                })
+                                .map(|i| {
+                                    let mut selected = index;
+                                    selected[axis] = i;
+                                    at(selected)
+                                })
+                                .sum::<f32>();
+                            expected.push(total);
+                        }
+                    }
+                }
+                let result = cumsum(&view, axis as i32 - 3, reverse, inclusive, None);
+                eval(&[&result]);
+                assert_eq!(result.data_f32(), expected);
+                assert_eq!(base.data_f32(), source);
+            }
+        }
+    }
+}
+
+#[test]
 fn softmax_sums_to_one() {
     let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
     let s = softmax(&a, 0, None);

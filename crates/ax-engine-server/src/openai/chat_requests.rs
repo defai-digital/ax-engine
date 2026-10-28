@@ -624,16 +624,16 @@ fn render_ministral_openai_chat_prompt(
                 if index + 1 == messages.len()
                     && let Some(system_text) = system.take()
                 {
-                    prompt.push_str(&system_text);
+                    prompt.push_str(&chat::escape_ministral_content(&system_text));
                     prompt.push_str("\n\n");
                 }
-                prompt.push_str(&content);
+                prompt.push_str(&chat::escape_ministral_content(&content));
                 prompt.push_str("[/INST]");
             }
             "assistant" => {
                 let content = render_openai_chat_content(message.content.as_ref())?;
                 // Hub: message["content"] + eos_token (no inserted whitespace).
-                prompt.push_str(&content);
+                prompt.push_str(&chat::escape_ministral_content(&content));
                 prompt.push_str("</s>");
             }
             "tool" | "function" => {
@@ -652,7 +652,7 @@ fn render_ministral_openai_chat_prompt(
                         )
                     })?;
                 prompt.push_str("[TOOL_RESULTS]{\"content\": ");
-                prompt.push_str(&content);
+                prompt.push_str(&chat::escape_ministral_content(&content));
                 prompt.push_str(", \"call_id\": \"");
                 prompt.push_str(&call_id);
                 prompt.push_str("\"}[/TOOL_RESULTS]");
@@ -754,7 +754,7 @@ fn render_llama_family_tools_prompt(
         if tools.is_some() && environment_ipython {
             prompt.push_str("Environment: ipython\n");
         }
-        prompt.push_str(system_text.trim());
+        prompt.push_str(&chat::escape_llama_content(system_text.trim()));
         prompt.push_str(eot);
     } else if tools.is_some() && environment_ipython {
         // Llama 3 always emits a system block with Environment: ipython when tools are set.
@@ -781,6 +781,8 @@ fn render_llama_family_tools_prompt(
             prompt.push_str("ipython");
             prompt.push_str(header_close);
             // Jinja `content | tojson` for strings yields a quoted JSON string.
+            // JSON encoding leaves `<|eot_id|>` intact; escape turn tokens first.
+            let content = chat::escape_llama_content(&content);
             prompt.push_str(&serde_json::to_string(&content).unwrap_or_else(|_| {
                 format!("\"{}\"", content.replace('\\', "\\\\").replace('"', "\\\""))
             }));
@@ -807,7 +809,7 @@ fn render_llama_family_tools_prompt(
                 // <|python_start|>{content}<|python_end|>{"name":…,"parameters":…}<|eot|>
                 prompt.push_str("<|python_start|>");
                 if !content.trim().is_empty() {
-                    prompt.push_str(&content);
+                    prompt.push_str(&chat::escape_llama_content(&content));
                 }
                 prompt.push_str("<|python_end|>");
             }
@@ -836,7 +838,7 @@ fn render_llama_family_tools_prompt(
                     prompt.push_str("\n\n");
                 }
             }
-            prompt.push_str(content.trim());
+            prompt.push_str(&chat::escape_llama_content(content.trim()));
             prompt.push_str(eot);
             injected_tools = true;
             index += 1;
@@ -854,7 +856,7 @@ fn render_llama_family_tools_prompt(
         prompt.push_str(header_role);
         prompt.push_str(header_close);
         if !content.trim().is_empty() {
-            prompt.push_str(content.trim());
+            prompt.push_str(&chat::escape_llama_content(content.trim()));
         }
         prompt.push_str(eot);
         index += 1;
@@ -1470,7 +1472,7 @@ fn render_gemma4_openai_chat_prompt(
         }
         if matches!(first_role, "system" | "developer") {
             let content = render_openai_chat_content(messages[0].content.as_ref())?;
-            prompt.push_str(content.trim());
+            prompt.push_str(&chat::escape_gemma4_content(content.trim()));
             index = 1;
         }
         if has_tools && let Some(tools) = tools {
@@ -1488,9 +1490,6 @@ fn render_gemma4_openai_chat_prompt(
     // (tool-call → tool-response → answer).
     let mut prev_message_type: Option<Gemma4PrevMessageType> = None;
     let mut prev_non_tool_role: Option<&'static str> = None;
-    // Whether the immediately preceding assistant message contributed text
-    // content; used to separate consecutive model turns without tool traffic.
-    let mut prev_assistant_had_content = false;
 
     while index < messages.len() {
         let message = &messages[index];
@@ -1516,22 +1515,6 @@ fn render_gemma4_openai_chat_prompt(
         let mut rendered_tool_call = false;
         let mut tool_response_count = 0usize;
         let mut next_index = index + 1;
-
-        // Assistant text renders before its tool_calls and before the tool
-        // responses that follow them (official template order: content first).
-        let content = render_openai_chat_content(message.content.as_ref())?;
-        let content_for_prompt = if role == "assistant" {
-            chat::strip_gemma4_thinking_from_history(&content)
-        } else {
-            content.trim().to_string()
-        };
-        let has_content = !content_for_prompt.is_empty();
-        if has_content {
-            if continue_same_model_turn && prev_assistant_had_content {
-                prompt.push('\n');
-            }
-            prompt.push_str(&content_for_prompt);
-        }
 
         if role == "assistant" {
             let mut tool_names_by_id = BTreeMap::new();
@@ -1568,6 +1551,19 @@ fn render_gemma4_openai_chat_prompt(
             }
         }
 
+        // Official template order: tool calls, then the tool responses that
+        // follow them, then the message text. Consecutive assistant messages
+        // in one model turn are joined with no separator.
+        let content = render_openai_chat_content(message.content.as_ref())?;
+        // Escape turn and tool tokens so message text cannot forge a turn.
+        let content_for_prompt = chat::escape_gemma4_content(&if role == "assistant" {
+            chat::strip_gemma4_thinking_from_history(&content)
+        } else {
+            content.trim().to_string()
+        });
+        let has_content = !content_for_prompt.is_empty();
+        prompt.push_str(&content_for_prompt);
+
         let next_non_tool_role = next_non_tool_role(messages, next_index);
         // Keep the model turn open when another assistant message follows
         // (agent loop: call → response → final answer in one turn).
@@ -1588,7 +1584,6 @@ fn render_gemma4_openai_chat_prompt(
         }
 
         prev_non_tool_role = Some(role);
-        prev_assistant_had_content = role == "assistant" && has_content;
         index = next_index;
     }
 
@@ -1680,7 +1675,12 @@ fn render_following_gemma4_tool_responses(
         prompt.push_str("<|tool_response>response:");
         prompt.push_str(tool_name);
         prompt.push_str("{value:");
-        prompt.push_str(&format_gemma4_argument(&Value::String(content), false));
+        // Tool output is often untrusted; it must not close the quote or the
+        // response and forge a turn.
+        prompt.push_str(&format_gemma4_argument(
+            &Value::String(chat::escape_gemma4_content(&content)),
+            false,
+        ));
         prompt.push_str("}<tool_response|>");
         count += 1;
         index += 1;
@@ -2123,8 +2123,9 @@ impl QwenToolContractStyle {
 
 fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
     let normalized = chat::normalize_model_id_token(model_id);
-    if chat::uses_qwen_coder_xml_tool_contract(model_id) {
+    if chat::uses_qwen_coder_xml_tool_contract(model_id) || chat::is_nemotron_chat_model(model_id) {
         // Coder-Next: XML tool *declarations* + function= call format.
+        // Nemotron 3 hub templates carry the same tool block verbatim.
         QwenToolContractStyle::CoderXml
     } else if normalized.contains("qwen3-next")
         || normalized.contains("qwen3-5")
@@ -2895,7 +2896,33 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
                 )
                 .map_err(media_error_response)?;
                 let (patches, geom, grid_t) = patchify_qwen3_vl_video(&frames, &processor)?;
-                (patches, geom, grid_t, true)
+                // HF Qwen3-VL / Qwen3.5 lay a video out per temporal group:
+                // `<t seconds><|vision_start|>` + pads + `<|vision_end|>`, with
+                // the grid split so each group positions like a t=1 image.
+                // A single span with t advancing inside it shifted every
+                // later position and dropped the timestamps.
+                if let Some(next_cursor) = expand_qwen3_vl_video_per_frame(
+                    &tokenizer,
+                    &base_tokens,
+                    start,
+                    placeholder_len,
+                    pad_id,
+                    &frames,
+                    patches,
+                    &geom,
+                    grid_t,
+                    &mut expanded,
+                    &mut media_rt,
+                )? {
+                    cursor = next_cursor;
+                    continue;
+                }
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "qwen3_vl video placeholder must be wrapped in <|vision_start|>…<|vision_end|>"
+                        .to_string(),
+                ));
             }
         };
         let soft = geom.soft_token_count;
@@ -3506,6 +3533,19 @@ fn nemotron_omni_per_image_patch_budget(
     // request was then rejected by the context gate only after every image had
     // been decoded and normalized.
     let image_count = image_count.max(1);
+    // The minimum patch floor applies per image, so the floors alone can exceed
+    // the pool. Reject such a request before any image is decoded.
+    let min_tokens_per_image = config.min_num_patches.div_ceil(factor_sq.max(1));
+    if u64::from(min_tokens_per_image) * u64::from(image_count) > u64::from(tokens_available) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            format!(
+                "{image_count} Nemotron H Nano Omni images need at least \
+                 {min_tokens_per_image} tokens each, more than the {tokens_available}-token context"
+            ),
+        ));
+    }
     let budget = (tokens_available / image_count).saturating_mul(factor_sq);
     Ok(budget
         .max(config.min_num_patches)
@@ -3530,8 +3570,7 @@ fn probe_and_decode_rgb(bytes: &[u8], label: &str) -> Result<image::RgbImage, Ht
         limits.max_image_height = Some(8192);
         limits
     });
-    let rgb = reader
-        .decode()
+    let rgb = crate::multimodal::decode_with_orientation(reader)
         .map_err(|error| {
             error_response(
                 StatusCode::BAD_REQUEST,
@@ -3604,8 +3643,10 @@ fn nemotron_omni_target_patches(
             "Nemotron H Nano Omni image geometry must be positive".to_string(),
         ));
     }
-    let closest_h = (height as f64 / patch_size as f64 + 0.5).round() as u32;
-    let closest_w = (width as f64 / patch_size as f64 + 0.5).round() as u32;
+    // Reference `round(h / patch + 0.5)` is Python round (ties to even): a
+    // 512-pixel side at patch 16 is 32 patches, not 33.
+    let closest_h = (height as f64 / patch_size as f64 + 0.5).round_ties_even() as u32;
+    let closest_w = (width as f64 / patch_size as f64 + 0.5).round_ties_even() as u32;
     let patches = closest_h.saturating_mul(closest_w).max(1);
     let factor = (patch_budget as f64 / patches as f64).sqrt().min(1.0);
     let mut target_h = (factor * closest_h as f64).floor().max(1.0) as u32;
@@ -3848,14 +3889,13 @@ fn minicpm_v46_best_resize(
             "MiniCPM-V 4.6 image dimensions must be positive".to_string(),
         ));
     }
-    let max_area = u64::from(config.scale_resolution).pow(2);
-    let mut resized_w = width;
-    let mut resized_h = height;
-    if u64::from(width).saturating_mul(u64::from(height)) > max_area {
-        let ratio = width as f64 / height as f64;
-        resized_h = (config.scale_resolution as f64 / ratio.sqrt()).round() as u32;
-        resized_w = (resized_h as f64 * ratio).round() as u32;
-    }
+    // HF `find_best_resize(..., allow_upscale=(best_grid is None))`: AX
+    // serves only the source image (no slices), so it is always scaled to
+    // the `scale_resolution`² area, small images included, with `int()`
+    // truncation as in the processor.
+    let ratio = width as f64 / height as f64;
+    let resized_h = (config.scale_resolution as f64 / ratio.sqrt()) as u32;
+    let resized_w = (resized_h as f64 * ratio) as u32;
     let unit = config
         .patch_size
         .checked_mul(config.spatial_downsample_factor)
@@ -3866,8 +3906,10 @@ fn minicpm_v46_best_resize(
                 "MiniCPM-V 4.6 resize unit overflowed".to_string(),
             )
         })?;
+    // HF `ensure_divide`: max(round(length / unit) * unit, unit), Python
+    // round (ties to even).
     let ensure_divide =
-        |length: u32| ((length.max(config.patch_size) + unit / 2) / unit).max(1) * unit;
+        |length: u32| ((length as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
     Ok((ensure_divide(resized_w), ensure_divide(resized_h)))
 }
 
@@ -4086,8 +4128,9 @@ fn patchify_qwen3_vl_image(
     }
     // Hugging Face `smart_resize` uses Python `round` (ties to even): a
     // 336-pixel edge at a 32-pixel unit becomes 320, not 352.
-    let round_to_factor =
-        |value: u32| ((value as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
+    // No floor at one unit: HF lets a thin side round to 0, which sends the
+    // image into the min_pixels upscale branch below.
+    let round_to_factor = |value: u32| (value as f64 / unit as f64).round_ties_even() as u32 * unit;
     let mut th = round_to_factor(oh);
     let mut tw = round_to_factor(ow);
     let pixels = u64::from(th).saturating_mul(u64::from(tw));
@@ -4100,6 +4143,8 @@ fn patchify_qwen3_vl_image(
         th = ((oh as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
         tw = ((ow as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
     }
+    th = th.max(unit);
+    tw = tw.max(unit);
     let resized = if tw == ow && th == oh {
         rgb
     } else {
@@ -4167,6 +4212,77 @@ fn patchify_qwen3_vl_image(
 /// Patchify sampled video frames into Qwen's Conv3D `C,T,H,W` rows. Frames
 /// are paired along the temporal patch axis and the final frame is repeated
 /// when the sample count is odd, matching the still-image duplication rule.
+/// Expand one video placeholder into HF's per-temporal-group layout. The
+/// rendered markup is `<|vision_start|><|video_pad|><|vision_end|>`; each
+/// group becomes `<{t:.1} seconds><|vision_start|>` + `frame_seqlen` pads +
+/// `<|vision_end|>`, and its patches become a t=1 runtime input. Returns the
+/// base-token cursor after the closing `<|vision_end|>`, or `None` when the
+/// placeholder is not wrapped in the vision markers.
+#[allow(clippy::too_many_arguments)]
+fn expand_qwen3_vl_video_per_frame(
+    tokenizer: &EngineTokenizer,
+    base_tokens: &[u32],
+    start: usize,
+    placeholder_len: usize,
+    pad_id: u32,
+    frames: &[VideoFrame],
+    patches: Qwen3VlPatches,
+    geom: &Qwen3VlGeom,
+    grid_t: u32,
+    expanded: &mut Vec<u32>,
+    media_rt: &mut Vec<Qwen3VlImageRuntimeInput>,
+) -> Result<Option<usize>, HttpErrorResponse> {
+    let encode = |text: &str| {
+        tokenizer.encode(text, false).map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("failed to tokenize qwen3_vl video markup: {error}"),
+            )
+        })
+    };
+    let vision_start = encode("<|vision_start|>")?;
+    let vision_end = encode("<|vision_end|>")?;
+    let end = start + placeholder_len;
+    if !expanded.ends_with(&vision_start) || !base_tokens[end..].starts_with(&vision_end) {
+        return Ok(None);
+    }
+    expanded.truncate(expanded.len() - vision_start.len());
+    let groups = grid_t.max(1) as usize;
+    let frame_seqlen = geom.soft_token_count / grid_t.max(1);
+    let patches_per_group = patches.num_patches / grid_t.max(1);
+    let floats_per_group = patches_per_group as usize * patches.patch_dim as usize;
+    let temporal = geom.temporal_patch_size.max(1) as usize;
+    for group in 0..groups {
+        // HF `_calculate_timestamps`: the mean of the group's first and last
+        // frame times, padding with the last frame.
+        let first = (group * temporal).min(frames.len().saturating_sub(1));
+        let last = (group * temporal + temporal - 1).min(frames.len().saturating_sub(1));
+        let seconds = (frames[first].timestamp_seconds + frames[last].timestamp_seconds) / 2.0;
+        expanded.extend(encode(&format!("<{seconds:.1} seconds>"))?);
+        expanded.extend_from_slice(&vision_start);
+        let placeholder_index = expanded.len();
+        expanded.extend(std::iter::repeat_n(pad_id, frame_seqlen as usize));
+        expanded.extend_from_slice(&vision_end);
+        let offset = group * floats_per_group;
+        media_rt.push(Qwen3VlImageRuntimeInput {
+            placeholder_index,
+            soft_token_count: frame_seqlen,
+            patches: patches.patches[offset..offset + floats_per_group].to_vec(),
+            num_patches: patches_per_group,
+            patch_dim: patches.patch_dim,
+            grid_t: 1,
+            height: geom.height,
+            width: geom.width,
+            patch_size: geom.patch_size,
+            temporal_patch_size: geom.temporal_patch_size,
+            spatial_merge_size: geom.spatial_merge_size,
+            is_video: true,
+        });
+    }
+    Ok(Some(end + vision_end.len()))
+}
+
 fn patchify_qwen3_vl_video(
     frames: &[VideoFrame],
     config: &Qwen3VlProcessorConfig,
@@ -4213,8 +4329,9 @@ fn patchify_qwen3_vl_video(
     }
     // Hugging Face `smart_resize` uses Python `round` (ties to even): a
     // 336-pixel edge at a 32-pixel unit becomes 320, not 352.
-    let round_to_factor =
-        |value: u32| ((value as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
+    // No floor at one unit: HF lets a thin side round to 0, which sends the
+    // image into the min_pixels upscale branch below.
+    let round_to_factor = |value: u32| (value as f64 / unit as f64).round_ties_even() as u32 * unit;
     let mut th = round_to_factor(oh);
     let mut tw = round_to_factor(ow);
     let pixels = u64::from(th).saturating_mul(u64::from(tw));
@@ -4227,6 +4344,8 @@ fn patchify_qwen3_vl_video(
         th = ((oh as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
         tw = ((ow as f64 * beta / unit as f64).ceil() as u32).max(1) * unit;
     }
+    th = th.max(unit);
+    tw = tw.max(unit);
 
     let resized: Vec<image::RgbImage> = frames
         .iter()
@@ -4859,6 +4978,16 @@ mod media_tests {
         // A zero-image call must not divide by zero (the caller may render an
         // audio-only prompt through the same path).
         assert!(nemotron_omni_per_image_patch_budget(&config, 0).is_ok());
+        // The per-image minimum (1024 patches = 256 tokens) caps the count:
+        // 16380 / 256 = 63 images fit, 64 must fail before decoding.
+        assert!(nemotron_omni_per_image_patch_budget(&config, 63).is_ok());
+        let (status, body) = nemotron_omni_per_image_patch_budget(&config, 64)
+            .expect_err("per-image floors exceed the context");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body.0.error.code.as_deref(),
+            Some("context_length_exceeded")
+        );
     }
 
     fn processor_config() -> Gemma4UnifiedProcessorConfig {
@@ -5044,9 +5173,19 @@ mod media_tests {
             minicpm_v46_best_resize(500, 1000, &config).expect("portrait"),
             (336, 616)
         );
+        // AX serves the unsliced source image, so HF's allow_upscale applies:
+        // small images scale up to the scale_resolution area too.
         assert_eq!(
             minicpm_v46_best_resize(1, 1, &config).expect("minimum"),
-            (56, 56)
+            (448, 448)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(224, 224, &config).expect("small square"),
+            (448, 448)
+        );
+        assert_eq!(
+            minicpm_v46_best_resize(400, 300, &config).expect("small landscape"),
+            (504, 392)
         );
     }
 
@@ -5065,6 +5204,136 @@ mod media_tests {
         let needle = [9u32, 9];
         assert_eq!(find_subsequence_starts(&hay, &needle), vec![2, 5]);
         assert!(find_subsequence_starts(&hay, &[7]).is_empty());
+    }
+
+    #[test]
+    fn qwen_video_expands_into_hf_per_frame_segments() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-engine-qwen-video-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":1}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0", "truncation": null, "padding": null,
+  "added_tokens": [
+    {"id": 10, "content": "<|vision_start|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 11, "content": "<|vision_end|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 12, "content": "<|video_pad|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null,
+  "decoder": null,
+  "model": {"type": "WordLevel", "vocab": {"[UNK]": 0, "<eos>": 1, "hi": 2,
+    "<|vision_start|>": 10, "<|vision_end|>": 11, "<|video_pad|>": 12}, "unk_token": "[UNK]"}
+}"#,
+        )
+        .expect("tokenizer");
+        let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer loads");
+        // Four frames at 0.0/0.5/1.0/1.5 s, temporal patch 2: two groups at
+        // 0.25 s and 1.25 s, each 2 merged tokens.
+        let frames: Vec<VideoFrame> = (0..4)
+            .map(|index| VideoFrame {
+                image: image::RgbImage::new(1, 1),
+                timestamp_seconds: index as f32 * 0.5,
+            })
+            .collect();
+        let geom = Qwen3VlGeom {
+            height: 32,
+            width: 64,
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            soft_token_count: 4,
+        };
+        let patches = Qwen3VlPatches {
+            patches: (0..16).map(|value| value as f32).collect(),
+            num_patches: 16,
+            patch_dim: 1,
+        };
+        let base = vec![2, 10, 12, 11, 2];
+        let mut expanded = base[..2].to_vec();
+        let mut media = Vec::new();
+        let cursor = expand_qwen3_vl_video_per_frame(
+            &tokenizer,
+            &base,
+            2,
+            1,
+            12,
+            &frames,
+            patches,
+            &geom,
+            2,
+            &mut expanded,
+            &mut media,
+        )
+        .expect("expand")
+        .expect("wrapped placeholder");
+        assert_eq!(cursor, 4);
+        assert_eq!(media.len(), 2);
+        assert!(
+            media
+                .iter()
+                .all(|item| item.grid_t == 1 && item.soft_token_count == 2)
+        );
+        assert_eq!(
+            media[1].patches,
+            (8..16).map(|value| value as f32).collect::<Vec<_>>()
+        );
+        // Each group: timestamp text, vision_start, 2 pads, vision_end.
+        assert_eq!(expanded.iter().filter(|token| **token == 10).count(), 2);
+        assert_eq!(expanded.iter().filter(|token| **token == 11).count(), 2);
+        assert_eq!(expanded.iter().filter(|token| **token == 12).count(), 4);
+        assert_eq!(expanded[media[0].placeholder_index - 1], 10);
+        assert_eq!(expanded.last(), Some(&11));
+        let first_segment = tokenizer
+            .decode(&expanded[1..media[0].placeholder_index - 1], false)
+            .expect("decode");
+        assert!(
+            first_segment.contains("0.2") || first_segment.contains("[UNK]"),
+            "{first_segment}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen_smart_resize_lets_a_thin_side_reach_the_min_pixels_branch() {
+        // HF smart_resize: a 15-pixel side rounds to 0 at factor 32, which
+        // forces the min_pixels upscale (32x3648); flooring it at one unit
+        // kept 32x3008 and skipped the upscale.
+        let png = {
+            use image::{ImageBuffer, ImageEncoder, Rgb};
+            let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+                ImageBuffer::from_pixel(3000, 15, Rgb([10, 20, 30]));
+            let mut buf = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut buf)
+                .write_image(img.as_raw(), 3000, 15, image::ExtendedColorType::Rgb8)
+                .expect("encode png");
+            buf
+        };
+        let processor = Qwen3VlProcessorConfig {
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            min_pixels: 65_536,
+            max_pixels: 16_777_216,
+            mean: [0.5; 3],
+            std: [0.5; 3],
+        };
+        let (_patches, geom) = patchify_qwen3_vl_image(&png, &processor).expect("patchify");
+        assert_eq!((geom.height, geom.width), (32, 3648));
+    }
+
+    #[test]
+    fn nemotron_patch_grid_rounds_ties_to_even() {
+        // Reference `round(512 / 16 + 0.5)` is 32 under Python round.
+        let (patch_w, patch_h) =
+            nemotron_omni_target_patches(512, 512, 4096, 16, 1, 1).expect("geometry");
+        assert_eq!((patch_w, patch_h), (32, 32));
     }
 
     #[test]

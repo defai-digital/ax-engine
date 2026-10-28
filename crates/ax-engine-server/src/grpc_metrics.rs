@@ -68,18 +68,82 @@ where
         Box::pin(async move {
             let guard = InFlightGrpcRequestGuard::new(metrics);
             let response = inner.call(request).await?;
-            // `grpc-status` lives in HTTP/2 trailers for successful unary
-            // and all streaming responses, which this tower layer cannot
-            // see — those are absent here and counted as "ok" by
-            // `ServerMetrics::finish_grpc_request`'s documented default.
-            let status = response
+            // A trailers-only error carries `grpc-status` in the headers;
+            // otherwise it arrives in the trailers at the end of the body.
+            let header_status = response
                 .headers()
                 .get("grpc-status")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string);
-            guard.finish(status.as_deref());
-            Ok(response)
+            // Hold the in-flight gauge until the body ends, as HTTP does:
+            // a server-streaming RPC is in flight for its whole stream, not
+            // only until the response headers go out.
+            Ok(response.map(|body| {
+                tonic::body::boxed(GuardedGrpcBody {
+                    inner: body,
+                    guard: Some(guard),
+                    status: header_status,
+                })
+            }))
         })
+    }
+}
+
+/// Response body that finishes the in-flight guard when the stream ends,
+/// with the `grpc-status` read from the trailers (or the headers).
+struct GuardedGrpcBody {
+    inner: BoxBody,
+    guard: Option<InFlightGrpcRequestGuard>,
+    status: Option<String>,
+}
+
+impl http_body::Body for GuardedGrpcBody {
+    type Data = axum::body::Bytes;
+    type Error = tonic::Status;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.inner).poll_frame(cx);
+        match &polled {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(status) = frame
+                    .trailers_ref()
+                    .and_then(|trailers| trailers.get("grpc-status"))
+                    .and_then(|value| value.to_str().ok())
+                {
+                    this.status = Some(status.to_string());
+                }
+            }
+            Poll::Ready(None) => {
+                if let Some(guard) = this.guard.take() {
+                    guard.finish(this.status.as_deref());
+                }
+            }
+            _ => {}
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl Drop for GuardedGrpcBody {
+    fn drop(&mut self) {
+        // Body dropped before its end (client went away, or never polled):
+        // the call is over; count it with the status known so far, as the
+        // HTTP layer does for its bodies.
+        if let Some(guard) = self.guard.take() {
+            guard.finish(self.status.as_deref());
+        }
     }
 }
 
@@ -177,6 +241,62 @@ mod tests {
 
         assert_eq!(metrics.grpc_status_ok_total.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.grpc_status_error_total.load(Ordering::Relaxed), 1);
+    }
+
+    /// Frames served in reverse `Vec` order (popped from the end).
+    struct Frames(Vec<http_body::Frame<axum::body::Bytes>>);
+
+    impl http_body::Body for Frames {
+        type Data = axum::body::Bytes;
+        type Error = tonic::Status;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            Poll::Ready(self.get_mut().0.pop().map(Ok))
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_body_stays_in_flight_until_it_ends_and_reads_trailer_status() {
+        #[derive(Clone)]
+        struct TrailerStatus;
+
+        impl Service<http::Request<BoxBody>> for TrailerStatus {
+            type Response = http::Response<BoxBody>;
+            type Error = std::convert::Infallible;
+            type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+            fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn call(&mut self, _request: http::Request<BoxBody>) -> Self::Future {
+                let mut trailers = http::HeaderMap::new();
+                trailers.insert("grpc-status", "13".parse().expect("valid header value"));
+                let body = Frames(vec![
+                    http_body::Frame::trailers(trailers),
+                    http_body::Frame::data(axum::body::Bytes::from_static(b"chunk")),
+                ]);
+                std::future::ready(Ok(http::Response::new(tonic::body::boxed(body))))
+            }
+        }
+
+        let metrics = Arc::new(ServerMetrics::default());
+        let layer = GrpcMetricsLayer::new(Arc::clone(&metrics));
+        let mut service = layer.layer(TrailerStatus);
+        let response = service.call(request()).await.expect("infallible");
+        // Headers are out, the stream is not: still in flight.
+        assert_eq!(metrics.grpc_requests_in_flight.load(Ordering::Relaxed), 1);
+        let body = axum::body::Body::new(response.into_body());
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .expect("body collects");
+        assert_eq!(&bytes[..], b"chunk");
+        assert_eq!(metrics.grpc_requests_in_flight.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.grpc_status_error_total.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.grpc_status_ok_total.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

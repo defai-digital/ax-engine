@@ -579,7 +579,26 @@ extern "C" int mlx_take_along_axis(mlx_array* r, const mlx_array a, const mlx_ar
 extern "C" int mlx_put_along_axis(mlx_array* r, const mlx_array a, const mlx_array idx, const mlx_array v, int ax, const mlx_stream s) {
   AX_TRY { aset(r, mx::put_along_axis(aref(a), aref(idx), aref(v), ax, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_cumsum(mlx_array* r, const mlx_array a, int ax, bool rev, bool inc, const mlx_stream s) {
-  AX_TRY { aset(r, mx::cumsum(aref(a), ax, rev, inc, sd(s))); return 0; } AX_CATCH }
+  AX_TRY {
+    // MLX 0.32.4's strided scan can overwrite the source allocation for a
+    // sliced column view, including a singleton scan axis. Scan the final
+    // contiguous axis instead; contiguous storage alone still permits a
+    // strided scan for earlier axes. Restore the original axis order.
+    const auto moved = mx::moveaxis(aref(a), ax, -1, sd(s));
+    // Singleton strides can survive contiguous/copy as views. No scan is
+    // needed: inclusive is identity and exclusive is zero. Match cumsum's
+    // bool-to-int32 promotion without entering the affected GPU kernel.
+    if (moved.shape().back() == 1) {
+      const auto dtype = aref(a).dtype() == mx::bool_ ? mx::int32 : aref(a).dtype();
+      aset(r, inc ? mx::contiguous(mx::astype(aref(a), dtype, sd(s)), false, sd(s))
+                  : mx::zeros(aref(a).shape(), dtype, sd(s)));
+      return 0;
+    }
+    const auto input = mx::contiguous(moved, false, sd(s));
+    const auto scanned = mx::cumsum(input, -1, rev, inc, sd(s));
+    aset(r, mx::contiguous(mx::moveaxis(scanned, -1, ax, sd(s)), false, sd(s)));
+    return 0;
+  } AX_CATCH }
 extern "C" int mlx_softmax_axis(mlx_array* r, const mlx_array a, int ax, bool precise, const mlx_stream s) {
   AX_TRY { aset(r, mx::softmax(aref(a), ax, precise, sd(s))); return 0; } AX_CATCH }
 

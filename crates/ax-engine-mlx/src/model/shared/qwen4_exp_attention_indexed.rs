@@ -216,6 +216,9 @@ fn launch_indexed(
 ) -> Result<Option<MlxArray>> {
     // Every caller derives `width` from `indices`; catch future drift.
     debug_assert_eq!(indices.shape().last().copied(), Some(width));
+    if !indexed_offsets_fit(seq, total_rows, width, q_heads, kv_heads, head_dim) {
+        return Ok(None);
+    }
     let q_rows = contiguous(&transpose(queries, &[2, 1, 0, 3], None), None);
     let scale = MlxArray::from_raw_data(
         (&scale as *const f32).cast(),
@@ -385,6 +388,29 @@ pub(crate) fn warm_indexed_prefill_kernel(
     .ok_or_else(|| "indexed QSA prefill warm-up declined the probe launch".to_string())?;
     mlx_sys::try_eval(&[&out])
         .map_err(|error| format!("indexed QSA prefill warm-up failed: {error}"))
+}
+
+fn indexed_offsets_fit(
+    seq: i32,
+    rows: i32,
+    width: i32,
+    heads: i32,
+    kv_heads: i32,
+    dim: i32,
+) -> bool {
+    // Device index_base and row_base use signed 32-bit products. Test those
+    // products in a wider type before admitting the launch, including Q/out.
+    [[seq, width, 1], [rows, kv_heads, dim], [seq, heads, dim]]
+        .iter()
+        .all(|shape| {
+            shape
+                .iter()
+                .try_fold(1i64, |n, &x| {
+                    (x > 0).then_some(())?;
+                    n.checked_mul(i64::from(x))
+                })
+                .is_some_and(|n| n <= i64::from(i32::MAX))
+        })
 }
 
 /// Geometry the kernel is compiled for: one warp per query head of a kv-head
@@ -651,6 +677,16 @@ mod tests {
     const Q_HEADS: i32 = 4;
     const KV_HEADS: i32 = 2;
     const RATIO: i32 = 4;
+
+    #[test]
+    fn indexed_address_products_are_checked_before_launch() {
+        assert!(indexed_offsets_fit(2048, 32768, 4096, 24, 2, 256));
+        assert!(indexed_offsets_fit(1, i32::MAX / 512, 1, 24, 2, 256));
+        assert!(!indexed_offsets_fit(1, i32::MAX / 512 + 1, 1, 24, 2, 256));
+        assert!(!indexed_offsets_fit(65536, 65536, 65536, 24, 2, 256));
+        assert!(!indexed_offsets_fit(i32::MAX, 1, 1, 24, 2, 256));
+        assert!(!indexed_offsets_fit(1, 1, -1, 24, 2, 256));
+    }
 
     /// Deterministic, well-scaled data so fp16/bf16 rounding stays meaningful.
     fn data(len: usize, seed: u32) -> Vec<f32> {

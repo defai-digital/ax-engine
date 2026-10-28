@@ -876,6 +876,42 @@ mod tests {
     }
 
     #[test]
+    fn restored_cancel_prefix_off_the_block_grid_does_not_wedge_the_step() {
+        // The checkpoint cut (20) is past the last whole 16-token block the KV
+        // cache keeps (16). That prefix-cache hit did not advance the restored
+        // request, and validating it failed every later step with "prefix
+        // reuse moved processed prompt tokens backwards".
+        let mut engine = scripted_engine(Script::success());
+        engine.set_cancel_keep_prefix(true);
+        engine.set_adaptive_prefill(true);
+        let prompt: Vec<u32> = (1..=40).collect();
+        engine
+            .submit(submission(7, 1, prompt.clone(), 2))
+            .expect("submit");
+        engine.step(20, true).expect("partial");
+        let processed = engine
+            .request_manager()
+            .snapshot(RequestId(7))
+            .expect("partial request")
+            .processed_prompt_tokens;
+        assert_eq!(processed % 16, 4, "the cut must sit off the block grid");
+        engine.cancel(RequestId(7)).expect("cancel");
+        engine
+            .submit(submission(8, 2, prompt, 2))
+            .expect("resubmit");
+        let restored = engine
+            .request_manager()
+            .snapshot(RequestId(8))
+            .expect("restored")
+            .processed_prompt_tokens;
+        assert_eq!(restored, processed);
+        engine
+            .step(64, true)
+            .expect("the resumed step must not fail");
+        engine.step(64, true).expect("and neither may the next");
+    }
+
+    #[test]
     fn l1_checkpoint_restores_on_resubmit_without_ssd_hit() {
         let mut engine = scripted_engine(Script::l1());
         engine.set_cancel_keep_prefix(true);
@@ -985,6 +1021,80 @@ mod tests {
         assert!(failed_on <= 70, "failed_on={failed_on}");
         assert!(held.spill_attempts_for(RequestId(1)) <= MAX_PRESSURE_SPILLS);
         assert_eq!(held.ssd_spill_hits(), 1);
+    }
+
+    #[test]
+    fn pressure_requeue_leaves_a_kv_blocked_request_unpreempted() {
+        // 2 blocks x 16 tokens cannot hold 30 prompt + 10 output tokens: the
+        // decode blocks on KV with pressure requeue on but no pressure spill.
+        let mut quiet = Script::success();
+        quiet.pressure_active_bytes = 100;
+        let mut engine = scripted_engine_with_blocks(quiet, 2);
+        engine.set_pressure_requeue(true);
+        engine
+            .submit(submission(1, 1, (0..30).collect(), 10))
+            .expect("submit");
+        for step in 1..=8 {
+            engine
+                .step(64, true)
+                .unwrap_or_else(|error| panic!("step {step} must not fail: {error:?}"));
+            let snapshot = engine
+                .request_manager()
+                .snapshot(RequestId(1))
+                .expect("snapshot");
+            // Never preempted: the processed prompt is kept.
+            assert_eq!(snapshot.processed_prompt_tokens, 30, "step {step}");
+        }
+    }
+
+    #[test]
+    fn restored_cancel_prefix_holds_its_kv_against_newer_requests() {
+        let mut engine = scripted_engine_with_blocks(Script::success(), 4);
+        engine.set_cancel_keep_prefix(true);
+        let prompt: Vec<u32> = (1..=48).collect();
+        engine
+            .submit(submission(7, 1, prompt.clone(), 4))
+            .expect("submit");
+        engine.step(32, true).expect("partial prefill");
+        engine.cancel(RequestId(7)).expect("cancel");
+        engine
+            .submit(submission(8, 2, prompt, 4))
+            .expect("resubmit");
+        let restored = engine.request_manager().snapshot(RequestId(8)).expect("8");
+        assert_eq!(
+            engine
+                .kv_manager()
+                .logical_token_count(RequestId(8))
+                .expect("kv"),
+            restored.processed_prompt_tokens,
+            "restored tokens are charged to the KV ledger"
+        );
+        engine
+            .submit(submission(9, 3, (100..132).collect(), 4))
+            .expect("other");
+        let _ = engine.step(64, true);
+        let restored = engine.request_manager().snapshot(RequestId(8)).expect("8");
+        assert_ne!(
+            restored.state,
+            RequestState::Failed,
+            "the restored request must not lose its capacity: {:?}",
+            restored.last_error
+        );
+    }
+
+    #[test]
+    fn cancel_checkpoints_stay_bounded() {
+        let mut engine = scripted_engine_with_blocks(Script::success(), 64);
+        engine.set_cancel_keep_prefix(true);
+        for id in 0..(crate::engine::MAX_CANCEL_CHECKPOINTS as u64 + 8) {
+            let prompt: Vec<u32> = (0..48).map(|token| token + id as u32 * 100).collect();
+            engine
+                .submit(submission(id, id, prompt, 4))
+                .expect("submit");
+            engine.step(32, true).expect("partial prefill");
+            engine.cancel(RequestId(id)).expect("cancel");
+        }
+        assert!(engine.cancel_checkpoints().len() <= crate::engine::MAX_CANCEL_CHECKPOINTS);
     }
 
     fn decision_value(plan: &crate::scheduler::SchedulePlan, key: &str) -> Option<u32> {

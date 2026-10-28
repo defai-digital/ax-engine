@@ -17,8 +17,8 @@ use super::{
     compute_attention_value_from_key_layers, compute_kv_shared_sources, config_quantization,
     convert_hf_model_dir, deepseek_v4_config, ensure_deepseek_v4_chat_template,
     ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_qwen4_exp_ngram_tensor,
-    match_tensor, model_family_for_type, moe_config, parse_layer_types, parse_rope_params,
-    parse_rope_scaling, qwen4_exp_config, tensor_name_looks_like_media_role,
+    match_tensor, model_family_for_type, moe_config, parse_layer_types, parse_rope_mscale,
+    parse_rope_params, parse_rope_scaling, qwen4_exp_config, tensor_name_looks_like_media_role,
     tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
     with_real_model_manifest_lock, write_manifest,
 };
@@ -112,6 +112,7 @@ fn embeddinggemma_300m_mx_preserves_mixed_precision_and_both_dense_heads() {
             manifest.generation_kind(),
             crate::GenerationKind::EncoderEmbed
         );
+        let mut mx_projections = 0;
         for spec in &manifest.tensors {
             if spec.role == NativeTensorRole::TokenEmbedding {
                 let quant = spec.quantization.as_ref().unwrap();
@@ -124,8 +125,12 @@ fn embeddinggemma_300m_mx_preserves_mixed_precision_and_both_dense_heads() {
                     (quant.mode.as_str(), quant.bits, quant.group_size),
                     (mode, bits as u32, 32)
                 );
+                mx_projections += 1;
             }
         }
+        // Every attention and MLP projection must stay quantized; a converter
+        // that dropped the quantization would otherwise pass the loop above.
+        assert_eq!(mx_projections, 7, "{mode} projection quantization");
         for role in [
             NativeTensorRole::EmbeddingDense0,
             NativeTensorRole::EmbeddingDense1,
@@ -5376,6 +5381,26 @@ fn qwen4_exp_preserves_ple_and_block_selection_contract() {
     assert!(defaults.ple_layer_ids.is_empty());
     assert!(defaults.never_eval_ngram_at_load);
     assert!(!qwen4_exp_config(&config, "qwen3_5").unwrap().is_enabled());
+
+    // Reference config: `output_gate_type or hidden_act`, hidden_act = silu.
+    let gate = |config: serde_json::Value| {
+        qwen4_exp_config(&config, "qwen4_exp")
+            .unwrap()
+            .output_gate_type
+    };
+    assert_eq!(gate(serde_json::json!({})).as_deref(), Some("silu"));
+    assert_eq!(
+        gate(serde_json::json!({"hidden_act": "sigmoid"})).as_deref(),
+        Some("sigmoid")
+    );
+    assert_eq!(
+        gate(serde_json::json!({"output_gate_type": "", "hidden_act": "silu"})).as_deref(),
+        Some("silu")
+    );
+    assert_eq!(
+        gate(serde_json::json!({"output_gate_type": "sigmoid", "hidden_act": "silu"})).as_deref(),
+        Some("sigmoid")
+    );
 }
 
 #[test]
@@ -5550,6 +5575,17 @@ fn gemma4_router_eight_bit_override_applies_only_to_affine_quantization() {
     assert_eq!(quantization.mode, "mxfp4");
     assert_eq!(quantization.bits, 4);
     assert_eq!(quantization.group_size, 32);
+    // A mixed recipe writes the router's real setting as a per-layer entry;
+    // it wins over the 8-bit default, as in mlx-lm.
+    let mixed = serde_json::json!({
+        "model_type": "gemma4",
+        "quantization": {
+            "mode": "affine", "bits": 6, "group_size": 64,
+            "language_model.model.layers.0.router.proj": {"mode": "affine", "bits": 4, "group_size": 64}
+        }
+    });
+    let quantization = super::tensor_quantization(&mixed, &family, router).expect("mixed");
+    assert_eq!(quantization.bits, 4);
 }
 
 #[test]
@@ -7255,6 +7291,86 @@ fn causal_ministral3_without_pooling_stays_mistral3_chat() {
 }
 
 #[test]
+fn unlimited_ocr2_config_is_rejected_before_weight_mapping() {
+    for model_type in ["unlimited-ocr", "unlimited_ocr", "deepseekocr"] {
+        for scope in ["root", "language_config", "text_config"] {
+            let dir = unique_test_dir("unlimited_ocr2_config");
+            let mut config = serde_json::json!({"model_type": model_type});
+            let sparse = serde_json::json!({
+                "use_sparse_attention": true,
+                "dash_router": "entmax_topk_perlayer",
+                "sparse_main_rope_mode": "page2d"
+            });
+            if scope == "root" {
+                config["sparse_attention_config"] = sparse;
+            } else {
+                config[scope] = serde_json::json!({"sparse_attention_config": sparse});
+            }
+            write_config(&dir, config);
+            let error = convert_hf_model_dir(&dir).expect_err("v2 must not enter v1 mapper");
+            assert!(matches!(error, ConvertError::InvalidModelContract { .. }));
+            assert!(error.to_string().contains("Unlimited-OCR-2 SR-SWA"));
+            assert!(!dir.join("model-manifest.json").exists());
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn unlimited_ocr2_routing_weights_cannot_be_dropped_as_v1_extras() {
+    let dir = unique_test_dir("unlimited_ocr2_stripped_config");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "unlimited-ocr", "hidden_size": 1280,
+            "num_hidden_layers": 12, "num_attention_heads": 10,
+            "num_key_value_heads": 10, "intermediate_size": 6848, "vocab_size": 129280
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[(
+            "model.layers.0.self_attn.dash_router.q_proj.weight",
+            "BF16",
+            &[128, 1280],
+        )],
+    );
+    let error = ensure_manifest_for_hf_model_dir(&dir)
+        .expect_err("auto-convert must reject sparse weights even without sparse config");
+    assert!(error.to_string().contains("Unlimited-OCR-2 SR-SWA"));
+    assert!(!dir.join("model-manifest.json").exists());
+    let _ = fs::remove_dir_all(dir);
+    for marker in ["dash_router.q_proj", "indexer.k_proj"] {
+        for prefix in ["model", "language_model.model"] {
+            for sparse in [
+                serde_json::Value::Null,
+                serde_json::json!({"use_sparse_attention": false}),
+            ] {
+                let config = serde_json::json!({"sparse_attention_config": sparse});
+                let name = format!("{prefix}.layers.0.self_attn.{marker}.weight");
+                let error =
+                    super::validate_unlimited_ocr_attention(&config, "unlimited_ocr", [&name])
+                        .expect_err("stripped or disabled config cannot hide sparse weights");
+                assert!(error.to_string().contains("Unlimited-OCR-2 SR-SWA"));
+            }
+        }
+    }
+    super::validate_unlimited_ocr_attention(
+        &serde_json::json!({"sparse_attention_config": null}),
+        "unlimited_ocr",
+        ["model.layers.0.self_attn.q_proj.weight"],
+    )
+    .expect("v1 remains eligible");
+    super::validate_unlimited_ocr_attention(
+        &serde_json::json!({"sparse_attention_config": {"enabled": true}}),
+        "deepseek_v4",
+        ["model.layers.0.self_attn.indexer.k_proj.weight"],
+    )
+    .expect("other architectures retain their own sparse-attention contract");
+}
+
+#[test]
 fn converts_unlimited_ocr_language_moe_directory() {
     let dir = unique_test_dir("unlimited_ocr_lang");
     write_config(
@@ -7935,6 +8051,42 @@ fn parse_rope_scaling_keeps_yarn_beta_bounds() {
     );
     assert_eq!(beta_fast, None);
     assert_eq!(beta_slow, None);
+}
+
+#[test]
+fn rope_parameters_blocks_carry_yarn_and_its_attention_scale() {
+    // Ministral 3 (transformers v5) nests YaRN under text_config.rope_parameters;
+    // it used to be read only for Nemotron 3 Embed, so Ministral ran plain RoPE.
+    let ministral = serde_json::json!({
+        "model_type": "mistral3",
+        "text_config": {
+            "rope_parameters": {
+                "rope_type": "yarn",
+                "rope_theta": 1000000.0,
+                "factor": 16.0,
+                "original_max_position_embeddings": 16384,
+                "mscale": 1.0,
+                "mscale_all_dim": 1.0,
+                "beta_fast": 32.0,
+                "beta_slow": 1.0
+            }
+        }
+    });
+    let (ty, factor, _, _, orig, _, _) = parse_rope_scaling(&ministral, "mistral3");
+    assert_eq!(ty.as_deref(), Some("yarn"));
+    assert_eq!(factor, Some(16.0));
+    assert_eq!(orig, Some(16384));
+    assert_eq!(
+        parse_rope_mscale(&ministral, "mistral3"),
+        (Some(1.0), Some(1.0))
+    );
+
+    // A v5 "default" block is plain RoPE, not a scaling request.
+    let plain = serde_json::json!({
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000.0}
+    });
+    assert_eq!(parse_rope_scaling(&plain, "llama").0, None);
+    assert_eq!(parse_rope_mscale(&plain, "llama"), (None, None));
 }
 
 // ---------------------------------------------------------------------------

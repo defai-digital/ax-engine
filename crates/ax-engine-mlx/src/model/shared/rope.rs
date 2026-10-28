@@ -73,6 +73,16 @@ pub(crate) fn build_llama3_rope_freqs(
     MlxArray::from_f32_slice(&freqs)
 }
 
+/// Linear RoPE scaling: the plain wavelength divisors stretched by `factor`
+/// (same convention as [`build_llama3_rope_freqs`]).
+pub(crate) fn build_linear_rope_freqs(dims: usize, theta: f32, factor: f32) -> MlxArray {
+    let dims_f = dims as f32;
+    let freqs: Vec<f32> = (0..dims / 2)
+        .map(|i| factor * theta.powf(2.0 * i as f32 / dims_f))
+        .collect();
+    MlxArray::from_f32_slice(&freqs)
+}
+
 /// YaRN RoPE frequency divisors + attention mscale (mlx-lm `YarnRoPE`).
 ///
 /// Returns `(freqs[dims/2], mscale)` where `freqs` are wavelength **divisors**

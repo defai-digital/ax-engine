@@ -15,7 +15,48 @@ use crate::admission::AdmissionPermit;
 use crate::app_state::{AppState, LiveState};
 use crate::generation::service::GenerationServiceError;
 use crate::generation::streaming::StreamStateSource;
+use crate::openai::reasoning_stream::DeepSeekThinkCutter;
+use crate::openai::stop::StopSequenceScanner;
 use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
+
+/// Client stop strings. The native session ignores `stop_sequences`, so the
+/// server enforces them on the decoded text, as the HTTP surfaces do.
+struct GrpcStops(Option<StopSequenceScanner>);
+
+impl GrpcStops {
+    fn new(sequences: Vec<String>) -> Self {
+        Self(StopSequenceScanner::new(sequences))
+    }
+
+    /// Text that is safe to emit now, and whether a stop matched.
+    fn push(&mut self, text: String) -> (String, bool) {
+        match self.0.as_mut() {
+            None => (text, false),
+            Some(scanner) => {
+                let step = scanner.push(&text);
+                (step.emit, step.matched)
+            }
+        }
+    }
+
+    /// Withheld text at the end of an unmatched stream.
+    fn finish(&mut self) -> String {
+        self.0
+            .as_mut()
+            .map(StopSequenceScanner::finish)
+            .unwrap_or_default()
+    }
+}
+
+/// A failed or cancelled generation ends the stream with an error status,
+/// not a normal final chunk (the HTTP surfaces return 502 or an error frame).
+fn grpc_terminal_status(response: &ax_engine_sdk::GenerateResponse) -> Result<(), Status> {
+    crate::generation::native::reject_failed_generate_status(
+        response.status,
+        response.finish_reason,
+    )
+    .map_err(super::requests::openai_error_to_status)
+}
 
 pub(super) type GenerateEventStream = ReceiverStream<Result<proto::GenerateStreamEvent, Status>>;
 pub(super) type ChatChunkStream = ReceiverStream<Result<proto::ChatCompletionChunk, Status>>;
@@ -340,6 +381,8 @@ pub(super) fn spawn_grpc_chat_stream(
     tx: mpsc::Sender<Result<proto::ChatCompletionChunk, Status>>,
     stream_context: StreamStateSource,
     tokenizer: Option<EngineTokenizer>,
+    stop_sequences: Vec<String>,
+    deepseek_think_cut: bool,
 ) -> Result<(), GenerationServiceError> {
     spawn_grpc_stream_task(
         tx,
@@ -360,10 +403,19 @@ pub(super) fn spawn_grpc_chat_stream(
                 tx,
                 decoder.as_mut(),
                 channel_filter.as_mut(),
+                GrpcStops::new(stop_sequences),
+                deepseek_think_cut.then(DeepSeekThinkCutter::new),
                 next_event,
             )
         },
     )
+}
+
+fn cut_think(cutter: &mut Option<DeepSeekThinkCutter>, text: String) -> String {
+    match cutter.as_mut() {
+        Some(cutter) => cutter.push(&text),
+        None => text,
+    }
 }
 
 fn chat_delta_chunk_proto(
@@ -392,33 +444,77 @@ fn drive_grpc_chat_events<N>(
     tx: &mpsc::Sender<Result<proto::ChatCompletionChunk, Status>>,
     mut decoder: Option<&mut IncrementalDecoder>,
     mut channel_filter: Option<&mut ChatChannelStreamFilter>,
+    mut stops: GrpcStops,
+    // DeepSeek with thinking off (gRPC always renders it off): the prompt
+    // pre-fills `</think>`, so a re-emitted marker and everything after it is
+    // a leak, cut here as on the HTTP stream and the unary sanitize.
+    mut think_cutter: Option<DeepSeekThinkCutter>,
     mut next: N,
 ) -> Result<(), Status>
 where
     N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
+    let final_chunk = |request_id: u64, finish_reason: String| proto::ChatCompletionChunk {
+        id: format!("chatcmpl-{request_id}"),
+        object: "chat.completion.chunk".to_string(),
+        created: unix_now(),
+        model: model_id.to_string(),
+        choices: vec![proto::ChatCompletionChunkChoice {
+            index: 0,
+            delta: Some(proto::ChatDelta {
+                role: String::new(),
+                content: String::new(),
+            }),
+            finish_reason,
+        }],
+    };
+    // Emit `text` through the stop filter. Returns false when the stream must
+    // end: the client went away, or a stop matched and was finalized.
+    let emit = |stops: &mut GrpcStops,
+                request_id: u64,
+                text: String,
+                chat_role_emitted: &mut bool|
+     -> bool {
+        let (text, matched) = stops.push(text);
+        if !text.is_empty() {
+            let chunk = chat_delta_chunk_proto(
+                request_id,
+                model_id,
+                next_grpc_chat_role(chat_role_emitted),
+                text,
+            );
+            if tx.blocking_send(Ok(chunk)).is_err() {
+                return false;
+            }
+        }
+        if matched {
+            let _ = tx.blocking_send(Ok(final_chunk(request_id, "stop".to_string())));
+            return false;
+        }
+        true
+    };
     loop {
         match next() {
             Ok(None) => return Ok(()),
             Err(e) => return Err(session_error_status(e)),
             Ok(Some(GenerateStreamEvent::Request(_))) => {}
             Ok(Some(GenerateStreamEvent::Response(payload))) => {
+                grpc_terminal_status(&payload.response)?;
+                let request_id = payload.response.request_id;
                 // The model can leave its entire answer inside an unclosed
                 // thinking/final channel; serve that body before the stream
                 // closes (mirrors the SSE path).
                 if let Some(filter) = channel_filter.as_mut()
                     && let Some(decoder) = decoder.as_mut()
                     && let Some(body_text) = filter.take_fallback_text(decoder)
+                    && !emit(
+                        &mut stops,
+                        request_id,
+                        cut_think(&mut think_cutter, body_text),
+                        chat_role_emitted,
+                    )
                 {
-                    let chunk = chat_delta_chunk_proto(
-                        payload.response.request_id,
-                        model_id,
-                        next_grpc_chat_role(chat_role_emitted),
-                        body_text,
-                    );
-                    if tx.blocking_send(Ok(chunk)).is_err() {
-                        return Ok(());
-                    }
+                    return Ok(());
                 }
                 // Text the incremental decoder was still holding for a
                 // trailing codepoint is content too (same flush as the SSE
@@ -436,15 +532,33 @@ where
                         {
                             filter.mark_kept_output();
                         }
-                        let chunk = chat_delta_chunk_proto(
-                            payload.response.request_id,
-                            model_id,
-                            next_grpc_chat_role(chat_role_emitted),
-                            tail,
-                        );
-                        if tx.blocking_send(Ok(chunk)).is_err() {
+                        if !emit(
+                            &mut stops,
+                            request_id,
+                            cut_think(&mut think_cutter, tail),
+                            chat_role_emitted,
+                        ) {
                             return Ok(());
                         }
+                    }
+                }
+                // A held partial `</think>` that never completed is content.
+                if let Some(held) = think_cutter.as_mut().map(DeepSeekThinkCutter::finish)
+                    && !held.is_empty()
+                    && !emit(&mut stops, request_id, held, chat_role_emitted)
+                {
+                    return Ok(());
+                }
+                let withheld = stops.finish();
+                if !withheld.is_empty() {
+                    let chunk = chat_delta_chunk_proto(
+                        request_id,
+                        model_id,
+                        next_grpc_chat_role(chat_role_emitted),
+                        withheld,
+                    );
+                    if tx.blocking_send(Ok(chunk)).is_err() {
+                        return Ok(());
                     }
                 }
                 // Final chunk carries finish_reason (OpenAI SSE parity).
@@ -453,21 +567,10 @@ where
                     .finish_reason
                     .map(finish_reason_str)
                     .unwrap_or_default();
-                let final_chunk = proto::ChatCompletionChunk {
-                    id: format!("chatcmpl-{}", payload.response.request_id),
-                    object: "chat.completion.chunk".to_string(),
-                    created: unix_now(),
-                    model: model_id.to_string(),
-                    choices: vec![proto::ChatCompletionChunkChoice {
-                        index: 0,
-                        delta: Some(proto::ChatDelta {
-                            role: String::new(),
-                            content: String::new(),
-                        }),
-                        finish_reason,
-                    }],
-                };
-                if tx.blocking_send(Ok(final_chunk)).is_err() {
+                if tx
+                    .blocking_send(Ok(final_chunk(request_id, finish_reason)))
+                    .is_err()
+                {
                     return Ok(());
                 }
             }
@@ -500,13 +603,16 @@ where
                 if let Some(filter) = channel_filter.as_mut() {
                     filter.mark_kept_output();
                 }
-                let chunk = chat_delta_chunk_proto(
+                let delta_text = cut_think(&mut think_cutter, delta_text);
+                if delta_text.is_empty() {
+                    continue;
+                }
+                if !emit(
+                    &mut stops,
                     payload.request.request_id,
-                    model_id,
-                    next_grpc_chat_role(chat_role_emitted),
                     delta_text,
-                );
-                if tx.blocking_send(Ok(chunk)).is_err() {
+                    chat_role_emitted,
+                ) {
                     return Ok(());
                 }
             }
@@ -519,6 +625,7 @@ pub(super) fn spawn_grpc_completion_stream(
     tx: mpsc::Sender<Result<proto::CompletionChunk, Status>>,
     stream_context: StreamStateSource,
     tokenizer: Option<EngineTokenizer>,
+    stop_sequences: Vec<String>,
 ) -> Result<(), GenerationServiceError> {
     spawn_grpc_stream_task(
         tx,
@@ -526,7 +633,13 @@ pub(super) fn spawn_grpc_completion_stream(
         stream_context,
         move |tx, next_event| {
             let mut decoder = tokenizer.map(IncrementalDecoder::new);
-            drive_grpc_completion_events(&model_id, tx, decoder.as_mut(), next_event)
+            drive_grpc_completion_events(
+                &model_id,
+                tx,
+                decoder.as_mut(),
+                GrpcStops::new(stop_sequences),
+                next_event,
+            )
         },
     )
 }
@@ -535,17 +648,48 @@ fn drive_grpc_completion_events<N>(
     model_id: &str,
     tx: &mpsc::Sender<Result<proto::CompletionChunk, Status>>,
     mut decoder: Option<&mut IncrementalDecoder>,
+    mut stops: GrpcStops,
     mut next: N,
 ) -> Result<(), Status>
 where
     N: FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
+    let chunk = |request_id: u64, text: String, finish_reason: String| proto::CompletionChunk {
+        id: format!("cmpl-{request_id}"),
+        object: "text_completion.chunk".to_string(),
+        created: unix_now(),
+        model: model_id.to_string(),
+        choices: vec![proto::CompletionChunkChoice {
+            index: 0,
+            text,
+            finish_reason,
+        }],
+    };
+    // Emit `text` through the stop filter. Returns false when the stream must
+    // end: the client went away, or a stop matched and was finalized.
+    let emit = |stops: &mut GrpcStops, request_id: u64, text: String| -> bool {
+        let (text, matched) = stops.push(text);
+        if !text.is_empty()
+            && tx
+                .blocking_send(Ok(chunk(request_id, text, String::new())))
+                .is_err()
+        {
+            return false;
+        }
+        if matched {
+            let _ = tx.blocking_send(Ok(chunk(request_id, String::new(), "stop".to_string())));
+            return false;
+        }
+        true
+    };
     loop {
         match next() {
             Ok(None) => return Ok(()),
             Err(e) => return Err(session_error_status(e)),
             Ok(Some(GenerateStreamEvent::Request(_))) => {}
             Ok(Some(GenerateStreamEvent::Response(payload))) => {
+                grpc_terminal_status(&payload.response)?;
+                let request_id = payload.response.request_id;
                 let finish_reason = payload
                     .response
                     .finish_reason
@@ -561,35 +705,22 @@ where
                             "failed to decode native MLX gRPC stream tokens: {error}"
                         ))
                     })?;
-                    if !tail.is_empty() {
-                        let chunk = proto::CompletionChunk {
-                            id: format!("cmpl-{}", payload.response.request_id),
-                            object: "text_completion.chunk".to_string(),
-                            created: unix_now(),
-                            model: model_id.to_string(),
-                            choices: vec![proto::CompletionChunkChoice {
-                                index: 0,
-                                text: tail,
-                                finish_reason: String::new(),
-                            }],
-                        };
-                        if tx.blocking_send(Ok(chunk)).is_err() {
-                            return Ok(());
-                        }
+                    if !tail.is_empty() && !emit(&mut stops, request_id, tail) {
+                        return Ok(());
                     }
                 }
-                let final_chunk = proto::CompletionChunk {
-                    id: format!("cmpl-{}", payload.response.request_id),
-                    object: "text_completion.chunk".to_string(),
-                    created: unix_now(),
-                    model: model_id.to_string(),
-                    choices: vec![proto::CompletionChunkChoice {
-                        index: 0,
-                        text: String::new(),
-                        finish_reason,
-                    }],
-                };
-                if tx.blocking_send(Ok(final_chunk)).is_err() {
+                let withheld = stops.finish();
+                if !withheld.is_empty()
+                    && tx
+                        .blocking_send(Ok(chunk(request_id, withheld, String::new())))
+                        .is_err()
+                {
+                    return Ok(());
+                }
+                if tx
+                    .blocking_send(Ok(chunk(request_id, String::new(), finish_reason)))
+                    .is_err()
+                {
                     return Ok(());
                 }
             }
@@ -605,18 +736,7 @@ where
                 if delta_text.is_empty() {
                     continue;
                 }
-                let chunk = proto::CompletionChunk {
-                    id: format!("cmpl-{}", payload.request.request_id),
-                    object: "text_completion.chunk".to_string(),
-                    created: unix_now(),
-                    model: model_id.to_string(),
-                    choices: vec![proto::CompletionChunkChoice {
-                        index: 0,
-                        text: delta_text,
-                        finish_reason: String::new(),
-                    }],
-                };
-                if tx.blocking_send(Ok(chunk)).is_err() {
+                if !emit(&mut stops, payload.request.request_id, delta_text) {
                     return Ok(());
                 }
             }
@@ -735,6 +855,46 @@ mod tests {
     }
 
     #[test]
+    fn drive_grpc_chat_events_cuts_a_leaked_deepseek_think_close() {
+        // Thinking-off DeepSeek pre-fills `</think>`; a re-emitted marker and
+        // everything after it must not reach content (unary sanitize parity).
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut role = false;
+        let events = [
+            Ok(Some(step_with_delta_text("ans"))),
+            Ok(Some(step_with_delta_text("wer</thi"))),
+            Ok(Some(step_with_delta_text("nk>next turn"))),
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            GrpcStops::new(Vec::new()),
+            Some(DeepSeekThinkCutter::new()),
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+        drop(tx);
+        let mut content = String::new();
+        while let Ok(chunk) = rx.try_recv() {
+            let chunk = chunk.expect("chunk ok");
+            if let Some(delta) = chunk.choices[0].delta.as_ref() {
+                content.push_str(&delta.content);
+            }
+        }
+        assert_eq!(content, "answer");
+    }
+
+    #[test]
     fn drive_grpc_chat_events_emits_finish_reason_on_response() {
         let (tx, mut rx) = mpsc::channel(8);
         let mut role = false;
@@ -748,9 +908,16 @@ mod tests {
             Ok(None),
         ];
         let mut iter = events.into_iter();
-        drive_grpc_chat_events("test-model", &mut role, &tx, None, None, || {
-            iter.next().unwrap_or(Ok(None))
-        })
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            GrpcStops::new(Vec::new()),
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
         .expect("drive should succeed");
 
         let mut chunks = Vec::new();
@@ -789,9 +956,16 @@ mod tests {
             Ok(None), // stream ends without Response
         ];
         let mut iter = events.into_iter();
-        drive_grpc_chat_events("test-model", &mut role, &tx, None, None, || {
-            iter.next().unwrap_or(Ok(None))
-        })
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            GrpcStops::new(Vec::new()),
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
         .expect("drive should succeed");
 
         let mut chunks = Vec::new();
@@ -825,8 +999,10 @@ mod tests {
             Ok(None),
         ];
         let mut iter = events.into_iter();
-        drive_grpc_completion_events("test-model", &tx, None, || iter.next().unwrap_or(Ok(None)))
-            .expect("drive should succeed");
+        drive_grpc_completion_events("test-model", &tx, None, GrpcStops::new(Vec::new()), || {
+            iter.next().unwrap_or(Ok(None))
+        })
+        .expect("drive should succeed");
 
         let mut chunks = Vec::new();
         while let Ok(chunk) = rx.try_recv() {
@@ -839,12 +1015,127 @@ mod tests {
     }
 
     #[test]
+    fn grpc_streams_enforce_client_stops_across_chunk_boundaries() {
+        // The native session ignores stop_sequences, so the gRPC stream must cut
+        // the text itself; a stop split across deltas is still caught.
+        let events = || {
+            vec![
+                Ok(Some(step_with_delta_text("Hello\n"))),
+                Ok(Some(step_with_delta_text("\nmore text"))),
+                Ok(Some(GenerateStreamEvent::Response(
+                    GenerateStreamResponseEvent {
+                        response: sample_response(Some(GenerateFinishReason::MaxOutputTokens)),
+                    },
+                ))),
+                Ok(None),
+            ]
+        };
+        let stops = || GrpcStops::new(vec!["\n\n".to_string()]);
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut iter = events().into_iter();
+        drive_grpc_completion_events("test-model", &tx, None, stops(), || {
+            iter.next().unwrap_or(Ok(None))
+        })
+        .expect("drive should succeed");
+        let mut text = String::new();
+        let mut finishes = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            let chunk = chunk.expect("chunk ok");
+            text.push_str(&chunk.choices[0].text);
+            if !chunk.choices[0].finish_reason.is_empty() {
+                finishes.push(chunk.choices[0].finish_reason.clone());
+            }
+        }
+        assert_eq!(text, "Hello");
+        assert_eq!(finishes, vec!["stop".to_string()]);
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut role = false;
+        let mut iter = events().into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            None,
+            None,
+            stops(),
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+        let mut content = String::new();
+        let mut finishes = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            let chunk = chunk.expect("chunk ok");
+            if let Some(delta) = chunk.choices[0].delta.as_ref() {
+                content.push_str(&delta.content);
+            }
+            if !chunk.choices[0].finish_reason.is_empty() {
+                finishes.push(chunk.choices[0].finish_reason.clone());
+            }
+        }
+        assert_eq!(content, "Hello");
+        assert_eq!(finishes, vec!["stop".to_string()]);
+    }
+
+    #[test]
+    fn grpc_streams_end_failed_generations_with_an_error_status() {
+        let mut failed = sample_response(Some(GenerateFinishReason::Error));
+        failed.status = GenerateStatus::Failed;
+        let events = || {
+            vec![
+                Ok(Some(step_with_delta_text("partial"))),
+                Ok(Some(GenerateStreamEvent::Response(
+                    GenerateStreamResponseEvent {
+                        response: failed.clone(),
+                    },
+                ))),
+                Ok(None),
+            ]
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut iter = events().into_iter();
+        assert!(
+            drive_grpc_completion_events(
+                "test-model",
+                &tx,
+                None,
+                GrpcStops::new(Vec::new()),
+                || { iter.next().unwrap_or(Ok(None)) }
+            )
+            .is_err()
+        );
+        while let Ok(chunk) = rx.try_recv() {
+            assert!(chunk.expect("chunk ok").choices[0].finish_reason.is_empty());
+        }
+        let (tx, _rx) = mpsc::channel(8);
+        let mut role = false;
+        let mut iter = events().into_iter();
+        assert!(
+            drive_grpc_chat_events(
+                "test-model",
+                &mut role,
+                &tx,
+                None,
+                None,
+                GrpcStops::new(Vec::new()),
+                None,
+                || iter.next().unwrap_or(Ok(None)),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn drive_grpc_completion_events_omits_finish_chunk_without_response_event() {
         let (tx, mut rx) = mpsc::channel(8);
         let events = [Ok(Some(step_with_delta_text("xyz"))), Ok(None)];
         let mut iter = events.into_iter();
-        drive_grpc_completion_events("test-model", &tx, None, || iter.next().unwrap_or(Ok(None)))
-            .expect("drive should succeed");
+        drive_grpc_completion_events("test-model", &tx, None, GrpcStops::new(Vec::new()), || {
+            iter.next().unwrap_or(Ok(None))
+        })
+        .expect("drive should succeed");
 
         let mut chunks = Vec::new();
         while let Ok(chunk) = rx.try_recv() {
@@ -878,6 +1169,8 @@ mod tests {
             &mut role,
             &tx,
             Some(&mut decoder),
+            None,
+            GrpcStops::new(Vec::new()),
             None,
             || iter.next().unwrap_or(Ok(None)),
         )
@@ -921,9 +1214,13 @@ mod tests {
             Ok(None),
         ];
         let mut iter = events.into_iter();
-        drive_grpc_completion_events("test-model", &tx, Some(&mut decoder), || {
-            iter.next().unwrap_or(Ok(None))
-        })
+        drive_grpc_completion_events(
+            "test-model",
+            &tx,
+            Some(&mut decoder),
+            GrpcStops::new(Vec::new()),
+            || iter.next().unwrap_or(Ok(None)),
+        )
         .expect("drive should succeed");
 
         let mut chunks = Vec::new();

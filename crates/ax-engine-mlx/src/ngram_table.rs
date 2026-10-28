@@ -12,6 +12,14 @@
 //! avoided here; returned rows own their storage so later gathers cannot
 //! overwrite them; payload bytes are counted so tests can prove that only
 //! requested rows move. No reference code or comments are reused here.
+//! Speculative next-chunk reads run as bounded work: aggregate job and staged
+//! byte ceilings span all tables, stale work is cancelled between positional
+//! reads, and demand never blocks on unrelated speculation.
+
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+mod dedup;
+mod prefetch;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -78,6 +86,7 @@ enum NgramTableError {
     },
     Overflow(String),
     Gather(String),
+    Cancelled,
     Internal(String),
 }
 
@@ -168,6 +177,7 @@ impl std::fmt::Display for NgramTableError {
             ),
             Self::Overflow(detail) => write!(f, "ngram table: arithmetic overflow: {detail}"),
             Self::Gather(detail) => write!(f, "ngram table: gather failed: {detail}"),
+            Self::Cancelled => write!(f, "ngram table: prefetch cancelled"),
             Self::Internal(detail) => write!(f, "ngram table: internal error: {detail}"),
         }
     }
@@ -364,18 +374,63 @@ struct Core {
 ///
 /// Reads are synchronous by default. [`Self::prefetch`] starts the reads for
 /// a lookup the caller already knows it will make (the next prefill chunk,
-/// whose rows depend only on token IDs) on a background thread, and the
-/// matching [`Self::gather`] collects them instead of reading again.
+/// whose rows depend only on token IDs) on a bounded background worker, and
+/// a matching [`Self::gather`] reuses the staged planes when they are ready.
+/// Any other gather cancels the speculation and reads synchronously without
+/// ever blocking on it.
 pub struct NgramTable {
     core: Arc<Core>,
-    pending: Mutex<Option<Pending>>,
+    pending: Mutex<Option<PendingWork>>,
+    warm_cancel: Arc<prefetch::CancelFlag>,
+    accounting: Arc<prefetch::SpecAccounting>,
+    hook: Option<prefetch::ReadHook>,
+    #[cfg(test)]
+    worker_done: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-type StagedPlanes = Result<Option<Vec<Vec<u8>>>, NgramTableError>;
-
-struct Pending {
+/// Owned speculative prefetch: exact rows plus format identity, a cancel flag
+/// shared with the worker, the outcome slot the worker publishes once, and
+/// the worker handle reaped without blocking (joined if finished, otherwise
+/// detached while its guards keep it accounted).
+struct PendingWork {
     rows: Vec<u64>,
-    handle: std::thread::JoinHandle<StagedPlanes>,
+    layout: BatchLayout,
+    cancel: Arc<prefetch::CancelFlag>,
+    slot: prefetch::SpecSlot,
+    handle: std::thread::JoinHandle<()>,
+}
+
+/// Test-only worker-exit notifier. Declared before the job guard inside
+/// workers so the job slot releases before the notification fires.
+#[cfg(test)]
+struct WorkerDoneGuard {
+    hook: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+#[cfg(test)]
+impl Drop for WorkerDoneGuard {
+    fn drop(&mut self) {
+        if let Some(hook) = self.hook.take() {
+            hook();
+        }
+    }
+}
+
+impl Drop for NgramTable {
+    fn drop(&mut self) {
+        self.warm_cancel.cancel();
+        // Cancel without joining: the worker stays accounted through its
+        // guards and exits after its current read.
+        if let Ok(mut pending) = self.pending.lock()
+            && let Some(work) = pending.take()
+        {
+            work.cancel.cancel();
+            if let Ok(mut slot) = work.slot.lock() {
+                drop(slot.take());
+            }
+            prefetch::reap_if_finished(work.handle);
+        }
+    }
 }
 
 impl NgramTable {
@@ -398,6 +453,11 @@ impl NgramTable {
         Ok(Self {
             core: Arc::new(core),
             pending: Mutex::new(None),
+            warm_cancel: Arc::new(prefetch::CancelFlag::new()),
+            accounting: prefetch::global_accounting(),
+            hook: None,
+            #[cfg(test)]
+            worker_done: None,
         })
     }
 
@@ -411,6 +471,8 @@ impl NgramTable {
     }
 
     pub(crate) fn gather(&self, row_ids: &[u64]) -> Result<MlxArray, String> {
+        // Demand reads take priority over best-effort sequential warming.
+        self.warm_cancel.cancel();
         if let Some(planes) = self.take_prefetched(row_ids) {
             let count = i32::try_from(row_ids.len()).map_err(|e| e.to_string())?;
             if let Some(layout) = &self.core.batch {
@@ -420,47 +482,171 @@ impl NgramTable {
                     .map_err(|e| e.to_string());
             }
         }
-        self.core.gather_inner(row_ids).map_err(|e| e.to_string())
+        self.core
+            .gather_inner(row_ids, self.hook.as_ref())
+            .map_err(|e| e.to_string())
     }
 
-    /// Start reading `row_ids` in the background. A later [`Self::gather`] of
-    /// exactly these rows collects the result; any other gather ignores it and
-    /// reads synchronously. A new prefetch replaces an unclaimed one.
+    /// Start reading `row_ids` on a bounded worker. A later [`Self::gather`]
+    /// of exactly these rows reuses the staged planes when they are ready;
+    /// any other gather cancels this work and reads synchronously. A new
+    /// prefetch replaces an unclaimed one. Admission fails closed under the
+    /// aggregate job and staged-byte ceilings.
     pub(crate) fn prefetch(&self, row_ids: Vec<u64>) {
-        if self.core.batch.is_none() || row_ids.is_empty() {
+        let Some(layout) = self.core.batch.clone() else {
+            return;
+        };
+        if row_ids.is_empty() {
             return;
         }
+        // Replace any unclaimed work without blocking.
+        if let Ok(mut pending) = self.pending.lock() {
+            if let Some(old) = pending.take() {
+                old.cancel.cancel();
+                if let Ok(mut slot) = old.slot.lock() {
+                    drop(slot.take());
+                }
+                prefetch::reap_if_finished(old.handle);
+            }
+        } else {
+            return;
+        }
+        let mut per_row: usize = 0;
+        for plane in layout.planes() {
+            match per_row.checked_add(plane.row_bytes) {
+                Some(sum) => per_row = sum,
+                None => return,
+            }
+        }
+        let staging_bytes = match row_ids.len().checked_mul(per_row) {
+            Some(bytes) => bytes,
+            None => return,
+        };
+        let Some(job_guard) = self.accounting.try_acquire_job() else {
+            return;
+        };
+        let Some(byte_guard) = self.accounting.try_reserve_bytes(staging_bytes) else {
+            drop(job_guard);
+            return;
+        };
+        let cancel = Arc::new(prefetch::CancelFlag::new());
+        let slot = prefetch::new_slot();
         let core = Arc::clone(&self.core);
-        let rows = row_ids.clone();
+        let hook = self.hook.clone();
+        #[cfg(test)]
+        let done_hook = self.worker_done.clone();
+        let rows_for_worker = row_ids.clone();
+        let cancel_for_worker = Arc::clone(&cancel);
+        let slot_for_worker = Arc::clone(&slot);
         let spawned = std::thread::Builder::new()
             .name("ax-flash-next-ngram-prefetch".to_string())
-            .spawn(move || core.stage(&row_ids));
-        if let (Ok(handle), Ok(mut pending)) = (spawned, self.pending.lock()) {
-            *pending = Some(Pending { rows, handle });
+            .spawn(move || {
+                #[cfg(test)]
+                let _done_guard = WorkerDoneGuard { hook: done_hook };
+                let _job_guard = job_guard;
+                let mut byte_guard_opt = Some(byte_guard);
+                let staged = core.stage(
+                    &rows_for_worker,
+                    Some(cancel_for_worker.as_ref()),
+                    hook.as_ref(),
+                    true,
+                );
+                let outcome = match staged {
+                    Ok(Some(planes)) => match byte_guard_opt.take() {
+                        Some(bytes) => {
+                            prefetch::SpecOutcome::Ready(prefetch::StagedReady { planes, bytes })
+                        }
+                        None => prefetch::SpecOutcome::Failed(
+                            "ngram table: byte guard missing".to_string(),
+                        ),
+                    },
+                    Ok(None) => {
+                        drop(byte_guard_opt.take());
+                        prefetch::SpecOutcome::Cancelled
+                    }
+                    Err(NgramTableError::Cancelled) => {
+                        drop(byte_guard_opt.take());
+                        prefetch::SpecOutcome::Cancelled
+                    }
+                    Err(e) => {
+                        drop(byte_guard_opt.take());
+                        prefetch::SpecOutcome::Failed(e.to_string())
+                    }
+                };
+                drop(byte_guard_opt);
+                if let Ok(mut slot) = slot_for_worker.lock() {
+                    *slot = Some(outcome);
+                } else {
+                    drop(outcome);
+                }
+            });
+        let Ok(handle) = spawned else {
+            return;
+        };
+        if let Ok(mut pending) = self.pending.lock() {
+            if let Some(old) = pending.take() {
+                old.cancel.cancel();
+                if let Ok(mut slot) = old.slot.lock() {
+                    drop(slot.take());
+                }
+                prefetch::reap_if_finished(old.handle);
+            }
+            *pending = Some(PendingWork {
+                rows: row_ids,
+                layout,
+                cancel,
+                slot,
+                handle,
+            });
+        } else {
+            cancel.cancel();
+            if let Ok(mut locked) = slot.lock() {
+                drop(locked.take());
+            }
+            prefetch::reap_if_finished(handle);
         }
     }
 
     /// Best-effort background warm-up of the quantization aux planes.
     ///
-    /// Spawns a thread that sequentially pre-reads every quantized shard's
-    /// scales and biases planes into the OS page cache, so a first-seen row
-    /// gather needs about one cold read (the packed weight plane) instead of
-    /// three. Call this only after the main weights finish loading: the ~6 GB
-    /// of aux planes only stay resident if the ~70 GB weight read is done
-    /// competing for the page cache. Never blocks the caller and never
-    /// panics; a failed spawn just skips the warm-up.
+    /// Spawns one accounted worker that sequentially pre-reads every
+    /// quantized shard's scales and biases planes into the OS page cache, so
+    /// a first-seen row gather needs about one cold read (the packed weight
+    /// plane) instead of three. Call this only after the main weights finish
+    /// loading: the ~6 GB of aux planes only stay resident if the ~70 GB
+    /// weight read is done competing for the page cache. Never blocks the
+    /// caller; a saturated job ceiling or a failed spawn just skips it.
     pub(crate) fn warm_aux_in_background(&self) {
+        if self.warm_cancel.is_cancelled() {
+            return;
+        }
+        let Some(job_guard) = self.accounting.try_acquire_job() else {
+            return;
+        };
+        let Some(byte_guard) = self
+            .accounting
+            .try_reserve_bytes(SafetensorsRowReader::WARM_CHUNK_BYTES)
+        else {
+            return;
+        };
         let core = Arc::clone(&self.core);
+        let cancel = Arc::clone(&self.warm_cancel);
+        #[cfg(test)]
+        let done_hook = self.worker_done.clone();
         let spawned = std::thread::Builder::new()
             .name("ax-flash-next-ngram-warm".to_string())
             .spawn(move || {
+                #[cfg(test)]
+                let _done_guard = WorkerDoneGuard { hook: done_hook };
+                let _job_guard = job_guard;
+                let _byte_guard = byte_guard;
                 let started = std::time::Instant::now();
-                match core.warm_aux_planes() {
+                match core.warm_aux_planes_cancellable(Some(&cancel)) {
                     Ok(bytes) => tracing::info!(
                         target: "ax_engine_mlx::ngram_table",
                         bytes,
                         elapsed_ms = started.elapsed().as_millis() as u64,
-                        "n-gram scales/biases planes warmed into page cache"
+                        "n-gram aux-plane warm pass completed or yielded to demand"
                     ),
                     Err(error) => tracing::warn!(
                         target: "ax_engine_mlx::ngram_table",
@@ -473,13 +659,54 @@ impl NgramTable {
         let _ = spawned;
     }
 
-    /// Staged planes for exactly `row_ids`, if a matching prefetch succeeded.
+    /// Staged planes for exactly `row_ids` when a matching prefetch is ready.
+    /// Mismatched, failed, cancelled, or still-running work is cancelled and
+    /// reaped without blocking so the caller reads synchronously.
     fn take_prefetched(&self, row_ids: &[u64]) -> Option<Vec<Vec<u8>>> {
         let pending = self.pending.lock().ok()?.take()?;
-        if pending.rows != row_ids {
+        let layout_matches = self
+            .core
+            .batch
+            .as_ref()
+            .is_some_and(|current| *current == pending.layout);
+        if pending.rows != row_ids || !layout_matches {
+            pending.cancel.cancel();
+            if let Ok(mut slot) = pending.slot.lock() {
+                drop(slot.take());
+            }
+            prefetch::reap_if_finished(pending.handle);
             return None;
         }
-        pending.handle.join().ok()?.ok()?
+        let outcome = match pending.slot.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => {
+                pending.cancel.cancel();
+                prefetch::reap_if_finished(pending.handle);
+                return None;
+            }
+        };
+        match outcome {
+            Some(prefetch::SpecOutcome::Ready(ready)) => {
+                prefetch::reap_if_finished(pending.handle);
+                Some(ready.into_planes())
+            }
+            Some(prefetch::SpecOutcome::Failed(error)) => {
+                tracing::debug!(%error, "n-gram prefetch failed; retrying as demand read");
+                pending.cancel.cancel();
+                prefetch::reap_if_finished(pending.handle);
+                None
+            }
+            Some(prefetch::SpecOutcome::Cancelled) => {
+                pending.cancel.cancel();
+                prefetch::reap_if_finished(pending.handle);
+                None
+            }
+            None => {
+                pending.cancel.cancel();
+                prefetch::reap_if_finished(pending.handle);
+                None
+            }
+        }
     }
 }
 
@@ -564,12 +791,15 @@ fn uniform_batch_layout(shards: &[Shard]) -> Option<BatchLayout> {
     found
 }
 
-/// One positional row read into its slot of a staging plane.
+/// One positional row read into its representative slot of a staging plane.
 struct RowRead<'a> {
     reader: &'a SafetensorsRowReader,
     tensor: &'a str,
     row: u64,
     dst: &'a mut [u8],
+    global_row: u64,
+    plane: usize,
+    position: usize,
 }
 
 /// Reader threads per gather (`AX_FLASH_NEXT_NGRAM_READ_THREADS`, see fastpath).
@@ -581,34 +811,65 @@ fn max_read_threads() -> usize {
     crate::fastpath::flash_next_ngram_read_threads()
 }
 
-fn run_row_reads(reads: &mut [RowRead<'_>]) -> Result<(), NgramTableError> {
-    fn run(chunk: &mut [RowRead<'_>]) -> Result<(), String> {
+fn run_row_reads(
+    reads: &mut [RowRead<'_>],
+    cancel: Option<&prefetch::CancelFlag>,
+    hook: Option<&prefetch::ReadHook>,
+    is_speculative: bool,
+) -> Result<(), NgramTableError> {
+    fn run(
+        chunk: &mut [RowRead<'_>],
+        cancel: Option<&prefetch::CancelFlag>,
+        hook: Option<&prefetch::ReadHook>,
+        is_speculative: bool,
+    ) -> Result<(), NgramTableError> {
         for read in chunk {
-            read.reader.read_row_into(read.tensor, read.row, read.dst)?;
+            if let Some(hook) = hook {
+                hook(&prefetch::ReadHookContext {
+                    is_speculative,
+                    row: read.global_row,
+                    plane: read.plane,
+                    position: read.position,
+                });
+            }
+            if let Some(cancel) = cancel
+                && cancel.is_cancelled()
+            {
+                return Err(NgramTableError::Cancelled);
+            }
+            read.reader
+                .read_row_into(read.tensor, read.row, read.dst)
+                .map_err(NgramTableError::Gather)?;
         }
         Ok(())
     }
     let threads = reads.len().min(max_read_threads());
     if threads <= 1 {
-        return run(reads).map_err(NgramTableError::Gather);
+        return run(reads, cancel, hook, is_speculative);
     }
     let per_thread = reads.len().div_ceil(threads);
     let mut chunks = reads.chunks_mut(per_thread);
     let first = chunks.next();
     std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
-            .map(|chunk| scope.spawn(move || run(chunk)))
+            .map(|chunk| scope.spawn(move || run(chunk, cancel, hook, is_speculative)))
             .collect();
-        let mut result = first.map_or(Ok(()), run);
+        let mut result = first.map_or(Ok(()), |chunk| run(chunk, cancel, hook, is_speculative));
         for handle in handles {
-            let joined = handle
-                .join()
-                .unwrap_or_else(|_| Err("n-gram row read thread panicked".to_string()));
-            if result.is_ok() {
-                result = joined;
+            let joined = match handle.join() {
+                Ok(inner) => inner,
+                Err(_) => Err(NgramTableError::Gather(
+                    "n-gram row read thread panicked".to_string(),
+                )),
+            };
+            match (&result, &joined) {
+                (Err(NgramTableError::Cancelled), _) => {}
+                (_, Err(NgramTableError::Cancelled)) => result = joined,
+                (Ok(()), Err(_)) => result = joined,
+                _ => {}
             }
         }
-        result.map_err(NgramTableError::Gather)
+        result
     })
 }
 
@@ -1085,9 +1346,20 @@ impl Core {
     /// row instead of three). The packed weight plane stays on-demand: it is
     /// the large region gathers already stream by row. Dense shards
     /// contribute nothing. Returns the total bytes read.
+    #[cfg(test)]
     fn warm_aux_planes(&self) -> Result<u64, String> {
+        self.warm_aux_planes_cancellable(None)
+    }
+
+    fn warm_aux_planes_cancellable(
+        &self,
+        cancel: Option<&prefetch::CancelFlag>,
+    ) -> Result<u64, String> {
         let mut total: u64 = 0;
         for shard in &self.shards {
+            if cancel.is_some_and(prefetch::CancelFlag::is_cancelled) {
+                break;
+            }
             if let ShardEncoding::Quantized {
                 scales_name,
                 scales_file,
@@ -1099,11 +1371,19 @@ impl Core {
                 let scales_reader = self.readers.get(scales_file).ok_or_else(|| {
                     format!("warm scales: reader missing for {}", scales_file.display())
                 })?;
-                total = total.saturating_add(scales_reader.warm_tensor(scales_name)?);
+                total = total.saturating_add(
+                    scales_reader.warm_tensor_cancellable(scales_name, || {
+                        cancel.is_some_and(prefetch::CancelFlag::is_cancelled)
+                    })?,
+                );
                 let biases_reader = self.readers.get(biases_file).ok_or_else(|| {
                     format!("warm biases: reader missing for {}", biases_file.display())
                 })?;
-                total = total.saturating_add(biases_reader.warm_tensor(biases_name)?);
+                total = total.saturating_add(
+                    biases_reader.warm_tensor_cancellable(biases_name, || {
+                        cancel.is_some_and(prefetch::CancelFlag::is_cancelled)
+                    })?,
+                );
             }
         }
         Ok(total)
@@ -1200,7 +1480,15 @@ impl Core {
 
     /// Read the rows of a batched gather into caller-ordered staging planes,
     /// or `None` when the table has no uniform row format to batch over.
-    fn stage(&self, row_ids: &[u64]) -> Result<Option<Vec<Vec<u8>>>, NgramTableError> {
+    /// Speculative callers pass a cancel flag checked between positional
+    /// reads; demand callers pass `None` and never observe cancellation.
+    fn stage(
+        &self,
+        row_ids: &[u64],
+        cancel: Option<&prefetch::CancelFlag>,
+        hook: Option<&prefetch::ReadHook>,
+        is_speculative: bool,
+    ) -> Result<Option<Vec<Vec<u8>>>, NgramTableError> {
         let Some(layout) = &self.batch else {
             return Ok(None);
         };
@@ -1208,10 +1496,15 @@ impl Core {
             return Ok(None);
         }
         let assignment = self.assign(row_ids)?;
-        self.stage_planes(layout, row_ids, &assignment).map(Some)
+        self.stage_planes(layout, row_ids, &assignment, cancel, hook, is_speculative)
+            .map(Some)
     }
 
-    fn gather_inner(&self, row_ids: &[u64]) -> Result<MlxArray, NgramTableError> {
+    fn gather_inner(
+        &self,
+        row_ids: &[u64],
+        hook: Option<&prefetch::ReadHook>,
+    ) -> Result<MlxArray, NgramTableError> {
         let count = row_ids.len();
         if count > i32::MAX as usize {
             return Err(NgramTableError::TooManyRows(count));
@@ -1235,7 +1528,7 @@ impl Core {
             .checked_mul(width)
             .ok_or_else(|| NgramTableError::Overflow("gather elements".to_string()))?;
         if let Some(layout) = &self.batch {
-            let planes = self.stage_planes(layout, row_ids, &assignment)?;
+            let planes = self.stage_planes(layout, row_ids, &assignment, None, hook, false)?;
             return self.planes_to_array(layout, &planes, count_i32);
         }
         let mut per_shard: Vec<Vec<(usize, u64)>> = Vec::new();
@@ -1338,13 +1631,18 @@ impl Core {
         Ok(out_array)
     }
 
-    /// Read every requested row concurrently into caller-ordered staging
-    /// planes (weight, then scales and biases when quantized).
+    /// Read every unique row concurrently into its representative slot of
+    /// caller-ordered staging planes (weight, then scales and biases when
+    /// quantized), then replicate bytes to duplicate slots. The full planes
+    /// feed the same single dequantize as before, so arithmetic is unchanged.
     fn stage_planes(
         &self,
         layout: &BatchLayout,
         row_ids: &[u64],
         assignment: &[usize],
+        cancel: Option<&prefetch::CancelFlag>,
+        hook: Option<&prefetch::ReadHook>,
+        is_speculative: bool,
     ) -> Result<Vec<Vec<u8>>, NgramTableError> {
         let count = row_ids.len();
         let planes = layout.planes();
@@ -1355,18 +1653,38 @@ impl Core {
                 .ok_or_else(|| NgramTableError::Overflow("staging plane bytes".to_string()))?;
             staging.push(vec![0u8; bytes]);
         }
+        let plan = dedup::plan(row_ids).map_err(NgramTableError::Internal)?;
         {
-            let mut reads: Vec<RowRead<'_>> = Vec::with_capacity(count * planes.len());
+            let mut reads: Vec<RowRead<'_>> =
+                Vec::with_capacity(plan.unique_rows.len() * planes.len());
             let mut cursors: Vec<_> = staging
                 .iter_mut()
                 .zip(&planes)
                 .map(|(bytes, plane)| bytes.chunks_exact_mut(plane.row_bytes))
                 .collect();
-            for (row, &shard_idx) in row_ids.iter().zip(assignment) {
+            // Representative positions arrive in increasing order, so one
+            // forward pass reaches each unique slot while skipping duplicates.
+            let mut cursor_pos: usize = 0;
+            for (uniq, global_row) in plan.unique_rows.iter().enumerate() {
+                let rep = *plan
+                    .representative
+                    .get(uniq)
+                    .ok_or_else(|| NgramTableError::Internal("dedup rep missing".to_string()))?;
+                while cursor_pos < rep {
+                    for cursor in cursors.iter_mut() {
+                        cursor.next().ok_or_else(|| {
+                            NgramTableError::Internal("staging row missing".to_string())
+                        })?;
+                    }
+                    cursor_pos = cursor_pos.saturating_add(1);
+                }
+                let shard_idx = *assignment.get(rep).ok_or_else(|| {
+                    NgramTableError::Internal("batched shard missing".to_string())
+                })?;
                 let shard = self.shards.get(shard_idx).ok_or_else(|| {
                     NgramTableError::Internal("batched shard missing".to_string())
                 })?;
-                let local = row
+                let local = global_row
                     .checked_sub(shard.global_start)
                     .ok_or_else(|| NgramTableError::Overflow("local row".to_string()))?;
                 let mut sources: Vec<(&PathBuf, &str)> =
@@ -1382,7 +1700,14 @@ impl Core {
                     sources.push((scales_file, scales_name));
                     sources.push((biases_file, biases_name));
                 }
-                for ((file, tensor), cursor) in sources.into_iter().zip(cursors.iter_mut()) {
+                if sources.len() != cursors.len() {
+                    return Err(NgramTableError::Internal(
+                        "batched plane count mismatch".to_string(),
+                    ));
+                }
+                for (plane_idx, ((file, tensor), cursor)) in
+                    sources.into_iter().zip(cursors.iter_mut()).enumerate()
+                {
                     let reader = self.readers.get(file).ok_or_else(|| {
                         NgramTableError::Internal("batched reader missing".to_string())
                     })?;
@@ -1394,11 +1719,17 @@ impl Core {
                         tensor,
                         row: local,
                         dst,
+                        global_row: *global_row,
+                        plane: plane_idx,
+                        position: rep,
                     });
                 }
+                cursor_pos = cursor_pos.saturating_add(1);
             }
-            run_row_reads(&mut reads)?;
+            run_row_reads(&mut reads, cancel, hook, is_speculative)?;
         }
+        let row_bytes: Vec<usize> = planes.iter().map(|p| p.row_bytes).collect();
+        dedup::expand(&mut staging, &plan, &row_bytes).map_err(NgramTableError::Internal)?;
         Ok(staging)
     }
 
@@ -1642,7 +1973,7 @@ mod tests {
             want.extend_from_slice(&full[start..start + width]);
         }
         assert_eq!(got, want);
-        assert_eq!(table.payload_bytes_read(), (5 * 4 * 4) as u64);
+        assert_eq!(table.payload_bytes_read(), (4 * 4 * 4) as u64);
     }
 
     fn quant_fixture(
@@ -1794,7 +2125,7 @@ mod tests {
             }
             assert_eq!(got, want, "parity failed for {bits}-bit");
             let per_row = packed_cols * 4 + groups * 4 + groups * 4;
-            assert_eq!(table.payload_bytes_read(), (rows.len() * per_row) as u64);
+            assert_eq!(table.payload_bytes_read(), (4 * per_row) as u64);
             // Uniform shards take the concurrent batched path; it must match
             // the per-shard path, including past one row per reader thread.
             assert!(table.core.batch.is_some(), "uniform shards must batch");
@@ -1812,7 +2143,7 @@ mod tests {
             let other = table.gather(&rows).unwrap();
             mlx_sys::eval(&[&other]);
             assert_eq!(other.data_f32().to_vec(), want, "{bits}-bit stale prefetch");
-            let mut per_shard = table;
+            let mut per_shard = NgramTable::open(&dir, &specs, 1, 2, width, 1 << 24).unwrap();
             Arc::get_mut(&mut per_shard.core).unwrap().batch = None;
             let slow = per_shard.gather(&many).unwrap();
             mlx_sys::eval(&[&slow]);
@@ -1952,7 +2283,7 @@ mod tests {
         }
         assert_eq!(got, want);
         let per_row = packed_cols * 4 + groups * 4 + groups * 4;
-        assert_eq!(table.payload_bytes_read(), (rows.len() * per_row) as u64);
+        assert_eq!(table.payload_bytes_read(), (4 * per_row) as u64);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2045,5 +2376,439 @@ mod tests {
         mlx_sys::eval(&[&second]);
         assert_eq!(first.data_f32().to_vec(), snapshot);
         assert_eq!(second.shape(), vec![3, 4]);
+    }
+
+    use std::sync::Condvar;
+
+    fn isolated(jobs: usize, bytes: usize) -> Arc<prefetch::SpecAccounting> {
+        let accounting = Arc::new(prefetch::SpecAccounting::new(jobs, bytes));
+        assert_eq!(accounting.max_jobs(), jobs.min(1024));
+        assert_eq!(
+            accounting.max_staged_bytes(),
+            bytes.min(8 * 1024 * 1024 * 1024)
+        );
+        accounting
+    }
+
+    fn done_hook(counter: &Arc<(Mutex<usize>, Condvar)>) -> Arc<dyn Fn() + Send + Sync> {
+        let counter = Arc::clone(counter);
+        Arc::new(move || {
+            let (lock, cvar) = &*counter;
+            *lock.lock().unwrap() += 1;
+            cvar.notify_all();
+        })
+    }
+
+    fn wait_for(counter: &Arc<(Mutex<usize>, Condvar)>, want: usize) {
+        let (lock, cvar) = &**counter;
+        let mut current = lock.lock().unwrap();
+        while *current < want {
+            current = cvar.wait(current).unwrap();
+        }
+    }
+
+    fn tiny_expected() -> Vec<f32> {
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ]
+    }
+
+    fn want_rows(full: &[f32], rows: &[u64], width: usize) -> Vec<f32> {
+        let mut want = Vec::new();
+        for row in rows {
+            let start = (*row as usize) * width;
+            want.extend_from_slice(&full[start..start + width]);
+        }
+        want
+    }
+
+    #[test]
+    fn duplicate_rows_read_once_and_match_output() {
+        let (dir, specs) = tiny_dense_dir("dedup_once");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(4, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let calls: Arc<Mutex<Vec<prefetch::ReadHookContext>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        table.hook = Some(Arc::new(move |ctx: &prefetch::ReadHookContext| {
+            recorded.lock().unwrap().push(ctx.clone());
+        }));
+        let rows = vec![3u64, 0, 3, 1, 2];
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(out.shape(), vec![5, 4]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &rows, 4)
+        );
+        let seen = calls.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        assert!(seen.iter().all(|c| !c.is_speculative));
+        let mut hit_rows: Vec<u64> = seen.iter().map(|c| c.row).collect();
+        hit_rows.sort_unstable();
+        assert_eq!(hit_rows, vec![0, 1, 2, 3]);
+        let mut hit_pos: Vec<usize> = seen.iter().map(|c| c.position).collect();
+        hit_pos.sort_unstable();
+        assert_eq!(hit_pos, vec![0, 1, 3, 4]);
+        assert!(seen.iter().all(|c| c.plane == 0));
+        assert_eq!(table.payload_bytes_read(), 64);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn job_ceiling_skips_prefetch_and_demand_succeeds() {
+        let (dir, specs) = tiny_dense_dir("job_ceil");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(0, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        table.worker_done = Some(done_hook(&done));
+        let rows = vec![0u64, 1, 2, 3];
+        table.prefetch(rows.clone());
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        assert_eq!(*done.0.lock().unwrap(), 0);
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &rows, 4)
+        );
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        assert_eq!(*done.0.lock().unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn byte_ceiling_skips_prefetch_and_demand_succeeds() {
+        let (dir, specs) = tiny_dense_dir("byte_ceil");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(4, 1);
+        table.accounting = Arc::clone(&accounting);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        table.worker_done = Some(done_hook(&done));
+        let rows = vec![0u64, 1, 2, 3];
+        table.prefetch(rows.clone());
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        assert_eq!(*done.0.lock().unwrap(), 0);
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &rows, 4)
+        );
+        assert_eq!(table.payload_bytes_read(), 64);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mismatched_gather_cancels_and_reads_synchronously() {
+        let (dir, specs) = tiny_dense_dir("mismatch_sync");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(4, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        table.worker_done = Some(done_hook(&done));
+        table.prefetch(vec![0]);
+        let rows = vec![1u64, 2];
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &rows, 4)
+        );
+        wait_for(&done, 1);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn demand_progress_while_speculation_gated_then_cancelled_without_new_reads() {
+        let (dir, specs) = tiny_dense_dir("gate_demand");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(4, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        table.worker_done = Some(done_hook(&done));
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let entered: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let calls: Arc<Mutex<Vec<prefetch::ReadHookContext>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let gate = Arc::clone(&gate);
+            let entered = Arc::clone(&entered);
+            let calls = Arc::clone(&calls);
+            table.hook = Some(Arc::new(move |ctx: &prefetch::ReadHookContext| {
+                calls.lock().unwrap().push(ctx.clone());
+                if ctx.is_speculative {
+                    *entered.0.lock().unwrap() += 1;
+                    entered.1.notify_all();
+                    let mut open = gate.0.lock().unwrap();
+                    while !*open {
+                        open = gate.1.wait(open).unwrap();
+                    }
+                }
+            }));
+        }
+        table.prefetch(vec![0]);
+        wait_for(&entered, 1);
+        let rows = vec![1u64, 2];
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &rows, 4)
+        );
+        {
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+        }
+        wait_for(&done, 1);
+        let seen = calls.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.iter().filter(|c| c.is_speculative).count(), 1);
+        assert_eq!(seen.iter().filter(|c| !c.is_speculative).count(), 2);
+        assert_eq!(table.payload_bytes_read(), 32);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replaced_prefetch_releases_and_successor_reuses_ready_planes() {
+        let (dir, specs) = tiny_dense_dir("gate_replace");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(4, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        table.worker_done = Some(done_hook(&done));
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let entered: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let calls: Arc<Mutex<Vec<prefetch::ReadHookContext>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let gate = Arc::clone(&gate);
+            let entered = Arc::clone(&entered);
+            let calls = Arc::clone(&calls);
+            table.hook = Some(Arc::new(move |ctx: &prefetch::ReadHookContext| {
+                calls.lock().unwrap().push(ctx.clone());
+                if ctx.is_speculative {
+                    *entered.0.lock().unwrap() += 1;
+                    entered.1.notify_all();
+                    let mut open = gate.0.lock().unwrap();
+                    while !*open {
+                        open = gate.1.wait(open).unwrap();
+                    }
+                }
+            }));
+        }
+        table.prefetch(vec![0]);
+        wait_for(&entered, 1);
+        table.prefetch(vec![1]);
+        wait_for(&entered, 2);
+        {
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+        }
+        wait_for(&done, 2);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 16);
+        let out = table.gather(&[1]).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &[1], 4)
+        );
+        let seen = calls.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|c| c.is_speculative));
+        assert_eq!(table.payload_bytes_read(), 16);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn demand_and_table_drop_cancel_background_warming() {
+        let (dir, specs) = tiny_dense_dir("warm-cancel-lifetime");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(4, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let cancel = Arc::clone(&table.warm_cancel);
+        assert!(!cancel.is_cancelled());
+        let _ = table.gather(&[0]).unwrap();
+        assert!(cancel.is_cancelled());
+        table.warm_aux_in_background();
+        assert_eq!(accounting.current_jobs(), 0);
+        let table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let cancel = Arc::clone(&table.warm_cancel);
+        drop(table);
+        assert!(cancel.is_cancelled());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn drop_cancels_without_joining_blocked_worker() {
+        let (dir, specs) = tiny_dense_dir("drop_gate");
+        let accounting = isolated(4, 64 << 20);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let entered: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let calls: Arc<Mutex<Vec<prefetch::ReadHookContext>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+            table.accounting = Arc::clone(&accounting);
+            table.worker_done = Some(done_hook(&done));
+            let gate = Arc::clone(&gate);
+            let worker_entered = Arc::clone(&entered);
+            let calls = Arc::clone(&calls);
+            table.hook = Some(Arc::new(move |ctx: &prefetch::ReadHookContext| {
+                calls.lock().unwrap().push(ctx.clone());
+                if ctx.is_speculative {
+                    *worker_entered.0.lock().unwrap() += 1;
+                    worker_entered.1.notify_all();
+                    let mut open = gate.0.lock().unwrap();
+                    while !*open {
+                        open = gate.1.wait(open).unwrap();
+                    }
+                }
+            }));
+            table.prefetch(vec![0]);
+            wait_for(&entered, 1);
+            assert_eq!(accounting.current_jobs(), 1);
+            drop(table);
+        }
+        {
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+        }
+        wait_for(&done, 1);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn churn_replaces_without_leak_and_final_gather_matches() {
+        let (dir, specs) = tiny_dense_dir("churn_final");
+        let mut table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let accounting = isolated(32, 64 << 20);
+        table.accounting = Arc::clone(&accounting);
+        let done: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        table.worker_done = Some(done_hook(&done));
+        for i in 0..20u64 {
+            table.prefetch(vec![i % 4]);
+        }
+        wait_for(&done, 20);
+        assert_eq!(accounting.current_jobs(), 0);
+        let rows = vec![3u64];
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(
+            out.data_f32().to_vec(),
+            want_rows(&tiny_expected(), &rows, 4)
+        );
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn speculative_guards_release_on_all_paths() {
+        let accounting = isolated(1, 100);
+        assert_eq!(accounting.current_jobs(), 0);
+        assert_eq!(accounting.current_staged_bytes(), 0);
+        {
+            let job = accounting.try_acquire_job().unwrap();
+            assert_eq!(accounting.current_jobs(), 1);
+            assert!(accounting.try_acquire_job().is_none());
+            {
+                let bytes = accounting.try_reserve_bytes(60).unwrap();
+                assert_eq!(bytes.bytes(), 60);
+                assert_eq!(accounting.current_staged_bytes(), 60);
+                assert!(accounting.try_reserve_bytes(50).is_none());
+            }
+            assert_eq!(accounting.current_staged_bytes(), 0);
+            drop(job);
+        }
+        assert_eq!(accounting.current_jobs(), 0);
+        {
+            let job = accounting.try_acquire_job().unwrap();
+            let bytes = accounting.try_reserve_bytes(40).unwrap();
+            let ready = prefetch::StagedReady {
+                planes: vec![vec![0u8; 40]],
+                bytes,
+            };
+            assert_eq!(accounting.current_staged_bytes(), 40);
+            drop(job);
+            assert_eq!(accounting.current_jobs(), 0);
+            assert_eq!(accounting.current_staged_bytes(), 40);
+            let planes = ready.into_planes();
+            assert_eq!(planes.len(), 1);
+            assert_eq!(accounting.current_staged_bytes(), 0);
+        }
+        {
+            let bytes = accounting.try_reserve_bytes(25).unwrap();
+            let outcome = prefetch::SpecOutcome::Ready(prefetch::StagedReady {
+                planes: vec![vec![0u8; 25]],
+                bytes,
+            });
+            assert_eq!(accounting.current_staged_bytes(), 25);
+            drop(outcome);
+            assert_eq!(accounting.current_staged_bytes(), 0);
+        }
+        assert!(accounting.try_reserve_bytes(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn synchronous_cancel_between_reads_stops_before_new_os_read() {
+        let (dir, specs) = tiny_dense_dir("sync_cancel");
+        let table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let cancel = Arc::new(prefetch::CancelFlag::new());
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_cancel = Arc::clone(&cancel);
+        let hook_seen = Arc::clone(&seen);
+        let hook: prefetch::ReadHook = Arc::new(move |ctx: &prefetch::ReadHookContext| {
+            let mut guard = hook_seen.lock().unwrap();
+            guard.push(ctx.row);
+            if guard.len() == 2 {
+                hook_cancel.cancel();
+            }
+        });
+        let before = table.payload_bytes_read();
+        let err = table
+            .core
+            .stage(&[0, 1, 2, 3], Some(cancel.as_ref()), Some(&hook), true)
+            .err()
+            .unwrap();
+        assert_eq!(err, NgramTableError::Cancelled);
+        let hooks = seen.lock().unwrap().len();
+        assert!((2..=4).contains(&hooks), "hooks {hooks}");
+        let payload = table.payload_bytes_read() - before;
+        assert!(payload < 64, "payload {payload}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn synchronous_pre_cancelled_stage_reads_nothing() {
+        let (dir, specs) = tiny_dense_dir("sync_precancel");
+        let table = NgramTable::open(&dir, &specs, 2, 2, 4, 1 << 20).unwrap();
+        let cancel = Arc::new(prefetch::CancelFlag::new());
+        cancel.cancel();
+        let before = table.payload_bytes_read();
+        let err = table
+            .core
+            .stage(&[0, 1, 2, 3], Some(cancel.as_ref()), None, true)
+            .err()
+            .unwrap();
+        assert_eq!(err, NgramTableError::Cancelled);
+        assert_eq!(table.payload_bytes_read() - before, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

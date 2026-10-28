@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -493,10 +494,27 @@ class Session:
             delegated_http_read_timeout_secs=delegated_http_read_timeout_secs,
             delegated_http_write_timeout_secs=delegated_http_write_timeout_secs,
         )
+        # `model_id` is an opaque label (it defaults to "qwen3_dense"), so an
+        # MLX session picks its chat template from the loaded artifacts.
+        artifacts_dir = None
+        if mlx:
+            artifacts_dir = (
+                mlx_model_artifacts_dir
+                or llama_model_path
+                or os.environ.get("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR")
+            )
+        self._artifact_model_type = _artifact_model_type(artifacts_dir)
 
     @property
     def model_id(self) -> str:
         return self._inner.model_id
+
+    def _chat_prompt(self, messages: list[ChatMessage | dict[str, str]]) -> str:
+        return _render_chat_prompt(
+            messages,
+            self.model_id,
+            template=_chat_template_for_artifacts(self._artifact_model_type),
+        )
 
     @property
     def closed(self) -> bool:
@@ -625,7 +643,10 @@ class Session:
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
-        for value in self._inner.stream_generate(
+        # Start the native stream now, not on the first ``next()``: argument
+        # and session-state errors (closed session, active stream) must raise
+        # at the call site, where callers wrap the call in ``try``.
+        native = self._inner.stream_generate(
             input_tokens,
             input_text=input_text,
             multimodal_inputs=multimodal_inputs,
@@ -643,8 +664,8 @@ class Session:
             ignore_eos=ignore_eos,
             stop_sequences=stop_sequences,
             metadata=metadata,
-        ):
-            yield _stream_event_from_dict(value)
+        )
+        return (_stream_event_from_dict(value) for value in native)
 
     def generate_text(
         self,
@@ -756,7 +777,7 @@ class Session:
         metadata: str | None = None,
     ) -> GenerateResult:
         return self.generate_text(
-            _render_chat_prompt(messages, self.model_id),
+            self._chat_prompt(messages),
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -787,7 +808,7 @@ class Session:
         metadata: str | None = None,
     ) -> int:
         return self.submit_text(
-            _render_chat_prompt(messages, self.model_id),
+            self._chat_prompt(messages),
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -818,7 +839,7 @@ class Session:
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
         return self.stream_text(
-            _render_chat_prompt(messages, self.model_id),
+            self._chat_prompt(messages),
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -1309,11 +1330,17 @@ def _stream_event_from_dict(value: dict[str, Any]) -> GenerateStreamEvent:
     )
 
 
-def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: str) -> str:
+def _render_chat_prompt(
+    messages: list[ChatMessage | dict[str, str]],
+    model_id: str,
+    *,
+    template: str | None = None,
+) -> str:
     if not messages:
         raise ValueError("chat requires at least one message")
 
-    template = _chat_prompt_template(model_id)
+    if template is None:
+        template = _chat_prompt_template(model_id)
     prompt_parts: list[str] = []
     if template in {"llama3", "llama4"}:
         prompt_parts.append("<|begin_of_text|>")
@@ -1331,7 +1358,12 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
                 if not qwen_tool_response_open:
                     prompt_parts.append("<|im_start|>user\n")
                     qwen_tool_response_open = True
-                prompt_parts.append(f"<tool_response>\n{escaped}\n</tool_response>\n")
+                # A payload must not close this response and forge another
+                # (same escape as the server's chat.rs).
+                tool_body = escaped.replace("<tool_response>", "&lt;tool_response>").replace(
+                    "</tool_response>", "&lt;/tool_response>"
+                )
+                prompt_parts.append(f"<tool_response>\n{tool_body}\n</tool_response>\n")
             else:
                 if qwen_tool_response_open:
                     prompt_parts.append("<|im_end|>\n")
@@ -1397,6 +1429,45 @@ def _escape_llama4_content(content: str) -> str:
         content.replace("<|header_start|>", "&lt;|header_start|>")
         .replace("<|header_end|>", "&lt;|header_end|>")
         .replace("<|eot|>", "&lt;|eot|>")
+    )
+
+
+def _artifact_model_type(artifacts_dir: str | None) -> str | None:
+    """``model_type`` from the artifacts' ``config.json``, or None if unknown."""
+    if not artifacts_dir:
+        return None
+    try:
+        with open(Path(artifacts_dir) / "config.json", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    model_type = config.get("model_type") if isinstance(config, dict) else None
+    if not isinstance(model_type, str) and isinstance(config, dict):
+        text_config = config.get("text_config")
+        if isinstance(text_config, dict):
+            model_type = text_config.get("model_type")
+    return model_type.lower() if isinstance(model_type, str) and model_type else None
+
+
+def _chat_template_for_artifacts(model_type: str | None) -> str | None:
+    """Chat template for loaded artifacts; None defers to the model-id label.
+
+    The SDK renders only the Qwen ChatML and Llama 3/4 templates. Any other
+    family the artifacts declare is refused rather than rendered with
+    another model's framing (the server's chat routes cover those).
+    """
+    if model_type is None:
+        return None
+    if model_type.startswith("qwen"):
+        return "qwen_chatml"
+    if model_type.startswith("llama4"):
+        return "llama4"
+    if model_type == "llama":
+        return "llama3"
+    raise ValueError(
+        f"Session chat helpers cannot render the chat template for model_type "
+        f"{model_type!r}; pass a prompt rendered with the model's own template to "
+        "generate_text(), or use the ax-engine-server chat endpoints"
     )
 
 

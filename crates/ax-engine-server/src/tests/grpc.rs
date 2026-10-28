@@ -90,6 +90,27 @@ async fn grpc_embeddings_rejects_unknown_pooling_like_http() {
     assert!(status.message().contains("pooling"), "{status}");
 }
 
+#[tokio::test]
+async fn grpc_embeddings_caps_the_item_count_like_http() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let service = AxEngineGrpcService::new(state);
+    let inputs = (0..=crate::openai::embeddings::DEFAULT_EMBED_MAX_ITEMS)
+        .map(|_| proto::EmbeddingInput { tokens: vec![1] })
+        .collect();
+    let status = service
+        .embeddings(tonic::Request::new(proto::EmbeddingsRequest {
+            model: String::new(),
+            input: Vec::new(),
+            pooling: String::new(),
+            normalize: true,
+            inputs,
+        }))
+        .await
+        .expect_err("more items than the HTTP cap must be rejected");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("items"), "{status}");
+}
+
 /// Regression for gRPC unary chat/completion/generate: native MLX leaves
 /// `output_text` unset; the unary handlers must call
 /// `populate_native_mlx_output_text` so clients receive decoded content.

@@ -561,16 +561,6 @@ enum LinearAttentionProjectionRowSource {
     A(usize),
 }
 
-/// A weight matrix plus optional MLX affine quantization metadata.
-///
-/// When `scales` is `Some`, the weight tensor contains packed affine-quantized
-/// integers and must be multiplied via `mlx_quantized_matmul` rather than
-/// regular matmul.
-///
-/// `Clone` is implemented because `MlxArray` clones are cheap refcount bumps
-/// (`mlx_array_set`), and per-layer compiled closures (e.g. the compiled
-/// shared-expert forward) need to capture cloned `QuantizedWeight`s as graph
-/// constants.
 /// Lazily built `[in, out]` transposed *view* (no copy) of an unquantized
 /// `[out, in]` weight, reused by every matmul instead of rebuilding the view
 /// per call.
@@ -579,6 +569,11 @@ enum LinearAttentionProjectionRowSource {
 /// the clone's `weight` must never inherit a view of the old tensor. Replacing
 /// `weight` in place on a weight that may already have served a projection
 /// requires [`QuantizedWeight::invalidate_weight_t_view`].
+///
+/// The view is evaluated before it is cached. Weights are shared across worker
+/// threads, and an unevaluated view stays bound to the creating thread's
+/// stream: another thread that evaluates a graph holding it fails with "There
+/// is no Stream(gpu, N) in current thread".
 #[derive(Default)]
 pub struct WeightViewCell(std::sync::OnceLock<MlxArray>);
 
@@ -589,8 +584,17 @@ impl Clone for WeightViewCell {
 }
 
 impl WeightViewCell {
-    pub(crate) fn get_or_init(&self, build: impl FnOnce() -> MlxArray) -> &MlxArray {
-        self.0.get_or_init(build)
+    pub(crate) fn get_or_build(&self, build: impl FnOnce() -> MlxArray) -> MlxArray {
+        if let Some(view) = self.0.get() {
+            return view.clone();
+        }
+        let view = build();
+        // Inside a function transformation (compile trace) eval is refused;
+        // use the view uncached rather than publish a traced array.
+        if mlx_sys::transforms::try_eval(&[&view]).is_err() {
+            return view;
+        }
+        self.0.get_or_init(|| view).clone()
     }
 
     fn reset(&mut self) {
@@ -598,6 +602,16 @@ impl WeightViewCell {
     }
 }
 
+/// A weight matrix plus optional MLX affine quantization metadata.
+///
+/// When `scales` is `Some`, the weight tensor contains packed affine-quantized
+/// integers and must be multiplied via `mlx_quantized_matmul` rather than
+/// regular matmul.
+///
+/// `Clone` is implemented because `MlxArray` clones are cheap refcount bumps
+/// (`mlx_array_set`), and per-layer compiled closures (e.g. the compiled
+/// shared-expert forward) need to capture cloned `QuantizedWeight`s as graph
+/// constants.
 #[derive(Clone)]
 pub struct QuantizedWeight {
     pub weight: MlxArray,
@@ -954,7 +968,10 @@ pub(crate) const PREFILL_FFN_Q3_GROUP_SIZE: i32 = 32;
 
 pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<QuantizedWeight> {
     let scales = src.scales.as_ref()?;
-    if src.bits <= PREFILL_LA_Q2_BITS || src.group_size <= 0 || src.mode != "affine" {
+    // `is_affine_quantized`, not the mode string: an "affine"-labelled
+    // scales-only 4-bit/g32 weight runs as MXFP4, and an affine dequantize
+    // without biases panics at load.
+    if src.bits <= PREFILL_LA_Q2_BITS || src.group_size <= 0 || !src.is_affine_quantized() {
         return None;
     }
     let dense = dequantize(
@@ -1006,7 +1023,7 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
     if src.bits <= 0
         || src.group_size <= 0
         || src.group_size == PREFILL_FFN_GS64_GROUP_SIZE
-        || src.mode != "affine"
+        || !src.is_affine_quantized()
     {
         return None;
     }
@@ -1057,7 +1074,7 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
 /// specialization. No-ops when the source is already ≤3-bit.
 pub(crate) fn requant_affine_to_prefill_q3(src: &QuantizedWeight) -> Option<QuantizedWeight> {
     let scales = src.scales.as_ref()?;
-    if src.bits <= PREFILL_FFN_Q3_BITS || src.group_size <= 0 || src.mode != "affine" {
+    if src.bits <= PREFILL_FFN_Q3_BITS || src.group_size <= 0 || !src.is_affine_quantized() {
         return None;
     }
     let dense = dequantize(
@@ -4717,6 +4734,9 @@ fn apply_rotated_checkpoint(
                 target.biases = Some(biases.clone());
                 target.bits = bits_calc as i32;
                 target.group_size = 64;
+                // The rotated tensors are affine-packed; a leftover mxfp4 /
+                // mxfp8 mode would read them as microscaled data.
+                target.mode = "affine".to_string();
             } else {
                 // f32 path: cast to bf16, drop scales/biases, forward picks
                 // the plain matmul branch.

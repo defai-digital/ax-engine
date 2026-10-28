@@ -527,19 +527,25 @@ def client_stop_sequences(payload: dict[str, Any]) -> list[str]:
 
 
 def truncate_at_stop(text: str, stops: list[str]) -> tuple[str, bool]:
-    """Cut `text` at the earliest client stop string; `True` when one matched.
+    """Cut `text` at the first client stop string to complete; `True` when one matched.
 
     The native MLX session does not apply stop strings at decode (the Rust
     server truncates post-decode too), so the shim must enforce them here.
+    Matches rank by end offset, ties by earlier start, as in the Rust server:
+    generation emits text left to right, so with stops ``abcd`` and ``bc``
+    the turn ends on ``bc`` even though ``abcd`` starts first.
     """
-    cut = None
+    best: tuple[int, int] | None = None
     for stop in stops:
         index = text.find(stop)
-        if index != -1 and (cut is None or index < cut):
-            cut = index
-    if cut is None:
+        if index == -1:
+            continue
+        candidate = (index + len(stop), index)
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
         return text, False
-    return text[:cut], True
+    return text[: best[1]], True
 
 
 def split_held_stop_prefix(text: str, stops: list[str]) -> tuple[str, str]:
@@ -584,20 +590,62 @@ def openai_value_is_present(value: Any) -> bool:
     return True
 
 
+def tool_call_finish(native_finish: str | None) -> str | None:
+    """``tool_calls`` only for a clean end of turn, as in the Rust server.
+
+    A call cut off by ``max_tokens`` (``length``) or a cancelled generation
+    keeps its native reason, so a client never runs a truncated call as
+    though it had finished.
+    """
+    return "tool_calls" if native_finish in (None, "stop") else native_finish
+
+
+def resolve_tool_chat_stop(
+    text: str, stops: list[str], native_finish: str | None
+) -> tuple[str, str | None, bool]:
+    """Apply client stops to tool-enabled chat output.
+
+    Returns ``(text, finish_reason, stop_hit)``. A stop that occurs before any
+    ``<tool_call>`` opener ends the turn there, as it would have on the
+    stream: the call after it would never have been generated. A stop after
+    an opener (inside or past a call) loses to a call that parses. Without a
+    parsed call the stop applies as in plain chat.
+    """
+    truncated, stop_hit = truncate_at_stop(text.strip(), stops)
+    if stop_hit and ("<tool_call>" not in truncated or not extract_tool_calls(text)[1]):
+        return truncated, "stop", True
+    return text, native_finish, False
+
+
 def extract_tool_calls(content: str) -> tuple[str, list[dict[str, Any]] | None]:
+    """Pull ``<tool_call>`` spans out of ``content``, as the Rust server does.
+
+    Each opener tries every later ``</tool_call>`` in order (arguments may
+    contain the closing tag as text), falling back to the end of the text
+    only when no closing tag follows. An opener whose body never parses is
+    left as content and the scan moves on, so a tag mentioned in prose does
+    not hide a real call after it.
+    """
     remaining = content
     calls: list[dict[str, Any]] = []
+    search_from = 0
     while True:
-        start = remaining.find("<tool_call>")
+        start = remaining.find("<tool_call>", search_from)
         if start < 0:
             break
         body_start = start + len("<tool_call>")
+        function = None
+        suffix_start = len(remaining)
         end = remaining.find("</tool_call>", body_start)
-        suffix_start = len(remaining) if end < 0 else end + len("</tool_call>")
-        body_end = len(remaining) if end < 0 else end
-        function = parse_tool_call_body(remaining[body_start:body_end].strip())
+        if end < 0:
+            function = parse_tool_call_body(remaining[body_start:].strip())
+        while end >= 0 and function is None:
+            function = parse_tool_call_body(remaining[body_start:end].strip())
+            suffix_start = end + len("</tool_call>")
+            end = remaining.find("</tool_call>", end + 1)
         if function is None:
-            break
+            search_from = body_start
+            continue
         calls.append(
             {
                 "id": f"call_{len(calls)}",
@@ -606,6 +654,7 @@ def extract_tool_calls(content: str) -> tuple[str, list[dict[str, Any]] | None]:
             }
         )
         remaining = remaining[:start] + remaining[suffix_start:]
+        search_from = start
     return remaining.strip(), calls or None
 
 
@@ -756,9 +805,7 @@ def usage(
     # A text-only delegated backend reports authoritative counts while leaving
     # the token arrays empty; prefer the count when present.
     prompt_count = len(prompt_tokens) if prompt_token_count is None else prompt_token_count
-    completion_count = (
-        len(output_tokens) if output_token_count is None else output_token_count
-    )
+    completion_count = len(output_tokens) if output_token_count is None else output_token_count
     return {
         "prompt_tokens": prompt_count,
         "completion_tokens": completion_count,
@@ -831,6 +878,32 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_cls: Any) -> Any:
     return tokenizer_cls.from_file(str(path))
 
 
+def gated_stream(gate: Any, chunks: Iterator[str]) -> AsyncIterator[str]:
+    """Hold ``gate`` for a stream's whole lifetime.
+
+    The gate is released when the stream is exhausted or the client
+    disconnects. Before release, the underlying sync iterator is closed: a
+    disconnect only closes this async wrapper, and an inner native stream left
+    open would keep the session busy, so the next request admitted through the
+    gate would fail with "session already has an active stream".
+    """
+    import anyio
+    from starlette.concurrency import iterate_in_threadpool
+
+    async def _gated_chunks() -> AsyncIterator[str]:
+        async with gate:
+            try:
+                async for chunk in iterate_in_threadpool(chunks):
+                    yield chunk
+            finally:
+                close = getattr(chunks, "close", None)
+                if callable(close):
+                    with anyio.CancelScope(shield=True):
+                        await anyio.to_thread.run_sync(close)
+
+    return _gated_chunks()
+
+
 def create_app(
     *,
     model_id: str = "qwen3_dense",
@@ -843,7 +916,6 @@ def create_app(
         import anyio
         from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse, StreamingResponse
-        from starlette.concurrency import iterate_in_threadpool
         from tokenizers import Tokenizer
     except ImportError as error:
         raise RuntimeError(
@@ -865,18 +937,7 @@ def create_app(
     generation_gate = anyio.Semaphore(1)
 
     def serialized_stream(chunks: Iterator[str]) -> AsyncIterator[str]:
-        """Hold the generation gate for a stream's whole lifetime.
-
-        The gate is released in the ``async with`` unwind when the stream is
-        exhausted or the client disconnects (Starlette closes the generator).
-        """
-
-        async def _gated_chunks() -> AsyncIterator[str]:
-            async with generation_gate:
-                async for chunk in iterate_in_threadpool(chunks):
-                    yield chunk
-
-        return _gated_chunks()
+        return gated_stream(generation_gate, chunks)
 
     @asynccontextmanager
     async def lifespan(_app: Any):
@@ -915,6 +976,7 @@ def create_app(
                 or require_max_tokens(payload)
                 or validate_sampling_params(payload)
                 or validate_metadata(payload)
+                or validate_choice_params(payload, "completion")
             )
         if error is not None:
             return openai_error(*error)
@@ -938,7 +1000,7 @@ def create_app(
             return StreamingResponse(events, media_type="text/event-stream")
 
         def _blocking_completion() -> Any:
-            return session.generate(input_tokens, **session_generate_kwargs(payload))
+            return session.generate(input_tokens, **session_generate_kwargs(payload, model_id))
 
         # generate() blocks for the whole generation; running it inline would
         # park the event loop and stall every concurrent request, /health
@@ -979,6 +1041,7 @@ def create_app(
                 or require_max_tokens(payload)
                 or validate_sampling_params(payload)
                 or validate_metadata(payload)
+                or validate_choice_params(payload, "chat")
             )
         if error is not None:
             return openai_error(*error)
@@ -1001,7 +1064,8 @@ def create_app(
             if parse_tool_calls:
 
                 def _blocking_tool_chat() -> Any:
-                    return session.generate(input_tokens, **session_generate_kwargs(payload))
+                    kwargs = session_generate_kwargs(payload, model_id)
+                    return session.generate(input_tokens, **kwargs)
 
                 # Blocking generate off the event loop; see the completions
                 # handler for rationale.
@@ -1010,11 +1074,11 @@ def create_app(
                 text = result_text(result, tokenizer)
                 # Client stops apply to visible content only; a parsed tool
                 # call is never truncated (same contract as the Rust server).
-                buffered_finish = finish_reason(result.finish_reason)
-                if not extract_tool_calls(text)[1]:
-                    text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
-                    if stop_hit:
-                        buffered_finish = "stop"
+                text, buffered_finish, _stop_hit = resolve_tool_chat_stop(
+                    text,
+                    client_stop_sequences(payload),
+                    finish_reason(result.finish_reason),
+                )
                 events = stream_buffered_tool_chat_chunks(
                     model_id,
                     result.request_id,
@@ -1037,7 +1101,7 @@ def create_app(
             return StreamingResponse(gated_events, media_type="text/event-stream")
 
         def _blocking_chat() -> Any:
-            return session.generate(input_tokens, **session_generate_kwargs(payload))
+            return session.generate(input_tokens, **session_generate_kwargs(payload, model_id))
 
         # Blocking generate off the event loop; see the completions handler
         # for rationale.
@@ -1047,11 +1111,15 @@ def create_app(
         # Client stops apply to visible content only; a parsed tool call is
         # never truncated (same order as the streaming tool-chat path above).
         tool_calls: list[dict[str, Any]] | None = None
-        if parse_tool_calls:
-            text, tool_calls = extract_tool_calls(text)
         response_finish_reason = finish_reason(result.finish_reason)
-        if tool_calls:
-            response_finish_reason = "tool_calls"
+        if parse_tool_calls:
+            text, response_finish_reason, stop_hit = resolve_tool_chat_stop(
+                text, client_stop_sequences(payload), response_finish_reason
+            )
+            if not stop_hit:
+                text, tool_calls = extract_tool_calls(text)
+                if tool_calls:
+                    response_finish_reason = tool_call_finish(response_finish_reason)
         else:
             text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
             if stop_hit:
@@ -1077,7 +1145,7 @@ def create_app(
     def openai_error(status: int, message: str, *, code: str = "invalid_request") -> Any:
         return JSONResponse(
             status_code=status,
-            content={"error": {"code": code, "message": message}},
+            content={"error": openai_error_body(message, code, client_error=status < 500)},
         )
 
     @app.exception_handler(Exception)
@@ -1195,6 +1263,82 @@ def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
     min_p = payload.get("min_p")
     if min_p is not None and not 0.0 <= float(min_p) <= 1.0:
         return 400, "OpenAI-compatible MLX shim requires min_p to be within [0, 1]"
+    # The Python session has no presence/frequency penalty or logit_bias
+    # input; silently ignoring a non-neutral value would answer 200 as though
+    # it had been applied.
+    for key in ("presence_penalty", "frequency_penalty"):
+        value = payload.get(key)
+        if value is not None and value != 0:
+            return 400, f"OpenAI-compatible MLX shim does not support {key}"
+    if payload.get("logit_bias"):
+        return 400, "OpenAI-compatible MLX shim does not support logit_bias"
+    return None
+
+
+def default_repetition_penalty(model_id: str, temperature: float) -> float:
+    """Default penalty when the request sends none, matching the Rust server.
+
+    Greedy requests keep 1.0 so the deterministic argmax fast path stays on;
+    sampled Qwen/Gemma requests get the mild 1.1 default (GLM keeps 1.0).
+    """
+    if temperature <= 0.0:
+        return 1.0
+    normalized = model_id.lower()
+    if "glm" in normalized:
+        return 1.0
+    if "qwen" in normalized or "gemma" in normalized:
+        return 1.1
+    return 1.0
+
+
+MAX_CLIENT_STOP_SEQUENCES = 4
+MAX_CLIENT_STOP_SEQUENCE_BYTES = 256
+
+
+def validate_choice_params(payload: dict[str, Any], endpoint: str) -> tuple[int, str] | None:
+    """Reject choice-count, logprob and stop options the shim cannot honor.
+
+    Mirrors the Rust server: one choice per request, and malformed ``stop``
+    fails closed. The shim returns no logprobs at all, so any logprob request
+    is refused instead of answering 200 without them.
+    """
+    for key in ("n", "best_of"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be a positive integer"
+        if value != 1:
+            return 400, f"{key} above 1 is not supported; AX generates one choice per request"
+    logprobs = payload.get("logprobs")
+    if endpoint == "chat":
+        requested = logprobs is True or bool(payload.get("top_logprobs"))
+    else:
+        requested = logprobs is not None and logprobs is not False
+    if requested:
+        return 400, "OpenAI-compatible MLX shim does not support logprobs"
+    stop = payload.get("stop")
+    if stop is None:
+        return None
+    if isinstance(stop, str):
+        stops = [stop]
+    elif isinstance(stop, list) and all(isinstance(item, str) for item in stop):
+        stops = stop
+    else:
+        return 400, "stop must be a string or an array of strings"
+    if len(stops) > MAX_CLIENT_STOP_SEQUENCES:
+        return (
+            400,
+            f"stop accepts at most {MAX_CLIENT_STOP_SEQUENCES} sequences (received {len(stops)})",
+        )
+    for sequence in stops:
+        if not sequence:
+            return 400, "stop sequences must not be empty"
+        if len(sequence.encode("utf-8")) > MAX_CLIENT_STOP_SEQUENCE_BYTES:
+            return (
+                400,
+                f"stop sequences must be at most {MAX_CLIENT_STOP_SEQUENCE_BYTES} bytes",
+            )
     return None
 
 
@@ -1205,7 +1349,7 @@ def validate_metadata(payload: dict[str, Any]) -> tuple[int, str] | None:
     return None
 
 
-def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+def session_generate_kwargs(payload: dict[str, Any], model_id: str = "") -> dict[str, Any]:
     """Sampling kwargs shared by every generate/stream_generate call site.
 
     ``min_p`` is forwarded only when the client provided it so the shim keeps
@@ -1214,7 +1358,7 @@ def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     ``max_completion_tokens`` is honored as validated.
     """
     temperature = float(payload.get("temperature", 0.0))
-    default_rp = 1.1 if temperature <= 0.0 else 1.0
+    default_rp = default_repetition_penalty(model_id, temperature)
     _max_tokens_key, max_tokens = requested_max_tokens(payload)
     seed = payload.get("seed")
     kwargs: dict[str, Any] = {
@@ -1279,7 +1423,8 @@ def stream_completion_chunks(
     response_prompt_token_count: int | None = None
     response_output_token_count: int | None = None
     try:
-        generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
+        kwargs = session_generate_kwargs(payload, model_id)
+        generator = session.stream_generate(input_tokens, **kwargs)
         for event in generator:
             if event.event == "step" and (event.delta_tokens or event.delta_text is not None):
                 accumulated_tokens.extend(event.delta_tokens)
@@ -1338,12 +1483,8 @@ def stream_completion_chunks(
                     yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
                     break
             elif event.event == "response" and event.response is not None:
-                response_prompt_token_count = getattr(
-                    event.response, "prompt_token_count", None
-                )
-                response_output_token_count = getattr(
-                    event.response, "output_token_count", None
-                )
+                response_prompt_token_count = getattr(event.response, "prompt_token_count", None)
+                response_output_token_count = getattr(event.response, "output_token_count", None)
                 # No later delta can complete a stop: flush whatever prefix was
                 # held back against a stop split across deltas.
                 if held_text:
@@ -1476,8 +1617,18 @@ def sse_error_chunk(message: str, code: str = "internal_error") -> str:
     whose data is the OpenAI error envelope the language SDKs parse. The
     caller follows it with ``data: [DONE]``.
     """
-    payload = {"error": {"code": code, "message": message}}
+    payload = {"error": openai_error_body(message, code, client_error=False)}
     return f"event: error\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+def openai_error_body(message: str, code: str, *, client_error: bool) -> dict[str, Any]:
+    """OpenAI error object with the same fields as the Rust server's ``ErrorBody``."""
+    return {
+        "type": "invalid_request_error" if client_error else "server_error",
+        "code": code,
+        "param": None,
+        "message": message,
+    }
 
 
 def stream_buffered_tool_chat_chunks(
@@ -1519,7 +1670,7 @@ def stream_buffered_tool_chat_chunks(
         if not role_emitted:
             delta["role"] = "assistant"
         yield chat_sse_payload(stream_id, created, model_id, delta, None)
-        terminal_reason = "tool_calls"
+        terminal_reason = tool_call_finish(terminal_reason)
         role_emitted = True
     if not role_emitted:
         yield chat_sse_payload(

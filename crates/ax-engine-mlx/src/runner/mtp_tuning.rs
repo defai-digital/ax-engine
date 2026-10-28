@@ -293,9 +293,13 @@ pub(super) fn mtp_ngram_acceptance_mode_from_env() -> MtpNgramAcceptanceMode {
             .replace('_', "-")
             .as_str()
         {
-            "delta" => MtpNgramAcceptanceMode::Delta,
+            // Default Delta: an n-gram proposal is deterministic, so the
+            // exact acceptance probability is p_target(draft), which Delta
+            // applies. Confidence (opt-in) divides by the n-gram confidence
+            // and over-accepts sampled drafts.
+            "confidence" => MtpNgramAcceptanceMode::Confidence,
             "greedy" => MtpNgramAcceptanceMode::Greedy,
-            _ => MtpNgramAcceptanceMode::Confidence,
+            _ => MtpNgramAcceptanceMode::Delta,
         }
     })
 }

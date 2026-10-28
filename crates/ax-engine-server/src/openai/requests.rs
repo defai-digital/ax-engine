@@ -79,6 +79,8 @@ pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OpenAiResponseOptions {
+    pub(crate) grammar_budget: bool,
+    pub(crate) prepared_json_constraint: Option<ax_engine_sdk::PreparedJsonConstraint>,
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
     pub(crate) include_stream_usage: bool,
@@ -243,6 +245,8 @@ impl OpenAiResponseOptions {
         reject_unsupported_top_logprobs(request.top_logprobs)?;
         reject_unsupported_completion_logprobs(request.logprobs)?;
         Ok(Self {
+            grammar_budget: request.grammar_budget,
+            prepared_json_constraint: None,
             include_logprobs: request.logprobs.is_some(),
             include_reasoning: false,
             include_stream_usage: request.stream_options.include_usage,
@@ -287,6 +291,8 @@ impl OpenAiResponseOptions {
             ));
         }
         Ok(Self {
+            grammar_budget: request.grammar_budget,
+            prepared_json_constraint: None,
             include_logprobs: request.logprobs,
             include_reasoning: openai_chat_thinking_is_enabled(request),
             include_stream_usage: request.stream_options.include_usage,
@@ -531,7 +537,7 @@ fn build_openai_chat_request_with_control(
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     // Masking constrains what the model may write, not what it plans: tell
     // it the format too, so it does not plan past the schema's limits.
-    if let Some(schema) = native_json_constraint(live, &response_options) {
+    if let Some(schema) = native_json_constraint(live, &mut response_options) {
         let instruction = if response_options.json_schema.is_some() {
             format!(
                 "Respond only with JSON that conforms to this JSON Schema, with no code fences \
@@ -822,6 +828,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_delegated_grammar_budget(request.grammar_budget)?;
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
@@ -841,7 +848,9 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
     )?;
-    response_options.reject_unsupported_streaming_contract(request.stream, false)?;
+    // mlx-lm streams reasoning as delta.reasoning, which the driver forwards as
+    // delta.reasoning_content.
+    response_options.reject_unsupported_streaming_contract(request.stream, true)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let user_stop = request
@@ -885,6 +894,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_delegated_grammar_budget(request.grammar_budget)?;
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
@@ -958,7 +968,17 @@ fn build_openai_generate_request(
         max_output_tokens,
         response_options.fit_max_tokens_to_context,
     )?;
-    payload.sampling.json_schema = native_json_constraint(live, &response_options);
+    let mut response_options = response_options;
+    payload.sampling.json_schema = native_json_constraint(live, &mut response_options);
+    payload.sampling.grammar_budget = response_options.grammar_budget;
+    if response_options.grammar_budget && payload.sampling.json_schema.is_none() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "grammar_budget requires native MLX JSON decoding with a fully enforced schema and no tool-call envelope".to_string(),
+        ));
+    }
+    payload.sampling.prepared_json_constraint = response_options.prepared_json_constraint.clone();
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -1012,7 +1032,7 @@ fn add_system_instruction(messages: &mut Vec<OpenAiChatMessage>, instruction: &s
 /// grammar cannot enforce exactly also stay post-hoc only.
 fn native_json_constraint(
     live: &LiveState,
-    response_options: &OpenAiResponseOptions,
+    response_options: &mut OpenAiResponseOptions,
 ) -> Option<serde_json::Value> {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx
         || response_options.parse_tool_calls
@@ -1020,13 +1040,25 @@ fn native_json_constraint(
     {
         return None;
     }
+    if let Some(prepared) = response_options.prepared_json_constraint.as_ref() {
+        return prepared.has_grammar().then(|| prepared.schema().clone());
+    }
     let schema = match response_options.json_schema.as_ref() {
         Some(contract) => contract.schema.clone(),
         None if response_options.validate_json_object => serde_json::json!({"type": "object"}),
         None => return None,
     };
-    ax_engine_core::grammar::JsonGrammar::from_schema(&schema)
-        .is_ok()
+    let mut sampling = GenerateSampling {
+        json_schema: Some(schema.clone()),
+        grammar_budget: response_options.grammar_budget,
+        ..Default::default()
+    };
+    sampling.prepare_json_constraint().ok()?;
+    response_options.prepared_json_constraint = sampling.prepared_json_constraint;
+    response_options
+        .prepared_json_constraint
+        .as_ref()?
+        .has_grammar()
         .then_some(schema)
 }
 
@@ -1207,6 +1239,17 @@ fn reject_openai_multimodal_inputs_without_tokens(
     ))
 }
 
+fn reject_delegated_grammar_budget(enabled: bool) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if enabled {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "grammar_budget requires native MLX".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn reject_delegated_chat_extensions(
     input_tokens: &[u32],
     multimodal_inputs: &RequestMultimodalInputs,
@@ -1317,6 +1360,9 @@ fn build_openai_sampling_with_default_repetition_penalty(
         ngram_window: 128,
         logit_bias: params.logit_bias,
         json_schema: None,
+        json_schema_strict: false,
+        grammar_budget: false,
+        prepared_json_constraint: None,
         seed,
         seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,

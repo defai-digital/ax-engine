@@ -70,7 +70,9 @@ pub(super) fn resolve_native_model_report(
             .map(|artifacts| artifacts.summary())
     })?;
     let binding = core.native_model_binding_summary();
-    Some(NativeModelReport::from_summary(source, summary, binding))
+    let mut report = NativeModelReport::from_summary(source, summary, binding);
+    report.drafter_identity = core.drafter_identity();
+    Some(report)
 }
 
 #[cfg(test)]
@@ -360,6 +362,8 @@ mod tests {
             rope_original_context_len: None,
             rope_beta_fast: None,
             rope_beta_slow: None,
+            rope_mscale: None,
+            rope_mscale_all_dim: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -585,6 +589,7 @@ mod tests {
         assert_eq!(
             report,
             NativeModelReport {
+                drafter_identity: None,
                 artifacts_source: NativeModelArtifactsSource::ExplicitConfig,
                 model_family: "qwen3".to_string(),
                 tensor_format: NativeTensorFormat::Safetensors,

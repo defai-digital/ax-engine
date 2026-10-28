@@ -571,3 +571,14 @@ crates/ax-engine-mlx/
 
 docs/MLX-BACKEND.md  (this file)
 ```
+
+### DFlash2 artifact selection
+
+Automatic discovery of `z-lab/Qwen3.8-27B-DFlash2` uses revision
+`50307d4c4cde6860d4eee73e2547cd786fe8e8a4` and verifies the pinned configuration
+and weights SHA-256 digests. Cache directory modification times do not select
+a drafter. Bundled automatic discovery requires the same content pin. An explicit
+drafter directory remains an operator override; its actual digests and precision
+are reported in `drafter_identity`. A missing or mismatched automatic artifact
+leaves DFlash2 unavailable. This artifact binding does not change MTP defaults
+or constitute model/SKU qualification.

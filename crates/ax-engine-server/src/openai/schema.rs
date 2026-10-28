@@ -60,8 +60,17 @@ pub(crate) struct OpenAiEmbeddingResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct OpenAiEmbeddingObject {
     pub(crate) object: &'static str,
-    pub(crate) embedding: Vec<f32>,
+    pub(crate) embedding: OpenAiEmbeddingVector,
     pub(crate) index: u32,
+}
+
+/// `encoding_format: "float"` serves a JSON array; `"base64"` serves the
+/// little-endian float32 bytes base64-encoded, as OpenAI does.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum OpenAiEmbeddingVector {
+    Float(Vec<f32>),
+    Base64(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -136,6 +145,8 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     pub(crate) response_format: Option<Value>,
+    #[serde(default)]
+    pub(crate) grammar_budget: bool,
 }
 
 /// Kill switch for the WP12 OpenAI/Anthropic contract polish
@@ -240,6 +251,8 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     pub(crate) response_format: Option<Value>,
+    #[serde(default)]
+    pub(crate) grammar_budget: bool,
     #[serde(default)]
     pub(crate) tools: Option<Value>,
     #[serde(default)]
@@ -386,6 +399,11 @@ pub(crate) struct OpenAiChatCompletionChoice {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) logprobs: Option<OpenAiChatLogprobs>,
     pub(crate) finish_reason: Option<&'static str>,
+    /// vLLM-compatible: the client stop string that ended the turn. Present
+    /// only on a client stop match; the Anthropic bridge maps it to
+    /// `stop_reason: "stop_sequence"` and `stop_sequence`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -472,6 +490,9 @@ pub(crate) struct OpenAiChatCompletionChunkChoice {
     pub(crate) index: u32,
     pub(crate) delta: OpenAiChatDelta,
     pub(crate) finish_reason: Option<&'static str>,
+    /// See [`OpenAiChatCompletionChoice::stop_reason`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

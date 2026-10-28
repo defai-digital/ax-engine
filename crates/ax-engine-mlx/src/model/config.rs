@@ -97,6 +97,23 @@ impl LinearAttentionConfig {
     }
 }
 
+/// DeepSeek V3 YaRN softmax correction (mlx-lm `deepseek_v3`):
+/// `scale *= get_mscale(factor, mscale_all_dim)^2` when `mscale_all_dim` is
+/// set. 1.0 for unscaled RoPE (GLM MLA rejects rope_scaling at convert).
+fn mla_yarn_softmax_scale(m: &NativeModelManifest) -> f32 {
+    let is_yarn = matches!(
+        m.rope_scaling_type.as_deref(),
+        Some("yarn") | Some("deepseek_yarn")
+    );
+    let factor = m.rope_scaling_factor.unwrap_or(1.0);
+    let mscale_all_dim = m.rope_mscale_all_dim.unwrap_or(0.0);
+    if !is_yarn || mscale_all_dim == 0.0 || factor <= 1.0 {
+        return 1.0;
+    }
+    let mscale = 0.1 * mscale_all_dim * factor.ln() + 1.0;
+    mscale * mscale
+}
+
 /// GLM4MoELite MLA attention dimensions extracted from the manifest.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaAttentionConfig {
@@ -143,7 +160,7 @@ impl MlaAttentionConfig {
             // GLM MLA scales scores by the original query head width
             // (qk_nope_head_dim + qk_rope_head_dim), not by the packed
             // SDPA key width (kv_lora_rank + qk_rope_head_dim).
-            query_scale: 1.0 / (q_head_dim as f32).sqrt(),
+            query_scale: 1.0 / (q_head_dim as f32).sqrt() * mla_yarn_softmax_scale(m),
         })
     }
 
@@ -634,6 +651,15 @@ impl ModelConfig {
                 .qk_rope_head_dim
                 .map(|dims| dims as usize)
                 .unwrap_or(head_dim)
+        } else if let Some(dims) = m
+            .mla_attention
+            .is_enabled()
+            .then_some(m.mla_attention.qk_rope_head_dim)
+            .flatten()
+        {
+            // MLA (DeepSeek V3 / GLM) rotates only the qk_rope_head_dim
+            // slice; YaRN freqs must be built for that width.
+            dims as usize
         } else {
             m.partial_rotary_factor
                 .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
@@ -714,11 +740,32 @@ impl ModelConfig {
                 // the primary YaRN path consistent so non-default bounds land.
                 let beta_fast = m.rope_beta_fast.unwrap_or(32.0);
                 let beta_slow = m.rope_beta_slow.unwrap_or(1.0);
+                // mlx-lm YarnRoPE: get_mscale(factor, mscale) /
+                // get_mscale(factor, mscale_all_dim). Absent keys keep the
+                // gpt-oss `0.1 ln(factor) + 1`; Nemotron 3 Embed's
+                // `mscale_all_dim: 1` makes it 1.0.
                 let (freqs, mscale) = super::shared::build_yarn_rope_freqs(
-                    rope_dims, rope_theta, factor, orig_ctx, beta_fast, beta_slow, 1.0, 0.0,
+                    rope_dims,
+                    rope_theta,
+                    factor,
+                    orig_ctx,
+                    beta_fast,
+                    beta_slow,
+                    m.rope_mscale.unwrap_or(1.0),
+                    m.rope_mscale_all_dim.unwrap_or(0.0),
                 );
                 (Some(freqs), mscale)
             }
+            // Position interpolation: every wavelength stretches by `factor`
+            // (mlx-lm `nn.RoPE(scale=1/factor)`).
+            Some("linear") => (
+                Some(super::shared::build_linear_rope_freqs(
+                    rope_dims,
+                    rope_theta,
+                    m.rope_scaling_factor.unwrap_or(1.0),
+                )),
+                1.0,
+            ),
             _ => (None, 1.0),
         };
 
@@ -1160,6 +1207,115 @@ mod tests {
         assert_eq!(cfg.layer_configs.len(), 2);
         assert_eq!(cfg.layer_configs[0].sliding_window, Some(128));
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    fn rope_manifest(extra: serde_json::Value) -> ax_engine_core::NativeModelManifest {
+        let mut base = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "llama3",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 64,
+            "attention_head_count": 4,
+            "attention_head_dim": 16,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "rope_theta": 10000,
+            "tensors": [],
+        });
+        for (key, value) in extra.as_object().expect("object") {
+            base[key] = value.clone();
+        }
+        serde_json::from_value(base).expect("manifest")
+    }
+
+    #[test]
+    fn yarn_attention_scale_follows_manifest_mscale_all_dim() {
+        let yarn = serde_json::json!({
+            "rope_scaling_type": "yarn",
+            "rope_scaling_factor": 16.0,
+            "rope_original_context_len": 4096,
+        });
+        // Absent keys keep the gpt-oss 0.1 ln(factor) + 1.
+        let default_cfg = ModelConfig::from_manifest(&rope_manifest(yarn.clone()));
+        assert!((default_cfg.rope_mscale - (0.1 * 16.0_f32.ln() + 1.0)).abs() < 1e-5);
+        // Nemotron 3 Embed: mscale = mscale_all_dim = 1 -> scale 1.0.
+        let mut nemotron = yarn;
+        nemotron["rope_mscale"] = serde_json::json!(1.0);
+        nemotron["rope_mscale_all_dim"] = serde_json::json!(1.0);
+        let nemotron_cfg = ModelConfig::from_manifest(&rope_manifest(nemotron));
+        assert!(
+            (nemotron_cfg.rope_mscale - 1.0).abs() < 1e-6,
+            "{}",
+            nemotron_cfg.rope_mscale
+        );
+    }
+
+    #[test]
+    fn deepseek_v3_mla_yarn_scales_softmax_and_rotates_the_pe_slice() {
+        // DeepSeek-V3: q_head_dim 192 (128 nope + 64 rope), YaRN factor 40,
+        // mscale = mscale_all_dim = 1 (mlx-lm deepseek_v3: scale *= s^2).
+        let mla = serde_json::json!({
+            "model_family": "deepseek_v3",
+            "attention_head_dim": 192,
+            "rope_scaling_type": "yarn",
+            "rope_scaling_factor": 40.0,
+            "rope_original_context_len": 4096,
+            "rope_mscale": 1.0,
+            "rope_mscale_all_dim": 1.0,
+            "mla_attention": {
+                "q_lora_rank": 32,
+                "kv_lora_rank": 16,
+                "qk_nope_head_dim": 128,
+                "qk_rope_head_dim": 64,
+                "value_head_dim": 128
+            }
+        });
+        let cfg = ModelConfig::from_manifest(&rope_manifest(mla.clone()));
+        let s = 0.1 * 40.0_f32.ln() + 1.0;
+        let expected = 1.0 / 192.0_f32.sqrt() * s * s;
+        let mla_cfg = cfg.mla_attention.as_ref().expect("mla config");
+        assert!(
+            (mla_cfg.query_scale - expected).abs() < 1e-6,
+            "{}",
+            mla_cfg.query_scale
+        );
+        // YaRN divisors for the 64-dim pe slice, and no extra pe pre-scale.
+        let freqs = cfg.rope_freqs.as_ref().expect("yarn freqs").data_f32();
+        assert_eq!(freqs.len(), 32);
+        assert!((cfg.rope_mscale - 1.0).abs() < 1e-6);
+
+        // Unscaled MLA (GLM) keeps the plain 1/sqrt(q_head_dim).
+        let mut plain = mla;
+        for key in [
+            "rope_scaling_type",
+            "rope_scaling_factor",
+            "rope_mscale",
+            "rope_mscale_all_dim",
+        ] {
+            plain.as_object_mut().expect("object").remove(key);
+        }
+        let cfg = ModelConfig::from_manifest(&rope_manifest(plain));
+        let mla_cfg = cfg.mla_attention.as_ref().expect("mla config");
+        assert!((mla_cfg.query_scale - 1.0 / 192.0_f32.sqrt()).abs() < 1e-7);
+        assert!(cfg.rope_freqs.is_none());
+    }
+
+    #[test]
+    fn linear_rope_scaling_stretches_every_wavelength() {
+        let cfg = ModelConfig::from_manifest(&rope_manifest(serde_json::json!({
+            "rope_scaling_type": "linear",
+            "rope_scaling_factor": 4.0,
+        })));
+        let freqs = cfg
+            .rope_freqs
+            .as_ref()
+            .expect("linear scaling precomputes freqs")
+            .data_f32();
+        // dims 16: divisors 4 * 10000^(2i/16).
+        assert_eq!(freqs.len(), 8);
+        assert!((freqs[0] - 4.0).abs() < 1e-4);
+        assert!((freqs[1] - 4.0 * 10000_f32.powf(2.0 / 16.0)).abs() < 1e-2);
     }
 
     #[test]

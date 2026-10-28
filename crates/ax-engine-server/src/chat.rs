@@ -50,6 +50,10 @@ pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
     "<|im_start|>assistant\n<think>\n";
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str = "<|im_start|>assistant\n";
+/// Nemotron 3 (Nano / Super / 3.5 Lightning) hub templates: thinking off
+/// prefills an empty `<think></think>` with no surrounding newlines.
+const NEMOTRON_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str =
+    "<|im_start|>assistant\n<think></think>";
 
 // MiniMax M3 hub `chat_template.jinja` control tokens. These strings must
 // stay byte-identical to the tokenizer added-token entries.
@@ -144,8 +148,13 @@ impl ChatUnsupportedFamily {
 impl ChatPromptTemplate {
     pub(crate) fn for_model_id(model_id: &str) -> Self {
         let normalized = model_id.to_ascii_lowercase();
+        // DeepSeek R1 distills (`DeepSeek-R1-Distill-Qwen-*` / `-Llama-*`) ship
+        // DeepSeek's chat template, not their base model's, so the DeepSeek
+        // match must win over the qwen / llama substrings.
+        if normalized.contains("deepseek") {
+            Self::DeepSeekChat
         // Qwen3.5-class fine-tunes (Holo3 / Ornith) share ChatML + thinking markers.
-        if normalized.contains("qwen")
+        } else if normalized.contains("qwen")
             || normalized.contains("minicpm")
             || is_qwen35_class_named_finetune(model_id)
         {
@@ -183,8 +192,6 @@ impl ChatPromptTemplate {
             || normalized.contains("codestral")
         {
             Self::MistralInstruct
-        } else if normalized.contains("deepseek") {
-            Self::DeepSeekChat
         } else if normalized.contains("gpt-oss")
             || normalized.contains("gpt_oss")
             || normalized.contains("gptoss")
@@ -324,7 +331,9 @@ pub(crate) fn is_deepseek_thinking_model(model_id: &str) -> bool {
 /// (ds4 reference render rule): a payload containing the closing marker must
 /// not terminate the tool-result block early.
 fn escape_deepseek_tool_result(content: &str) -> String {
-    content.replace("</tool_result>", "&lt;/tool_result>")
+    // Tool output is often untrusted (fetched pages); it must not forge a
+    // turn either, so the turn tokens are escaped as in message content.
+    escape_deepseek_content(&content.replace("</tool_result>", "&lt;/tool_result>"))
 }
 
 /// Escape the literal ChatML turn-boundary tokens inside message content, so
@@ -340,7 +349,7 @@ fn escape_qwen_chatml_content(content: &str) -> String {
 
 /// Escape the literal Llama 3.x header/turn-boundary tokens inside message
 /// content, for the same reason as `escape_qwen_chatml_content`.
-fn escape_llama3_content(content: &str) -> String {
+pub(crate) fn escape_llama3_content(content: &str) -> String {
     content
         .replace("<|start_header_id|>", "&lt;|start_header_id|>")
         .replace("<|end_header_id|>", "&lt;|end_header_id|>")
@@ -349,7 +358,12 @@ fn escape_llama3_content(content: &str) -> String {
 
 /// Escape the literal Llama 4 header/turn-boundary tokens inside message
 /// content, for the same reason as `escape_qwen_chatml_content`.
-fn escape_llama4_content(content: &str) -> String {
+/// Llama 3 and Llama 4 turn tokens together, for renderers shared by both.
+pub(crate) fn escape_llama_content(content: &str) -> String {
+    escape_llama4_content(&escape_llama3_content(content))
+}
+
+pub(crate) fn escape_llama4_content(content: &str) -> String {
     content
         .replace("<|header_start|>", "&lt;|header_start|>")
         .replace("<|header_end|>", "&lt;|header_end|>")
@@ -358,10 +372,17 @@ fn escape_llama4_content(content: &str) -> String {
 
 /// Escape the literal Gemma 4 turn-boundary tokens inside message content, for
 /// the same reason as `escape_qwen_chatml_content`.
-fn escape_gemma4_content(content: &str) -> String {
+pub(crate) fn escape_gemma4_content(content: &str) -> String {
     content
         .replace("<|turn>", "&lt;|turn>")
         .replace(GEMMA4_TURN_TERMINATOR, "&lt;turn|>")
+        // Tool framing and the string delimiter: tool results are quoted with
+        // `<|"|>`, so a payload must not close the quote or the response.
+        .replace("<|tool_call>", "&lt;|tool_call>")
+        .replace("<tool_call|>", "&lt;tool_call|>")
+        .replace("<|tool_response>", "&lt;|tool_response>")
+        .replace("<tool_response|>", "&lt;tool_response|>")
+        .replace("<|\"|>", "&lt;|\"|>")
 }
 
 /// Escape the literal GLM 4.x role/turn-boundary tokens inside message
@@ -388,10 +409,16 @@ fn escape_mistral_content(content: &str) -> String {
 
 /// Escape the literal Ministral instruction-boundary tokens inside message
 /// content, for the same reason as `escape_qwen_chatml_content`.
-fn escape_ministral_content(content: &str) -> String {
+pub(crate) fn escape_ministral_content(content: &str) -> String {
     content
         .replace("[INST]", "&#91;INST]")
         .replace("[/INST]", "&#91;/INST]")
+        .replace("[TOOL_RESULTS]", "&#91;TOOL_RESULTS]")
+        .replace("[/TOOL_RESULTS]", "&#91;/TOOL_RESULTS]")
+        .replace("[TOOL_CALLS]", "&#91;TOOL_CALLS]")
+        .replace("[AVAILABLE_TOOLS]", "&#91;AVAILABLE_TOOLS]")
+        .replace("[/AVAILABLE_TOOLS]", "&#91;/AVAILABLE_TOOLS]")
+        .replace("</s>", "&lt;/s>")
 }
 
 /// Escape the literal gpt-oss Harmony turn-boundary tokens inside message
@@ -954,7 +981,16 @@ fn render_prompt_internal(
             prompt.push('\n');
             prompt.push_str(MINIMAX_BOS);
             prompt.push_str("developer\n");
-            prompt.push_str(MINIMAX_DEFAULT_DEVELOPER);
+            // Hub jinja: a leading system/developer message *is* the
+            // developer SP; the default identity applies only without one.
+            match messages.first() {
+                Some((role, content))
+                    if normalize_role(role)? == "system" && !content.is_empty() =>
+                {
+                    prompt.push_str(&escape_minimax_content(content));
+                }
+                _ => prompt.push_str(MINIMAX_DEFAULT_DEVELOPER),
+            }
             prompt.push_str(MINIMAX_EOS);
             prompt.push('\n');
         }
@@ -988,7 +1024,11 @@ fn render_prompt_internal(
         prompt.push_str(MUSE_GLIMMER_DEFAULT_SYSTEM);
         prompt.push_str(MUSE_GLIMMER_EOT);
     }
-    let mut mistral_system: Option<&str> = None;
+    // Every system message before a user turn, in order (hub jinja emits
+    // each [SYSTEM_PROMPT] block; keeping only the last dropped the rest).
+    let mut mistral_system: Vec<&str> = Vec::new();
+    let nemotron =
+        matches!(template, ChatPromptTemplate::QwenChatMl) && is_nemotron_chat_model(model_id);
     let mut ministral_system: Option<&str> = None;
     let mut gpt_oss_system: Option<&str> = None;
     let mut ministral_loop_start = 0usize;
@@ -1029,16 +1069,35 @@ fn render_prompt_internal(
                         qwen_tool_response_open = true;
                     }
                     prompt.push_str("<tool_response>\n");
-                    prompt.push_str(&escape_qwen_chatml_content(content));
+                    // A payload must not close this response and forge another.
+                    prompt.push_str(
+                        &escape_qwen_chatml_content(content)
+                            .replace("<tool_response>", "&lt;tool_response>")
+                            .replace("</tool_response>", "&lt;/tool_response>"),
+                    );
                     prompt.push_str("\n</tool_response>\n");
                 } else {
                     if qwen_tool_response_open {
                         prompt.push_str("<|im_end|>\n");
                         qwen_tool_response_open = false;
                     }
+                    // Nemotron 3 hub jinja always opens with a system block,
+                    // empty when the caller sent none.
+                    if nemotron && msg_index == 0 && role != "system" {
+                        prompt.push_str("<|im_start|>system\n<|im_end|>\n");
+                    }
                     prompt.push_str("<|im_start|>");
                     prompt.push_str(role);
                     prompt.push('\n');
+                    // ...and prefixes past assistant turns without think
+                    // markers with an empty `<think></think>`.
+                    if nemotron
+                        && role == "assistant"
+                        && !content.contains("<think>")
+                        && !content.contains("</think>")
+                    {
+                        prompt.push_str("<think></think>");
+                    }
                     prompt.push_str(&escape_qwen_chatml_content(content));
                     prompt.push_str("<|im_end|>\n");
                 }
@@ -1077,7 +1136,18 @@ fn render_prompt_internal(
             }
             ChatPromptTemplate::Glm47 => {
                 if matches!(role, "tool" | "function") {
-                    prompt.push_str("<|observation|><tool_response>");
+                    // Hub jinja: one <|observation|> opens a run of
+                    // consecutive tool results; it is also a GLM stop token.
+                    let follows_tool = msg_index
+                        .checked_sub(1)
+                        .and_then(|prev| messages.get(prev))
+                        .is_some_and(|(prev_role, _)| {
+                            matches!(prev_role.as_str(), "tool" | "function")
+                        });
+                    if !follows_tool {
+                        prompt.push_str("<|observation|>");
+                    }
+                    prompt.push_str("<tool_response>");
                     prompt.push_str(&escape_glm_content(content));
                     prompt.push_str("</tool_response>");
                 } else {
@@ -1100,10 +1170,10 @@ fn render_prompt_internal(
                 // assistant turns append eos_token (`</s>`).
                 match role {
                     "system" => {
-                        mistral_system = Some(content.as_str());
+                        mistral_system.push(content.as_str());
                     }
                     "user" => {
-                        if let Some(system) = mistral_system.take() {
+                        for system in mistral_system.drain(..) {
                             prompt.push_str("[SYSTEM_PROMPT]");
                             prompt.push_str(&escape_mistral_content(system));
                             prompt.push_str("[/SYSTEM_PROMPT]");
@@ -1171,14 +1241,15 @@ fn render_prompt_internal(
                             // Subsequent system lines are folded as developer append.
                             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
                             prompt.push_str(&escape_gpt_oss_harmony_content(content));
-                            prompt.push_str("<|end|>");
+                            prompt.push_str("\n\n<|end|>");
                         }
                     }
                     "user" => {
                         if let Some(system) = gpt_oss_system.take() {
                             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
                             prompt.push_str(&escape_gpt_oss_harmony_content(system));
-                            prompt.push_str("<|end|>");
+                            // Hub jinja closes the instructions with "\n\n".
+                            prompt.push_str("\n\n<|end|>");
                         }
                         prompt.push_str("<|start|>user<|message|>");
                         prompt.push_str(&escape_gpt_oss_harmony_content(content));
@@ -1222,7 +1293,10 @@ fn render_prompt_internal(
                 }
                 "tool" | "function" => {
                     prompt.push_str("<|start|>tool<|message|><tool_output>\n");
-                    prompt.push_str(&escape_muse_glimmer_content(content));
+                    prompt.push_str(
+                        &escape_muse_glimmer_content(content)
+                            .replace("</tool_output>", "&lt;/tool_output>"),
+                    );
                     prompt.push_str("\n</tool_output>");
                     prompt.push_str(MUSE_GLIMMER_EOT);
                 }
@@ -1312,11 +1386,10 @@ fn render_prompt_internal(
                 "assistant" => {
                     prompt.push_str(MINIMAX_BOS);
                     prompt.push_str("ai\n");
-                    prompt.push_str(if thinking_enabled {
-                        MINIMAX_THINK_OPEN
-                    } else {
-                        MINIMAX_THINK_CLOSE
-                    });
+                    // A past turn carries no reasoning here, so the hub
+                    // jinja prefixes the think-end token whatever the mode;
+                    // only the generation prompt opens `<mm:think>`.
+                    prompt.push_str(MINIMAX_THINK_CLOSE);
                     prompt.push_str(&escape_minimax_content(content));
                     prompt.push_str(MINIMAX_EOS);
                     prompt.push('\n');
@@ -1372,7 +1445,7 @@ fn render_prompt_internal(
     }
     // System-only chats still need the system block emitted before generation.
     if matches!(template, ChatPromptTemplate::MistralInstruct) {
-        if let Some(system) = mistral_system {
+        for system in mistral_system {
             prompt.push_str("[SYSTEM_PROMPT]");
             prompt.push_str(&escape_mistral_content(system));
             prompt.push_str("[/SYSTEM_PROMPT]");
@@ -1382,7 +1455,7 @@ fn render_prompt_internal(
         if let Some(system) = gpt_oss_system {
             prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
             prompt.push_str(&escape_gpt_oss_harmony_content(system));
-            prompt.push_str("<|end|>");
+            prompt.push_str("\n\n<|end|>");
         }
     }
     // The generation prompt opens an assistant turn: record its start
@@ -1480,7 +1553,19 @@ fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &
     if thinking_enabled {
         return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING;
     }
+    if is_nemotron_chat_model(model_id) {
+        return NEMOTRON_ASSISTANT_GENERATION_PROMPT_NO_THINK;
+    }
     QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+}
+
+/// Nemotron 3 chat checkpoints use ChatML framing with their own think
+/// conventions (always a system block, `<think></think>` on past turns).
+pub(crate) fn is_nemotron_chat_model(model_id: &str) -> bool {
+    let normalized = normalize_model_id_token(model_id);
+    normalized.contains("nemotron")
+        && !normalized.contains("nemotron-embed")
+        && !normalized.contains("nemotron-h")
 }
 
 pub(crate) fn is_qwen_non_thinking_only_model(model_id: &str) -> bool {
@@ -1772,11 +1857,16 @@ pub(crate) fn decode_gemma4_chat_output_with_reasoning(
 /// Decode a DeepSeek thinking-mode chat completion. Generation starts inside
 /// an open think block, so the output carries reasoning until the first
 /// close tag; unterminated output is all reasoning (never leaks to content).
+///
+/// `</think>` is an ordinary added token in DeepSeek tokenizers, so the
+/// split survives a special-token-skipping decode. Skip them like the stream
+/// decoder and the thinking-off path do: keeping them would serve control
+/// tokens (`<｜end▁of▁sentence｜>`) as content that the stream never shows.
 pub(crate) fn decode_deepseek_chat_output_with_reasoning(
     tokenizer: &EngineTokenizer,
     output_tokens: &[u32],
 ) -> Result<(String, Option<String>), EngineTokenizerError> {
-    let text = tokenizer.decode(output_tokens, false)?;
+    let text = tokenizer.decode(output_tokens, true)?;
     let (reasoning, content) = match text.split_once(DEEPSEEK_THINK_CLOSE) {
         Some((before, after)) => (before, after),
         None => (text.as_str(), ""),
@@ -1855,6 +1945,64 @@ pub(crate) fn decode_glm_chat_output(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_reasoning_decode_skips_special_tokens_like_the_stream() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-engine-deepseek-special-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":5}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0", "truncation": null, "padding": null,
+  "added_tokens": [
+    {"id": 3, "content": "</think>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": false},
+    {"id": 5, "content": "<eos>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null,
+  "decoder": null,
+  "model": {"type": "WordLevel",
+    "vocab": {"[UNK]": 0, "plan": 1, "answer": 2, "</think>": 3, "<eos>": 5},
+    "unk_token": "[UNK]"}
+}"#,
+        )
+        .expect("tokenizer");
+        let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer loads");
+        let (content, reasoning) =
+            decode_deepseek_chat_output_with_reasoning(&tokenizer, &[1, 3, 2, 5]).expect("decode");
+        assert_eq!(reasoning.as_deref(), Some("plan"));
+        assert!(
+            !content.contains("<eos>"),
+            "special tokens must not surface as content: {content:?}"
+        );
+        assert_eq!(content.trim(), "answer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deepseek_r1_distills_use_the_deepseek_template() {
+        for model_id in [
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+            "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+            "deepseek-ai/DeepSeek-V3",
+        ] {
+            assert_eq!(
+                ChatPromptTemplate::for_model_id(model_id),
+                ChatPromptTemplate::DeepSeekChat,
+                "{model_id}"
+            );
+        }
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("Qwen/Qwen3-8B"),
+            ChatPromptTemplate::QwenChatMl
+        );
+    }
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2065,6 +2213,135 @@ mod tests {
         );
         let stops = default_stop_sequences(ChatPromptTemplate::MiniMaxM3);
         assert!(stops.iter().any(|s| s == "[e~["));
+    }
+
+    fn owned(messages: &[(&str, &str)]) -> Vec<(String, String)> {
+        messages
+            .iter()
+            .map(|(role, content)| ((*role).to_string(), (*content).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn minimax_m3_system_message_becomes_the_developer_prompt() {
+        // MiniMax-M3.jinja: a leading system/developer message is the
+        // developer SP; past assistant turns without reasoning get the
+        // think-end token in both thinking modes.
+        for thinking in [false, true] {
+            let prompt = render_prompt_with_template(
+                ChatPromptTemplate::MiniMaxM3,
+                &owned(&[
+                    ("system", "S"),
+                    ("user", "hi"),
+                    ("assistant", "yo"),
+                    ("user", "x"),
+                ]),
+                thinking,
+            )
+            .expect("minimax render");
+            assert!(prompt.contains("]~b]developer\nS[e~[\n"), "{prompt}");
+            assert!(!prompt.contains("You are a helpful assistant."), "{prompt}");
+            assert!(prompt.contains("]~b]ai\n</mm:think>yo[e~["), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn nemotron_3_matches_its_hub_chatml_framing() {
+        // Rendered from the Nemotron 3 Nano / Super / 3.5 Lightning hub
+        // chat_template.jinja (all three agree), thinking off.
+        let model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16";
+        let render = |messages: &[(&str, &str)]| {
+            render_prompt_with_template_and_framing(
+                model,
+                ChatPromptTemplate::QwenChatMl,
+                &owned(messages),
+                false,
+                None,
+            )
+            .expect("nemotron render")
+        };
+        assert_eq!(
+            render(&[("user", "hi")]),
+            "<|im_start|>system\n<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n\
+             <|im_start|>assistant\n<think></think>"
+        );
+        assert_eq!(
+            render(&[
+                ("system", "S"),
+                ("user", "hi"),
+                ("assistant", "yo"),
+                ("user", "more")
+            ]),
+            "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n\
+             <|im_start|>assistant\n<think></think>yo<|im_end|>\n\
+             <|im_start|>user\nmore<|im_end|>\n<|im_start|>assistant\n<think></think>"
+        );
+        // Qwen keeps its own framing.
+        assert!(
+            !render_prompt_with_template_and_framing(
+                "Qwen/Qwen3-8B",
+                ChatPromptTemplate::QwenChatMl,
+                &owned(&[("user", "hi")]),
+                false,
+                None,
+            )
+            .expect("qwen render")
+            .contains("<|im_start|>system")
+        );
+    }
+
+    #[test]
+    fn glm_opens_one_observation_per_run_of_tool_results() {
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::Glm47,
+            &owned(&[
+                ("user", "q"),
+                ("tool", "r1"),
+                ("tool", "r2"),
+                ("user", "more"),
+                ("tool", "r3"),
+            ]),
+            false,
+        )
+        .expect("glm render");
+        assert!(
+            prompt.contains(
+                "<|observation|><tool_response>r1</tool_response><tool_response>r2</tool_response>"
+            ),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("<|observation|>").count(), 2, "{prompt}");
+    }
+
+    #[test]
+    fn mistral_keeps_every_system_message_in_order() {
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::MistralInstruct,
+            &owned(&[("system", "A"), ("system", "B"), ("user", "hi")]),
+            false,
+        )
+        .expect("mistral render");
+        assert!(
+            prompt.contains(
+                "[SYSTEM_PROMPT]A[/SYSTEM_PROMPT][SYSTEM_PROMPT]B[/SYSTEM_PROMPT][INST]hi[/INST]"
+            ),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn gpt_oss_developer_instructions_end_with_a_blank_line() {
+        // openai-gpt-oss-120b.jinja: "# Instructions\n\n" + message + "\n\n".
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::GptOssHarmony,
+            &owned(&[("system", "S"), ("user", "hi")]),
+            false,
+        )
+        .expect("gpt-oss render");
+        assert!(
+            prompt.contains("<|start|>developer<|message|># Instructions\n\nS\n\n<|end|>"),
+            "{prompt}"
+        );
     }
 
     /// Goldens below were rendered from the Hy-MT2-30B-A3B hub
