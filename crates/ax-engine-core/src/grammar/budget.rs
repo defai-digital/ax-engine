@@ -299,6 +299,35 @@ mod tests {
     }
 
     #[test]
+    fn repeated_property_masks_keep_declared_value_constraints() {
+        let grammar = JsonGrammar::from_schema(&json!({
+            "type": "object", "properties": {"x": {"type": "integer"}},
+            "required": ["x"]
+        }))
+        .unwrap();
+        let vocab = vocab(&[b"2}", b"\"wrong\"}", b"false}", b"EOS"]);
+        let mut state = grammar.matcher();
+        assert!(state.advance_bytes(&grammar, br#"{"x":1,"x":"#));
+        let mut plain = Vec::new();
+        vocab.allowed_tokens(
+            &grammar,
+            &state,
+            &[3],
+            &mut MaskWorkspace::default(),
+            &mut plain,
+        );
+        let bounded = BudgetWorkspace::default()
+            .mask(&vocab, &grammar, &state, &[3], 1)
+            .unwrap();
+        for mask in [plain, bounded] {
+            assert!(mask_allows(&mask, 0));
+            for token in [1, 2, 3] {
+                assert!(!mask_allows(&mask, token), "{token}");
+            }
+        }
+    }
+
+    #[test]
     fn unicode_and_nested_completion_use_real_token_boundaries() {
         let grammar = JsonGrammar::from_schema(&json!({"const":[{"x":"\u{6c34}"}]})).unwrap();
         let vocab = vocab(&[b"[{\"x\":\"", &[0xe6], &[0xb0, 0xb4], b"\"}]", b"EOS"]);

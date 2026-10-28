@@ -456,7 +456,7 @@ enum ObjectState {
     InKey {
         lo: u8,
         hi: u8,
-        len: u16,
+        len: usize,
         utf8: u8,
     },
     /// After the closing quote of a key; `prop` is the matched property or
@@ -530,7 +530,7 @@ enum Frame {
     Literal {
         first: u32,
         alive: u64,
-        pos: u16,
+        pos: usize,
     },
 }
 
@@ -693,10 +693,10 @@ fn frame_can_end(grammar: &JsonGrammar, frame: &Frame) -> bool {
     }
 }
 
-fn literal_complete(grammar: &JsonGrammar, first: u32, alive: u64, pos: u16) -> bool {
+fn literal_complete(grammar: &JsonGrammar, first: u32, alive: u64, pos: usize) -> bool {
     (0..64u32)
         .filter(|bit| alive & (1u64 << bit) != 0)
-        .any(|bit| grammar.literal(first + bit).len() == usize::from(pos))
+        .any(|bit| grammar.literal(first + bit).len() == pos)
 }
 
 /// Start the value `node` with `byte`; the returned frame has consumed it.
@@ -963,9 +963,9 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                     continue;
                 }
                 let literal = grammar.literal(first + bit);
-                if literal.get(usize::from(pos)) == Some(&byte) {
+                if literal.get(pos) == Some(&byte) {
                     next_alive |= 1u64 << bit;
-                    if literal.len() > usize::from(pos) + 1 {
+                    if literal.len() > pos + 1 {
                         longer = true;
                     }
                 }
@@ -1079,26 +1079,21 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                     Step::Consumed
                 }
                 ObjectState::InKey { lo, hi, len, utf8 } => {
-                    let unused_in = |lo: u8, hi: u8, exact: Option<u16>| {
+                    let eligible_in = |lo: u8, hi: u8, exact: Option<usize>| {
                         (lo..hi).find(|index| {
-                            used & (1u128 << index) == 0
+                            (free || used & (1u128 << index) == 0)
                                 && match exact {
-                                    Some(len) => {
-                                        spec.keys[usize::from(*index)].0.len() == usize::from(len)
-                                    }
+                                    Some(len) => spec.keys[usize::from(*index)].0.len() == len,
                                     None => true,
                                 }
                         })
                     };
                     if utf8 == 0 && byte == b'"' {
-                        let prop = unused_in(lo, hi, Some(len));
+                        let prop = eligible_in(lo, hi, Some(len));
                         let prop = match prop {
                             Some(index) => index,
-                            // An unknown name, or a declared name used
-                            // already: with additional properties allowed
-                            // both are additional (duplicate keys are valid
-                            // JSON). Refusing the repeat would trap the key,
-                            // because a free key admits any plain text.
+                            // Repeated declared names keep their schema.
+                            // Only unknown names use additionalProperties.
                             None if free => u8::MAX,
                             None => return Step::Reject,
                         };
@@ -1112,7 +1107,7 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                         return Step::Reject;
                     };
                     // Narrow the sorted range to names with this byte here.
-                    let at = usize::from(len);
+                    let at = len;
                     let matches =
                         |index: u8| spec.keys[usize::from(index)].0.get(at) == Some(&byte);
                     let new_lo = (lo..hi).find(|index| matches(*index)).unwrap_or(hi);
@@ -1122,7 +1117,7 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                     } else {
                         (new_lo, new_hi)
                     };
-                    if !free && unused_in(new_lo, new_hi, None).is_none() {
+                    if !free && eligible_in(new_lo, new_hi, None).is_none() {
                         return Step::Reject;
                     }
                     set_state(
@@ -1130,7 +1125,7 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                         ObjectState::InKey {
                             lo: new_lo,
                             hi: new_hi,
-                            len: len.saturating_add(1),
+                            len: if new_lo == new_hi { 0 } else { len + 1 },
                             utf8: pending,
                         },
                     );
@@ -1267,16 +1262,65 @@ mod tests {
         assert!(!prefix_ok(&grammar, "{\"extra"));
         assert!(!prefix_ok(&grammar, "{\"tags\":[\"c"));
         assert!(!prefix_ok(&grammar, "{\"tags\":[\"a\",\"a\",\""));
-        // Duplicate keys are refused for closed objects, and accepted as
-        // additional properties for open ones.
+        // Duplicate keys are refused for closed objects. Open objects keep
+        // the declared value schema on every occurrence.
         let open = JsonGrammar::from_schema(&json!({
             "type": "object", "properties": {"name": {"type": "string"}}
         }))
         .unwrap();
-        assert!(accepts(&open, "{\"name\":\"x\",\"name\":1}"));
+        assert!(accepts(&open, "{\"name\":\"x\",\"name\":\"y\"}"));
+        assert!(!accepts(&open, "{\"name\":\"x\",\"name\":1}"));
         assert!(!prefix_ok(&grammar, "{\"age\":1,\"age\""));
         // Empty name violates minLength.
         assert!(!prefix_ok(&grammar, "{\"name\":\"\""));
+    }
+
+    #[test]
+    fn repeated_declared_properties_keep_their_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"x": {"type": "integer"}, "xy": {"const": true}},
+            "required": ["x"]
+        });
+        JsonGrammar::validate_strict_schema(&schema).unwrap();
+        let grammar = JsonGrammar::from_schema(&schema).unwrap();
+        for text in [
+            r#"{"x":1,"x":2}"#,
+            r#"{"x":1,"xy":true,"xy":true}"#,
+            r#"{"x":1,"xyz":"extra","extra":null}"#,
+        ] {
+            assert!(accepts(&grammar, text), "{text}");
+        }
+        for text in [r#"{"x":1,"x":"wrong"}"#, r#"{"x":1,"xy":true,"xy":false}"#] {
+            assert!(!accepts(&grammar, text), "{text}");
+        }
+    }
+
+    #[test]
+    fn long_literals_preserve_exact_positions() {
+        for length in [65_534, 65_535, 65_536] {
+            let value = "a".repeat(length);
+            let schema = json!({"const": value});
+            JsonGrammar::validate_strict_schema(&schema).unwrap();
+            let grammar = JsonGrammar::from_schema(&schema).unwrap();
+            assert!(accepts(&grammar, &serde_json::to_string(&value).unwrap()));
+            assert!(!accepts(&grammar, &format!("\"{value}b\"")));
+        }
+    }
+
+    #[test]
+    fn long_property_names_preserve_schema_identity() {
+        let name = format!("{}b", "a".repeat(65_535));
+        for additional in [true, false] {
+            let schema = json!({
+                "type": "object", "properties": {name.clone(): {"type": "integer"}},
+                "additionalProperties": additional
+            });
+            JsonGrammar::validate_strict_schema(&schema).unwrap();
+            let grammar = JsonGrammar::from_schema(&schema).unwrap();
+            assert!(accepts(&grammar, &format!("{{\"{name}\":1}}")));
+            assert!(!accepts(&grammar, &format!("{{\"{name}\":false}}")));
+        }
     }
 
     #[test]
