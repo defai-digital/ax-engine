@@ -1,0 +1,21 @@
+{
+  "tested_source_commit": "f3dd4e46e320ac28123f7bb8b0bc689c5b9bac6f",
+  "tracked_files_verified": 17131,
+  "source_manifest_sha256": "dc8a530fdb0828639e47bed8af1dcd98cf2fb79abb486c2c33227a701b3398c6",
+  "manifest_algorithm": "SHA256 of JSON mapping sorted tracked relative paths to SHA256 file bytes, indent=2, trailing newline",
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "scope": "Single-stream direct functional and serving regression, MTP disabled; no certification or performance promotion",
+  "baseline_source_commit": "abe238aaa42e864133e172dd897e6e1dac20936a",
+  "changed_source_sha256": {
+    "crates/ax-engine-core/src/convert/hf_config.rs": "f29f3e5b1888f948d6bdfa54d20f16d41eecc8952b13159bdd2a4183f9eadb37",
+    "crates/ax-engine-core/src/convert/mod.rs": "311f0494455d2bacb604fc19584e690a89000308b621fcbf67c2ad767355cf39",
+    "crates/ax-engine-core/src/convert/tests.rs": "be64541df327664ff9108a4ebc91a6117657a514cd2a307e72ffb4fd7f39803f",
+    "crates/ax-engine-core/src/engine.rs": "b1c39afd11a643035fcd62367e0d24c7d9513c2ed1953044d6f24c989834037a",
+    "crates/ax-engine-core/src/runner.rs": "21e75e9639e033888a88b23f1a6795ffc7c701f39e12f1f9c844dfa170203c4d",
+    "crates/ax-engine-mlx/src/qwen4_exp_qsa.rs": "4ed1cb88cfaefaefe0604c0ee21a48351760f839fe27503b86bfbf4727667ce3",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "d2a82479318885a7b4a135fb1c825be72e2ceb6540ed0654cd678fc8fda97d45",
+    "crates/ax-engine-mlx/src/runner/tests.rs": "29f502fb8b34b54f71ebff4ce86823b0bb55ddbe8f098b0bbdd2ff301eed6be2",
+    "docs/KV-CACHE.md": "9f95f24cc3b51ddae5f0e17c721575ddd429e0f45fc99396a4a2dd4f269ce0c1",
+    "docs/SUPPORTED-MODELS.md": "4b5ae6079a21389a491a19c250b9e0e63d3cd7a93ef8be130bdcbb21e79b8518"
+  }
+}

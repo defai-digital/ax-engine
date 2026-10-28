@@ -1,0 +1,20 @@
+{
+  "lifetime_max_phys_footprint_bytes": 76266607584,
+  "memory_plan": {
+    "live_sequence_cap": null,
+    "live_sequences": null,
+    "recommended_wired_limit_mebibytes": null,
+    "remedy": null,
+    "wired_limit_bytes": 103903852953,
+    "wired_shortfall_bytes": 0,
+    "working_set_bytes": 87296240632
+  },
+  "mlx": {
+    "active_bytes": 73736640366,
+    "cache_bytes": 119767044,
+    "peak_bytes": 75326678886
+  },
+  "mlx_numerics": "exact",
+  "phys_footprint_bytes": 74870707432,
+  "sampled_at": "2026-10-28T01:22:55.661449000Z"
+}

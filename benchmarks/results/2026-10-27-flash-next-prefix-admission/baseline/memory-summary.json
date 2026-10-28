@@ -1,0 +1,25 @@
+{
+  "initial": {
+    "elapsed_s": 4.5797787606716156e-07,
+    "pressure_level": 1,
+    "swap_used_bytes": 1314452930,
+    "compressor_bytes": 370540544,
+    "swapins": 7486825,
+    "swapouts": 8246189
+  },
+  "final": {
+    "elapsed_s": 169.5979033750482,
+    "pressure_level": 1,
+    "swap_used_bytes": 1314452930,
+    "compressor_bytes": 389578752,
+    "swapins": 7486825,
+    "swapouts": 8246189
+  },
+  "samples": 84,
+  "peak_phys_footprint_bytes": 113913651192,
+  "peak_rss_bytes": 78875688960,
+  "pressure_levels": [
+    1
+  ],
+  "guard_failures": []
+}
