@@ -1,0 +1,72 @@
+[
+  {
+    "case": "load_and_health",
+    "pass": true,
+    "seconds": 40.51221925020218
+  },
+  {
+    "case": "json_budget",
+    "pass": true,
+    "http_status": 200,
+    "seconds": 0.7292090831324458
+  },
+  {
+    "case": "nested_unicode",
+    "pass": true,
+    "http_status": 200,
+    "seconds": 0.867610584013164
+  },
+  {
+    "case": "reasoning_budget",
+    "pass": true,
+    "http_status": 200,
+    "seconds": 0.8412083338480443
+  },
+  {
+    "case": "insufficient_budget",
+    "pass": true,
+    "http_status": 502,
+    "seconds": 0.014768625143915415
+  },
+  {
+    "case": "open_schema_0",
+    "pass": true,
+    "http_status": 200
+  },
+  {
+    "case": "open_schema_1",
+    "pass": true,
+    "http_status": 200
+  },
+  {
+    "case": "final_health",
+    "pass": true
+  },
+  {
+    "case": "memory_guard",
+    "pass": true,
+    "initial": {
+      "elapsed_s": 5.00120222568512e-07,
+      "pressure_level": 1,
+      "swap_used_bytes": 1314452930,
+      "compressor_bytes": 408240128,
+      "swapins": 7486991,
+      "swapouts": 8246189
+    },
+    "final": {
+      "elapsed_s": 44.61622895812616,
+      "pressure_level": 1,
+      "swap_used_bytes": 1314452930,
+      "compressor_bytes": 425050112,
+      "swapins": 7486991,
+      "swapouts": 8246189
+    },
+    "samples": 22,
+    "peak_phys_footprint_bytes": 75686811168,
+    "peak_rss_bytes": 75057577984,
+    "pressure_levels": [
+      1
+    ],
+    "guard_failures": []
+  }
+]

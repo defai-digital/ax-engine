@@ -1,0 +1,38 @@
+{
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "os": "27.0.1",
+  "source_state": "JSON grammar follow-up candidate",
+  "source_base_commit": "e5dec8f38e139a24e115d0d8e2bab3b53a0bf9c1",
+  "source_verification": {
+    "files_checked": 17162,
+    "mismatches": [],
+    "manifest_sha256": "c88b887b9ea1390c8df75b28c1cc67402c4df304038ca7b03a34c266be700270"
+  },
+  "binary_sha256": "9df6448305e5e00f1993f952d251a8d976eec64a5ce21e4f69b7ecb99101e79d",
+  "profile": "release-server",
+  "mlx": "0.32.4",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27) (Homebrew)",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "pack_pin": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "server_command": [
+    "<release-server-binary>",
+    "--mlx",
+    "--mlx-model-artifacts-dir",
+    "<pinned-mxfp4-pack>",
+    "--model-id",
+    "qwen3.8-flash-next",
+    "--port",
+    "31591",
+    "--max-concurrent-requests",
+    "1",
+    "--stream-experts",
+    "auto",
+    "--total-blocks",
+    "2048",
+    "--prefill-chunk",
+    "1024",
+    "--mlx-mtp-policy",
+    "disabled"
+  ],
+  "scope": "Bounded functional and serving regression; not certification or sustained qualification"
+}

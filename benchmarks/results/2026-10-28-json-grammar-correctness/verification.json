@@ -1,0 +1,31 @@
+{
+  "baseline": {
+    "source_commit": "e5dec8f38e139a24e115d0d8e2bab3b53a0bf9c1",
+    "tests": "Three new parser regressions applied to the baseline implementation",
+    "command": "rustup run 1.99.1 cargo test -p ax-engine-core --lib grammar::json::tests -- --nocapture",
+    "passed": 9,
+    "failed": 3
+  },
+  "candidate": {
+    "source_commit": "be4360a6118f01a783cec3f86cdc8fe09aaf9972",
+    "command": "rustup run 1.99.1 cargo test -p ax-engine-core --lib grammar:: -- --nocapture",
+    "passed": 26,
+    "failed": 0,
+    "ignored": 1
+  },
+  "findings": [
+    "Repeated declared object keys used the unconstrained additional-property schema on their second occurrence.",
+    "A property-name byte cursor saturated at 65535, losing declared schema identity for longer names.",
+    "A literal byte cursor overflowed at 65535, panicking in debug builds and wrapping in release builds."
+  ],
+  "fixes": [
+    "Repeated declared names retain their declared value schema; unknown names still use additionalProperties.",
+    "String-backed byte cursors use usize; unknown key prefixes drop irrelevant length state."
+  ],
+  "m5_checks_passed": 9,
+  "m5_checks_total": 9,
+  "m5_scope": "Normal, nested Unicode, reasoning, insufficient token budget, greedy and sampled open-object JSON. Boundary failures are reproduced by synthetic parser tests; the model run is an integration smoke.",
+  "owned_server_stopped": true,
+  "performance_claim": null,
+  "certification_change": null
+}
