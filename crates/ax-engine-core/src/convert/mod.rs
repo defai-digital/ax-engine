@@ -180,6 +180,7 @@ set {strict_env}=0 to allow, or map the tensors (sample: {sample})"
 pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, ConvertError> {
     let mut config = load_hf_config(model_dir)?;
     let model_type = resolve_model_type(&config)?;
+    validate_unlimited_ocr_attention(&config, &model_type, std::iter::empty::<&str>())?;
     if model_type.starts_with("embedding_gemma2") {
         embedding_gemma2::prepare_config(&mut config, &model_type)?;
     }
@@ -187,6 +188,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
     let all_tensors = parse_all_safetensors_headers(model_dir, &safetensors_files)?;
+    validate_unlimited_ocr_attention(
+        &config,
+        &model_type,
+        all_tensors.iter().map(|tensor| tensor.name.as_str()),
+    )?;
     // DeepSeek V4 quantized checkpoints (FP8 dense weights + FP4 routed
     // experts) need a real data pass: dequantize/repack into a generated
     // safetensors file and consume the quantized sources + scale sidecars so

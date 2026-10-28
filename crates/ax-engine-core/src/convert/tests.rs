@@ -7291,6 +7291,86 @@ fn causal_ministral3_without_pooling_stays_mistral3_chat() {
 }
 
 #[test]
+fn unlimited_ocr2_config_is_rejected_before_weight_mapping() {
+    for model_type in ["unlimited-ocr", "unlimited_ocr", "deepseekocr"] {
+        for scope in ["root", "language_config", "text_config"] {
+            let dir = unique_test_dir("unlimited_ocr2_config");
+            let mut config = serde_json::json!({"model_type": model_type});
+            let sparse = serde_json::json!({
+                "use_sparse_attention": true,
+                "dash_router": "entmax_topk_perlayer",
+                "sparse_main_rope_mode": "page2d"
+            });
+            if scope == "root" {
+                config["sparse_attention_config"] = sparse;
+            } else {
+                config[scope] = serde_json::json!({"sparse_attention_config": sparse});
+            }
+            write_config(&dir, config);
+            let error = convert_hf_model_dir(&dir).expect_err("v2 must not enter v1 mapper");
+            assert!(matches!(error, ConvertError::InvalidModelContract { .. }));
+            assert!(error.to_string().contains("Unlimited-OCR-2 SR-SWA"));
+            assert!(!dir.join("model-manifest.json").exists());
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn unlimited_ocr2_routing_weights_cannot_be_dropped_as_v1_extras() {
+    let dir = unique_test_dir("unlimited_ocr2_stripped_config");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "unlimited-ocr", "hidden_size": 1280,
+            "num_hidden_layers": 12, "num_attention_heads": 10,
+            "num_key_value_heads": 10, "intermediate_size": 6848, "vocab_size": 129280
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[(
+            "model.layers.0.self_attn.dash_router.q_proj.weight",
+            "BF16",
+            &[128, 1280],
+        )],
+    );
+    let error = ensure_manifest_for_hf_model_dir(&dir)
+        .expect_err("auto-convert must reject sparse weights even without sparse config");
+    assert!(error.to_string().contains("Unlimited-OCR-2 SR-SWA"));
+    assert!(!dir.join("model-manifest.json").exists());
+    let _ = fs::remove_dir_all(dir);
+    for marker in ["dash_router.q_proj", "indexer.k_proj"] {
+        for prefix in ["model", "language_model.model"] {
+            for sparse in [
+                serde_json::Value::Null,
+                serde_json::json!({"use_sparse_attention": false}),
+            ] {
+                let config = serde_json::json!({"sparse_attention_config": sparse});
+                let name = format!("{prefix}.layers.0.self_attn.{marker}.weight");
+                let error =
+                    super::validate_unlimited_ocr_attention(&config, "unlimited_ocr", [&name])
+                        .expect_err("stripped or disabled config cannot hide sparse weights");
+                assert!(error.to_string().contains("Unlimited-OCR-2 SR-SWA"));
+            }
+        }
+    }
+    super::validate_unlimited_ocr_attention(
+        &serde_json::json!({"sparse_attention_config": null}),
+        "unlimited_ocr",
+        ["model.layers.0.self_attn.q_proj.weight"],
+    )
+    .expect("v1 remains eligible");
+    super::validate_unlimited_ocr_attention(
+        &serde_json::json!({"sparse_attention_config": {"enabled": true}}),
+        "deepseek_v4",
+        ["model.layers.0.self_attn.indexer.k_proj.weight"],
+    )
+    .expect("other architectures retain their own sparse-attention contract");
+}
+
+#[test]
 fn converts_unlimited_ocr_language_moe_directory() {
     let dir = unique_test_dir("unlimited_ocr_lang");
     write_config(

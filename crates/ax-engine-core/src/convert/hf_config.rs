@@ -191,6 +191,44 @@ pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
     )
 }
 
+/// Reject second-generation sparse attention before the v1 mapper can drop
+/// routing weights and produce a plausible but semantically different graph.
+pub(crate) fn validate_unlimited_ocr_attention(
+    config: &serde_json::Value,
+    model_type: &str,
+    tensor_names: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<(), ConvertError> {
+    if !is_unlimited_ocr(model_type) {
+        return Ok(());
+    }
+    let sparse_config = [
+        Some(config),
+        config.get("language_config"),
+        config.get("text_config"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|scope| {
+        scope
+            .get("sparse_attention_config")
+            .is_some_and(|v| !v.is_null())
+    });
+    let sparse_weights = tensor_names.into_iter().any(|name| {
+        let name = name.as_ref();
+        name.contains(".self_attn.dash_router.") || name.contains(".self_attn.indexer.")
+    });
+    if sparse_config || sparse_weights {
+        return Err(ConvertError::InvalidModelContract {
+            model_type: model_type.to_string(),
+            message: "Unlimited-OCR-2 SR-SWA is not implemented: native DASH routing, \
+                page-aware rotary positions and multi-page KV lifecycle are required; \
+                the Unlimited-OCR v1 protected-prefix attention path cannot run this checkpoint"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     matches!(
         model_type,
