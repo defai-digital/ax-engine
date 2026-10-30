@@ -1255,6 +1255,12 @@ fn render_prompt_internal(
                     prompt.push_str(&escape_gpt_oss_harmony_content(system));
                     // Hub jinja closes the instructions with "\n\n".
                     prompt.push_str("\n\n<|end|>");
+                    // The assistant turn starts after the flushed instructions.
+                    if role == "assistant"
+                        && let Some(start) = assistant_byte_starts.last_mut()
+                    {
+                        *start = prompt.len();
+                    }
                 }
                 match role {
                     "system" => {
@@ -1350,6 +1356,12 @@ fn render_prompt_internal(
                             prompt.push_str(DEEPSEEK_EOS);
                         }
                         deepseek_tool_response_open = false;
+                        // The assistant turn starts after the closed tool block.
+                        if role == "assistant"
+                            && let Some(start) = assistant_byte_starts.last_mut()
+                        {
+                            *start = prompt.len();
+                        }
                     }
                     match role {
                         "system" => {
@@ -2039,6 +2051,39 @@ mod tests {
             "{}",
             &rendered.text[start..]
         );
+    }
+
+    #[test]
+    fn assistant_offsets_follow_flushed_or_closed_blocks() {
+        for (model, template, messages, marker) in [
+            (
+                "openai/gpt-oss-20b",
+                ChatPromptTemplate::GptOssHarmony,
+                [("system", "A"), ("assistant", "a"), ("user", "hi")],
+                "<|start|>assistant",
+            ),
+            (
+                "deepseek-ai/DeepSeek-V3",
+                ChatPromptTemplate::DeepSeekChat,
+                [("user", "q"), ("tool", "r"), ("assistant", "a")],
+                DEEPSEEK_ASSISTANT,
+            ),
+        ] {
+            let rendered = render_prompt_with_template_and_framing_offsets(
+                model,
+                template,
+                &owned(&messages),
+                false,
+                None,
+            )
+            .expect("render");
+            let start = rendered.assistant_byte_starts[0];
+            assert!(
+                rendered.text[start..].starts_with(marker),
+                "{model}: {}",
+                &rendered.text[start..]
+            );
+        }
     }
 
     #[test]
