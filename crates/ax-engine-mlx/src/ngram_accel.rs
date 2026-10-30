@@ -1675,8 +1675,8 @@ pub struct ThinkSoftCloseProbe {
 
 /// Whether `think_end_token_id` sits within the top `rank` logits: fewer
 /// than `rank` logits are strictly greater, so a tie never depends on token
-/// order. A NaN target logit has no rank; other NaN logits outrank it, as
-/// under `total_cmp`.
+/// order. A NaN target logit has no rank; other logits are ordered by
+/// `total_cmp`, so a positive NaN outranks it and a negative NaN does not.
 pub(crate) fn think_soft_close_in_top_k(
     logits: &[f32],
     think_end_token_id: u32,
@@ -1690,7 +1690,7 @@ pub(crate) fn think_soft_close_in_top_k(
     }
     logits
         .iter()
-        .filter(|&&value| value > target || value.is_nan())
+        .filter(|&&value| value.total_cmp(&target).is_gt())
         .count()
         < rank
 }
@@ -1875,6 +1875,7 @@ mod tests {
         // A NaN target is unrankable.
         assert!(!think_soft_close_in_top_k(&[f32::NAN, 5.0], 0, 1));
         assert!(!think_soft_close_in_top_k(&[f32::NAN, 1.0, 0.0], 1, 1));
+        assert!(think_soft_close_in_top_k(&[-f32::NAN, 1.0, 0.0], 1, 1));
     }
 
     fn table_from_sequence(tokens: &[u32]) -> NgramTable {
