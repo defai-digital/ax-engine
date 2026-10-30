@@ -227,15 +227,18 @@ impl TokenVocab {
         match vocab {
             Value::Object(map) => {
                 for (piece, id) in map {
-                    if let Some(id) = id.as_u64() {
-                        pieces.push((id as u32, piece.clone()));
+                    // Truncating an out-of-range id would alias another token.
+                    if let Some(id) = id.as_u64().and_then(|id| u32::try_from(id).ok()) {
+                        pieces.push((id, piece.clone()));
                     }
                 }
             }
             Value::Array(entries) => {
                 for (id, entry) in entries.iter().enumerate() {
-                    if let Some(piece) = entry.get(0).and_then(Value::as_str) {
-                        pieces.push((id as u32, piece.to_string()));
+                    if let (Ok(id), Some(piece)) =
+                        (u32::try_from(id), entry.get(0).and_then(Value::as_str))
+                    {
+                        pieces.push((id, piece.to_string()));
                     }
                 }
             }
@@ -558,6 +561,17 @@ mod tests {
         apply_token_mask(&mut logits, &out);
         assert_eq!(logits[1], f32::NEG_INFINITY);
         assert_eq!(logits[0], 1.0);
+    }
+
+    #[test]
+    fn tokenizer_json_skips_ids_beyond_u32_instead_of_aliasing() {
+        let tokenizer = json!({
+            "decoder": {"type": "ByteLevel"},
+            "model": {"vocab": {"{": 4_294_967_296_u64, "x": 1}}
+        });
+        let vocab = TokenVocab::from_tokenizer_json(&tokenizer, 8).unwrap();
+        assert!(vocab.token_bytes(0).is_none());
+        assert_eq!(vocab.token_bytes(1), Some(&b"x"[..]));
     }
 }
 

@@ -254,7 +254,15 @@ impl GrammarCursor<'_> {
     /// `drafts[..i]`, so there are `drafts.len() + 1` rows.
     pub(super) fn row_masks(mut self, drafts: &[u32]) -> Vec<Option<Vec<u64>>> {
         let mut masks = Vec::with_capacity(drafts.len() + 1);
-        masks.push(self.mask());
+        // Row 0 follows only committed tokens: zero support there is not a
+        // rejected draft but a request that cannot finish, so report it.
+        masks.push(match self.mask_checked() {
+            Ok(mask) => mask,
+            Err(error) => {
+                *self.budget_error.lock() = Some(error);
+                Some(vec![0; self.vocab.vocab_size().div_ceil(64)])
+            }
+        });
         for &token in drafts {
             self.advance(token);
             masks.push(self.mask());
@@ -435,6 +443,18 @@ mod tests {
                 .mask_checked()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn completion_budget_infeasible_committed_row_reports_an_error() {
+        let vocab = vocab();
+        let mut grammar = RequestGrammar::new(Arc::new(
+            JsonGrammar::any_object().with_completion_budget(true),
+        ));
+        grammar.set_remaining(1);
+        let masks = grammar.cursor(&vocab, THINK, false, EOS).row_masks(&[0]);
+        assert!(masks[0].as_ref().unwrap().iter().all(|&word| word == 0));
+        assert_eq!(grammar.take_budget_error(), Some(BudgetError::Infeasible));
     }
 
     #[test]
