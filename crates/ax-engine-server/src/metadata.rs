@@ -420,11 +420,17 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         && has_tensor_name_prefix(tensors, "mlp1.");
     let nemotron_omni_audio = has_tensor_name_prefix(tensors, "sound_encoder.")
         && has_tensor_name_prefix(tensors, "sound_projection.");
+    // Flash Next ships its tower outside the manifest; the runtime loads it
+    // only behind the preview flag and refuses DeepStack towers.
+    let qwen4_exp_image = family == "qwen4_exp"
+        && qwen4_exp_vision_enabled()
+        && qwen4_exp_vision_tower_loadable(artifacts_dir);
     let image = gemma4_unified_image
         || gemma4_standard_image
         || qwen3_vl_image
         || minicpm_v46_image
-        || nemotron_omni_image;
+        || nemotron_omni_image
+        || qwen4_exp_image;
     let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE) || nemotron_omni_audio;
     // Advertise video only when the loaded tower has the corresponding native
     // frame path: Gemma4 unified or Qwen3-VL/Qwen3.5. Media is data-URI only
@@ -458,6 +464,36 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         video,
         gemma4_unified: gemma4_unified_image,
     }
+}
+
+/// Mirrors the runtime's `qwen4_exp::load_vision_tower`: the tower is listed
+/// in `model.safetensors.index.json` (not the manifest), and a config that
+/// declares `deepstack_visual_indexes` fails the load closed.
+fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
+    let read_json = |name: &str| {
+        std::fs::read(artifacts_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    };
+    let has_tower = read_json("model.safetensors.index.json")
+        .and_then(|index| {
+            index
+                .get("weight_map")
+                .and_then(Value::as_object)
+                .map(|map| map.keys().any(|name| name.starts_with("vision_tower.")))
+        })
+        .unwrap_or(false);
+    if !has_tower {
+        return false;
+    }
+    let Some(config) = read_json("config.json") else {
+        return false;
+    };
+    !config
+        .get("vision_config")
+        .and_then(|vision| vision.get("deepstack_visual_indexes"))
+        .and_then(Value::as_array)
+        .is_some_and(|indexes| !indexes.is_empty())
 }
 
 fn family_from_manifest(manifest: &Value) -> Option<String> {
@@ -628,4 +664,65 @@ pub(crate) fn json_constrained_decoding_enabled() -> bool {
             )
         })
     })
+}
+
+#[cfg(test)]
+mod qwen4_exp_vision_tower_tests {
+    use super::qwen4_exp_vision_tower_loadable;
+    use serde_json::json;
+
+    fn pack(
+        label: &str,
+        weight_map: serde_json::Value,
+        config: serde_json::Value,
+    ) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("ax-engine-server-qwen4-vision-{label}-{unique}"));
+        std::fs::create_dir_all(&dir).expect("create pack dir");
+        std::fs::write(
+            dir.join("model.safetensors.index.json"),
+            serde_json::to_vec(&json!({ "weight_map": weight_map })).expect("index json"),
+        )
+        .expect("write index");
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&config).expect("config json"),
+        )
+        .expect("write config");
+        dir
+    }
+
+    #[test]
+    fn tower_in_index_without_deepstack_is_loadable() {
+        let dir = pack(
+            "ok",
+            json!({ "vision_tower.blocks.0.attn.qkv.weight": "model-00001.safetensors" }),
+            json!({ "vision_config": { "deepstack_visual_indexes": [] } }),
+        );
+        assert!(qwen4_exp_vision_tower_loadable(&dir));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_tower_or_deepstack_is_not_loadable() {
+        let no_tower = pack(
+            "none",
+            json!({ "model.layers.0.mlp.weight": "model-00001.safetensors" }),
+            json!({}),
+        );
+        assert!(!qwen4_exp_vision_tower_loadable(&no_tower));
+        let _ = std::fs::remove_dir_all(no_tower);
+
+        let deepstack = pack(
+            "deepstack",
+            json!({ "vision_tower.blocks.0.attn.qkv.weight": "model-00001.safetensors" }),
+            json!({ "vision_config": { "deepstack_visual_indexes": [5, 11] } }),
+        );
+        assert!(!qwen4_exp_vision_tower_loadable(&deepstack));
+        let _ = std::fs::remove_dir_all(deepstack);
+    }
 }
