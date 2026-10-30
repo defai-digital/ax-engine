@@ -1203,12 +1203,15 @@ pub enum MlxKVCacheSerializeError {
     IncompleteLinearLayer(usize),
     /// Flash Next request state is inconsistent with its prefix or model.
     FlashNextState(String),
+    /// An optional-tensor presence tag was neither present nor absent.
+    BadPresenceTag(u8),
 }
 
 impl std::fmt::Display for MlxKVCacheSerializeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::FlashNextState(message) => write!(f, "Flash Next cache: {message}"),
+            Self::BadPresenceTag(t) => write!(f, "kv-cache payload has unknown presence tag {t}"),
             Self::BadMagic => write!(f, "kv-cache payload has wrong magic"),
             Self::UnsupportedVersion(v) => write!(f, "kv-cache payload version {v} unsupported"),
             Self::UnexpectedEof => write!(f, "kv-cache payload truncated"),
@@ -2601,6 +2604,18 @@ impl MlxKVCache {
         Self::try_deserialize_from_reader(&mut cursor)
     }
 
+    /// Read a presence-tagged optional tensor; an unknown tag is corruption,
+    /// not absence, so required state cannot be silently dropped.
+    fn read_optional_tensor_from_reader(
+        reader: &mut dyn std::io::Read,
+    ) -> Result<Option<MlxArray>, MlxKVCacheSerializeError> {
+        match read_u8_from(reader)? {
+            Self::TENSOR_PRESENT_TAG => Ok(Some(Self::read_tensor_from_reader(reader)?)),
+            Self::TENSOR_ABSENT_TAG => Ok(None),
+            tag => Err(MlxKVCacheSerializeError::BadPresenceTag(tag)),
+        }
+    }
+
     /// Streaming deserialize for durable L2 restore (spec §7.2 / §9).
     /// Each tensor is read directly into its final owned buffer while the
     /// caller updates integrity state (e.g. entry SHA-256). Prefer this
@@ -2657,7 +2672,8 @@ impl MlxKVCache {
                     let k_arr = Self::read_tensor_from_reader(reader)?;
                     let v_arr = Self::read_tensor_from_reader(reader)?;
                     let shape = k_arr.shape();
-                    if shape.len() < 4 {
+                    // The serializer writes single-batch `[1, heads, cap, dim]`.
+                    if shape.len() != 4 || shape[0] != 1 {
                         return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
                     }
                     // K and V are written from one layer with one geometry;
@@ -2710,7 +2726,15 @@ impl MlxKVCache {
                     let k_pe = Self::read_tensor_from_reader(reader)?;
                     let kv_shape = kv_latent.shape();
                     let pe_shape = k_pe.shape();
-                    if kv_shape.len() < 4 || pe_shape.len() < 4 {
+                    // Both halves are `[1, 1, cap, dim > 0]` in one dtype.
+                    if kv_shape.len() != 4
+                        || pe_shape.len() != 4
+                        || kv_shape[..2] != [1, 1]
+                        || pe_shape[..2] != [1, 1]
+                        || kv_shape[3] <= 0
+                        || pe_shape[3] <= 0
+                        || kv_latent.dtype() != k_pe.dtype()
+                    {
                         return Err(MlxKVCacheSerializeError::BadShape(kv_shape.len()));
                     }
                     // Latent and positional halves cover the same tokens, and
@@ -2731,18 +2755,8 @@ impl MlxKVCache {
                     });
                 }
                 k if k == Self::LAYER_KIND_LINEAR => {
-                    let conv_present = read_u8_from(reader)?;
-                    let conv_state = if conv_present == Self::TENSOR_PRESENT_TAG {
-                        Some(Self::read_tensor_from_reader(reader)?)
-                    } else {
-                        None
-                    };
-                    let rec_present = read_u8_from(reader)?;
-                    let recurrent_state = if rec_present == Self::TENSOR_PRESENT_TAG {
-                        Some(Self::read_tensor_from_reader(reader)?)
-                    } else {
-                        None
-                    };
+                    let conv_state = Self::read_optional_tensor_from_reader(reader)?;
+                    let recurrent_state = Self::read_optional_tensor_from_reader(reader)?;
                     cache.linear_layers[idx] = LinearLayerState {
                         conv_state,
                         recurrent_state,
@@ -4997,6 +5011,30 @@ impl MlxKVCache {
             usage.capacity_bytes = usage
                 .capacity_bytes
                 .saturating_add(bytes_per_token.saturating_mul(glm_mla.capacity as u64));
+        }
+
+        for dsv4 in self.deepseek_v4_layers.iter().flatten() {
+            let bytes_per_token =
+                (dsv4.head_dim.max(0) as u64).saturating_mul(dsv4.dtype.size_bytes() as u64);
+            // Compressor state is per-layer, not per-token; charge it to
+            // capacity like the latent buffer it accompanies.
+            let compressor_bytes = [&dsv4.comp, &dsv4.indexer_comp]
+                .into_iter()
+                .flatten()
+                .flat_map(|comp| [&comp.comp_k, &comp.state_kv, &comp.state_score])
+                .flatten()
+                .map(|array| array.nbytes() as u64)
+                .fold(0u64, u64::saturating_add);
+            usage.full_attention_layers = usage.full_attention_layers.saturating_add(1);
+            usage.capacity_tokens = usage.capacity_tokens.saturating_add(dsv4.capacity);
+            usage.logical_bytes = usage
+                .logical_bytes
+                .saturating_add(bytes_per_token.saturating_mul(self.seq_len as u64));
+            usage.capacity_bytes = usage.capacity_bytes.saturating_add(
+                bytes_per_token
+                    .saturating_mul(dsv4.capacity as u64)
+                    .saturating_add(compressor_bytes),
+            );
         }
 
         if let Some(state) = &self.qwen4_exp {
