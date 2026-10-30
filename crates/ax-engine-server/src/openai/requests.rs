@@ -115,7 +115,13 @@ impl OpenAiToolContract {
         let tools = value.and_then(Value::as_array)?;
         let mut contract = OpenAiToolContract::default();
         for tool in tools {
-            let Some(function) = tool.get("function").and_then(Value::as_object) else {
+            // Accept the nested chat shape and the flat Responses shape the
+            // prompt renderer also accepts.
+            let Some(function) = tool
+                .get("function")
+                .and_then(Value::as_object)
+                .or_else(|| tool.as_object())
+            else {
                 continue;
             };
             let Some(name) = function.get("name").and_then(Value::as_str) else {
@@ -1008,6 +1014,10 @@ fn build_openai_generate_request(
 /// Append `instruction` to a leading text system message, or add one.
 /// A leading multi-part system message is left alone.
 fn add_system_instruction(messages: &mut Vec<OpenAiChatMessage>, instruction: &str) {
+    // An empty conversation must still reach the empty-messages rejection.
+    if messages.is_empty() {
+        return;
+    }
     match messages.first_mut() {
         Some(OpenAiChatMessage {
             role,
@@ -1870,6 +1880,25 @@ fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_contract_accepts_flat_function_tools() {
+        let tools = serde_json::json!([{
+            "type": "function",
+            "name": "edit",
+            "parameters": {"type": "object", "properties": {"filePath": {}}}
+        }]);
+        let contract = OpenAiToolContract::from_tools(Some(&tools)).expect("contract");
+        assert_eq!(contract.canonical_tool_name("edit"), "edit");
+        assert!(contract.tools["edit"].properties.contains("filePath"));
+    }
+
+    #[test]
+    fn system_instruction_is_not_added_to_an_empty_conversation() {
+        let mut messages = Vec::new();
+        add_system_instruction(&mut messages, "Respond only with JSON.");
+        assert!(messages.is_empty());
+    }
 
     #[test]
     fn gemma4_tool_gate_uses_the_manifest_family() {
