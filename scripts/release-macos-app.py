@@ -55,7 +55,7 @@ def tree_digest(root: Path) -> str:
             require(path.resolve().is_relative_to(root.resolve()), "App symlink escapes its bundle")
             rows.append([relative, "link", os.readlink(path)])
         elif path.is_file():
-            rows.append([relative, path.stat().st_mode & 0o777, sha256(path)])
+            rows.append([relative, path.stat().st_mode & 0o7777, sha256(path)])
         else:
             require(path.is_dir(), "Special files cannot be shipped")
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
@@ -153,8 +153,12 @@ def build(output: Path, mlx: Path) -> None:
         plistlib.dump(info, stream)
     run("codesign", "--force", "--sign", "-", app)
     run("codesign", "--verify", "--deep", "--strict", app)
+    # The build's own output may live inside the checkout; it is not a source change.
+    status = ["git", "status", "--porcelain"]
+    if output.resolve().is_relative_to(ROOT):
+        status += ["--", ".", f":(exclude){output.resolve().relative_to(ROOT).as_posix()}"]
     require(run("git", "rev-parse", "HEAD", capture=True).strip() == commit and
-            not run("git", "status", "--porcelain", capture=True).strip(), "Source changed during build")
+            not run(*status, capture=True).strip(), "Source changed during build")
     write_json(output / "build.json", {"schema": "ax-engine.gui-build.v1", "version": version,
                "commit": commit, "rust": toolchain, "mlx": (ROOT / "mlx.version").read_text().strip(),
                "appTreeSha256": tree_digest(app)})
