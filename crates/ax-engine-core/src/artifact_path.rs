@@ -3,11 +3,7 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) fn resolve_file(
-    root: &Path,
-    canonical_root: &Path,
-    relative: &Path,
-) -> io::Result<PathBuf> {
+pub fn resolve_file(root: &Path, canonical_root: &Path, relative: &Path) -> io::Result<PathBuf> {
     let joined = root.join(relative);
     let canonical = joined.canonicalize()?;
     if canonical.is_file()

@@ -587,20 +587,29 @@ fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
     let Some(weight_map) = index.get("weight_map").and_then(Value::as_object) else {
         return false;
     };
-    // The runtime's index reader rejects the whole index on any non-string
-    // entry, not only on tower entries.
-    if !weight_map.values().all(Value::is_string) {
-        return false;
-    }
     let Ok(canonical_root) = artifacts_dir.canonicalize() else {
         return false;
     };
+    // The runtime's index reader resolves every entry, trunk included, and
+    // drops the tower on any non-string or unresolvable one.
+    for file in weight_map.values() {
+        let Some(file) = file.as_str() else {
+            return false;
+        };
+        if ax_engine_core::artifact_path::resolve_file(
+            artifacts_dir,
+            &canonical_root,
+            Path::new(file),
+        )
+        .is_err()
+        {
+            return false;
+        }
+    }
     let shard_resolves = |suffix: &str| {
         VISUAL_PREFIXES
             .iter()
-            .filter_map(|prefix| weight_map.get(&format!("{prefix}{suffix}")))
-            .filter_map(Value::as_str)
-            .any(|file| shard_inside_pack(artifacts_dir, &canonical_root, file))
+            .any(|prefix| weight_map.contains_key(&format!("{prefix}{suffix}")))
     };
     FIXED_TENSORS.iter().all(|suffix| shard_resolves(suffix))
         && (0..depth).all(|layer| {
@@ -608,34 +617,6 @@ fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
                 .iter()
                 .all(|suffix| shard_resolves(&format!("blocks.{layer}.{suffix}")))
         })
-}
-
-/// Same containment rule as the runtime's `artifact_path::resolve_file`: a
-/// shard resolves inside the pack, or, for a Hugging Face cache snapshot,
-/// into that repository's own `blobs/` directory.
-fn shard_inside_pack(
-    artifacts_dir: &std::path::Path,
-    canonical_root: &std::path::Path,
-    file: &str,
-) -> bool {
-    let Ok(canonical) = artifacts_dir.join(file).canonicalize() else {
-        return false;
-    };
-    if !canonical.is_file() {
-        return false;
-    }
-    if canonical.starts_with(canonical_root) {
-        return true;
-    }
-    let Some(snapshots) = canonical_root.parent() else {
-        return false;
-    };
-    snapshots
-        .file_name()
-        .is_some_and(|name| name == "snapshots")
-        && snapshots
-            .parent()
-            .is_some_and(|repo| canonical.parent() == Some(repo.join("blobs").as_path()))
 }
 
 fn family_from_manifest(manifest: &Value) -> Option<String> {
@@ -868,9 +849,13 @@ mod qwen4_exp_vision_tower_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let dir =
+        // Nest the pack so a real `../outside.safetensors` exists next to it
+        // and the escape case exercises containment, not a missing file.
+        let parent =
             std::env::temp_dir().join(format!("ax-engine-server-qwen4-vision-{label}-{unique}"));
+        let dir = parent.join("pack");
         std::fs::create_dir_all(&dir).expect("create pack dir");
+        std::fs::write(parent.join("outside.safetensors"), b"").expect("write outside shard");
         std::fs::write(
             dir.join("model.safetensors.index.json"),
             serde_json::to_vec(&json!({ "weight_map": weight_map })).expect("index json"),
@@ -885,7 +870,7 @@ mod qwen4_exp_vision_tower_tests {
             std::fs::write(dir.join(SHARD), b"").expect("write shard");
         }
         let result = qwen4_exp_vision_tower_loadable(&dir);
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(parent);
         result
     }
 
@@ -941,6 +926,12 @@ mod qwen4_exp_vision_tower_tests {
                 .collect(),
         );
         assert!(!loadable("escape", escaping, config(2, json!([])), true));
+        let mut stray = complete();
+        stray
+            .as_object_mut()
+            .expect("map")
+            .insert("model.norm.weight".into(), json!("missing.safetensors"));
+        assert!(!loadable("stray", stray, config(2, json!([])), true));
         assert!(!loadable(
             "no-shard",
             complete(),
