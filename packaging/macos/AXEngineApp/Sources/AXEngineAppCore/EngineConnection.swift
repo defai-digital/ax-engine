@@ -62,8 +62,11 @@ public struct EngineConnection: Sendable, Identifiable, CustomStringConvertible,
         guard response.expectedContentLength <= Int64(limit) else {
             throw AppFailure.message("Service response exceeds the display limit.")
         }
+        // `timeoutInterval` only bounds inactivity; a slow drip would reset it.
+        let deadline = Date().addingTimeInterval(timeout)
         var data = Data()
         for try await byte in bytes {
+            guard Date() < deadline else { throw URLError(.timedOut) }
             guard data.count < limit else {
                 throw AppFailure.message("Service response exceeds the display limit.")
             }
