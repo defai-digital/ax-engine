@@ -626,6 +626,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
     )?;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
         !input_tokens.is_empty() || messages_contain_inline_media(&request.messages),
@@ -842,6 +843,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         openai_chat_prompt_render_options_for_live(&request, live).enable_thinking;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
         true,
@@ -908,6 +910,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         openai_chat_prompt_render_options_for_live(&request, live).enable_thinking;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
         true,
@@ -1538,12 +1541,15 @@ pub(crate) fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Optio
 
 fn reject_gemma4_tools_when_ax_cannot_render_them(
     model_id: &str,
+    family_hint: Option<&str>,
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
     cannot_render_ax_gemma4_dsl: bool,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    // Resolve like the prompt renderer (ADR-025): a Gemma 4 manifest family
+    // renders the Gemma 4 DSL even when the model id does not say so.
     if !matches!(
-        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::Gemma4
     ) || !openai_tools_are_enabled(tools, tool_choice)
         || !cannot_render_ax_gemma4_dsl
@@ -1864,6 +1870,31 @@ fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemma4_tool_gate_uses_the_manifest_family() {
+        let tools = serde_json::json!([{"type": "function", "function": {"name": "f"}}]);
+        assert!(
+            reject_gemma4_tools_when_ax_cannot_render_them(
+                "local-model",
+                Some("gemma4"),
+                Some(&tools),
+                None,
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            reject_gemma4_tools_when_ax_cannot_render_them(
+                "local-model",
+                None,
+                Some(&tools),
+                None,
+                true
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn canonical_arguments_never_steal_a_declared_sibling_property() {
