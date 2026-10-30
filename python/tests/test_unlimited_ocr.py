@@ -157,6 +157,21 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
                     directory, [19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID], pages
                 )
 
+    def test_rejects_conflicting_sparse_config_scopes(self) -> None:
+        module = load_module()
+        sparse = {"use_sparse_attention": True, "page_token_id": 19}
+        for nested in ("language_config", "text_config"):
+            with self.subTest(nested=nested):
+                with self.assertRaisesRegex(ValueError, "conflicting sparse attention scopes"):
+                    module._sparse_attention_config({
+                        "sparse_attention_config": sparse,
+                        nested: {"sparse_attention_config": {**sparse, "page_token_id": 20}},
+                    })
+        self.assertEqual(module._sparse_attention_config({
+            "sparse_attention_config": sparse,
+            "text_config": {"sparse_attention_config": dict(sparse)},
+        }), sparse)
+
     def test_expands_one_placeholder_and_preserves_rgb_bytes(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
