@@ -417,7 +417,7 @@ impl MlxPrefixCache {
     pub(crate) fn insert_unless_superseded(
         &mut self,
         key: MlxPrefixCacheKey,
-        snapshot: MlxPrefixSnapshot,
+        mut snapshot: MlxPrefixSnapshot,
     ) -> Option<MlxPrefixCacheInsertOutcome> {
         if self.contains_superseding_snapshot(
             &key,
@@ -427,6 +427,29 @@ impl MlxPrefixCache {
             snapshot.dflash2.as_deref(),
         ) {
             return None;
+        }
+        // The new snapshot is more complete on one dimension only: keep the
+        // resident sidecars it lacks (same tokens, so they still describe
+        // this prefix) instead of replacing an MTP/dflash2-capable entry
+        // with a trunk-only one.
+        let previous = self
+            .entries
+            .get(&key)
+            .filter(|entry| entry.snapshot.tokens == snapshot.tokens)
+            .map(|entry| Arc::clone(&entry.snapshot));
+        if let Some(previous) = previous {
+            if snapshot.greedy_prefill_output_token.is_none() {
+                snapshot.greedy_prefill_output_token = previous.greedy_prefill_output_token;
+            }
+            if snapshot.mtp_cursor_payload.is_none()
+                && let Some(cursor) = previous.mtp_cursor_payload.clone()
+            {
+                snapshot.bytes = snapshot.bytes.saturating_add(cursor.len() as u64);
+                snapshot.mtp_cursor_payload = Some(cursor);
+            }
+            if snapshot.dflash2.is_none() && previous.dflash2.is_some() {
+                snapshot = snapshot.with_dflash2(previous.dflash2.clone());
+            }
         }
         Some(self.insert(key, snapshot))
     }
@@ -1956,6 +1979,42 @@ mod tests {
         assert_eq!(outcome.evictions, 0);
         assert_eq!(cache.entries.len(), 1);
         assert!(cache.entries.contains_key(&healthy_key));
+    }
+
+    #[test]
+    fn insert_unless_superseded_keeps_resident_sidecars_the_new_snapshot_lacks() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 4,
+        });
+        let key = native_prefix_key(3);
+        let tokens = vec![1u32, 2, 3, 4];
+        let with_cursor = MlxPrefixSnapshot::from_shared_payload(
+            vec![0u8; 16].into(),
+            tokens.clone(),
+            4,
+            None,
+            Some(vec![9u8; 8].into()),
+        );
+        assert!(cache.insert(key.clone(), with_cursor).stored);
+        let greedy_only = MlxPrefixSnapshot::from_shared_payload(
+            vec![0u8; 16].into(),
+            tokens.clone(),
+            4,
+            Some(7),
+            None,
+        );
+        let expected_bytes = greedy_only.bytes + 8;
+        assert!(
+            cache
+                .insert_unless_superseded(key.clone(), greedy_only)
+                .is_some_and(|outcome| outcome.stored)
+        );
+        let merged = cache.get(&key, &tokens).expect("merged entry");
+        assert_eq!(merged.greedy_prefill_output_token, Some(7));
+        assert_eq!(merged.mtp_cursor_payload.as_deref(), Some(&[9u8; 8][..]));
+        assert_eq!(merged.bytes, expected_bytes);
+        assert_eq!(cache.stats().bytes, expected_bytes);
     }
 
     /// Lookups decide from host metadata (the token vector), never from the KV
