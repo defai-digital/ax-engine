@@ -17,7 +17,10 @@ use parking_lot::Mutex;
 /// so most masks are looked up rather than walked.
 const MASK_CACHE_ENTRIES: usize = 64;
 
-type MaskCache = Mutex<HashMap<JsonMatcher, Arc<[u64]>>>;
+/// Keyed by the terminal set too: `ignore_eos` decode steps pass no terminal
+/// ids while MTP verify rows pass the full EOS list, so the same position has
+/// two different masks.
+type MaskCache = Mutex<HashMap<(JsonMatcher, Vec<u32>), Arc<[u64]>>>;
 
 #[derive(Clone, Debug)]
 pub(super) struct RequestGrammar {
@@ -224,7 +227,7 @@ impl GrammarCursor<'_> {
         if self.in_think || self.dead {
             return Ok(None);
         }
-        let key = self.matcher.mask_key();
+        let key = (self.matcher.mask_key(), self.terminal.to_vec());
         if let Some(mask) = self.masks.lock().get(&key) {
             return Ok(Some(mask.to_vec()));
         }
@@ -443,6 +446,19 @@ mod tests {
                 .mask_checked()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn mask_cache_separates_terminal_sets() {
+        let vocab = vocab();
+        let mut grammar = RequestGrammar::new(Arc::new(JsonGrammar::any_object()));
+        for token in [0, 1] {
+            grammar.commit(&vocab, THINK, false, EOS, token);
+        }
+        let with_eos = grammar.cursor(&vocab, THINK, false, EOS).mask().unwrap();
+        assert!(mask_allows(&with_eos, EOS[0]));
+        let without_eos = grammar.cursor(&vocab, THINK, false, &[]).mask();
+        assert!(without_eos.is_none_or(|mask| !mask_allows(&mask, EOS[0])));
     }
 
     #[test]
