@@ -76,17 +76,19 @@ def prepare_unlimited_ocr_image_request(
             raise ValueError("Unlimited-OCR-2 requires <PAGE><image> for each source image")
     payloads = []
     counts = []
+    total_rgb_bytes = 0
     for source in images:
         image = _load_rgb_image(source)
         try:
             width, height = image.size
             _validate_dimensions(width, height)
+            total_rgb_bytes += width * height * 3
+            if total_rgb_bytes > _MAX_RGB_BYTES:
+                raise ValueError("Unlimited-OCR total RGB payload exceeds the request limit")
             payloads.append({"width": width, "height": height, "rgb_bytes": image.tobytes()})
             counts.append(_soft_token_count(width, height, cropping, 16 if is_v2 else 32))
         finally:
             image.close()
-    if sum(len(p["rgb_bytes"]) for p in payloads) > _MAX_RGB_BYTES:
-        raise ValueError("Unlimited-OCR total RGB payload exceeds the request limit")
     expanded_tokens = []
     index = 0
     for token in tokens:

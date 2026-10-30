@@ -84,6 +84,46 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
                     directory, [0, IMAGE_TOKEN_ID, IMAGE_TOKEN_ID], [first, second]
                 )
 
+    def test_ocr2_rejects_total_payload_before_serializing_over_budget_page(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            write_model_contract(directory)
+            config = {
+                "model_type": "unlimited-ocr",
+                "sparse_attention_config": {
+                    "use_sparse_attention": True,
+                    "page_token_id": 19,
+                    "image_token_id": IMAGE_TOKEN_ID,
+                },
+            }
+            (directory / "config.json").write_text(json.dumps(config))
+            first = unittest.mock.Mock(size=(2, 1))
+            first.tobytes.return_value = bytes(6)
+            second = unittest.mock.Mock(size=(2, 1))
+            second.tobytes.return_value = bytes(6)
+            with (
+                unittest.mock.patch.object(module, "_MAX_RGB_BYTES", 9),
+                unittest.mock.patch.object(module, "_load_rgb_image", side_effect=[first, second]),
+            ):
+                with self.assertRaisesRegex(ValueError, "total RGB payload"):
+                    module.prepare_unlimited_ocr_image_request(
+                        directory, [19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID], [first, second]
+                    )
+            first.tobytes.assert_called_once()
+            second.tobytes.assert_not_called()
+            first.close.assert_called_once()
+            second.close.assert_called_once()
+            with (
+                unittest.mock.patch.object(module, "_MAX_RGB_BYTES", 12),
+                unittest.mock.patch.object(module, "_load_rgb_image", side_effect=[first, second]),
+            ):
+                request = module.prepare_unlimited_ocr_image_request(
+                    directory, [19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID], [first, second]
+                )
+            pages = request.multimodal_inputs["unlimited_ocr"]["images"]
+            self.assertEqual(sum(len(page["rgb_bytes"]) for page in pages), 12)
+
     def test_expands_one_placeholder_and_preserves_rgb_bytes(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
