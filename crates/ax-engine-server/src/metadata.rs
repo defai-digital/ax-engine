@@ -158,10 +158,11 @@ pub(crate) async fn discovery_info(
     if snapshots.iter().any(openai_text_supported_live) {
         operations.extend(["chat_completions".to_string(), "completions".to_string()]);
     }
-    if snapshots
-        .iter()
-        .any(|live| openai_text_supported_live(live) || encoder_embed_live(live))
-    {
+    // Only the native MLX backend embeds; delegated text backends cannot.
+    if snapshots.iter().any(|live| {
+        live.runtime_report.selected_backend == SelectedBackend::Mlx
+            && (openai_text_supported_live(live) || encoder_embed_live(live))
+    }) {
         operations.push("embeddings".to_string());
     }
     if snapshots.iter().any(whisper_supported_live) {
@@ -230,6 +231,7 @@ fn model_card(live: &LiveState) -> ModelCard {
             native_multimodal,
             openai_tool_calling,
             whisper,
+            encoder_embed_live(live),
         ),
         runtime: live.runtime_report.clone(),
     }
@@ -282,6 +284,7 @@ fn ax_engine_model_metadata(
     native_multimodal: NativeProcessedMultimodalSupport,
     openai_tool_calling: bool,
     whisper: bool,
+    encoder_embed: bool,
 ) -> AxEngineModelMetadata {
     let native_multimodal_input = native_multimodal.any();
     let coding_only = chat::is_qwen_coder_model(model_id);
@@ -291,7 +294,7 @@ fn ax_engine_model_metadata(
             ChatPromptTemplate::QwenChatMl
         );
     AxEngineModelMetadata {
-        native_generate_supported: !whisper,
+        native_generate_supported: !whisper && !encoder_embed,
         openai_completions_supported: openai_text,
         openai_chat_completions_supported: openai_text,
         openai_audio_transcriptions_supported: whisper,
@@ -318,6 +321,7 @@ fn ax_engine_model_metadata(
 }
 
 fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool {
+    let family = model_family_from_artifacts(live);
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         // DiffusionGemma renders with the Gemma 4 template but never prefills
@@ -325,12 +329,14 @@ fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool 
         && !chat::is_diffusion_gemma(live.model_id.as_ref())
         && (chat::is_qwen_thinking_model(live.model_id.as_ref())
             || chat::is_deepseek_model(live.model_id.as_ref())
+            // Hybrid-thinking Qwen families keep the contract under any id.
+            || matches!(family.as_deref(), Some("qwen3_5" | "qwen4_exp"))
+            // Every template here renders the thinking switch.
             || matches!(
-                chat::resolve_chat_template(
-                    live.model_id.as_ref(),
-                    model_family_from_artifacts(live).as_deref()
-                ),
+                chat::resolve_chat_template(live.model_id.as_ref(), family.as_deref()),
                 ChatPromptTemplate::Gemma4
+                    | ChatPromptTemplate::MiniMaxM3
+                    | ChatPromptTemplate::MuseGlimmerAtem
             ))
 }
 
