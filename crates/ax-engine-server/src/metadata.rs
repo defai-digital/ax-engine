@@ -545,6 +545,12 @@ fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
                     | "qwen3_6"
                     | "qwen3_5_moe_text"
                     | "qwen4_exp"
+                    // HF spellings convert normalizes to `qwen4_exp`.
+                    | "qwen4-exp"
+                    | "qwen3.8-flash-next"
+                    | "qwen3_8_flash_next"
+                    | "qwen38_flash_next"
+                    | "qwen38-flash-next"
             )
         });
     if !qwen_visual_model_type {
@@ -947,6 +953,9 @@ mod qwen4_exp_vision_tower_tests {
             config(2, json!([5, 11])),
             true
         ));
+        let mut alias = config(2, json!([]));
+        alias["model_type"] = json!("qwen3.8-flash-next");
+        assert!(loadable("alias", complete(), alias, true));
         let mut llama = config(2, json!([]));
         llama["model_type"] = json!("llama");
         assert!(!loadable("model-type", complete(), llama, true));
