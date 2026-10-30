@@ -454,10 +454,11 @@ async fn embedding_records_endpoint_requires_tokenizer_artifacts() {
 }
 
 #[tokio::test]
-async fn reasoning_capability_follows_templates_that_render_the_thinking_switch() {
+async fn reasoning_capability_requires_a_reasoning_split_for_the_template() {
     for (model_id, expected) in [
-        ("AX-MiniMax-M3", true),
-        ("muse-glimmer-30b", true),
+        // No response path splits `</mm:think>` / `to=self` reasoning yet.
+        ("AX-MiniMax-M3", false),
+        ("muse-glimmer-30b", false),
         ("llama-3", false),
     ] {
         let dir = minimal_tokenizer_artifact(model_id);

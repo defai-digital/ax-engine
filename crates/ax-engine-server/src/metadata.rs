@@ -331,12 +331,11 @@ fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool 
             || chat::is_deepseek_model(live.model_id.as_ref())
             // Hybrid-thinking Qwen families keep the contract under any id.
             || matches!(family.as_deref(), Some("qwen3_5" | "qwen4_exp"))
-            // Every template here renders the thinking switch.
+            // MiniMax M3 and Muse ATEM render a thinking switch too, but no
+            // response path splits `</mm:think>` or `to=self` reasoning yet.
             || matches!(
                 chat::resolve_chat_template(live.model_id.as_ref(), family.as_deref()),
                 ChatPromptTemplate::Gemma4
-                    | ChatPromptTemplate::MiniMaxM3
-                    | ChatPromptTemplate::MuseGlimmerAtem
             ))
 }
 
@@ -466,34 +465,69 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
     }
 }
 
-/// Mirrors the runtime's `qwen4_exp::load_vision_tower`: the tower is listed
-/// in `model.safetensors.index.json` (not the manifest), and a config that
-/// declares `deepstack_visual_indexes` fails the load closed.
+/// Mirrors the runtime's `qwen4_exp::load_vision_tower` and
+/// `qwen3_vl::load_qwen3_vl_vision_weights`: the tower is listed in
+/// `model.safetensors.index.json` (not the manifest), its shards must exist,
+/// `config.json` must carry a Qwen-visual `model_type` and a `vision_config`,
+/// the core tower tensors must be present, and DeepStack fails closed. The
+/// runtime degrades to text-only on any of these, so the probe must too.
 fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
+    const REQUIRED_TOWER_TENSORS: [&str; 3] = [
+        "vision_tower.patch_embed.proj.weight",
+        "vision_tower.pos_embed.weight",
+        "vision_tower.blocks.0.attn.qkv.weight",
+    ];
     let read_json = |name: &str| {
         std::fs::read(artifacts_dir.join(name))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
     };
-    let has_tower = read_json("model.safetensors.index.json")
-        .and_then(|index| {
-            index
-                .get("weight_map")
-                .and_then(Value::as_object)
-                .map(|map| map.keys().any(|name| name.starts_with("vision_tower.")))
-        })
-        .unwrap_or(false);
-    if !has_tower {
+    let Some(index) = read_json("model.safetensors.index.json") else {
+        return false;
+    };
+    let Some(weight_map) = index.get("weight_map").and_then(Value::as_object) else {
+        return false;
+    };
+    let tower_shards_present = REQUIRED_TOWER_TENSORS.iter().all(|name| {
+        weight_map
+            .get(*name)
+            .and_then(Value::as_str)
+            .is_some_and(|file| artifacts_dir.join(file).is_file())
+    });
+    if !tower_shards_present {
         return false;
     }
     let Some(config) = read_json("config.json") else {
         return false;
     };
-    !config
-        .get("vision_config")
-        .and_then(|vision| vision.get("deepstack_visual_indexes"))
+    let qwen_visual_model_type = config
+        .get("model_type")
+        .and_then(Value::as_str)
+        .is_some_and(|model_type| {
+            matches!(
+                model_type,
+                "qwen3_vl"
+                    | "qwen3-vl"
+                    | "qwen3_vl_moe"
+                    | "qwen3-vl-moe"
+                    | "qwen3_5"
+                    | "qwen3.5"
+                    | "qwen3_5_moe"
+                    | "qwen3_next"
+                    | "qwen3.6"
+                    | "qwen3_6"
+                    | "qwen3_5_moe_text"
+                    | "qwen4_exp"
+            )
+        });
+    let Some(vision_config) = config.get("vision_config").and_then(Value::as_object) else {
+        return false;
+    };
+    let deepstack = vision_config
+        .get("deepstack_visual_indexes")
         .and_then(Value::as_array)
-        .is_some_and(|indexes| !indexes.is_empty())
+        .is_some_and(|indexes| !indexes.is_empty());
+    qwen_visual_model_type && !deepstack
 }
 
 fn family_from_manifest(manifest: &Value) -> Option<String> {
@@ -667,14 +701,26 @@ pub(crate) fn json_constrained_decoding_enabled() -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod qwen4_exp_vision_tower_tests {
     use super::qwen4_exp_vision_tower_loadable;
     use serde_json::json;
+
+    const SHARD: &str = "model-00001.safetensors";
+
+    fn tower_map() -> serde_json::Value {
+        json!({
+            "vision_tower.patch_embed.proj.weight": SHARD,
+            "vision_tower.pos_embed.weight": SHARD,
+            "vision_tower.blocks.0.attn.qkv.weight": SHARD,
+        })
+    }
 
     fn pack(
         label: &str,
         weight_map: serde_json::Value,
         config: serde_json::Value,
+        write_shard: bool,
     ) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -693,36 +739,68 @@ mod qwen4_exp_vision_tower_tests {
             serde_json::to_vec(&config).expect("config json"),
         )
         .expect("write config");
+        if write_shard {
+            std::fs::write(dir.join(SHARD), b"").expect("write shard");
+        }
         dir
     }
 
-    #[test]
-    fn tower_in_index_without_deepstack_is_loadable() {
-        let dir = pack(
-            "ok",
-            json!({ "vision_tower.blocks.0.attn.qkv.weight": "model-00001.safetensors" }),
-            json!({ "vision_config": { "deepstack_visual_indexes": [] } }),
-        );
-        assert!(qwen4_exp_vision_tower_loadable(&dir));
+    fn loadable(
+        label: &str,
+        weight_map: serde_json::Value,
+        config: serde_json::Value,
+        write_shard: bool,
+    ) -> bool {
+        let dir = pack(label, weight_map, config, write_shard);
+        let result = qwen4_exp_vision_tower_loadable(&dir);
         let _ = std::fs::remove_dir_all(dir);
+        result
+    }
+
+    fn config(deepstack: serde_json::Value) -> serde_json::Value {
+        json!({
+            "model_type": "qwen4_exp",
+            "vision_config": { "deepstack_visual_indexes": deepstack },
+        })
     }
 
     #[test]
-    fn missing_tower_or_deepstack_is_not_loadable() {
-        let no_tower = pack(
-            "none",
-            json!({ "model.layers.0.mlp.weight": "model-00001.safetensors" }),
-            json!({}),
-        );
-        assert!(!qwen4_exp_vision_tower_loadable(&no_tower));
-        let _ = std::fs::remove_dir_all(no_tower);
+    fn complete_tower_without_deepstack_is_loadable() {
+        assert!(loadable("ok", tower_map(), config(json!([])), true));
+    }
 
-        let deepstack = pack(
+    #[test]
+    fn incomplete_or_unloadable_towers_are_not_loadable() {
+        assert!(!loadable(
+            "none",
+            json!({ "model.layers.0.mlp.weight": SHARD }),
+            config(json!([])),
+            true,
+        ));
+        assert!(!loadable(
+            "partial",
+            json!({ "vision_tower.blocks.0.attn.qkv.weight": SHARD }),
+            config(json!([])),
+            true,
+        ));
+        assert!(!loadable("no-shard", tower_map(), config(json!([])), false));
+        assert!(!loadable(
             "deepstack",
-            json!({ "vision_tower.blocks.0.attn.qkv.weight": "model-00001.safetensors" }),
-            json!({ "vision_config": { "deepstack_visual_indexes": [5, 11] } }),
-        );
-        assert!(!qwen4_exp_vision_tower_loadable(&deepstack));
-        let _ = std::fs::remove_dir_all(deepstack);
+            tower_map(),
+            config(json!([5, 11])),
+            true
+        ));
+        assert!(!loadable(
+            "model-type",
+            tower_map(),
+            json!({ "model_type": "llama", "vision_config": {} }),
+            true,
+        ));
+        assert!(!loadable(
+            "no-vision-config",
+            tower_map(),
+            json!({ "model_type": "qwen4_exp" }),
+            true,
+        ));
     }
 }
