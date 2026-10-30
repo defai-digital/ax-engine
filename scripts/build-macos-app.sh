@@ -11,7 +11,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --release) CONFIGURATION=release; shift ;;
         --output|--runtime-dir)
-            [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
+            [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "Missing value for $1" >&2; exit 2; }
             if [[ "$1" == --output ]]; then OUTPUT="$2"; else RUNTIME="$2"; fi
             shift 2 ;;
         --distribution) DISTRIBUTION=true; CONFIGURATION=release; shift ;;
