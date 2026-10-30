@@ -287,6 +287,7 @@ pub struct GlmMtpWeights {
 
 /// Weights (and optional quantization data) for one transformer layer.
 pub struct LayerWeights {
+    pub unlimited_ocr2: Option<crate::unlimited_ocr2::Ocr2LayerWeights>,
     pub attn_norm: MlxArray,
     /// post_attention_layernorm for models that apply it to attention output
     /// before the residual add (for example Gemma4). Qwen3 and GLM4MoELite use
@@ -1652,6 +1653,9 @@ pub(crate) fn load_weights_with_session_budget(
     // Unlimited-OCR: projector roles + leftover sam_model.*/vision_model.* keys.
     // Load before layer loop so language tensors are still present for layers,
     // but vision keys are independent and safe to consume early.
+    if artifacts.manifest().unlimited_ocr2.is_some() {
+        crate::unlimited_ocr2::normalize_vision_layout(&mut name_map);
+    }
     let unlimited_ocr_vision =
         crate::unlimited_ocr::load_unlimited_ocr_vision_weights(specs, &mut name_map)?;
     // Qwen3-VL vision tower (WS-V2): roles + visual.* leftovers → Some when present.
@@ -1939,6 +1943,32 @@ pub(crate) fn load_weights_with_session_budget(
             None
         };
 
+        let (gate_exps, up_exps, down_exps) =
+            if artifacts.manifest().unlimited_ocr2.is_some() && li > 0 {
+                (
+                    Some(crate::unlimited_ocr2::load_experts(
+                        specs,
+                        &mut name_map,
+                        li,
+                        "gate_proj",
+                    )?),
+                    Some(crate::unlimited_ocr2::load_experts(
+                        specs,
+                        &mut name_map,
+                        li,
+                        "up_proj",
+                    )?),
+                    Some(crate::unlimited_ocr2::load_experts(
+                        specs,
+                        &mut name_map,
+                        li,
+                        "down_proj",
+                    )?),
+                )
+            } else {
+                (gate_exps, up_exps, down_exps)
+            };
+
         // GPT-OSS openai native MXFP4: fused gate_up_proj_blocks → de-interleave
         // into split gate/up experts (matches mlx-lm gpt_oss.Model.sanitize).
         // mlx-community product checkpoints already ship split gate/up/down and
@@ -2173,6 +2203,12 @@ pub(crate) fn load_weights_with_session_budget(
             up_exps,
             down_exps,
             attn_sink,
+            unlimited_ocr2: crate::unlimited_ocr2::load_layer(
+                artifacts.manifest(),
+                specs,
+                &mut name_map,
+                li,
+            )?,
             rotation_smoothing_inverse: None,
             expert_stream: None,
         });
@@ -2575,6 +2611,7 @@ fn load_dense_llama3_layer(
         up_exps: None,
         down_exps: None,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     })
@@ -3989,6 +4026,7 @@ fn load_glm_mtp_sidecar(
         up_exps,
         down_exps,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -4498,6 +4536,7 @@ fn load_mtp(
         up_exps,
         down_exps,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -6237,6 +6276,7 @@ fn load_deepseek_v4_mtp_sidecar(
         up_exps,
         down_exps,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };

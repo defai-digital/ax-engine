@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 
@@ -15,6 +16,10 @@ cleanup() {
 trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
+
+"$AX_PYTHON_BIN" -m py_compile scripts/validate_unlimited_ocr2.py
+"$AX_PYTHON_BIN" -m unittest scripts/test_validate_unlimited_ocr2.py
+"$AX_PYTHON_BIN" scripts/validate_unlimited_ocr2.py --help >/dev/null
 
 assert_exit_status() {
     local expected="$1"

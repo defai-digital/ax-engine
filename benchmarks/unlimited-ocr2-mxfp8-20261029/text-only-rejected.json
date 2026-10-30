@@ -1,0 +1,7 @@
+{
+  "control": "text-only request is rejected",
+  "status": "failed",
+  "finish_reason": "error",
+  "output_tokens": [],
+  "passed": true
+}

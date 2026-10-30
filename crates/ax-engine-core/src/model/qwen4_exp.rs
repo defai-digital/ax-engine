@@ -1609,6 +1609,7 @@ mod tests {
                 indexer_compress_ratio: Some(2),
                 never_eval_ngram_at_load: true,
             },
+            unlimited_ocr2: None,
             weight_sanitize: WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,

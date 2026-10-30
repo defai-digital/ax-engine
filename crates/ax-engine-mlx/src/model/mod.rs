@@ -1381,6 +1381,8 @@ fn forward_and_logits_mode(
     logits_mode: FinalLogitsMode,
     stream_row: Option<&mut Option<MlxArray>>,
 ) -> MlxArray {
+    crate::unlimited_ocr2::prepare(weights, cache, token_ids, token_offset);
+
     if cfg.model_family == "qwen4_exp" {
         // Only the last position's logits (or none) are ever read here.
         let rows = if matches!(logits_mode, FinalLogitsMode::Skip) {
@@ -1800,6 +1802,8 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    crate::unlimited_ocr2::prepare(weights, cache, token_ids, token_offset);
+
     reject_unimplemented_qwen4_exp(cfg);
     if cfg.deepseek_v4.is_some() {
         // V4 is text-only and owns the packed HC residual; the pre-scattered
@@ -2046,6 +2050,8 @@ pub fn forward_all_positions_update_cache(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) {
+    crate::unlimited_ocr2::prepare(weights, cache, token_ids, token_offset);
+
     if cfg.model_family == "qwen4_exp" {
         let output = qwen4_exp_forward_with_cache(
             cfg,
@@ -2124,6 +2130,8 @@ pub fn forward_all_positions(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    crate::unlimited_ocr2::prepare(weights, cache, token_ids, token_offset);
+
     if cfg.model_family == "qwen4_exp" {
         let output = qwen4_exp_forward_with_cache(
             cfg,
@@ -2459,6 +2467,11 @@ pub(crate) fn forward_all_positions_with_post_norm_ids(
     token_offset: usize,
     native_greedy_logits: bool,
 ) -> (MlxArray, MlxArray) {
+    if cfg.model_family == "unlimited_ocr2" {
+        mlx_sys::eval(&[ids_1d]);
+        crate::unlimited_ocr2::prepare(weights, cache, ids_1d.data_u32(), token_offset);
+    }
+
     if cfg.model_family == "qwen4_exp" {
         assert_eq!(
             ids_1d.dtype(),
@@ -2634,6 +2647,8 @@ pub(crate) fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    crate::unlimited_ocr2::prepare(weights, cache, token_ids, token_offset);
+
     reject_unimplemented_qwen4_exp(cfg);
     if cfg.deepseek_v4.is_some() {
         // See the guard in `forward_with_initial_hidden_and_media_ranges`:
@@ -2695,6 +2710,8 @@ pub(crate) fn forward_all_positions_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    crate::unlimited_ocr2::prepare(weights, cache, token_ids, token_offset);
+
     if cfg.model_family == "qwen4_exp" {
         let output = qwen4_exp_forward_with_cache(
             cfg,
@@ -4930,6 +4947,11 @@ fn forward_lazy_single_argmax_impl(
     token_offset: usize,
     stream_row: Option<&mut Option<MlxArray>>,
 ) -> MlxArray {
+    if cfg.model_family == "unlimited_ocr2" {
+        mlx_sys::eval(&[token_arr]);
+        crate::unlimited_ocr2::prepare(weights, cache, token_arr.data_u32(), token_offset);
+    }
+
     if cfg.model_family == "qwen4_exp" {
         assert_eq!(
             token_arr.dtype(),

@@ -941,6 +941,17 @@ fn layer_forward_internal(
     skip_post_attention_ffn: bool,
     mrope: Option<&crate::qwen3_vl::QwenMropeCosSin>,
 ) -> MlxArray {
+    if w.unlimited_ocr2.is_some() {
+        return crate::unlimited_ocr2::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+        );
+    }
+
     let _dense_long_mt_layer_scope = fastpath::scoped_dense_long_mt_layer(layer_idx);
     let (
         head_dim,

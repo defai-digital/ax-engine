@@ -276,7 +276,7 @@ impl ArchitectureSpec {
         });
         let is_multimodal_capable = matches!(
             manifest.model_family.as_str(),
-            "qwen3_vl" | "qwen3_vl_moe" | "minicpmv4_6" | "unlimited_ocr"
+            "qwen3_vl" | "qwen3_vl_moe" | "minicpmv4_6" | "unlimited_ocr" | "unlimited_ocr2"
         ) || has_named_media_tower
             || manifest.tensors.iter().any(|t| {
                 matches!(

@@ -731,7 +731,10 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 } else {
                     false
                 }
-            } else if artifact_family.as_deref() == Some("unlimited_ocr") {
+            } else if matches!(
+                artifact_family.as_deref(),
+                Some("unlimited_ocr" | "unlimited_ocr2")
+            ) {
                 // Unlimited-OCR consumes processed pixels through the AX
                 // `input_tokens` + `multimodal_inputs` extension; routing raw
                 // image parts into the Gemma4 renderer would only surface an

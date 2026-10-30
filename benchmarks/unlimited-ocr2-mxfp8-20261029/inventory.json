@@ -1,0 +1,10 @@
+{
+  "model_family": "unlimited_ocr2",
+  "layer_count": 12,
+  "indexed_tensors": 5015,
+  "manifest_tensors": 5015,
+  "dropped_tensors": 0,
+  "source_quantized_tensors": 2196,
+  "protected_router_tensors": 108,
+  "source_expert_matrices": 2112
+}

@@ -709,6 +709,7 @@ mod tests {
                 ple_conv_kernel_size: Some(3),
                 ..Default::default()
             },
+            unlimited_ocr2: None,
             weight_sanitize: WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,

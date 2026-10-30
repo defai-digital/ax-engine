@@ -1236,6 +1236,8 @@ pub struct NativeModelManifest {
     /// Qwen 3.8 Flash Next n-gram / hyper-connection / QSA contract.
     #[serde(default, skip_serializing_if = "NativeQwen4ExpConfig::is_disabled")]
     pub qwen4_exp: NativeQwen4ExpConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlimited_ocr2: Option<crate::unlimited_ocr2::UnlimitedOcr2Config>,
     /// Weight on-disk convention. Defaults to `None` (mlx-community
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
@@ -1508,6 +1510,41 @@ pub(crate) fn validate_native_model_manifest(
     root_dir: &Path,
     manifest: &NativeModelManifest,
 ) -> Result<(), NativeModelError> {
+    if manifest.model_family == "unlimited_ocr"
+        && manifest.tensors.iter().any(|t| {
+            t.name.contains(".self_attn.dash_router.") || t.name.contains(".self_attn.indexer.")
+        })
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: "OCR-2 routing weights cannot enter a v1 manifest".into(),
+        });
+    }
+    if matches!(
+        manifest.model_family.as_str(),
+        "unlimited_ocr" | "unlimited_ocr2"
+    ) {
+        let source = fs::read(root_dir.join("config.json"));
+        if manifest.model_family == "unlimited_ocr2" || source.is_ok() {
+            let source = source.map_err(|error| NativeModelError::InvalidManifest {
+                message: format!("OCR-2 requires readable config.json: {error}"),
+            })?;
+            let value = serde_json::from_slice(&source).map_err(|error| {
+                NativeModelError::InvalidManifest {
+                    message: format!("invalid OCR config.json: {error}"),
+                }
+            })?;
+            let sparse = crate::unlimited_ocr2::UnlimitedOcr2Config::from_hf(
+                &value,
+                manifest.layer_count as usize,
+            )
+            .map_err(|message| NativeModelError::InvalidManifest { message })?;
+            if sparse != manifest.unlimited_ocr2 {
+                return Err(NativeModelError::InvalidManifest {
+                    message: "OCR manifest attention contract differs from config.json; regenerate the manifest".into(),
+                });
+            }
+        }
+    }
     if manifest.schema_version != AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
@@ -1888,6 +1925,15 @@ pub(crate) fn validate_native_model_manifest(
         return Ok(());
     }
 
+    if manifest.model_family == "unlimited_ocr2" {
+        return crate::unlimited_ocr2::validate_manifest(manifest)
+            .map_err(|message| NativeModelError::InvalidManifest { message });
+    }
+    if manifest.unlimited_ocr2.is_some() {
+        return Err(NativeModelError::InvalidManifest {
+            message: "OCR-2 config requires unlimited_ocr2 family".into(),
+        });
+    }
     if manifest.model_family == "qwen4_exp" {
         return qwen4_exp::validate(manifest);
     }
@@ -5560,6 +5606,7 @@ pub(crate) fn base_manifest(family: &str, layer_count: u32) -> NativeModelManife
         glm_router: Default::default(),
         deepseek_v4: Default::default(),
         qwen4_exp: Default::default(),
+        unlimited_ocr2: None,
         weight_sanitize: WeightSanitize::default(),
         think_start_token_id: None,
         think_end_token_id: None,
@@ -5819,6 +5866,7 @@ mod tests {
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
             qwen4_exp: Default::default(),
+            unlimited_ocr2: None,
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,

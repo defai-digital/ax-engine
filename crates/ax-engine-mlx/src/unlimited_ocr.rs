@@ -8,9 +8,7 @@
 
 use std::collections::HashMap;
 
-use ax_engine_core::{
-    UNLIMITED_OCR_LOCAL_QUERY_GRID, UNLIMITED_OCR_LOCAL_TILE_SIZE, unlimited_ocr_crop_grid,
-};
+use ax_engine_core::{UNLIMITED_OCR_LOCAL_QUERY_GRID, UNLIMITED_OCR_LOCAL_TILE_SIZE};
 use image::{Rgb, RgbImage, imageops};
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype, broadcast_to,
@@ -685,6 +683,16 @@ pub fn preprocess_document_rgb_u8(
     height: u32,
     cropping: bool,
 ) -> Result<UnlimitedOcrImageViews, UnlimitedOcrError> {
+    preprocess_document_rgb_u8_with_tile_limit(rgb, width, height, cropping, 32)
+}
+
+pub fn preprocess_document_rgb_u8_with_tile_limit(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    cropping: bool,
+    max_tiles: u32,
+) -> Result<UnlimitedOcrImageViews, UnlimitedOcrError> {
     let expected = (width as usize)
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(3))
@@ -695,7 +703,10 @@ pub fn preprocess_document_rgb_u8(
     let source =
         RgbImage::from_raw(width, height, rgb.to_vec()).ok_or(UnlimitedOcrError::BadPixelValues)?;
     let global_nhwc = normalized_image_batch(&[global_letterbox(&source)])?;
-    let (crop_columns, crop_rows) = unlimited_ocr_crop_grid(width, height, cropping);
+    let (crop_columns, crop_rows) =
+        ax_engine_core::unlimited_ocr::unlimited_ocr_crop_grid_with_limit(
+            width, height, cropping, max_tiles,
+        );
     let local_nhwc = if crop_columns > 1 || crop_rows > 1 {
         let target_width = UNLIMITED_OCR_LOCAL_TILE_SIZE * crop_columns;
         let target_height = UNLIMITED_OCR_LOCAL_TILE_SIZE * crop_rows;
@@ -1205,11 +1216,11 @@ fn overwrite_image_token_positions(
 }
 
 /// Embed prompt tokens and overwrite image-token slots with vision features.
-pub(crate) fn build_embeddings_with_image(
+pub(crate) fn build_embeddings_with_images(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
-    views: &UnlimitedOcrImageViews,
+    views: &[UnlimitedOcrImageViews],
     image_token_id: u32,
 ) -> Result<MlxArray, UnlimitedOcrError> {
     let vision = weights
@@ -1221,7 +1232,13 @@ pub(crate) fn build_embeddings_with_image(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden_pub(&hidden, scale);
     }
-    let features = encode_document_image(vision, views)?;
+    let mut pages = Vec::with_capacity(views.len());
+    for view in views {
+        let features = encode_document_image(vision, view)?;
+        pages.push(features);
+    }
+    let refs: Vec<_> = pages.iter().collect();
+    let features = concatenate(&refs, 0, None);
     let features = astype(&features, hidden.dtype(), None);
     // The request carries its own image token id (the client resolves it from
     // the checkpoint's config or tokenizer); the weight struct's constant is

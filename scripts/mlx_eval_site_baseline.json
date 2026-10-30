@@ -42,7 +42,7 @@
   },
   "crates/ax-engine-mlx/src/model/mod.rs": {
     "async_eval": 4,
-    "eval": 11
+    "eval": 13
   },
   "crates/ax-engine-mlx/src/model/profile.rs": {
     "eval": 6
@@ -139,6 +139,9 @@
   },
   "crates/ax-engine-mlx/src/unlimited_ocr.rs": {
     "eval": 3
+  },
+  "crates/ax-engine-mlx/src/unlimited_ocr2.rs": {
+    "eval": 1
   },
   "crates/ax-engine-mlx/src/weights.rs": {
     "eval": 22,

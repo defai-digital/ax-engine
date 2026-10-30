@@ -356,6 +356,7 @@ mod tests {
                 None,
             )),
             attn_sink: None,
+            unlimited_ocr2: None,
             rotation_smoothing_inverse: None,
             expert_stream: None,
         }

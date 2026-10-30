@@ -21,7 +21,7 @@ use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
     sample_categorical_into, sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
 };
-use crate::unlimited_ocr::{UnlimitedOcrImageViews, build_embeddings_with_image};
+use crate::unlimited_ocr::{UnlimitedOcrImageViews, build_embeddings_with_images};
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching mlx-lm's default
@@ -919,8 +919,37 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
+    chunked_prefill_unlimited_ocr_pages_with_sampling_buffers(
+        cfg,
+        weights,
+        prompt_tokens,
+        std::slice::from_ref(image_views),
+        image_token_id,
+        cache,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_unlimited_ocr_pages_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    image_views: &[UnlimitedOcrImageViews],
+    image_token_id: u32,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
     let hidden =
-        build_embeddings_with_image(cfg, weights, prompt_tokens, image_views, image_token_id)
+        build_embeddings_with_images(cfg, weights, prompt_tokens, image_views, image_token_id)
             .map_err(|e| e.to_string())?;
     // Unlimited-OCR uses ordinary causal attention for the complete prefill.
     // Its R-SWA cache only starts replacing generated decode entries after the

@@ -319,6 +319,7 @@ only modalities whose required tower tensors are present in
 | MiniCPM-V 4.6 | One or more images | Chat/generate | Dynamic SigLIP grid, mid-tower merger, OCR/document prompts |
 | Nemotron 3 Nano Omni | Image, audio, or both | Chat/generate | RADIO vision plus Parakeet audio with ordered mixed-media spans |
 | Unlimited-OCR | Image | Native processed-input runtime; delegated OpenAI OCR profile | Full prefill KV is protected; only generated-token KV uses the decode ring |
+| [Unlimited-OCR-2](docs/UNLIMITED-OCR-2.md) | Image, ordered pages | Experimental native MXFP8 SR-SWA via the Python image-request helper | Pinned-pack M5 Max functional controls; full retained KV, no constant-memory or quality qualification |
 | Whisper large-v3-turbo | Audio | `/v1/audio/transcriptions`, `/v1/audio/translations`, Rust SDK | WAV/MP3 to 16 kHz; multilingual transcribe/translate; text-generation routes fail closed |
 
 GLM-OCR is not supported.

@@ -522,6 +522,21 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         },
     },
     ArchitectureRegistration {
+        family_label: "unlimited_ocr2",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Unlimited-OCR-2 diagnostic SR-SWA; retained KV grows with document length",
+        support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::PlainRolePrefix,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
+    },
+    ArchitectureRegistration {
         family_label: "unlimited_ocr",
         mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,

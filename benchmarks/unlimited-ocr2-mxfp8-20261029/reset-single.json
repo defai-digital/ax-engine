@@ -1,0 +1,41 @@
+{
+  "name": "reset-single",
+  "prompt_tokens": 279,
+  "output_tokens": [
+    128827,
+    128828,
+    2067,
+    61,
+    1683,
+    14,
+    223,
+    11454,
+    14,
+    223,
+    26655,
+    14,
+    223,
+    20845,
+    63,
+    128829,
+    28984,
+    97901,
+    126041,
+    74381,
+    201,
+    50,
+    16412,
+    36338,
+    223,
+    6895,
+    1883
+  ],
+  "text": "<PAGE><BLOCK>text[60, 173, 563, 347]<FORK>AX ENGINE OCR TWO\nPAGE ONE 12345",
+  "elapsed_seconds": 0.28747270815074444,
+  "expected": [
+    "AX ENGINE OCR TWO",
+    "PAGE ONE 12345"
+  ],
+  "body": "AX ENGINE OCR TWO\nPAGE ONE 12345",
+  "passed": true
+}

@@ -241,7 +241,15 @@ pub(crate) fn model_family_for_type(
         }),
         // Unlimited-OCR / DeepSeek-OCR: language_model.* MoE SWA tower + vision/sam/projector.
         "unlimited_ocr" | "unlimited-ocr" | "deepseekocr" => Ok(ModelFamily {
-            family_name: "unlimited_ocr",
+            family_name: if crate::unlimited_ocr2::UnlimitedOcr2Config::from_hf(config, 12)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                "unlimited_ocr2"
+            } else {
+                "unlimited_ocr"
+            },
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(UNLIMITED_OCR_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,

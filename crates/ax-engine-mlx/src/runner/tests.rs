@@ -3206,6 +3206,7 @@ fn media_key_is_fail_closed_for_undigested_media() {
     // a text-only key here would alias prompts with different images.
     let ocr = ax_engine_core::RequestMultimodalInputs {
         unlimited_ocr: Some(ax_engine_core::unlimited_ocr::UnlimitedOcrRuntimeInputs {
+            page_token_id: None,
             image_token_id: 7,
             soft_token_count: 4,
             cropping: false,
@@ -4775,10 +4776,21 @@ fn binding_summary_reports_manifest_bytes_and_quantized_sources() {
 
 #[test]
 fn load_time_generation_warmup_skips_streamed_experts() {
-    assert!(should_run_load_time_generation_warmup(false, false, false));
-    assert!(!should_run_load_time_generation_warmup(false, false, true));
-    assert!(!should_run_load_time_generation_warmup(false, true, false));
-    assert!(!should_run_load_time_generation_warmup(true, false, false));
+    assert!(should_run_load_time_generation_warmup(
+        false, false, false, false
+    ));
+    assert!(!should_run_load_time_generation_warmup(
+        false, false, false, true
+    ));
+    assert!(!should_run_load_time_generation_warmup(
+        false, false, true, false
+    ));
+    assert!(!should_run_load_time_generation_warmup(
+        false, true, false, false
+    ));
+    assert!(!should_run_load_time_generation_warmup(
+        true, false, false, false
+    ));
 }
 
 fn unit_weight() -> QuantizedWeight {
@@ -4828,6 +4840,7 @@ fn runner_test_layer() -> LayerWeights {
         up_exps: None,
         down_exps: None,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     }
@@ -5334,6 +5347,7 @@ fn dense_manifest() -> NativeModelManifest {
         glm_router: Default::default(),
         deepseek_v4: Default::default(),
         qwen4_exp: Default::default(),
+        unlimited_ocr2: None,
         weight_sanitize: ax_engine_core::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,

@@ -58,7 +58,7 @@ use crate::generate::{
     chunked_prefill_minicpm_v46_with_sampling_buffers,
     chunked_prefill_nemotron_omni_with_sampling_buffers,
     chunked_prefill_qwen3_vl_with_sampling_buffers,
-    chunked_prefill_unlimited_ocr_with_sampling_buffers,
+    chunked_prefill_unlimited_ocr_pages_with_sampling_buffers,
     chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
@@ -105,7 +105,7 @@ use crate::sampling::{
     token_distribution,
 };
 use crate::speculation_profile::speculation_profile_from_env;
-use crate::unlimited_ocr::preprocess_document_rgb_u8;
+
 #[cfg(test)]
 use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
@@ -1502,8 +1502,12 @@ fn should_run_load_time_generation_warmup(
     is_encoder_embed_family: bool,
     reused_shared_weights: bool,
     expert_streaming_active: bool,
+    requires_image_prefill: bool,
 ) -> bool {
-    !is_encoder_embed_family && !reused_shared_weights && !expert_streaming_active
+    !is_encoder_embed_family
+        && !reused_shared_weights
+        && !expert_streaming_active
+        && !requires_image_prefill
 }
 
 /// EmbeddingGemma compiled batch closure output contract.
@@ -3028,6 +3032,7 @@ impl MlxRunner {
             is_encoder_embed_family,
             reused_shared_weights,
             expert_streaming_active,
+            cfg.model_family == "unlimited_ocr2",
         ) {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
@@ -7171,6 +7176,13 @@ impl MlxRunner {
             );
         }
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
+        if is_prefill && self.cfg.model_family == "unlimited_ocr2" && unlimited_ocr_inputs.is_none()
+        {
+            return errored_item_run(
+                item.request_id,
+                "Unlimited-OCR-2 requires a native image request with <PAGE> markers",
+            );
+        }
         let has_unlimited_ocr_multimodal_prefill = is_prefill && unlimited_ocr_inputs.is_some();
         let has_qwen3_vl_multimodal_prefill = is_prefill && qwen3_vl_inputs.is_some();
         let has_minicpm_v46_multimodal_prefill = is_prefill && minicpm_v46_inputs.is_some();
@@ -7618,27 +7630,48 @@ impl MlxRunner {
                     if let Err(error) = inputs.validate_for_prompt_tokens(&full_prompt_tokens) {
                         return errored_item_run(item.request_id, error.to_string());
                     }
-                    let Some(image) = inputs.images.first() else {
+                    let is_v2 = self.cfg.model_family == "unlimited_ocr2";
+                    if is_v2 != inputs.page_token_id.is_some() {
                         return errored_item_run(
                             item.request_id,
-                            "Unlimited-OCR request has no image",
+                            "OCR request version does not match the loaded model",
                         );
-                    };
-                    let image_views = match preprocess_document_rgb_u8(
-                        &image.rgb_bytes,
-                        image.width,
-                        image.height,
-                        inputs.cropping,
-                    ) {
-                        Ok(image) => image,
-                        Err(error) => {
-                            return errored_item_run(item.request_id, error.to_string());
-                        }
+                    }
+                    if is_v2
+                        && self.weights.layers[0]
+                            .unlimited_ocr2
+                            .as_ref()
+                            .is_none_or(|w| {
+                                Some(w.config.page_token_id) != inputs.page_token_id
+                                    || w.config.image_token_id != inputs.image_token_id
+                            })
+                    {
+                        return errored_item_run(
+                            item.request_id,
+                            "OCR-2 request marker ids differ from the checkpoint",
+                        );
+                    }
+                    let image_views = match inputs
+                        .images
+                        .iter()
+                        .map(|image| {
+                            crate::unlimited_ocr::preprocess_document_rgb_u8_with_tile_limit(
+                                &image.rgb_bytes,
+                                image.width,
+                                image.height,
+                                inputs.cropping,
+                                if is_v2 { 16 } else { 32 },
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(views) => views,
+                        Err(error) => return errored_item_run(item.request_id, error.to_string()),
                     };
                     let repetition_history =
                         state.repetition_history(&full_prompt_tokens, sampling);
                     let prefill_forward_started = Instant::now();
-                    let tok = match chunked_prefill_unlimited_ocr_with_sampling_buffers(
+                    let tok = match chunked_prefill_unlimited_ocr_pages_with_sampling_buffers(
                         &self.cfg,
                         &self.weights,
                         &full_prompt_tokens,

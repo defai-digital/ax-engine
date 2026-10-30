@@ -53,6 +53,37 @@ def write_model_contract(model_dir: Path) -> None:
 
 @unittest.skipIf(Image is None, "Pillow is required for Unlimited-OCR preprocessing")
 class UnlimitedOcrRequestTests(unittest.TestCase):
+    def test_ocr2_expands_ordered_pages_and_defaults_to_global_views(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            write_model_contract(directory)
+            config = json.loads((directory / "config.json").read_text())
+            config["sparse_attention_config"] = {
+                "use_sparse_attention": True,
+                "page_token_id": 19,
+                "image_token_id": IMAGE_TOKEN_ID,
+            }
+            (directory / "config.json").write_text(json.dumps(config))
+            first = Image.new("RGB", (800, 900), (1, 2, 3))
+            second = Image.new("RGB", (900, 800), (4, 5, 6))
+            tokens = [0, 19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID, 8]
+            request = module.prepare_unlimited_ocr_image_request(
+                directory, tokens, [first, second]
+            )
+            runtime = request.multimodal_inputs["unlimited_ocr"]
+            self.assertFalse(runtime["cropping"])
+            self.assertEqual(runtime["page_token_id"], 19)
+            self.assertEqual(request.soft_token_count, 546)
+            self.assertEqual(request.input_tokens, [0, 19, *([IMAGE_TOKEN_ID] * 273),
+                                                   19, *([IMAGE_TOKEN_ID] * 273), 8])
+            self.assertEqual(runtime["images"][0]["rgb_bytes"][:3], bytes([1, 2, 3]))
+            self.assertEqual(runtime["images"][1]["rgb_bytes"][:3], bytes([4, 5, 6]))
+            with self.assertRaisesRegex(ValueError, "<PAGE><image>"):
+                module.prepare_unlimited_ocr_image_request(
+                    directory, [0, IMAGE_TOKEN_ID, IMAGE_TOKEN_ID], [first, second]
+                )
+
     def test_expands_one_placeholder_and_preserves_rgb_bytes(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

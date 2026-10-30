@@ -471,6 +471,15 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community
         // weights store raw Gemma `gamma` norms (mlx-lm applies `1 + weight` at
         // runtime), so lift the `+1` into the norm weights at load.
+        unlimited_ocr2: if family.family_name == "unlimited_ocr2" {
+            crate::unlimited_ocr2::UnlimitedOcr2Config::from_hf(&config, arch.layer_count as usize)
+                .map_err(|message| ConvertError::InvalidModelContract {
+                    model_type: model_type.clone(),
+                    message,
+                })?
+        } else {
+            None
+        },
         weight_sanitize: if is_embeddinggemma_model_type(&model_type) || is_minimax_m3(&model_type)
         {
             WeightSanitize::HfNormOnly
@@ -1182,7 +1191,46 @@ fn parse_quantization_value(
 // ---------------------------------------------------------------------------
 
 /// Try to match a tensor name against the family's mapping table.
+pub(crate) fn ocr2_tensor_mapping(name: &str) -> Option<(NativeTensorRole, Option<u32>)> {
+    match_tensor(
+        name,
+        &ModelFamily {
+            family_name: "unlimited_ocr2",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(UNLIMITED_OCR_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        },
+    )
+}
+
 fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, Option<u32>)> {
+    if family.family_name == "unlimited_ocr2" {
+        match name {
+            "model.projector.layers.weight" => {
+                return Some((NativeTensorRole::UnlimitedOcrProjector, None));
+            }
+            "model.image_newline" => {
+                return Some((NativeTensorRole::UnlimitedOcrImageNewline, None));
+            }
+            "model.view_seperator" => {
+                return Some((NativeTensorRole::UnlimitedOcrViewSeparator, None));
+            }
+            _ => {}
+        }
+    }
+    if family.family_name == "unlimited_ocr2"
+        && (name == "model.projector.layers.bias"
+            || name.ends_with(".scales")
+            || crate::unlimited_ocr2::source_expert(name).is_some()
+            || name.contains(".self_attn.dash_router.")
+            || name.contains(".self_attn.indexer.")
+            || name.starts_with("model.sam_model.")
+            || name.starts_with("model.vision_model."))
+    {
+        return Some((NativeTensorRole::Other, None));
+    }
+
     if family.family_name == "embedding_gemma2" {
         return embedding_gemma2::match_tensor(name);
     }

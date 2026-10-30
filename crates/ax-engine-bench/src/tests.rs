@@ -1382,6 +1382,7 @@ fn valid_native_model_manifest() -> ax_engine_core::NativeModelManifest {
         glm_router: Default::default(),
         deepseek_v4: Default::default(),
         qwen4_exp: Default::default(),
+        unlimited_ocr2: None,
         weight_sanitize: ax_engine_core::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,

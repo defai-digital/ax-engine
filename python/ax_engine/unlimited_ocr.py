@@ -16,7 +16,7 @@ _MAX_TOKEN_ID = 2**32 - 1
 
 @dataclass(frozen=True)
 class UnlimitedOcrImageRequest:
-    """Prepared native Unlimited-OCR request for one document image."""
+    """Prepared native Unlimited-OCR request for one image or ordered OCR-2 pages."""
 
     input_tokens: list[int]
     multimodal_inputs: dict[str, Any]
@@ -28,11 +28,11 @@ def prepare_unlimited_ocr_image_request(
     input_tokens: list[int],
     images: list[Any],
     *,
-    cropping: bool = True,
+    cropping: bool | None = None,
 ) -> UnlimitedOcrImageRequest:
     """Prepare the public native Unlimited-OCR image request.
 
-    The caller tokenizes a prompt containing exactly one literal ``<image>``.
+    V1 accepts one ``<image>``. OCR-2 requires ``<PAGE><image>`` for each page.
     This helper expands that placeholder to the exact soft-token positions used
     by the native global + local-tile vision path and attaches bounded RGB8
     input. Resize, tiling, letterbox, normalization, and BF16 conversion remain
@@ -40,56 +40,73 @@ def prepare_unlimited_ocr_image_request(
     """
 
     directory = Path(model_dir).expanduser()
+    config = _load_json_object(directory / "config.json", "Unlimited-OCR config")
+    sparse = config.get("sparse_attention_config")
+    is_v2 = isinstance(sparse, dict) and sparse.get("use_sparse_attention") is True
     image_token_id = _load_image_token_id(directory)
     tokens = _validate_input_tokens(input_tokens)
-    placeholder_count = tokens.count(image_token_id)
-    if placeholder_count != 1:
+    if not isinstance(images, list) or not images or len(images) > (32 if is_v2 else 1):
         raise ValueError(
-            "Unlimited-OCR input_tokens must contain exactly one <image> token; "
-            f"found {placeholder_count}"
+            "native Unlimited-OCR requires exactly one source image"
+            if not is_v2
+            else "Unlimited-OCR-2 requires 1..32 ordered source images"
         )
-    if not isinstance(images, list) or len(images) != 1:
-        actual = len(images) if isinstance(images, list) else type(images).__name__
-        raise ValueError(f"native Unlimited-OCR requires exactly one source image; found {actual}")
+    if tokens.count(image_token_id) != len(images):
+        raise ValueError(
+            "Unlimited-OCR input_tokens must contain exactly one <image> token per image"
+        )
+    if cropping is None:
+        cropping = len(images) == 1
     if not isinstance(cropping, bool):
         raise TypeError("Unlimited-OCR cropping must be a boolean")
-    image = _load_rgb_image(images[0])
-    try:
-        width, height = image.size
-        _validate_dimensions(width, height)
-        rgb_bytes = image.tobytes()
-    finally:
-        image.close()
+    page_token_id = sparse.get("page_token_id") if isinstance(sparse, dict) else None
+    if is_v2:
+        if (
+            not isinstance(page_token_id, int)
+            or isinstance(page_token_id, bool)
+            or not 0 <= page_token_id <= _MAX_TOKEN_ID
+            or page_token_id == image_token_id
+        ):
+            raise ValueError("Unlimited-OCR-2 requires a valid page_token_id")
+        if tokens.count(page_token_id) != len(images) or any(
+            i == 0 or tokens[i - 1] != page_token_id
+            for i, token in enumerate(tokens)
+            if token == image_token_id
+        ):
+            raise ValueError("Unlimited-OCR-2 requires <PAGE><image> for each source image")
+    payloads = []
+    counts = []
+    for source in images:
+        image = _load_rgb_image(source)
+        try:
+            width, height = image.size
+            _validate_dimensions(width, height)
+            payloads.append({"width": width, "height": height, "rgb_bytes": image.tobytes()})
+            counts.append(_soft_token_count(width, height, cropping, 16 if is_v2 else 32))
+        finally:
+            image.close()
+    if sum(len(p["rgb_bytes"]) for p in payloads) > _MAX_RGB_BYTES:
+        raise ValueError("Unlimited-OCR total RGB payload exceeds the request limit")
+    expanded_tokens = []
+    index = 0
+    for token in tokens:
+        if token == image_token_id:
+            expanded_tokens.extend([token] * counts[index])
+            index += 1
+        else:
+            expanded_tokens.append(token)
+    runtime: dict[str, Any] = {
+        "image_token_id": image_token_id,
+        "soft_token_count": sum(counts),
+        "cropping": cropping,
+        "images": payloads,
+    }
+    if is_v2:
+        runtime["page_token_id"] = page_token_id
+    return UnlimitedOcrImageRequest(expanded_tokens, {"unlimited_ocr": runtime}, sum(counts))
 
-    soft_token_count = _soft_token_count(width, height, cropping)
-    placeholder_index = tokens.index(image_token_id)
-    expanded_tokens = [
-        *tokens[:placeholder_index],
-        *([image_token_id] * soft_token_count),
-        *tokens[placeholder_index + 1 :],
-    ]
 
-    return UnlimitedOcrImageRequest(
-        input_tokens=expanded_tokens,
-        multimodal_inputs={
-            "unlimited_ocr": {
-                "image_token_id": image_token_id,
-                "soft_token_count": soft_token_count,
-                "cropping": cropping,
-                "images": [
-                    {
-                        "width": width,
-                        "height": height,
-                        "rgb_bytes": rgb_bytes,
-                    }
-                ],
-            }
-        },
-        soft_token_count=soft_token_count,
-    )
-
-
-def _crop_grid(width: int, height: int, cropping: bool) -> tuple[int, int]:
+def _crop_grid(width: int, height: int, cropping: bool, max_tiles: int = 32) -> tuple[int, int]:
     if (
         not cropping
         or (width <= UNLIMITED_OCR_LOCAL_TILE_SIZE and height <= UNLIMITED_OCR_LOCAL_TILE_SIZE)
@@ -99,12 +116,12 @@ def _crop_grid(width: int, height: int, cropping: bool) -> tuple[int, int]:
         return (1, 1)
 
     ratios: list[tuple[int, int]] = []
-    for n in range(2, UNLIMITED_OCR_MAX_LOCAL_TILES + 1):
+    for n in range(2, max_tiles + 1):
         for columns in range(1, n + 1):
             for rows in range(1, n + 1):
                 count = columns * rows
                 ratio = (columns, rows)
-                if 2 <= count <= UNLIMITED_OCR_MAX_LOCAL_TILES and ratio not in ratios:
+                if 2 <= count <= max_tiles and ratio not in ratios:
                     ratios.append(ratio)
     ratios.sort(key=lambda ratio: ratio[0] * ratio[1])
 
@@ -123,8 +140,8 @@ def _crop_grid(width: int, height: int, cropping: bool) -> tuple[int, int]:
     return best
 
 
-def _soft_token_count(width: int, height: int, cropping: bool) -> int:
-    columns, rows = _crop_grid(width, height, cropping)
+def _soft_token_count(width: int, height: int, cropping: bool, max_tiles: int = 32) -> int:
+    columns, rows = _crop_grid(width, height, cropping, max_tiles)
     if (columns, rows) == (1, 1):
         return UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT
     local_rows = rows * UNLIMITED_OCR_LOCAL_QUERY_GRID
@@ -150,7 +167,10 @@ def _load_image_token_id(model_dir: Path) -> int:
         raise ValueError(
             "Unlimited-OCR config model_type must be unlimited-ocr, unlimited_ocr, or deepseekocr"
         )
-    configured = config.get("image_token_id")
+    sparse = config.get("sparse_attention_config")
+    configured = config.get(
+        "image_token_id", sparse.get("image_token_id") if isinstance(sparse, dict) else None
+    )
     if isinstance(configured, int) and not isinstance(configured, bool):
         if configured < 0 or configured > _MAX_TOKEN_ID:
             raise ValueError("Unlimited-OCR image_token_id must be an unsigned 32-bit integer")

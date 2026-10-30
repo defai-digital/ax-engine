@@ -217,13 +217,20 @@ pub(crate) fn validate_unlimited_ocr_attention(
         let name = name.as_ref();
         name.contains(".self_attn.dash_router.") || name.contains(".self_attn.indexer.")
     });
-    if sparse_config || sparse_weights {
+    if sparse_config {
+        let layers = arch_u64(config, model_type, "num_hidden_layers").unwrap_or(0) as usize;
+        crate::unlimited_ocr2::UnlimitedOcr2Config::from_hf(config, layers).map_err(|message| {
+            ConvertError::InvalidModelContract {
+                model_type: model_type.into(),
+                message: format!("Unlimited-OCR-2 SR-SWA: {message}"),
+            }
+        })?;
+    } else if sparse_weights {
         return Err(ConvertError::InvalidModelContract {
-            model_type: model_type.to_string(),
-            message: "Unlimited-OCR-2 SR-SWA is not implemented: native DASH routing, \
-                page-aware rotary positions and multi-page KV lifecycle are required; \
-                the Unlimited-OCR v1 protected-prefix attention path cannot run this checkpoint"
-                .to_string(),
+            model_type: model_type.into(),
+            message:
+                "Unlimited-OCR-2 SR-SWA routing tensors require an explicit supported sparse config"
+                    .into(),
         });
     }
     Ok(())

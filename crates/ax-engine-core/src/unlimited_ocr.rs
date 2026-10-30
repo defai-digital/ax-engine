@@ -21,12 +21,15 @@ pub const UNLIMITED_OCR_MAX_IMAGE_DIMENSION: u32 = 32_768;
 pub struct UnlimitedOcrRuntimeInputs {
     /// Token ID used for the expanded `<image>` soft-token run.
     pub image_token_id: u32,
+    /// OCR-2 page marker; absent for the single-image v1 contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_token_id: Option<u32>,
     /// Number of image tokens inserted into the prompt by the public helper.
     pub soft_token_count: u32,
     /// Preserve the released processor's local-tile path for dense documents.
     #[serde(default = "default_cropping")]
     pub cropping: bool,
-    /// The native document path accepts exactly one source image.
+    /// V1 accepts one image; OCR-2 accepts ordered page images.
     pub images: Vec<UnlimitedOcrImageRuntimeInput>,
 }
 
@@ -39,6 +42,15 @@ const fn default_cropping() -> bool {
 /// `(1, 1)` means global-only.  Larger images select between two and 32
 /// 640px tiles using the closest source aspect ratio.
 pub fn unlimited_ocr_crop_grid(width: u32, height: u32, cropping: bool) -> (u32, u32) {
+    unlimited_ocr_crop_grid_with_limit(width, height, cropping, UNLIMITED_OCR_MAX_LOCAL_TILES)
+}
+
+pub fn unlimited_ocr_crop_grid_with_limit(
+    width: u32,
+    height: u32,
+    cropping: bool,
+    max_tiles: u32,
+) -> (u32, u32) {
     if !cropping
         || (width <= UNLIMITED_OCR_LOCAL_TILE_SIZE && height <= UNLIMITED_OCR_LOCAL_TILE_SIZE)
         || width == 0
@@ -51,13 +63,11 @@ pub fn unlimited_ocr_crop_grid(width: u32, height: u32, cropping: bool) -> (u32,
     let area = f64::from(width) * f64::from(height);
     let tile_area = f64::from(UNLIMITED_OCR_LOCAL_TILE_SIZE).powi(2);
     let mut ratios = Vec::new();
-    for n in 2..=UNLIMITED_OCR_MAX_LOCAL_TILES {
+    for n in 2..=max_tiles {
         for columns in 1..=n {
             for rows in 1..=n {
                 let count = columns * rows;
-                if (2..=UNLIMITED_OCR_MAX_LOCAL_TILES).contains(&count)
-                    && !ratios.contains(&(columns, rows))
-                {
+                if (2..=max_tiles).contains(&count) && !ratios.contains(&(columns, rows)) {
                     ratios.push((columns, rows));
                 }
             }
@@ -91,6 +101,78 @@ pub fn unlimited_ocr_soft_token_count(width: u32, height: u32, cropping: bool) -
 }
 
 impl UnlimitedOcrRuntimeInputs {
+    fn validate_pages(&self, prompt: &[u32]) -> Result<(), UnlimitedOcrRuntimeInputError> {
+        let page_id = self
+            .page_token_id
+            .ok_or_else(|| invalid_input("page_token_id", "required for OCR-2"))?;
+        if self.images.is_empty() || self.images.len() > 32 || page_id == self.image_token_id {
+            return Err(invalid_input(
+                "images",
+                "OCR-2 requires 1..32 ordered pages and distinct marker ids",
+            ));
+        }
+        if prompt.iter().filter(|id| **id == page_id).count() != self.images.len() {
+            return Err(invalid_input(
+                "page_token_id",
+                "OCR-2 requires one <PAGE> marker per input page",
+            ));
+        }
+        let mut runs = Vec::new();
+        let mut i = 0;
+        while i < prompt.len() {
+            if prompt[i] != self.image_token_id {
+                i += 1;
+                continue;
+            }
+            if i == 0 || prompt[i - 1] != page_id {
+                return Err(invalid_input(
+                    "image_token_id",
+                    "OCR-2 image runs require a preceding <PAGE>",
+                ));
+            }
+            let start = i;
+            while i < prompt.len() && prompt[i] == self.image_token_id {
+                i += 1;
+            }
+            runs.push(i - start);
+        }
+        if runs.len() != self.images.len() {
+            return Err(invalid_input(
+                "images",
+                "OCR-2 page/image run count mismatch",
+            ));
+        }
+        let mut total = 0_u32;
+        let mut rgb = 0_usize;
+        for (image, run) in self.images.iter().zip(runs) {
+            validate_image(image)?;
+            rgb = rgb
+                .checked_add(image.rgb_bytes.len())
+                .ok_or_else(|| invalid_input("images", "RGB size overflow"))?;
+            let (cols, rows) =
+                unlimited_ocr_crop_grid_with_limit(image.width, image.height, self.cropping, 16);
+            let soft = if (cols, rows) == (1, 1) {
+                273
+            } else {
+                273 + rows * 10 * (cols * 10 + 1)
+            };
+            if run != soft as usize {
+                return Err(invalid_input(
+                    "image_token_id",
+                    "OCR-2 page soft-token count mismatch",
+                ));
+            }
+            total += soft;
+        }
+        if total != self.soft_token_count || rgb > UNLIMITED_OCR_MAX_RGB_BYTES {
+            return Err(invalid_input(
+                "images",
+                "OCR-2 total soft-token/RGB payload limit mismatch",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
     }
@@ -99,6 +181,9 @@ impl UnlimitedOcrRuntimeInputs {
         &self,
         prompt_tokens: &[u32],
     ) -> Result<(), UnlimitedOcrRuntimeInputError> {
+        if self.page_token_id.is_some() {
+            return self.validate_pages(prompt_tokens);
+        }
         if self.images.len() != 1 {
             return Err(invalid_input(
                 "images",
@@ -225,6 +310,7 @@ mod tests {
         ));
         prompt.extend([21431, 126041, 16]);
         let inputs = UnlimitedOcrRuntimeInputs {
+            page_token_id: None,
             image_token_id,
             soft_token_count: UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT,
             cropping: false,
@@ -241,6 +327,28 @@ mod tests {
     fn accepts_one_bounded_image_and_contiguous_soft_tokens() {
         let (prompt, inputs) = valid_inputs();
         assert_eq!(inputs.validate_for_prompt_tokens(&prompt), Ok(()));
+    }
+
+    #[test]
+    fn ocr2_requires_ordered_marked_image_runs_and_exact_counts() {
+        let (_, mut inputs) = valid_inputs();
+        inputs.page_token_id = Some(19);
+        inputs.images.push(inputs.images[0].clone());
+        inputs.soft_token_count = 546;
+        let mut prompt = vec![0, 19];
+        prompt.extend(vec![inputs.image_token_id; 273]);
+        prompt.push(19);
+        prompt.extend(vec![inputs.image_token_id; 273]);
+        prompt.push(8);
+        assert!(inputs.validate_for_prompt_tokens(&prompt).is_ok());
+        let mut wrong_marker = prompt.clone();
+        wrong_marker[275] = 8;
+        assert!(inputs.validate_for_prompt_tokens(&wrong_marker).is_err());
+        let mut wrong_count = prompt.clone();
+        wrong_count.remove(3);
+        assert!(inputs.validate_for_prompt_tokens(&wrong_count).is_err());
+        inputs.page_token_id = None;
+        assert!(inputs.validate_for_prompt_tokens(&prompt).is_err());
     }
 
     #[test]

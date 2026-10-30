@@ -1315,6 +1315,7 @@ pub struct DeepseekV4LayerStateView<'a> {
 /// the backing buffer but are beyond the logical boundary, so SDPA never sees them.
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
 pub struct MlxKVCache {
+    pub(crate) unlimited_ocr2: Option<crate::unlimited_ocr2::Ocr2Cache>,
     pub(crate) qwen4_exp: Option<crate::model::qwen4_exp::Qwen4ExpState>,
     layers: Vec<Option<FaLayerStorage>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
@@ -1434,6 +1435,7 @@ impl Clone for MlxKVCache {
             state.mtp_tape = None;
         }
         Self {
+            unlimited_ocr2: self.unlimited_ocr2.clone(),
             qwen4_exp: self.qwen4_exp.clone(),
             layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
@@ -1549,6 +1551,7 @@ impl MlxKVCache {
 
     fn new_with_fa_pool(num_layers: usize, fa_pool: Option<SharedFaBlockPool>) -> Self {
         Self {
+            unlimited_ocr2: None,
             qwen4_exp: None,
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
@@ -2450,7 +2453,8 @@ impl MlxKVCache {
     /// V4 compressor layers): storing it would produce a snapshot that
     /// claims tokens but restores as empty.
     pub(crate) fn has_unserializable_layers(&self) -> bool {
-        self.deepseek_v4_layers.iter().any(Option::is_some)
+        self.unlimited_ocr2.is_some()
+            || self.deepseek_v4_layers.iter().any(Option::is_some)
             || self
                 .qwen4_exp
                 .as_ref()
@@ -2467,7 +2471,9 @@ impl MlxKVCache {
     /// Linear, GDN, or QSA state is valid only at the token position that
     /// produced it. A checkpoint may store it when `seq_len` is already the cut.
     pub(crate) fn recurrent_capture_requires_exact_prefix(&self) -> bool {
-        self.qwen4_exp.is_some() || self.has_generic_linear_recurrent_state()
+        self.unlimited_ocr2.is_some()
+            || self.qwen4_exp.is_some()
+            || self.has_generic_linear_recurrent_state()
     }
 
     pub(crate) fn serialize_to_bytes(&self) -> Vec<u8> {
@@ -4533,6 +4539,20 @@ impl MlxKVCache {
     /// the cache and make SDPA attend to unwritten positions.
     #[must_use]
     pub fn trim_to(&mut self, prefix_len: usize) -> bool {
+        if prefix_len < self.seq_len && self.unlimited_ocr2.is_some() {
+            if prefix_len == 0 {
+                self.reset();
+                return true;
+            }
+            if !self
+                .unlimited_ocr2
+                .as_mut()
+                .is_some_and(|state| state.trim(prefix_len))
+            {
+                return false;
+            }
+        }
+
         if self.qwen4_exp.is_some() && prefix_len < self.seq_len {
             // GDN and PLE state cannot be sliced. The verifier restores its
             // pre-call checkpoint and replays the accepted prefix instead.
@@ -5528,6 +5548,7 @@ impl MlxKVCache {
 
     /// Reset cache entirely (e.g., between requests).
     pub(crate) fn reset(&mut self) {
+        self.unlimited_ocr2 = None;
         self.qwen4_exp = None;
         if let Some(pool) = self.fa_pool.as_ref() {
             for entry in self.layers.iter_mut().flatten() {

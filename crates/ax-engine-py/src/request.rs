@@ -168,6 +168,10 @@ fn unlimited_ocr_inputs_from_py(
     Ok(Some(RequestMultimodalInputs {
         gemma4_unified: None,
         unlimited_ocr: Some(UnlimitedOcrRuntimeInputs {
+            page_token_id: root
+                .get_item("page_token_id")?
+                .map(|v| v.extract::<u32>())
+                .transpose()?,
             image_token_id,
             soft_token_count,
             cropping,

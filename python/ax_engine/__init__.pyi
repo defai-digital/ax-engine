@@ -26,7 +26,7 @@ def prepare_unlimited_ocr_image_request(
     input_tokens: list[int],
     images: list[Any],
     *,
-    cropping: bool = ...,
+    cropping: bool | None = ...,
 ) -> UnlimitedOcrImageRequest: ...
 
 @dataclass(frozen=True)

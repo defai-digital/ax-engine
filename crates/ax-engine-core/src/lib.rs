@@ -35,6 +35,7 @@ pub mod sampling;
 pub mod scheduler;
 pub mod support_tier;
 pub mod unlimited_ocr;
+pub mod unlimited_ocr2;
 pub mod vl_geometry;
 
 pub use architecture::{

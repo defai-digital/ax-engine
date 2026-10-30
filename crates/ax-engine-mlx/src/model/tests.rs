@@ -171,6 +171,7 @@ fn gemma4_interleaved_manifest() -> NativeModelManifest {
         glm_router: Default::default(),
         deepseek_v4: Default::default(),
         qwen4_exp: Default::default(),
+        unlimited_ocr2: None,
         weight_sanitize: ax_engine_core::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
@@ -244,6 +245,7 @@ fn qwen35_linear_manifest() -> NativeModelManifest {
         glm_router: Default::default(),
         deepseek_v4: Default::default(),
         qwen4_exp: Default::default(),
+        unlimited_ocr2: None,
         weight_sanitize: ax_engine_core::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
@@ -443,6 +445,7 @@ fn glm4_moe_lite_manifest() -> NativeModelManifest {
         },
         deepseek_v4: Default::default(),
         qwen4_exp: Default::default(),
+        unlimited_ocr2: None,
         weight_sanitize: ax_engine_core::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
@@ -967,6 +970,7 @@ fn empty_layer_weights(hidden_size: usize) -> LayerWeights {
         up_exps: None,
         down_exps: None,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     }
@@ -1038,6 +1042,7 @@ fn glm_mla_layer_weights(cfg: &ModelConfig) -> LayerWeights {
         up_exps: None,
         down_exps: None,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     }
@@ -1237,6 +1242,7 @@ fn qwen35_linear_layer_weights(cfg: &LinearAttentionConfig, hidden_size: usize) 
         up_exps: None,
         down_exps: None,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     }
@@ -1397,6 +1403,7 @@ fn qkv_project_reuses_key_when_value_projection_is_absent() {
         up_exps: None,
         down_exps: None,
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -2934,6 +2941,7 @@ fn moe_experts_forward_uses_packed_gate_up_experts() {
         up_exps: None,
         down_exps: Some(dense_weight(&[2, 4, 3])),
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -3032,6 +3040,7 @@ fn moe_experts_forward_weights_multiple_packed_experts() {
         up_exps: None,
         down_exps: Some(dense_weight(&[2, 4, 3])),
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -3106,6 +3115,7 @@ fn moe_experts_forward_weights_multiple_split_experts() {
         up_exps: Some(dense_weight(&[2, 3, 4])),
         down_exps: Some(dense_weight(&[2, 4, 3])),
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -3180,6 +3190,7 @@ fn moe_experts_forward_supports_reference_switchglu_broadcast_for_topk_gt_tokens
         up_exps: Some(dense_weight(&[4, 3, 4])),
         down_exps: Some(dense_weight(&[4, 4, 3])),
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -3254,6 +3265,7 @@ fn moe_experts_forward_sorts_large_prefill_expert_indices() {
         up_exps: None,
         down_exps: Some(dense_weight(&[4, 4, 3])),
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
@@ -3373,6 +3385,7 @@ fn moe_experts_forward_keeps_single_token_sequence_axis() {
         up_exps: Some(dense_weight(&[4, 3, 4])),
         down_exps: Some(dense_weight(&[4, 4, 3])),
         attn_sink: None,
+        unlimited_ocr2: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
     };
