@@ -58,7 +58,14 @@ impl UnlimitedOcr2Config {
             ("dash_image_only", serde_json::json!(true)),
             ("image_bucket_constraint", serde_json::json!(true)),
         ] {
-            if s.get(key) != Some(&expected) {
+            // `10000` and `10000.0` are distinct `Value`s but the same setting.
+            let matches = match (s.get(key), &expected) {
+                (Some(serde_json::Value::Number(got)), serde_json::Value::Number(want)) => {
+                    got.as_f64() == want.as_f64()
+                }
+                (got, want) => got == Some(want),
+            };
+            if !matches {
                 return Err(format!(
                     "unsupported Unlimited-OCR-2 {key}: expected {expected}"
                 ));
@@ -536,6 +543,14 @@ mod tests {
         });
         let value = serde_json::json!({"sparse_attention_config": s});
         assert!(UnlimitedOcr2Config::from_hf(&value, 12).unwrap().is_some());
+        let mut integral = value.clone();
+        integral["sparse_attention_config"]["sparse_rope_tok_theta"] = serde_json::json!(10000);
+        integral["sparse_attention_config"]["sparse_rope_page_pairs"] = serde_json::json!(1.0);
+        assert!(
+            UnlimitedOcr2Config::from_hf(&integral, 12)
+                .unwrap()
+                .is_some()
+        );
         let mut wrong = value.clone();
         wrong["sparse_attention_config"]["dash_stage0"] = serde_json::json!("indexer");
         assert!(UnlimitedOcr2Config::from_hf(&wrong, 12).is_err());

@@ -401,6 +401,7 @@ pub(crate) fn parse_diffusion_config(
     // canvas_size: check both "canvas_size" and "canvas_length" (real config uses canvas_length).
     // Reject canvas_size=0 (malformed manifest) — treat as not specified.
     let canvas_size = get_u32("canvas_size")
+        .filter(|&v| v > 0)
         .or_else(|| get_u32("canvas_length"))
         .filter(|&v| v > 0);
 
@@ -412,6 +413,7 @@ pub(crate) fn parse_diffusion_config(
     // Convergence steps: real config uses stability_threshold (integer) inside generation_config.
     // Reject 0 — would cause instant convergence trigger in the denoise loop.
     let convergence_steps = get_u32("convergence_steps")
+        .filter(|&v| v > 0)
         .or_else(|| get_u32_gen("stability_threshold"))
         .filter(|&v| v > 0);
 
@@ -420,6 +422,7 @@ pub(crate) fn parse_diffusion_config(
         // Reject max_denoise_steps=0 — a denoise loop with zero iterations
         // produces degenerate output.
         max_denoise_steps: get_u32_gen("max_denoise_steps")
+            .filter(|&v| v > 0)
             .or_else(|| get_u32_gen("max_denoising_steps"))
             .filter(|&v| v > 0),
         self_conditioning: get_bool("self_conditioning"),
@@ -696,10 +699,12 @@ pub(crate) fn deepseek_v4_config(
         .get("compress_ratios")
         .and_then(|v| v.as_array())
         .map(|arr| {
+            // Ratios are positional: a malformed entry must not shift later
+            // layers, so it empties the list and fails the length validation.
             arr.iter()
-                .filter_map(|v| v.as_u64())
-                .filter_map(u64_to_u32)
-                .collect()
+                .map(|v| v.as_u64().and_then(u64_to_u32))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
         })
         .unwrap_or_default();
 

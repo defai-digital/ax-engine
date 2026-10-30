@@ -4993,6 +4993,17 @@ fn deepseek_v4_axq_config_trims_nextn_compress_ratio() {
 }
 
 #[test]
+fn deepseek_v4_config_rejects_malformed_compress_ratio_instead_of_shifting() {
+    let mut config = deepseek_v4_config_json();
+    config.as_object_mut().expect("config object").insert(
+        "compress_ratios".to_string(),
+        serde_json::json!([4, "x", 128, 0]),
+    );
+    let parsed = deepseek_v4_config(&config, "deepseek_v4");
+    assert!(parsed.compress_ratios.is_empty());
+}
+
+#[test]
 fn deepseek_v4_axq_tolerates_fp8_mtp_sidecar() {
     // The published AXQ `mtp.safetensors` sidecar stores raw-HF names with
     // FP8 weights (F8_E4M3 + F8_E8M0 `.scale`) and per-expert I8 stacks.
@@ -6128,6 +6139,20 @@ fn diffusion_gemma_canvas_size_zero_is_rejected() {
         Some(0),
         "canvas_length=0 must be filtered to None by parse_diffusion_config"
     );
+
+    // A zero primary key must not hide the alternate key.
+    let zero_primary = serde_json::json!({
+        "model_type": "diffusion_gemma",
+        "canvas_size": 0,
+        "canvas_length": 256,
+        "max_denoise_steps": 0,
+        "convergence_steps": 0,
+        "generation_config": {"max_denoising_steps": 48, "stability_threshold": 3}
+    });
+    let parsed3 = super::parse_diffusion_config(&zero_primary, "diffusion_gemma");
+    assert_eq!(parsed3.canvas_size, Some(256));
+    assert_eq!(parsed3.max_denoise_steps, Some(48));
+    assert_eq!(parsed3.convergence_steps, Some(3));
 
     // Verify that a valid canvas_size is preserved.
     let config_with_valid = serde_json::json!({
