@@ -91,6 +91,7 @@ pub(super) fn build_chat_generate_request(
 ) -> Result<GenerateRequest, Status> {
     chat::validate_native_chat_artifact(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         live.session_config.mlx_model_artifacts_dir.as_deref(),
     )
     .map_err(Status::invalid_argument)?;

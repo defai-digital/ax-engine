@@ -829,6 +829,7 @@ fn validate_native_chat_artifacts(
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     chat::validate_native_chat_artifact(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         live.session_config.mlx_model_artifacts_dir.as_deref(),
     )
     .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))
