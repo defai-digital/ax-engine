@@ -117,18 +117,10 @@ private func archive(_ messages: [ChatMessage], model: String = "speed-fixture")
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let fixture = try #require(Bundle.module.url(forResource: "chat_performance", withExtension: "py", subdirectory: "Fixtures"))
-    let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-    let portFile = root.appendingPathComponent("port")
-    process.arguments = [fixture.path, portFile.path]
-    process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-    try process.run()
-    defer { process.terminate(); process.waitUntilExit() }
-    let ready = ContinuousClock.now.advanced(by: .seconds(5))
-    while !FileManager.default.fileExists(atPath: portFile.path), ContinuousClock.now < ready {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    let port = try #require(Int(String(contentsOf: portFile, encoding: .utf8)))
+    let launched = try await startChatPerformanceFixture(in: root)
+    let process = launched.process
+    defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+    let port = launched.port
     let file = root.appendingPathComponent("conversation.json")
     try archive([ChatMessage(role: "user", content: "x"),
                  ChatMessage(role: "assistant", content: String(repeating: "a", count: ConversationLimits.textBytes - 21))]).write(to: file)

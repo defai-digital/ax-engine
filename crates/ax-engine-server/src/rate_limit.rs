@@ -359,16 +359,25 @@ mod tests {
             rps: 10_000.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(1.0, None);
-        let request = empty_request();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        // Even though elapsed time * rps would produce many tokens, the
-        // bucket must clamp to `burst` — only one acquire should succeed.
-        assert!(limiter.try_acquire(&request, &cfg));
+        // 10_000 rps refills one token in 0.1 ms. A follow-up acquire at that
+        // rate can succeed across a scheduling gap, so freeze refill after the
+        // clamped acquire and assert the bucket is empty.
+        let mut bucket = TokenBucket::new(1.0);
+        let idle = std::time::Duration::from_secs(30);
+        if let Some(past) = Instant::now().checked_sub(idle) {
+            bucket.last = past;
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(
-            !limiter.try_acquire(&request, &cfg),
-            "must clamp at burst capacity"
+            bucket.try_acquire(&cfg),
+            "a long idle period still leaves one usable token"
         );
+        let frozen = RateLimitConfig {
+            rps: 0.0,
+            burst: cfg.burst,
+        };
+        assert!(!bucket.try_acquire(&frozen), "must clamp at burst capacity");
     }
 
     #[test]
