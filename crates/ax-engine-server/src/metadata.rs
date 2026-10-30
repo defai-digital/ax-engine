@@ -156,11 +156,13 @@ pub(crate) async fn discovery_info(
     let snapshots = state.snapshots();
     let mut operations = Vec::new();
     if snapshots.iter().any(openai_text_supported_live) {
-        operations.extend([
-            "chat_completions".to_string(),
-            "completions".to_string(),
-            "embeddings".to_string(),
-        ]);
+        operations.extend(["chat_completions".to_string(), "completions".to_string()]);
+    }
+    if snapshots
+        .iter()
+        .any(|live| openai_text_supported_live(live) || encoder_embed_live(live))
+    {
+        operations.push("embeddings".to_string());
     }
     if snapshots.iter().any(whisper_supported_live) {
         operations.extend([
@@ -538,10 +540,27 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:
     // every backend that serves the OpenAI text endpoints must advertise them here.
     !whisper_supported_live(live)
+        && !encoder_embed_live(live)
         && matches!(
             live.runtime_report.selected_backend,
             SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
         )
+}
+
+#[cfg(test)]
+pub(crate) fn openai_text_supported_for_tests(live: &LiveState) -> bool {
+    openai_text_supported_live(live)
+}
+
+/// Embedding encoders serve `/v1/embeddings` only; the OpenAI text validator
+/// rejects them, so they must not advertise chat or completions.
+fn encoder_embed_live(live: &LiveState) -> bool {
+    model_family_from_artifacts(live)
+        .as_deref()
+        .and_then(ax_engine_core::lookup_architecture)
+        .is_some_and(|entry| {
+            entry.default_generation == ax_engine_core::GenerationKind::EncoderEmbed
+        })
 }
 
 fn whisper_supported_live(live: &LiveState) -> bool {

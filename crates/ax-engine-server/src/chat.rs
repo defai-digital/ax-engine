@@ -529,18 +529,22 @@ pub(crate) fn template_kwargs_for_model_id(model_id: &str) -> Option<Value> {
     .then(|| json!({"enable_thinking": false}))
 }
 
-pub(crate) fn requires_chat_template_artifact(model_id: &str) -> bool {
+/// Gemma 4 chat needs an instruction-tuned artifact. The manifest family
+/// decides like the renderer does (ADR-025), so a renamed Gemma 4 checkpoint
+/// is still checked.
+pub(crate) fn requires_chat_template_artifact(model_id: &str, family_hint: Option<&str>) -> bool {
     matches!(
-        ChatPromptTemplate::for_model_id(model_id),
+        resolve_chat_template(model_id, family_hint),
         ChatPromptTemplate::Gemma4
     )
 }
 
 pub(crate) fn validate_native_chat_artifact(
     model_id: &str,
+    family_hint: Option<&str>,
     artifacts_dir: Option<&Path>,
 ) -> Result<(), String> {
-    if !requires_chat_template_artifact(model_id) {
+    if !requires_chat_template_artifact(model_id, family_hint) {
         return Ok(());
     }
 
@@ -1080,6 +1084,12 @@ fn render_prompt_internal(
                     if qwen_tool_response_open {
                         prompt.push_str("<|im_end|>\n");
                         qwen_tool_response_open = false;
+                        // The assistant turn starts after the closed tool block.
+                        if role == "assistant"
+                            && let Some(start) = assistant_byte_starts.last_mut()
+                        {
+                            *start = prompt.len();
+                        }
                     }
                     // Nemotron 3 hub jinja always opens with a system block,
                     // empty when the caller sent none.
@@ -1233,9 +1243,28 @@ fn render_prompt_internal(
             ChatPromptTemplate::GptOssHarmony => {
                 // HF template: first system message becomes a developer
                 // instruction block; user/assistant use Harmony framing.
+                // A deferred system message is flushed before anything that
+                // follows it, so several system messages keep input order.
+                let deferred = if role == "system" && gpt_oss_system.is_none() {
+                    None
+                } else {
+                    gpt_oss_system.take()
+                };
+                if let Some(system) = deferred {
+                    prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
+                    prompt.push_str(&escape_gpt_oss_harmony_content(system));
+                    // Hub jinja closes the instructions with "\n\n".
+                    prompt.push_str("\n\n<|end|>");
+                    // The assistant turn starts after the flushed instructions.
+                    if role == "assistant"
+                        && let Some(start) = assistant_byte_starts.last_mut()
+                    {
+                        *start = prompt.len();
+                    }
+                }
                 match role {
                     "system" => {
-                        if gpt_oss_system.is_none() {
+                        if deferred.is_none() {
                             gpt_oss_system = Some(content.as_str());
                         } else {
                             // Subsequent system lines are folded as developer append.
@@ -1245,12 +1274,6 @@ fn render_prompt_internal(
                         }
                     }
                     "user" => {
-                        if let Some(system) = gpt_oss_system.take() {
-                            prompt.push_str("<|start|>developer<|message|># Instructions\n\n");
-                            prompt.push_str(&escape_gpt_oss_harmony_content(system));
-                            // Hub jinja closes the instructions with "\n\n".
-                            prompt.push_str("\n\n<|end|>");
-                        }
                         prompt.push_str("<|start|>user<|message|>");
                         prompt.push_str(&escape_gpt_oss_harmony_content(content));
                         prompt.push_str("<|end|>");
@@ -1333,6 +1356,12 @@ fn render_prompt_internal(
                             prompt.push_str(DEEPSEEK_EOS);
                         }
                         deepseek_tool_response_open = false;
+                        // The assistant turn starts after the closed tool block.
+                        if role == "assistant"
+                            && let Some(start) = assistant_byte_starts.last_mut()
+                        {
+                            *start = prompt.len();
+                        }
                     }
                     match role {
                         "system" => {
@@ -2007,6 +2036,57 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn qwen_assistant_offset_follows_a_closed_tool_response() {
+        let rendered = render_prompt_with_template_and_framing_offsets(
+            "Qwen/Qwen3-8B",
+            ChatPromptTemplate::QwenChatMl,
+            &owned(&[("user", "q"), ("tool", "r"), ("assistant", "a")]),
+            false,
+            None,
+        )
+        .expect("qwen render");
+        let start = rendered.assistant_byte_starts[0];
+        assert!(
+            rendered.text[start..].starts_with("<|im_start|>assistant"),
+            "{}",
+            &rendered.text[start..]
+        );
+    }
+
+    #[test]
+    fn assistant_offsets_follow_flushed_or_closed_blocks() {
+        for (model, template, messages, marker) in [
+            (
+                "openai/gpt-oss-20b",
+                ChatPromptTemplate::GptOssHarmony,
+                [("system", "A"), ("assistant", "a"), ("user", "hi")],
+                "<|start|>assistant",
+            ),
+            (
+                "deepseek-ai/DeepSeek-V3",
+                ChatPromptTemplate::DeepSeekChat,
+                [("user", "q"), ("tool", "r"), ("assistant", "a")],
+                DEEPSEEK_ASSISTANT,
+            ),
+        ] {
+            let rendered = render_prompt_with_template_and_framing_offsets(
+                model,
+                template,
+                &owned(&messages),
+                false,
+                None,
+            )
+            .expect("render");
+            let start = rendered.assistant_byte_starts[0];
+            assert!(
+                rendered.text[start..].starts_with(marker),
+                "{model}: {}",
+                &rendered.text[start..]
+            );
+        }
+    }
+
+    #[test]
     fn assistant_offsets_match_full_tokenization() {
         // Tokenize the whole rendered prompt once (one token per byte here)
         // and map each assistant byte start through those offsets.
@@ -2342,6 +2422,25 @@ mod tests {
             prompt.contains("<|start|>developer<|message|># Instructions\n\nS\n\n<|end|>"),
             "{prompt}"
         );
+    }
+
+    #[test]
+    fn gpt_oss_keeps_several_system_messages_in_input_order() {
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::GptOssHarmony,
+            &owned(&[
+                ("system", "A"),
+                ("system", "B"),
+                ("system", "C"),
+                ("user", "hi"),
+            ]),
+            false,
+        )
+        .expect("gpt-oss render");
+        let at = |text: &str| prompt.find(text).expect(text);
+        assert!(at("\n\nA\n\n") < at("\n\nB\n\n"), "{prompt}");
+        assert!(at("\n\nB\n\n") < at("\n\nC\n\n"), "{prompt}");
+        assert!(at("\n\nC\n\n") < at("<|start|>user"), "{prompt}");
     }
 
     /// Goldens below were rendered from the Hy-MT2-30B-A3B hub
@@ -3167,7 +3266,7 @@ mod tests {
             std::env::temp_dir().join(format!("ax-engine-chat-gemma4-artifact-{unique}"));
         fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
 
-        let error = validate_native_chat_artifact("gemma4", Some(&artifact_dir))
+        let error = validate_native_chat_artifact("gemma4", None, Some(&artifact_dir))
             .expect_err("Gemma4 chat artifact must include chat_template.jinja");
         assert!(error.contains("chat_template.jinja"));
 
@@ -3179,12 +3278,20 @@ mod tests {
             r#"{"eos_token_id":[1,106,50]}"#,
         )
         .expect("generation_config.json should write");
-        validate_native_chat_artifact("gemma4", Some(&artifact_dir))
+        validate_native_chat_artifact("gemma4", None, Some(&artifact_dir))
             .expect("instruction-tuned Gemma4 artifact should pass");
-        validate_native_chat_artifact("diffusiongemma-26B-A4B-it-4bit", Some(&artifact_dir))
+        validate_native_chat_artifact("diffusiongemma-26B-A4B-it-4bit", None, Some(&artifact_dir))
             .expect("DiffusionGemma should share Gemma4 chat artifact validation");
-        validate_native_chat_artifact("glm4_moe_lite", Some(&artifact_dir))
+        validate_native_chat_artifact("glm4_moe_lite", None, Some(&artifact_dir))
             .expect("non-Gemma families do not require Gemma4 template");
+        // A renamed checkpoint is checked by its manifest family.
+        let renamed = artifact_dir.with_extension("renamed");
+        fs::create_dir_all(&renamed).expect("renamed dir should create");
+        assert!(validate_native_chat_artifact("local-model", None, Some(&renamed)).is_ok());
+        assert!(
+            validate_native_chat_artifact("local-model", Some("gemma4"), Some(&renamed)).is_err()
+        );
+        fs::remove_dir_all(renamed).expect("renamed dir should clean up");
 
         fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
     }
@@ -3211,7 +3318,7 @@ mod tests {
         )
         .expect("generation_config.json should write");
 
-        let error = validate_native_chat_artifact("gemma4", Some(&artifact_dir))
+        let error = validate_native_chat_artifact("gemma4", None, Some(&artifact_dir))
             .expect_err("base Gemma4 artifact must be rejected for chat");
         assert!(
             error.contains("instruction-tuned") && error.contains("<turn|>"),

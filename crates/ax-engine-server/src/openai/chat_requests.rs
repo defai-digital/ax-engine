@@ -881,17 +881,19 @@ fn ministral_available_tools_array(tools: &Value) -> Result<String, HttpErrorRes
     };
     let mut rendered = Vec::with_capacity(items.len());
     for (index, tool) in items.iter().enumerate() {
-        let function = tool
-            .get("function")
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                chat_error_response(format!(
-                    "Ministral tools[{index}] requires a function object"
-                ))
-            })?;
+        // A flat (Responses-style) tool is its own function object; its
+        // `type` and any non-object `function` keys belong to the wrapper.
+        let flat = tool.get("function").and_then(Value::as_object).is_none();
+        let function = openai_tool_function(tool).ok_or_else(|| {
+            chat_error_response(format!(
+                "Ministral tools[{index}] requires a function object"
+            ))
+        })?;
         let fields = function
             .iter()
-            .filter(|(key, _)| key.as_str() != "return")
+            .filter(|(key, _)| {
+                key.as_str() != "return" && !(flat && matches!(key.as_str(), "type" | "function"))
+            })
             .map(|(key, value)| {
                 format!(
                     "{}: {}",
@@ -927,12 +929,20 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
         let object = call.as_object().ok_or_else(|| {
             chat_error_response("Ministral tool_calls entries must be objects".to_string())
         })?;
+        // The hub template splices `"id"` into the function JSON; a nameless
+        // (or empty) function would render malformed JSON.
         let function = object
             .get("function")
-            .filter(|value| value.is_object())
+            .filter(|value| {
+                value
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| !name.is_empty())
+            })
             .ok_or_else(|| {
                 chat_error_response(
-                    "Ministral tool_calls entries require a function object".to_string(),
+                    "Ministral tool_calls entries require a function object with a name"
+                        .to_string(),
                 )
             })?;
         let id = object
@@ -1699,7 +1709,7 @@ fn render_gemma4_tool_declarations(tools: &Value) -> Vec<String> {
 }
 
 fn render_gemma4_tool_declaration(tool: &Value) -> Option<String> {
-    let function = tool.get("function").and_then(Value::as_object)?;
+    let function = openai_tool_function(tool)?;
     let name = function.get("name")?.as_str()?;
     let description = function
         .get("description")
@@ -5688,5 +5698,41 @@ mod tool_schema_key_order_tests {
             prompt.contains("[\"z\",\"a\"]") || prompt.contains("[\"z\", \"a\"]"),
             "required array order is unchanged: {prompt}"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod flat_tool_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn gemma4_declares_flat_function_tools() {
+        let flat = json!({"type": "function", "name": "edit", "parameters": {"type": "object"}});
+        let nested = json!({"type": "function", "function": {"name": "edit", "parameters": {"type": "object"}}});
+        assert_eq!(
+            render_gemma4_tool_declaration(&flat),
+            render_gemma4_tool_declaration(&nested)
+        );
+        assert!(render_gemma4_tool_declaration(&flat).is_some());
+    }
+
+    #[test]
+    fn ministral_renders_flat_tools_like_nested_tools() {
+        let flat =
+            json!([{"type": "function", "function": null, "name": "edit", "description": "d"}]);
+        let nested =
+            json!([{"type": "function", "function": {"name": "edit", "description": "d"}}]);
+        assert_eq!(
+            ministral_available_tools_array(&flat).expect("flat"),
+            ministral_available_tools_array(&nested).expect("nested")
+        );
+    }
+
+    #[test]
+    fn ministral_rejects_nameless_tool_calls() {
+        let calls = json!([{"id": "123456789", "function": {}}]);
+        assert!(ministral_tool_calls_array(Some(&calls)).is_err());
     }
 }

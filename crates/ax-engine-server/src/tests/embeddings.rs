@@ -39,6 +39,10 @@ async fn encoder_manifests_reject_text_generation_even_under_a_chat_model_label(
             .expect_err("encoder cannot generate text");
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(error.1.0.error.message.contains("embedding encoder"));
+        // Capability discovery must agree with the validator.
+        assert!(!crate::metadata::openai_text_supported_for_tests(
+            &state.snapshot()
+        ));
         std::fs::remove_dir_all(dir).expect("remove encoder fixture");
     }
 }
