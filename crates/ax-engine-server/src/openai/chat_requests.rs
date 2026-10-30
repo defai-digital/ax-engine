@@ -882,7 +882,7 @@ fn ministral_available_tools_array(tools: &Value) -> Result<String, HttpErrorRes
     let mut rendered = Vec::with_capacity(items.len());
     for (index, tool) in items.iter().enumerate() {
         // A flat (Responses-style) tool is its own function object; its
-        // `type` key belongs to the wrapper, not the function.
+        // `type` and any non-object `function` keys belong to the wrapper.
         let flat = tool.get("function").and_then(Value::as_object).is_none();
         let function = openai_tool_function(tool).ok_or_else(|| {
             chat_error_response(format!(
@@ -891,7 +891,9 @@ fn ministral_available_tools_array(tools: &Value) -> Result<String, HttpErrorRes
         })?;
         let fields = function
             .iter()
-            .filter(|(key, _)| key.as_str() != "return" && !(flat && key.as_str() == "type"))
+            .filter(|(key, _)| {
+                key.as_str() != "return" && !(flat && matches!(key.as_str(), "type" | "function"))
+            })
             .map(|(key, value)| {
                 format!(
                     "{}: {}",
@@ -5718,7 +5720,8 @@ mod flat_tool_tests {
 
     #[test]
     fn ministral_renders_flat_tools_like_nested_tools() {
-        let flat = json!([{"type": "function", "name": "edit", "description": "d"}]);
+        let flat =
+            json!([{"type": "function", "function": null, "name": "edit", "description": "d"}]);
         let nested =
             json!([{"type": "function", "function": {"name": "edit", "description": "d"}}]);
         assert_eq!(
