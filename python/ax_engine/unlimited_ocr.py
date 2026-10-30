@@ -41,7 +41,7 @@ def prepare_unlimited_ocr_image_request(
 
     directory = Path(model_dir).expanduser()
     config = _load_json_object(directory / "config.json", "Unlimited-OCR config")
-    sparse = config.get("sparse_attention_config")
+    sparse = _sparse_attention_config(config)
     is_v2 = isinstance(sparse, dict) and sparse.get("use_sparse_attention") is True
     image_token_id = _load_image_token_id(directory)
     tokens = _validate_input_tokens(input_tokens)
@@ -162,6 +162,14 @@ def _validate_input_tokens(input_tokens: list[int]) -> list[int]:
     return list(input_tokens)
 
 
+def _sparse_attention_config(config: dict[str, Any]) -> object:
+    # Same scopes, in the same order, as the native OCR-2 config contract.
+    for scope in (config, config.get("language_config"), config.get("text_config")):
+        if isinstance(scope, dict) and scope.get("sparse_attention_config") is not None:
+            return scope["sparse_attention_config"]
+    return None
+
+
 def _load_image_token_id(model_dir: Path) -> int:
     config = _load_json_object(model_dir / "config.json", "Unlimited-OCR config")
     model_type = str(config.get("model_type", "")).replace("-", "_")
@@ -169,7 +177,7 @@ def _load_image_token_id(model_dir: Path) -> int:
         raise ValueError(
             "Unlimited-OCR config model_type must be unlimited-ocr, unlimited_ocr, or deepseekocr"
         )
-    sparse = config.get("sparse_attention_config")
+    sparse = _sparse_attention_config(config)
     configured = config.get(
         "image_token_id", sparse.get("image_token_id") if isinstance(sparse, dict) else None
     )

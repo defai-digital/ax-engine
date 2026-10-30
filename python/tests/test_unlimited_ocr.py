@@ -124,6 +124,33 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
             pages = request.multimodal_inputs["unlimited_ocr"]["images"]
             self.assertEqual(sum(len(page["rgb_bytes"]) for page in pages), 12)
 
+    def test_ocr2_reads_sparse_config_nested_under_language_config(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            write_model_contract(directory)
+            config = {
+                "model_type": "unlimited-ocr",
+                "language_config": {
+                    "sparse_attention_config": {
+                        "use_sparse_attention": True,
+                        "page_token_id": 19,
+                        "image_token_id": IMAGE_TOKEN_ID,
+                    }
+                },
+            }
+            (directory / "config.json").write_text(json.dumps(config))
+            pages = []
+            for _ in range(2):
+                page = unittest.mock.Mock(size=(2, 1))
+                page.tobytes.return_value = bytes(6)
+                pages.append(page)
+            with unittest.mock.patch.object(module, "_load_rgb_image", side_effect=pages):
+                request = module.prepare_unlimited_ocr_image_request(
+                    directory, [19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID], pages
+                )
+            self.assertEqual(len(request.multimodal_inputs["unlimited_ocr"]["images"]), 2)
+
     def test_expands_one_placeholder_and_preserves_rgb_bytes(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
