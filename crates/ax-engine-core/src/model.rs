@@ -3077,7 +3077,10 @@ fn validate_native_model_tensor_shapes(
             matrix_shape(pre_projection).ok_or_else(|| NativeModelError::InvalidManifest {
                 message: "assistant_pre_projection must be a rank-2 matrix".to_string(),
             })?;
-        if pre_rows != hidden_size || pre_cols == 0 || pre_cols % 2 != 0 {
+        // Packed U32 storage shrinks the column count; its logical width is
+        // checked by the packed-aware validation below.
+        let packed = uses_packed_u32_storage(pre_projection);
+        if pre_rows != hidden_size || pre_cols == 0 || (!packed && pre_cols % 2 != 0) {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "assistant_pre_projection must have shape [{hidden_size}, 2 * backbone_hidden_size], got {:?}",
@@ -5362,12 +5365,16 @@ fn validate_linear_attention_conv_tensor(
             ),
         });
     }
-    if total_elements(tensor) != expected_channels.checked_mul(expected_kernel_dim) {
+    let expected_total = expected_channels
+        .checked_mul(expected_kernel_dim)
+        .ok_or_else(|| NativeModelError::InvalidManifest {
+            message: "linear_attention_conv1d shape overflowed".to_string(),
+        })?;
+    if total_elements(tensor) != Some(expected_total) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "tensor linear_attention_conv1d total element count must be {}, got {:?}",
-                expected_channels.saturating_mul(expected_kernel_dim),
-                tensor.shape
+                expected_total, tensor.shape
             ),
         });
     }
