@@ -150,6 +150,12 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
                     directory, [19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID], pages
                 )
             self.assertEqual(len(request.multimodal_inputs["unlimited_ocr"]["images"]), 2)
+            config["sparse_attention_config"] = {"use_sparse_attention": False}
+            (directory / "config.json").write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "conflicting sparse attention scopes"):
+                module.prepare_unlimited_ocr_image_request(
+                    directory, [19, IMAGE_TOKEN_ID, 19, IMAGE_TOKEN_ID], pages
+                )
 
     def test_expands_one_placeholder_and_preserves_rgb_bytes(self) -> None:
         module = load_module()

@@ -163,11 +163,15 @@ def _validate_input_tokens(input_tokens: list[int]) -> list[int]:
 
 
 def _sparse_attention_config(config: dict[str, Any]) -> object:
-    # Same scopes, in the same order, as the native OCR-2 config contract.
-    for scope in (config, config.get("language_config"), config.get("text_config")):
-        if isinstance(scope, dict) and scope.get("sparse_attention_config") is not None:
-            return scope["sparse_attention_config"]
-    return None
+    # Same scopes and conflict rule as the native OCR-2 config contract.
+    found = [
+        scope["sparse_attention_config"]
+        for scope in (config, config.get("language_config"), config.get("text_config"))
+        if isinstance(scope, dict) and scope.get("sparse_attention_config") is not None
+    ]
+    if any(other != found[0] for other in found[1:]):
+        raise ValueError("Unlimited-OCR config has conflicting sparse attention scopes")
+    return found[0] if found else None
 
 
 def _load_image_token_id(model_dir: Path) -> int:
