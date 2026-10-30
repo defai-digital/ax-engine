@@ -883,7 +883,7 @@ fn ministral_available_tools_array(tools: &Value) -> Result<String, HttpErrorRes
     for (index, tool) in items.iter().enumerate() {
         // A flat (Responses-style) tool is its own function object; its
         // `type` key belongs to the wrapper, not the function.
-        let flat = tool.get("function").is_none();
+        let flat = tool.get("function").and_then(Value::as_object).is_none();
         let function = openai_tool_function(tool).ok_or_else(|| {
             chat_error_response(format!(
                 "Ministral tools[{index}] requires a function object"
