@@ -150,6 +150,7 @@ test('gateway handles HEAD, ranges, conditional reads and concurrent replacement
   response=await worker.fetch(new Request(url,{method:'HEAD'}),env);
   assert.equal(response.headers.get('content-length'),'10');assert.equal(await response.text(),'');
   response=await worker.fetch(new Request(url,{headers:{'If-None-Match':'"hash"'}}),env);assert.equal(response.status,304);
+  response=await worker.fetch(new Request(url,{headers:{'If-None-Match':'W/"hash"'}}),env);assert.equal(response.status,304);
   response=await worker.fetch(new Request(url),{...env,ENGINE_GUI_RELEASES:bucket(true)});assert.equal(response.status,503);
   response=await worker.fetch(new Request(url),{...env,PUBLIC_RELEASE_ENABLED:'false'});assert.equal(response.status,503);
   response=await worker.fetch(new Request(url,{method:'PUT'}),env);assert.equal(response.status,405);
