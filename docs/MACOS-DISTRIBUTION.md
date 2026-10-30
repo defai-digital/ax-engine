@@ -7,7 +7,8 @@ Last reviewed: 2026-10-26.
 Owner: AX Engine maintainers.
 Related: [native app](MACOS-APP.md), [installation guide](GETTING-STARTED.md).
 
-The native GUI can ship as a self-contained DMG. Users do not need Homebrew,
+The native GUI uses the curl bootstrap as its primary end-user installation
+entry point, installing a self-contained signed DMG payload. Users do not need Homebrew,
 Python, a Hugging Face account or a Cloudflare account. The existing CLI
 installer and Homebrew formula remain separate products. A generated optional
 `ax-engine-gui` Cask installs the exact same DMG.
@@ -64,6 +65,19 @@ Preparation signs the DMG, Apple receipt, installer, Cask, inventory, manifest
 and readiness record. Every manifest binds the same source commit/version.
 `latest.json` contains a readiness payload and its signature together, so an
 atomic R2 replacement cannot mix two versions' pointer/signature files.
+
+The end-user command is:
+
+```bash
+curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
+```
+
+The complete bootstrap is parsed before execution, so a truncated curl stream
+cannot begin installation. `--help` works without network access. Installation
+prints verification, download and destination stages, then explains how to open
+the app. Users rerun the command to upgrade after quitting the app; it does not
+add global CLI commands to PATH. Optional Cask generation is retained for
+release compatibility, not required by the end-user installation flow.
 
 The installer checks its pinned Minisign verifier, signed pointer/readiness,
 manifest, package size/hash, Apple Team, bundle ID, source commit and Gatekeeper

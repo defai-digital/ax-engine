@@ -58,7 +58,7 @@ if name=='codesign':
  done()
 if name=='spctl':done(status=1 if mode=='gatekeeper' or (mode=='post-gatekeeper' and a[-1]==str(root/'Applications/AX Engine.app')) else 0)
 if name=='xcode-select':done(status=1)
-if name=='pgrep':done(status=1)
+if name=='pgrep':done(status=0 if mode=='running-app' else 1)
 if name=='ps':done('424242' if mode=='other-user-installer' else '',0 if mode=='other-user-installer' else subprocess.call(['/bin/ps',*a]))
 if name=='PlistBuddy':
  field=a[1].removeprefix('Print :');data=json.loads(p(a[-1]).read_text())
@@ -104,6 +104,50 @@ class InstallerTests(unittest.TestCase):
     def invoke(self,mode='',*args):
         return subprocess.run(['bash',str(self.script),'--applications-dir',str(self.apps),*args],
                               env={**self.env,'FAIL_MODE':mode},capture_output=True,text=True,timeout=15)
+
+    def test_pipe_install_matches_documented_command(self):
+        result=subprocess.run(['bash','-s','--','--applications-dir',str(self.apps)],
+                              input=self.script.read_text(),env=self.env,
+                              capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.apps/'AX Engine.app/original').read_text(),'1.2.3')
+        self.assertIn('Open AX Engine',result.stdout)
+
+    def test_truncated_pipe_never_starts_installer(self):
+        text=self.script.read_text()
+        for marker in ['download "$BASE/latest.json"', 'priv ditto "$app"', '\n}\n\nmain "$@"']:
+            with self.subTest(marker=marker):
+                truncated=text[:text.index(marker)]
+                result=subprocess.run(['bash','-s','--','--applications-dir',str(self.apps)],
+                                      input=truncated,env=self.env,
+                                      capture_output=True,text=True,timeout=15)
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual(result.stdout,'')
+                self.assertFalse((self.apps/'AX Engine.app').exists())
+                self.assertEqual(list(self.root.glob('ax-engine-install.*')),[])
+
+    def test_help_works_offline_without_platform_checks(self):
+        self.env['TEST_MACOS']='25.0'
+        for option in ['--help','-h']:
+            result=self.invoke('offline',option)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('Usage: install',result.stdout)
+            self.assertFalse((self.apps/'AX Engine.app').exists())
+
+    def test_invalid_arguments_fail_before_network(self):
+        for args in [('--unknown',),('--applications-dir',)]:
+            result=self.invoke('offline',*args)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('Unknown argument' if args[0]=='--unknown' else 'Missing applications directory',result.stderr)
+
+    def test_running_app_rejected_before_network_but_allows_verification(self):
+        result=self.invoke('running-app')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Quit AX Engine',result.stderr)
+        self.assertNotIn('checking the signed release',result.stdout)
+        result=self.invoke('running-app','--verify-only')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse((self.apps/'AX Engine.app').exists())
 
     def test_fresh_install_and_upgrade_preserve_user_data(self):
         data=self.root/'user-model.safetensors';data.write_bytes(b'untouched')

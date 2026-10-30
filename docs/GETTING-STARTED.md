@@ -63,7 +63,32 @@ outside AX Engine; see [AX Serving](AX-SERVING.md).
 
 ## Installation
 
-### Match this guide
+### Install the macOS app
+
+The recommended end-user path installs **AX Engine.app and its bundled native
+runtime** on Apple Silicon (M2 or newer), macOS 26.2 or later. Quit AX Engine,
+then run:
+
+```bash
+curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
+```
+
+Open AX Engine from Applications, download a suitable model from Models → Catalog,
+and use the server controls or streaming chat. Homebrew, Python and Xcode are
+not required; public model downloads do not require a Hugging Face account.
+Models are downloaded separately and must fit the Mac's memory and disk.
+
+Run the same command again to upgrade after quitting the app. Models, settings
+and conversations are preserved. The installer verifies release signatures,
+Apple identity and Gatekeeper, stages replacement and restores the previous app
+on failure. Automatic app updates remain future work.
+
+Use `bash -s -- --verify-only` in place of `bash` to verify without installing,
+or `bash -s -- --applications-dir "$HOME/Applications"` to use an existing
+user-writable Applications directory. The app installer does not add global CLI
+commands to PATH. See the [app guide](MACOS-APP.md) for usage.
+
+### Advanced CLI and Python channels
 
 These instructions track the latest tagged `7.x` release. Homebrew, the
 standalone download, and the Python wheel are all supported on macOS Apple
@@ -76,7 +101,7 @@ Homebrew or Python package path.
 | --- | --- |
 | Run the CLI, server, or benchmark tools, and you use Homebrew | Homebrew |
 | Run the CLI and server without Homebrew or the Python SDK | Standalone download |
-| Use `import ax_engine`, LangChain helpers, or Python extras — or you have neither Homebrew nor Python | pip in a virtual environment (Python from python.org) |
+| Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment (Python from python.org) |
 | Develop AX Engine or test unreleased changes | Source build |
 
 All paths need **Apple Silicon (M2 or newer)** and **macOS 26 or newer**:
@@ -86,8 +111,8 @@ uname -m                 # must print: arm64
 sw_vers -productVersion  # must print 26.0 or higher
 ```
 
-Homebrew is optional. Start from the [README Quick Start](../README.md#quick-start)
-if you have neither Homebrew nor Python.
+Homebrew is optional. Start from the [macOS app installation](../README.md#install-ax-engine-for-macos)
+for the GUI with a bundled runtime. The CLI channels below do not install the GUI.
 
 The repository can move ahead of its released packages. Refresh the selected
 channel and compare it with the
