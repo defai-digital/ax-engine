@@ -113,10 +113,14 @@ pub(super) fn build_chat_generate_request(
     };
     let default_repetition_penalty =
         default_native_mlx_openai_repetition_penalty(live, req.temperature);
-    // DeepSeek thinking-mode defaults (proto has no thinking flag: apply only
-    // when temperature is already stochastic, so greedy requests stay greedy).
-    let deepseek_min_p =
-        (req.temperature > 0.0 && chat::is_deepseek_model(live.model_id.as_ref())).then_some(0.05);
+    // DeepSeek thinking-mode defaults, as on HTTP: native MLX and a model that
+    // thinks with the thinking-off render used here (proto has no thinking
+    // flag). Apply only when temperature is already stochastic, so greedy
+    // requests stay greedy.
+    let deepseek_min_p = (req.temperature > 0.0
+        && live.runtime_report.selected_backend == ax_engine_sdk::SelectedBackend::Mlx
+        && chat::is_deepseek_thinking_model(live.model_id.as_ref()))
+    .then_some(0.05);
     let sampling = GenerateSampling {
         temperature: req.temperature,
         top_p: 1.0,
