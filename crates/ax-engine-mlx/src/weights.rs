@@ -854,6 +854,10 @@ impl QuantizedWeight {
         if !self.matching_affine_quant(other) && !self.matching_mxfp4_quant(other) {
             return None;
         }
+        // The fused result carries no dense bias; keep biased pairs split.
+        if self.linear_bias.is_some() || other.linear_bias.is_some() {
+            return None;
+        }
         let a_shape = self.weight.shape();
         let b_shape = other.weight.shape();
         if a_shape.len() != 2 || b_shape.len() != 2 || a_shape[1] != b_shape[1] {
@@ -3145,6 +3149,13 @@ fn mtp_take_per_expert_qwen_moe(
                 bits = gate.bits;
                 group_size = gate.group_size;
                 mode = gate.mode.clone();
+                // The first expert's up/down must share gate's descriptor too.
+                if [&up, &down]
+                    .iter()
+                    .any(|w| w.bits != bits || w.group_size != group_size || w.mode != mode)
+                {
+                    return None;
+                }
             }
             Some(previous) if previous != expert_has_scales => return None,
             // Every expert must share the full descriptor, not just bits: the
