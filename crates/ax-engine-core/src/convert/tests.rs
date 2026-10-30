@@ -6168,6 +6168,15 @@ fn diffusion_gemma_canvas_size_zero_is_rejected() {
         "generation_config": {"max_denoise_steps": 48}
     });
     let parsed4 = super::parse_diffusion_config(&zero_scope, "diffusion_gemma");
+    let nested = serde_json::json!({
+        "model_type": "diffusion_gemma",
+        "canvas_size": 0,
+        "text_config": {"canvas_size": 256}
+    });
+    assert_eq!(
+        super::parse_diffusion_config(&nested, "diffusion_gemma").canvas_size,
+        Some(256)
+    );
     assert_eq!(parsed4.canvas_size, Some(256));
     assert_eq!(parsed4.max_denoise_steps, Some(48));
 

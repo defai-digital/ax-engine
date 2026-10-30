@@ -348,28 +348,31 @@ pub(crate) fn parse_diffusion_config(
 
     // Every u32 diffusion field treats 0 as "not specified", so a zero in one
     // scope must fall through to the next scope rather than end the lookup.
-    let get_u32 = |key: &str| -> Option<u32> {
-        diffusion
-            .get(key)
+    let positive = |value: Option<&serde_json::Value>| -> Option<u32> {
+        value
             .and_then(|v| v.as_u64())
             .and_then(u64_to_u32)
             .filter(|&v| v > 0)
+    };
+    let get_u32 = |key: &str| -> Option<u32> {
+        positive(diffusion.get(key))
+            .or_else(|| positive(config.get(key)))
             .or_else(|| {
-                arch_u64(config, model_type, key)
-                    .and_then(u64_to_u32)
-                    .filter(|&v| v > 0)
+                // `arch_u64` stops at a top-level zero; consult each nested
+                // architecture scope itself.
+                uses_text_config(model_type)
+                    .then(|| {
+                        ["text_config", "language_config", "llm_config"]
+                            .into_iter()
+                            .find_map(|scope| positive(config.get(scope)?.get(key)))
+                    })
+                    .flatten()
             })
     };
 
     // Helper for u32 fields that may also be under generation_config.
     let get_u32_gen = |key: &str| -> Option<u32> {
-        get_u32(key).or_else(|| {
-            generation_config
-                .and_then(|gc| gc.get(key))
-                .and_then(|v| v.as_u64())
-                .and_then(u64_to_u32)
-                .filter(|&v| v > 0)
-        })
+        get_u32(key).or_else(|| generation_config.and_then(|gc| positive(gc.get(key))))
     };
 
     // Helper for f32 fields that may also be under sampler_config or generation_config.
