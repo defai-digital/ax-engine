@@ -481,38 +481,49 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
 }
 
 /// Mirrors the runtime's `qwen4_exp::load_vision_tower` and
-/// `qwen3_vl::load_qwen3_vl_vision_weights`: the tower is listed in
-/// `model.safetensors.index.json` (not the manifest), its shards must exist,
-/// `config.json` must carry a Qwen-visual `model_type` and a `vision_config`,
-/// the core tower tensors must be present, and DeepStack fails closed. The
+/// `qwen3_vl::load_qwen3_vl_vision_weights` at the name level: the tower is
+/// listed in `model.safetensors.index.json` (not the manifest) under any of
+/// the `vision_tower.` / `visual.` / `model.visual.` spellings, every index
+/// entry must be a string, the tower shards must resolve inside the pack (or
+/// its own HF blob store), `config.json` must carry a Qwen-visual
+/// `model_type` and a complete numeric `vision_config`, every tensor implied
+/// by `depth` plus the merger must be listed, and DeepStack fails closed. The
 /// runtime degrades to text-only on any of these, so the probe must too.
+/// Tensor shapes and shard contents are only checked at load time.
 fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
-    const REQUIRED_TOWER_TENSORS: [&str; 3] = [
+    const VISUAL_PREFIXES: [&str; 3] = ["vision_tower.", "visual.", "model.visual."];
+    const VISION_CONFIG_KEYS: [&str; 10] = [
+        "depth",
+        "hidden_size",
+        "intermediate_size",
+        "out_hidden_size",
+        "num_heads",
+        "in_channels",
+        "patch_size",
+        "temporal_patch_size",
+        "spatial_merge_size",
+        "num_position_embeddings",
+    ];
+    const LAYER_TENSORS: [&str; 6] = [
+        "attn.qkv.weight",
+        "attn.proj.weight",
+        "norm1.weight",
+        "mlp.linear_fc1.weight",
+        "mlp.linear_fc2.weight",
+        "norm2.weight",
+    ];
+    const FIXED_TENSORS: [&str; 5] = [
         "patch_embed.proj.weight",
         "pos_embed.weight",
-        "blocks.0.attn.qkv.weight",
+        "merger.norm.weight",
+        "merger.linear_fc1.weight",
+        "merger.linear_fc2.weight",
     ];
     let read_json = |name: &str| {
         std::fs::read(artifacts_dir.join(name))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
     };
-    let Some(index) = read_json("model.safetensors.index.json") else {
-        return false;
-    };
-    let Some(weight_map) = index.get("weight_map").and_then(Value::as_object) else {
-        return false;
-    };
-    let tower_shards_present = REQUIRED_TOWER_TENSORS.iter().all(|suffix| {
-        ["vision_tower.", "visual.", "model.visual."]
-            .iter()
-            .filter_map(|prefix| weight_map.get(&format!("{prefix}{suffix}")))
-            .filter_map(Value::as_str)
-            .any(|file| artifacts_dir.join(file).is_file())
-    });
-    if !tower_shards_present {
-        return false;
-    }
     let Some(config) = read_json("config.json") else {
         return false;
     };
@@ -536,14 +547,89 @@ fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
                     | "qwen4_exp"
             )
         });
+    if !qwen_visual_model_type {
+        return false;
+    }
     let Some(vision_config) = config.get("vision_config").and_then(Value::as_object) else {
         return false;
     };
+    let config_number = |key: &str| {
+        vision_config
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    };
+    if !VISION_CONFIG_KEYS
+        .iter()
+        .all(|key| config_number(key).is_some())
+    {
+        return false;
+    }
     let deepstack = vision_config
         .get("deepstack_visual_indexes")
         .and_then(Value::as_array)
         .is_some_and(|indexes| !indexes.is_empty());
-    qwen_visual_model_type && !deepstack
+    if deepstack {
+        return false;
+    }
+    let Some(depth) = config_number("depth") else {
+        return false;
+    };
+    let Some(index) = read_json("model.safetensors.index.json") else {
+        return false;
+    };
+    let Some(weight_map) = index.get("weight_map").and_then(Value::as_object) else {
+        return false;
+    };
+    // The runtime's index reader rejects the whole index on any non-string
+    // entry, not only on tower entries.
+    if !weight_map.values().all(Value::is_string) {
+        return false;
+    }
+    let Ok(canonical_root) = artifacts_dir.canonicalize() else {
+        return false;
+    };
+    let shard_resolves = |suffix: &str| {
+        VISUAL_PREFIXES
+            .iter()
+            .filter_map(|prefix| weight_map.get(&format!("{prefix}{suffix}")))
+            .filter_map(Value::as_str)
+            .any(|file| shard_inside_pack(artifacts_dir, &canonical_root, file))
+    };
+    FIXED_TENSORS.iter().all(|suffix| shard_resolves(suffix))
+        && (0..depth).all(|layer| {
+            LAYER_TENSORS
+                .iter()
+                .all(|suffix| shard_resolves(&format!("blocks.{layer}.{suffix}")))
+        })
+}
+
+/// Same containment rule as the runtime's `artifact_path::resolve_file`: a
+/// shard resolves inside the pack, or, for a Hugging Face cache snapshot,
+/// into that repository's own `blobs/` directory.
+fn shard_inside_pack(
+    artifacts_dir: &std::path::Path,
+    canonical_root: &std::path::Path,
+    file: &str,
+) -> bool {
+    let Ok(canonical) = artifacts_dir.join(file).canonicalize() else {
+        return false;
+    };
+    if !canonical.is_file() {
+        return false;
+    }
+    if canonical.starts_with(canonical_root) {
+        return true;
+    }
+    let Some(snapshots) = canonical_root.parent() else {
+        return false;
+    };
+    snapshots
+        .file_name()
+        .is_some_and(|name| name == "snapshots")
+        && snapshots
+            .parent()
+            .is_some_and(|repo| canonical.parent() == Some(repo.join("blobs").as_path()))
 }
 
 fn family_from_manifest(manifest: &Value) -> Option<String> {
@@ -720,24 +806,58 @@ pub(crate) fn json_constrained_decoding_enabled() -> bool {
 #[allow(clippy::expect_used)]
 mod qwen4_exp_vision_tower_tests {
     use super::qwen4_exp_vision_tower_loadable;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     const SHARD: &str = "model-00001.safetensors";
 
-    fn tower_map() -> serde_json::Value {
+    fn tower_map(prefix: &str, depth: usize) -> Value {
+        let mut names = vec![
+            "patch_embed.proj.weight".to_string(),
+            "pos_embed.weight".to_string(),
+            "merger.norm.weight".to_string(),
+            "merger.linear_fc1.weight".to_string(),
+            "merger.linear_fc2.weight".to_string(),
+        ];
+        for layer in 0..depth {
+            for suffix in [
+                "attn.qkv.weight",
+                "attn.proj.weight",
+                "norm1.weight",
+                "mlp.linear_fc1.weight",
+                "mlp.linear_fc2.weight",
+                "norm2.weight",
+            ] {
+                names.push(format!("blocks.{layer}.{suffix}"));
+            }
+        }
+        Value::Object(
+            names
+                .into_iter()
+                .map(|name| (format!("{prefix}{name}"), json!(SHARD)))
+                .collect(),
+        )
+    }
+
+    fn config(depth: usize, deepstack: Value) -> Value {
         json!({
-            "vision_tower.patch_embed.proj.weight": SHARD,
-            "vision_tower.pos_embed.weight": SHARD,
-            "vision_tower.blocks.0.attn.qkv.weight": SHARD,
+            "model_type": "qwen4_exp",
+            "vision_config": {
+                "depth": depth,
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "out_hidden_size": 64,
+                "num_heads": 4,
+                "in_channels": 3,
+                "patch_size": 16,
+                "temporal_patch_size": 2,
+                "spatial_merge_size": 2,
+                "num_position_embeddings": 64,
+                "deepstack_visual_indexes": deepstack,
+            },
         })
     }
 
-    fn pack(
-        label: &str,
-        weight_map: serde_json::Value,
-        config: serde_json::Value,
-        write_shard: bool,
-    ) -> std::path::PathBuf {
+    fn loadable(label: &str, weight_map: Value, config: Value, write_shard: bool) -> bool {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
@@ -758,75 +878,83 @@ mod qwen4_exp_vision_tower_tests {
         if write_shard {
             std::fs::write(dir.join(SHARD), b"").expect("write shard");
         }
-        dir
-    }
-
-    fn loadable(
-        label: &str,
-        weight_map: serde_json::Value,
-        config: serde_json::Value,
-        write_shard: bool,
-    ) -> bool {
-        let dir = pack(label, weight_map, config, write_shard);
         let result = qwen4_exp_vision_tower_loadable(&dir);
         let _ = std::fs::remove_dir_all(dir);
         result
     }
 
-    fn config(deepstack: serde_json::Value) -> serde_json::Value {
-        json!({
-            "model_type": "qwen4_exp",
-            "vision_config": { "deepstack_visual_indexes": deepstack },
-        })
-    }
-
     #[test]
     fn complete_tower_without_deepstack_is_loadable() {
-        assert!(loadable("ok", tower_map(), config(json!([])), true));
-    }
-
-    #[test]
-    fn published_hf_visual_prefix_is_loadable() {
-        let map = json!({
-            "model.visual.patch_embed.proj.weight": SHARD,
-            "model.visual.pos_embed.weight": SHARD,
-            "model.visual.blocks.0.attn.qkv.weight": SHARD,
-        });
-        assert!(loadable("hf", map, config(json!([])), true));
+        for prefix in ["vision_tower.", "visual.", "model.visual."] {
+            assert!(
+                loadable("ok", tower_map(prefix, 2), config(2, json!([])), true),
+                "{prefix}"
+            );
+        }
     }
 
     #[test]
     fn incomplete_or_unloadable_towers_are_not_loadable() {
+        let complete = || tower_map("vision_tower.", 2);
         assert!(!loadable(
             "none",
             json!({ "model.layers.0.mlp.weight": SHARD }),
-            config(json!([])),
+            config(2, json!([])),
             true,
         ));
+        // depth 3 needs blocks.2.* which the map does not list.
+        assert!(!loadable("short", complete(), config(3, json!([])), true));
+        let mut no_merger = complete();
+        no_merger
+            .as_object_mut()
+            .expect("map")
+            .remove("vision_tower.merger.linear_fc2.weight");
         assert!(!loadable(
-            "partial",
-            json!({ "vision_tower.blocks.0.attn.qkv.weight": SHARD }),
-            config(json!([])),
-            true,
-        ));
-        assert!(!loadable("no-shard", tower_map(), config(json!([])), false));
-        assert!(!loadable(
-            "deepstack",
-            tower_map(),
-            config(json!([5, 11])),
+            "no-merger",
+            no_merger,
+            config(2, json!([])),
             true
         ));
+        let mut non_string = complete();
+        non_string
+            .as_object_mut()
+            .expect("map")
+            .insert("model.norm.weight".into(), json!(1));
         assert!(!loadable(
-            "model-type",
-            tower_map(),
-            json!({ "model_type": "llama", "vision_config": {} }),
-            true,
+            "non-string",
+            non_string,
+            config(2, json!([])),
+            true
+        ));
+        let escaping = Value::Object(
+            complete()
+                .as_object()
+                .expect("map")
+                .keys()
+                .map(|name| (name.clone(), json!("../outside.safetensors")))
+                .collect(),
+        );
+        assert!(!loadable("escape", escaping, config(2, json!([])), true));
+        assert!(!loadable(
+            "no-shard",
+            complete(),
+            config(2, json!([])),
+            false
         ));
         assert!(!loadable(
-            "no-vision-config",
-            tower_map(),
-            json!({ "model_type": "qwen4_exp" }),
-            true,
+            "deepstack",
+            complete(),
+            config(2, json!([5, 11])),
+            true
         ));
+        let mut llama = config(2, json!([]));
+        llama["model_type"] = json!("llama");
+        assert!(!loadable("model-type", complete(), llama, true));
+        let mut missing_field = config(2, json!([]));
+        missing_field["vision_config"]
+            .as_object_mut()
+            .expect("vision config")
+            .remove("num_position_embeddings");
+        assert!(!loadable("no-field", complete(), missing_field, true));
     }
 }
