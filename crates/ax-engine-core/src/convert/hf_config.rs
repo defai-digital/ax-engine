@@ -346,12 +346,19 @@ pub(crate) fn parse_diffusion_config(
     let top_level_sampler_config = config.get("sampler_config");
     let generation_sampler_config = generation_config.and_then(|gc| gc.get("sampler_config"));
 
+    // Every u32 diffusion field treats 0 as "not specified", so a zero in one
+    // scope must fall through to the next scope rather than end the lookup.
     let get_u32 = |key: &str| -> Option<u32> {
         diffusion
             .get(key)
             .and_then(|v| v.as_u64())
             .and_then(u64_to_u32)
-            .or_else(|| arch_u64(config, model_type, key).and_then(u64_to_u32))
+            .filter(|&v| v > 0)
+            .or_else(|| {
+                arch_u64(config, model_type, key)
+                    .and_then(u64_to_u32)
+                    .filter(|&v| v > 0)
+            })
     };
 
     // Helper for u32 fields that may also be under generation_config.
@@ -361,6 +368,7 @@ pub(crate) fn parse_diffusion_config(
                 .and_then(|gc| gc.get(key))
                 .and_then(|v| v.as_u64())
                 .and_then(u64_to_u32)
+                .filter(|&v| v > 0)
         })
     };
 
@@ -695,29 +703,27 @@ pub(crate) fn deepseek_v4_config(
         return NativeDeepseekV4Config::default();
     }
 
-    let compress_ratios = config
+    // AXQuant/mlx-lm configs append one ratio per nextn (MTP) predictor
+    // layer after the main layers; the manifest records main-layer ratios
+    // only and the contract enforces exactly `layer_count` entries.
+    let layer_count = arch_u64(config, model_type, "num_hidden_layers")
+        .and_then(u64_to_u32)
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(usize::MAX);
+    let compress_ratios: Vec<u32> = config
         .get("compress_ratios")
         .and_then(|v| v.as_array())
         .map(|arr| {
-            // Ratios are positional: a malformed entry must not shift later
-            // layers, so it empties the list and fails the length validation.
+            // Ratios are positional: a malformed main-layer entry must not
+            // shift later layers, so it empties the list and fails the length
+            // validation. Discarded nextn entries are not parsed.
             arr.iter()
+                .take(layer_count)
                 .map(|v| v.as_u64().and_then(u64_to_u32))
                 .collect::<Option<Vec<_>>>()
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-
-    // AXQuant/mlx-lm configs append one ratio per nextn (MTP) predictor
-    // layer after the main layers; the manifest records main-layer ratios
-    // only and the contract enforces exactly `layer_count` entries.
-    let mut compress_ratios: Vec<u32> = compress_ratios;
-    if let Some(layer_count) = arch_u64(config, model_type, "num_hidden_layers")
-        .and_then(u64_to_u32)
-        .and_then(|count| usize::try_from(count).ok())
-    {
-        compress_ratios.truncate(layer_count);
-    }
 
     NativeDeepseekV4Config {
         attention: NativeDeepseekV4AttentionConfig {

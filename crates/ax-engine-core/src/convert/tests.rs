@@ -5001,6 +5001,13 @@ fn deepseek_v4_config_rejects_malformed_compress_ratio_instead_of_shifting() {
     );
     let parsed = deepseek_v4_config(&config, "deepseek_v4");
     assert!(parsed.compress_ratios.is_empty());
+    // A malformed discarded nextn entry does not reject the main layers.
+    config.as_object_mut().expect("config object").insert(
+        "compress_ratios".to_string(),
+        serde_json::json!([4, 128, 0, "x"]),
+    );
+    let parsed = deepseek_v4_config(&config, "deepseek_v4");
+    assert_eq!(parsed.compress_ratios, vec![4, 128, 0]);
 }
 
 #[test]
@@ -6153,6 +6160,16 @@ fn diffusion_gemma_canvas_size_zero_is_rejected() {
     assert_eq!(parsed3.canvas_size, Some(256));
     assert_eq!(parsed3.max_denoise_steps, Some(48));
     assert_eq!(parsed3.convergence_steps, Some(3));
+    let zero_scope = serde_json::json!({
+        "model_type": "diffusion_gemma",
+        "diffusion_config": {"canvas_size": 0},
+        "canvas_size": 256,
+        "max_denoise_steps": 0,
+        "generation_config": {"max_denoise_steps": 48}
+    });
+    let parsed4 = super::parse_diffusion_config(&zero_scope, "diffusion_gemma");
+    assert_eq!(parsed4.canvas_size, Some(256));
+    assert_eq!(parsed4.max_denoise_steps, Some(48));
 
     // Verify that a valid canvas_size is preserved.
     let config_with_valid = serde_json::json!({
