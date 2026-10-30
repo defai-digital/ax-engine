@@ -614,6 +614,18 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 .to_string(),
         ));
     }
+    if live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && native_family == Some("qwen4_exp")
+        && !crate::metadata::model_supports_image(live)
+        && messages_contain_inline_media(&request.messages)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "Flash Next image input needs a loadable vision tower; this pack has none the runtime can load"
+                .to_string(),
+        ));
+    }
     let streaming_reasoning_supported = live.runtime_report.selected_backend
         == SelectedBackend::Mlx
         && matches!(

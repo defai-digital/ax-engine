@@ -327,6 +327,7 @@ fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool 
         // DiffusionGemma renders with the Gemma 4 template but never prefills
         // a thought channel, so it must not advertise reasoning.
         && !chat::is_diffusion_gemma(live.model_id.as_ref())
+        && family.as_deref() != Some("diffusion_gemma")
         && (chat::is_qwen_thinking_model(live.model_id.as_ref())
             || chat::is_deepseek_model(live.model_id.as_ref())
             // Hybrid-thinking Qwen families keep the contract under any id.
@@ -378,6 +379,20 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
     let Some(artifacts_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return NativeProcessedMultimodalSupport::default();
     };
+    // The loaded runtime identity wins, as in the Flash Next request gates:
+    // an auto-converted snapshot need not persist a manifest, and the tower
+    // is read from the safetensors index, not the manifest.
+    let runtime_family = live
+        .runtime_report
+        .mlx_model
+        .as_ref()
+        .map(|model| model.model_family.as_str());
+    if runtime_family == Some("qwen4_exp") {
+        return NativeProcessedMultimodalSupport {
+            image: qwen4_exp_vision_enabled() && qwen4_exp_vision_tower_loadable(artifacts_dir),
+            ..NativeProcessedMultimodalSupport::default()
+        };
+    }
     let manifest_path = artifacts_dir.join("model-manifest.json");
     let Ok(manifest_bytes) = std::fs::read(manifest_path) else {
         return NativeProcessedMultimodalSupport::default();
@@ -473,9 +488,9 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
 /// runtime degrades to text-only on any of these, so the probe must too.
 fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
     const REQUIRED_TOWER_TENSORS: [&str; 3] = [
-        "vision_tower.patch_embed.proj.weight",
-        "vision_tower.pos_embed.weight",
-        "vision_tower.blocks.0.attn.qkv.weight",
+        "patch_embed.proj.weight",
+        "pos_embed.weight",
+        "blocks.0.attn.qkv.weight",
     ];
     let read_json = |name: &str| {
         std::fs::read(artifacts_dir.join(name))
@@ -488,11 +503,12 @@ fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
     let Some(weight_map) = index.get("weight_map").and_then(Value::as_object) else {
         return false;
     };
-    let tower_shards_present = REQUIRED_TOWER_TENSORS.iter().all(|name| {
-        weight_map
-            .get(*name)
-            .and_then(Value::as_str)
-            .is_some_and(|file| artifacts_dir.join(file).is_file())
+    let tower_shards_present = REQUIRED_TOWER_TENSORS.iter().all(|suffix| {
+        ["vision_tower.", "visual.", "model.visual."]
+            .iter()
+            .filter_map(|prefix| weight_map.get(&format!("{prefix}{suffix}")))
+            .filter_map(Value::as_str)
+            .any(|file| artifacts_dir.join(file).is_file())
     });
     if !tower_shards_present {
         return false;
@@ -767,6 +783,16 @@ mod qwen4_exp_vision_tower_tests {
     #[test]
     fn complete_tower_without_deepstack_is_loadable() {
         assert!(loadable("ok", tower_map(), config(json!([])), true));
+    }
+
+    #[test]
+    fn published_hf_visual_prefix_is_loadable() {
+        let map = json!({
+            "model.visual.patch_embed.proj.weight": SHARD,
+            "model.visual.pos_embed.weight": SHARD,
+            "model.visual.blocks.0.attn.qkv.weight": SHARD,
+        });
+        assert!(loadable("hf", map, config(json!([])), true));
     }
 
     #[test]
