@@ -49,6 +49,8 @@ manifest must be regenerated. Unsupported sparse configurations, incomplete
 experts, protected router quantization and conflicting marker ids fail closed.
 Inline chat image parts are not accepted; use the prepared native request.
 
+The [test report](UNLIMITED-OCR-2-TEST-REPORT.md) records the synthetic controls
+and official-sample quality probes, including scoring methods and limits.
 The [functional evidence](../benchmarks/unlimited-ocr2-mxfp8-20261029/README.md)
 covers the exact pack on MacBook Pro M5 Max 128 GB with MLX 0.32.4. The
 controls check complete synthetic OCR text, page count and identical output
