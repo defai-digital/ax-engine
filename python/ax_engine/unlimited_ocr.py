@@ -162,6 +162,21 @@ def _validate_input_tokens(input_tokens: list[int]) -> list[int]:
     return list(input_tokens)
 
 
+def _same_json_value(first: Any, second: Any) -> bool:
+    # JSON booleans and number representations must match the native Value comparison.
+    if type(first) is not type(second):
+        return False
+    if isinstance(first, dict):
+        return first.keys() == second.keys() and all(
+            _same_json_value(value, second[key]) for key, value in first.items()
+        )
+    if isinstance(first, list):
+        return len(first) == len(second) and all(
+            _same_json_value(left, right) for left, right in zip(first, second, strict=True)
+        )
+    return bool(first == second)
+
+
 def _sparse_attention_config(config: dict[str, Any]) -> object:
     # Same scopes and conflict rule as the native OCR-2 config contract.
     found = [
@@ -169,7 +184,7 @@ def _sparse_attention_config(config: dict[str, Any]) -> object:
         for scope in (config, config.get("language_config"), config.get("text_config"))
         if isinstance(scope, dict) and scope.get("sparse_attention_config") is not None
     ]
-    if any(other != found[0] for other in found[1:]):
+    if any(not _same_json_value(other, found[0]) for other in found[1:]):
         raise ValueError("Unlimited-OCR config has conflicting sparse attention scopes")
     return found[0] if found else None
 
