@@ -1,0 +1,238 @@
+{
+ "schema": "ax.ocr_quality_probe.v1",
+ "test_date": "2026-10-31",
+ "report_date": "2026-10-31",
+ "host": "MacBook Pro M5 Max 128 GB",
+ "os": "27.0.1",
+ "storage": "internal SSD",
+ "engine_commit": "b4a283e9eface0aea509df5a5a946aa57d822ba9",
+ "model_id": "AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8",
+ "model_revision": "462c40bb4f2c7eeb3e1230e912940efcbdefc8a3",
+ "mlx": "0.32.4",
+ "rapidfuzz": "3.14.6",
+ "extension_sha256": "d9cdb5650bdde685152414c1e7a20c6263936122440c299ac9b4e6126ec8259e",
+ "inputs": {
+  "dataset": "baidu/MarathonDocBench",
+  "dataset_revision": "fa05fccbe82ee6ec628006a1d58bb153954c3ee3",
+  "annotations_source_sha256": "7db0e659c76661ce87d4e1b3d47e010edbd48adfb446e3e2ee37260c60adf51c",
+  "demo_revision": "78c27d176793811cf8b5e74b62ceb04dd773c29a",
+  "demo_sha256": "06ef344113ea3a4c5f22d89cf6751bb3969890100b9845cbb406aaa291d6a6c1"
+ },
+ "selection_method": "First eligible page per document in lexicographic doc/page order; >=300 letters, >=99.5% ASCII letters, 700..6000 GT characters, text_block present, no code/table/formula categories; four distinct documents; selected before inference",
+ "generation": {
+  "temperature": 0.0,
+  "max_output_tokens": 4096,
+  "no_repeat_ngram_size": 35,
+  "ngram_window": 128
+ },
+ "normalization": [
+  "extract FORK bodies",
+  "HTML table to visible text",
+  "remove Markdown heading markers",
+  "Unicode NFKC",
+  "case folding",
+  "collapse whitespace",
+  "preserve punctuation"
+ ],
+ "cases": [
+  {
+   "name": "official-demo-base",
+   "reference_type": "Manual visual transcription from the pinned official demo image; not an upstream ground-truth annotation",
+   "status": "finished",
+   "finish_reason": "stop",
+   "elapsed_seconds": 2.7865830829832703,
+   "prompt_tokens": 279,
+   "output_token_count": 335,
+   "image_sha256": "06ef344113ea3a4c5f22d89cf6751bb3969890100b9845cbb406aaa291d6a6c1",
+   "output_pages": 1,
+   "truncated": false,
+   "metrics": {
+    "reference_characters": 686,
+    "predicted_characters": 686,
+    "character_edits": 0,
+    "cer": 0.0,
+    "word_edits": 0,
+    "reference_words": 110,
+    "wer": 0.0,
+    "unordered_token_f1": 1.0
+   },
+   "sensitivity": {
+    "alphanumeric_only_cer": 0.0,
+    "deleted_punctuation": 0,
+    "deleted_letters_digits": 0,
+    "substitutions": 0,
+    "insertions": 0
+   },
+   "table": {
+    "reference_cell_count": 12,
+    "predicted_cell_count": 12,
+    "matched_cells_in_order": 12,
+    "exact": true
+   }
+  },
+  {
+   "name": "official-demo-tiles",
+   "reference_type": "Manual visual transcription from the pinned official demo image; not an upstream ground-truth annotation",
+   "status": "finished",
+   "finish_reason": "stop",
+   "elapsed_seconds": 4.437311457935721,
+   "prompt_tokens": 909,
+   "output_token_count": 335,
+   "image_sha256": "06ef344113ea3a4c5f22d89cf6751bb3969890100b9845cbb406aaa291d6a6c1",
+   "output_pages": 1,
+   "truncated": false,
+   "metrics": {
+    "reference_characters": 686,
+    "predicted_characters": 686,
+    "character_edits": 0,
+    "cer": 0.0,
+    "word_edits": 0,
+    "reference_words": 110,
+    "wer": 0.0,
+    "unordered_token_f1": 1.0
+   },
+   "sensitivity": {
+    "alphanumeric_only_cer": 0.0,
+    "deleted_punctuation": 0,
+    "deleted_letters_digits": 0,
+    "substitutions": 0,
+    "insertions": 0
+   },
+   "table": {
+    "reference_cell_count": 12,
+    "predicted_cell_count": 12,
+    "matched_cells_in_order": 12,
+    "exact": true
+   }
+  },
+  {
+   "name": "mp3lan_0116-p3-tiles",
+   "reference_type": "Pinned official MarathonDocBench annotation",
+   "status": "finished",
+   "finish_reason": "stop",
+   "elapsed_seconds": 7.326991209061816,
+   "prompt_tokens": 1519,
+   "output_token_count": 398,
+   "image_sha256": "e87da6e764777774d850773230f37a3b6e1a70a74e26e49d679d182ac02faed2",
+   "output_pages": 1,
+   "truncated": false,
+   "metrics": {
+    "reference_characters": 877,
+    "predicted_characters": 766,
+    "character_edits": 111,
+    "cer": 0.1265678449258837,
+    "word_edits": 24,
+    "reference_words": 140,
+    "wer": 0.17142857142857143,
+    "unordered_token_f1": 0.99644128113879
+   },
+   "sensitivity": {
+    "alphanumeric_only_cer": 0.004885993485342019,
+    "deleted_punctuation": 92,
+    "deleted_letters_digits": 3,
+    "substitutions": 0,
+    "insertions": 0
+   }
+  },
+  {
+   "name": "mp3lan_0117-p1-tiles",
+   "reference_type": "Pinned official MarathonDocBench annotation",
+   "status": "finished",
+   "finish_reason": "stop",
+   "elapsed_seconds": 13.193923083133996,
+   "prompt_tokens": 1519,
+   "output_token_count": 687,
+   "image_sha256": "7c3078f5bda73911f0b5c3973e79c969534b3d551a627d3e2ef92dd864bb6495",
+   "output_pages": 1,
+   "truncated": false,
+   "metrics": {
+    "reference_characters": 2268,
+    "predicted_characters": 2135,
+    "character_edits": 169,
+    "cer": 0.07451499118165784,
+    "word_edits": 12,
+    "reference_words": 303,
+    "wer": 0.039603960396039604,
+    "unordered_token_f1": 0.9900990099009901
+   },
+   "sensitivity": {
+    "alphanumeric_only_cer": 0.0152046783625731,
+    "deleted_punctuation": 133,
+    "deleted_letters_digits": 0,
+    "substitutions": 32,
+    "insertions": 2
+   }
+  },
+  {
+   "name": "mp3lan_0118-p1-tiles",
+   "reference_type": "Pinned official MarathonDocBench annotation",
+   "status": "finished",
+   "finish_reason": "stop",
+   "elapsed_seconds": 10.020133833168074,
+   "prompt_tokens": 1519,
+   "output_token_count": 537,
+   "image_sha256": "bb445be9cfde41460d8fd8f5990463d02c2ab3af45516690668fabc89d87d64e",
+   "output_pages": 1,
+   "truncated": false,
+   "metrics": {
+    "reference_characters": 1968,
+    "predicted_characters": 2006,
+    "character_edits": 42,
+    "cer": 0.021341463414634148,
+    "word_edits": 13,
+    "reference_words": 276,
+    "wer": 0.04710144927536232,
+    "unordered_token_f1": 0.9824561403508771
+   },
+   "sensitivity": {
+    "alphanumeric_only_cer": 0.01712538226299694,
+    "deleted_punctuation": 0,
+    "deleted_letters_digits": 1,
+    "substitutions": 2,
+    "insertions": 39
+   }
+  },
+  {
+   "name": "mp3lan_0128-p6-tiles",
+   "reference_type": "Pinned official MarathonDocBench annotation",
+   "status": "finished",
+   "finish_reason": "stop",
+   "elapsed_seconds": 15.50632504094392,
+   "prompt_tokens": 1829,
+   "output_token_count": 725,
+   "image_sha256": "960818a338d0ce3d083c2d8cc5347276bc3e03cc5df6f294c299720f0406a2d5",
+   "output_pages": 1,
+   "truncated": false,
+   "metrics": {
+    "reference_characters": 2111,
+    "predicted_characters": 2111,
+    "character_edits": 2,
+    "cer": 0.0009474182851729038,
+    "word_edits": 2,
+    "reference_words": 325,
+    "wer": 0.006153846153846154,
+    "unordered_token_f1": 1.0
+   },
+   "sensitivity": {
+    "alphanumeric_only_cer": 0.0,
+    "deleted_punctuation": 0,
+    "deleted_letters_digits": 0,
+    "substitutions": 2,
+    "insertions": 0
+   }
+  }
+ ],
+ "dataset_aggregate": {
+  "pages": 4,
+  "character_edits": 324,
+  "reference_characters": 7224,
+  "word_edits": 51,
+  "reference_words": 1044,
+  "micro_cer": 0.044850498338870434,
+  "micro_wer": 0.04885057471264368
+ },
+ "sensitivity_note": "Post-hoc alphanumeric-only CER is a formatting sensitivity check, not a replacement for the predeclared primary CER.",
+ "limits": "English plain-text subset selected before inference. Demo uses manual visual reference. Custom normalized CER/WER/token-F1; not the official eight-metric evaluation, not a full document or leaderboard result. No full-model BF16 baseline.",
+ "data_handling": "Metrics and input hashes only. Source images, document transcriptions and model OCR bodies are retained locally and are not redistributed in this receipt.",
+ "previous_receipt": "../unlimited-ocr2-official-samples-20261029/metrics.json"
+}
