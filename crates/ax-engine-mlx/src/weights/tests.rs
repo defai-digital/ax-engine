@@ -558,6 +558,24 @@ fn mlx_layout_conv1d_is_accepted() {
 }
 
 #[test]
+fn extra_mtp_layers_are_detected_and_layer_zero_alone_is_not() {
+    let tensor = || zeros(&[1], MlxDtype::Float32, None);
+    let mut map = HashMap::from([
+        ("mtp.fc.weight".to_string(), tensor()),
+        ("mtp.layers.0.input_layernorm.weight".to_string(), tensor()),
+        ("layers.1.input_layernorm.weight".to_string(), tensor()),
+    ]);
+    assert_eq!(extra_mtp_layer_tensor(&map), None);
+
+    map.insert("mtp.layers.10.mlp.up_proj.weight".to_string(), tensor());
+    map.insert("mtp.layers.1.input_layernorm.weight".to_string(), tensor());
+    assert_eq!(
+        extra_mtp_layer_tensor(&map).as_deref(),
+        Some("mtp.layers.1.input_layernorm.weight")
+    );
+}
+
+#[test]
 fn normalize_f32_pack_casts_only_f32_for_qwen_class() {
     let mut map = HashMap::new();
     map.insert(

@@ -4336,6 +4336,19 @@ fn shift_mtp_norm(w: MlxArray) -> MlxArray {
     astype(&corrected, w.dtype(), None)
 }
 
+/// The first (sorted) tensor of an MTP layer other than `mtp.layers.0`.
+fn extra_mtp_layer_tensor(name_map: &HashMap<String, MlxArray>) -> Option<String> {
+    name_map
+        .keys()
+        .filter(|name| {
+            name.strip_prefix("mtp.layers.")
+                .and_then(|rest| rest.split_once('.'))
+                .is_some_and(|(index, _)| index != "0")
+        })
+        .min()
+        .cloned()
+}
+
 /// Try to load MTP weights from `mtp.*` keys in `name_map`.
 ///
 /// Returns `None` when no MTP keys are found, allowing graceful fallback to
@@ -4350,6 +4363,18 @@ fn load_mtp(
     norm_layout: MtpNormLayout,
 ) -> Option<MtpWeights> {
     if max_depth == 0 {
+        return None;
+    }
+    // This head applies `mtp.layers.0` recurrently at every draft depth. A
+    // multi-layer MTP pack (one layer per depth) would load and silently
+    // reuse layer 0 for later depths, collapsing acceptance, so decline MTP
+    // rather than run the wrong layers.
+    if let Some(tensor) = extra_mtp_layer_tensor(name_map) {
+        tracing::warn!(
+            target: "ax_mlx::weights",
+            tensor = tensor.as_str(),
+            "multi-layer MTP heads are not supported; MTP is disabled for this pack"
+        );
         return None;
     }
 
