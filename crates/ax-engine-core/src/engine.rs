@@ -28,8 +28,9 @@ use crate::runner::{
     RunnerRequestMultimodalInput, RunnerRequestPrefillHints,
 };
 use crate::sampling::{
-    DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
-    recent_repetition_tokens, sampling_params_allow_deterministic_argmax_fast_path,
+    DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, TokenSampler,
+    presence_frequency_penalty_active, recent_repetition_tokens,
+    sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
@@ -45,6 +46,27 @@ fn validation_enabled() -> bool {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
+}
+
+fn sampler_recent_tokens(
+    params: &SamplingParams,
+    prompt_tokens: &[u32],
+    generated_tokens: &[u32],
+) -> Vec<u32> {
+    if params.repetition_penalty == 1.0
+        && params.no_repeat_ngram_size == 0
+        && !presence_frequency_penalty_active(params.presence_penalty, params.frequency_penalty)
+    {
+        return Vec::new();
+    }
+    let context_size = if params.repetition_penalty != 1.0 {
+        params
+            .repetition_context_size
+            .map(|size| size.max(params.ngram_window))
+    } else {
+        Some(params.ngram_window)
+    };
+    recent_repetition_tokens(prompt_tokens, generated_tokens, context_size)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1698,25 +1720,11 @@ impl EngineCore {
                 request_id,
                 previous_token,
                 logits,
-                recent_tokens: if record.sampling_params.repetition_penalty == 1.0
-                    && record.sampling_params.no_repeat_ngram_size == 0
-                {
-                    Vec::new()
-                } else {
-                    let context_size = if record.sampling_params.repetition_penalty != 1.0 {
-                        record
-                            .sampling_params
-                            .repetition_context_size
-                            .map(|size| size.max(record.sampling_params.ngram_window))
-                    } else {
-                        Some(record.sampling_params.ngram_window)
-                    };
-                    recent_repetition_tokens(
-                        &record.prompt_tokens,
-                        &record.generated_tokens,
-                        context_size,
-                    )
-                },
+                recent_tokens: sampler_recent_tokens(
+                    &record.sampling_params,
+                    &record.prompt_tokens,
+                    &record.generated_tokens,
+                ),
                 generated_len: record.generated_tokens.len() as u32,
                 max_output_tokens: record.max_output_tokens,
                 sampling_params: record.sampling_params.clone(),
@@ -4100,6 +4108,28 @@ mod tests {
             "failure must name the cause, got {:?}",
             snapshot.last_error
         );
+    }
+
+    #[test]
+    fn sampler_history_is_retained_for_presence_and_frequency_penalties() {
+        let prompt = [1, 2];
+        let generated = [3, 4];
+        assert!(
+            sampler_recent_tokens(&SamplingParams::default(), &prompt, &generated).is_empty(),
+            "the default argmax path does not need token history"
+        );
+        for (presence_penalty, frequency_penalty) in [(1.0, 0.0), (0.0, 1.0)] {
+            let params = SamplingParams {
+                presence_penalty,
+                frequency_penalty,
+                ..SamplingParams::default()
+            };
+            assert_eq!(
+                sampler_recent_tokens(&params, &prompt, &generated),
+                vec![1, 2, 3, 4],
+                "the sampler needs generated-token history to apply its penalties"
+            );
+        }
     }
 
     #[test]

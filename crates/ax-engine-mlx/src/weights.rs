@@ -1301,6 +1301,26 @@ pub fn mmap_weights_enabled() -> bool {
     mmap_weights_env_value_enabled(value.as_deref())
 }
 
+fn merge_weight_file_tensors(
+    name_map: &mut HashMap<String, MlxArray>,
+    source_files: &mut HashMap<String, PathBuf>,
+    path: &Path,
+    tensors: HashMap<String, MlxArray>,
+) -> Result<(), WeightLoadError> {
+    for (name, tensor) in tensors {
+        if let Some(previous_path) = source_files.get(&name) {
+            return Err(WeightLoadError::DuplicateTensor(format!(
+                "{name} appears in {} and {}",
+                previous_path.display(),
+                path.display()
+            )));
+        }
+        source_files.insert(name.clone(), path.to_path_buf());
+        name_map.insert(name, tensor);
+    }
+    Ok(())
+}
+
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
     load_weights_with_session_budget(artifacts, None)
 }
@@ -1457,10 +1477,12 @@ pub(crate) fn load_weights_with_session_budget(
         }
     }
 
-    // Merge all tensors from all files into one flat map.
+    // Merge all tensors from all files into one flat map. Safetensors shards
+    // must partition names; accepting duplicates would select a random value.
     let mut name_map: HashMap<String, MlxArray> = HashMap::new();
-    for tensors in file_cache.into_values() {
-        name_map.extend(tensors);
+    let mut source_files = HashMap::new();
+    for (path, tensors) in file_cache {
+        merge_weight_file_tensors(&mut name_map, &mut source_files, &path, tensors)?;
     }
 
     // AXQuant protected vision sidecar: when the quantizer extracted the
@@ -1500,12 +1522,17 @@ pub(crate) fn load_weights_with_session_budget(
         &name_map,
     );
     match effective_sanitize {
-        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true, true),
+        WeightSanitize::HfToMlx => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, true, true, true)
+        }
         WeightSanitize::HfNormOnly => {
-            apply_hf_sanitize_transforms(specs, &mut name_map, false, true)
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, true, true)
+        }
+        WeightSanitize::HfConvOnly => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, true, false, false)
         }
         WeightSanitize::HfLayerNormsOnly => {
-            apply_hf_sanitize_transforms(specs, &mut name_map, false, false)
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, true, false)
         }
         WeightSanitize::None => {}
         WeightSanitize::Folded => return Err(folded_weight_sanitize_unsupported()),
@@ -2408,6 +2435,7 @@ pub fn load_pipeline_stage_weights(
     let root = artifacts.root_dir();
     let use_mmap = mmap_weights_enabled();
     let mut name_map = HashMap::<String, MlxArray>::new();
+    let mut source_files = HashMap::new();
     for relative in selected_files {
         let path = root.join(&relative);
         let tensors = if use_mmap {
@@ -2420,7 +2448,7 @@ pub fn load_pipeline_stage_weights(
         }
         let refs = tensors.values().collect::<Vec<_>>();
         eval(&refs);
-        name_map.extend(tensors);
+        merge_weight_file_tensors(&mut name_map, &mut source_files, &path, tensors)?;
     }
 
     let effective_sanitize = effective_weight_sanitize(
@@ -2430,12 +2458,17 @@ pub fn load_pipeline_stage_weights(
         &name_map,
     );
     match effective_sanitize {
-        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true, true),
+        WeightSanitize::HfToMlx => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, true, true, true)
+        }
         WeightSanitize::HfNormOnly => {
-            apply_hf_sanitize_transforms(specs, &mut name_map, false, true)
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, true, true)
+        }
+        WeightSanitize::HfConvOnly => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, true, false, false)
         }
         WeightSanitize::HfLayerNormsOnly => {
-            apply_hf_sanitize_transforms(specs, &mut name_map, false, false)
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, true, false)
         }
         WeightSanitize::None => {}
         WeightSanitize::Folded => return Err(folded_weight_sanitize_unsupported()),
@@ -4950,6 +4983,7 @@ fn apply_hf_sanitize_transforms(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     swap_conv1d: bool,
+    lift_norms: bool,
     lift_final_norm: bool,
 ) {
     let one = MlxArray::from_f32_slice(&[1.0_f32]);
@@ -4961,7 +4995,7 @@ fn apply_hf_sanitize_transforms(
             // `HfLayerNormsOnly` (Muse Glimmer): the final `model.norm` is a
             // plain gain in the checkpoint and must not be lifted.
             NativeTensorRole::FinalNorm if !lift_final_norm => None,
-            role if is_hf_rmsnorm_lift_role(role) => {
+            role if lift_norms && is_hf_rmsnorm_lift_role(role) => {
                 let tensor = name_map.get(&spec.name).expect("checked via contains_key");
                 // MLX promotes (bf16/f16 + f32) to f32, which would silently
                 // change the stored dtype of the norm weight. Cast back to the
@@ -5050,6 +5084,7 @@ fn folded_weight_sanitize_unsupported() -> WeightLoadError {
 ///   quantized hybrid models: Qwen3-Coder-Next-4bit, Qwen3.5-9B-4bit, …) or the model
 ///   has no conv1d at all (raw HF Gemma checkpoints)
 /// - `HfToMlx`: ordinary norm and conv1d are raw HF (rare for distributed mlx checkpoints)
+/// - `HfConvOnly`: raw Nemotron-H conv1d needs an axis swap, while its norm gains stay unchanged
 ///
 /// The norm sample is restricted to block-level roles (`AttentionNorm` /
 /// `FfnNorm` / `FinalNorm`): per-layer norms exist in every supported dense
@@ -5139,10 +5174,11 @@ fn auto_detect_weight_sanitize(
         (false, false) => WeightSanitize::None,
         (true, false) => WeightSanitize::HfNormOnly,
         (true, true) => WeightSanitize::HfToMlx,
-        // Norm looks sanitized but conv1d is still HF layout. A partially
-        // transformed checkpoint should not be silently patched — let the
-        // downstream `ensure_conv1d_mlx_layout` check fire with its
-        // diagnostic.
+        // Raw Nemotron-H stores multiplicative norms and HF convolution axes.
+        // Other families keep the partial-checkpoint failure below.
+        (false, true) if model_family == "nemotron_h" => WeightSanitize::HfConvOnly,
+        // Elsewhere, a partially transformed checkpoint should not be silently
+        // patched — let `ensure_conv1d_mlx_layout` fire with its diagnostic.
         (false, true) => WeightSanitize::None,
     };
 
@@ -6364,12 +6400,20 @@ fn split_deepseek_kv_b_projection(
     let bits = kv_b.bits;
 
     let dense = if let Some(scales) = &kv_b.scales {
-        dequantize(
+        let mode = kv_b.mlx_quantization_mode();
+        let quant_biases = match mode {
+            MlxQuantizationMode::Affine => kv_b.biases.as_ref(),
+            _ => None,
+        };
+        dequantize_with_mode(
             &kv_b.weight,
             scales,
-            kv_b.biases.as_ref(),
+            quant_biases,
             Some(group_size),
             Some(bits),
+            mode,
+            None,
+            None,
             None,
         )
     } else {
@@ -7592,6 +7636,8 @@ pub enum WeightLoadError {
     FileMissing(String),
     #[error("tensor not found: {0}")]
     TensorMissing(String),
+    #[error("duplicate tensor across weight files: {0}")]
+    DuplicateTensor(String),
     #[error("required tensor role missing: {0}")]
     RoleMissing(String),
     #[error("quantized tensor metadata missing: {0}")]

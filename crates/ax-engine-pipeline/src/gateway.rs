@@ -468,6 +468,18 @@ struct GenerateOutcome {
     finish_reason: &'static str,
 }
 
+async fn deliver_delta<Fut>(
+    deadline: tokio::time::Instant,
+    delivery: Fut,
+) -> Result<bool, PipelineClientError>
+where
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout_at(deadline, delivery)
+        .await
+        .map_err(|_| PipelineClientError::DeadlineExceeded)
+}
+
 async fn generate<F, Fut>(
     state: &GatewayState,
     request_id: u64,
@@ -522,7 +534,7 @@ where
                 // Advance the emitted cursor only over complete text so a
                 // later completed codepoint still prefixes cleanly.
                 emitted = complete_decode_prefix(&next_rendered).to_string();
-                if !on_delta(delta.to_string()).await {
+                if !deliver_delta(deadline, on_delta(delta.to_string())).await? {
                     // Consumer gone: treat as a clean client stop. The final
                     // flush below is skipped for a disconnected client.
                     finish_reason = "stop";
@@ -556,7 +568,7 @@ where
             && let Some(delta) = final_stream_delta(&emitted, &final_rendered)
         {
             let delta = delta.to_string();
-            if !on_delta(delta).await {
+            if !deliver_delta(deadline, on_delta(delta)).await? {
                 finish_reason = "stop";
             }
         }
@@ -835,6 +847,13 @@ mod tests {
             }])
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn delta_delivery_enforces_the_request_deadline() {
+        let result =
+            deliver_delta(tokio::time::Instant::now(), std::future::pending::<bool>()).await;
+        assert!(matches!(result, Err(PipelineClientError::DeadlineExceeded)));
     }
 
     #[test]

@@ -127,6 +127,9 @@ def render_chat_prompt(
         if template == "qwen_chatml":
             escaped = _escape_qwen_chatml_content(content)
             if role in {"tool", "function"}:
+                escaped = escaped.replace("<tool_response>", "&lt;tool_response>").replace(
+                    "</tool_response>", "&lt;/tool_response>"
+                )
                 if not qwen_tool_response_open:
                     prompt_parts.append("<|im_start|>user\n")
                     qwen_tool_response_open = True
@@ -218,23 +221,55 @@ def uses_qwen_coder_xml_tool_contract(model_id: str) -> bool:
     return is_qwen_coder_model(model_id)
 
 
+def is_qwen38_model_id(model_id: str) -> bool:
+    normalized = normalize_model_id_token(model_id)
+    return (
+        "qwen38" in normalized
+        or "qwen3-8-" in normalized
+        or normalized.endswith("qwen3-8")
+    )
+
+
+def is_tiel_coder_model(model_id: str) -> bool:
+    return model_id in {
+        "tiel-coder-35b-axq-mxfp4",
+        "tiel-coder-35b-axq-mxfp8",
+        "cyber-tiel-coder-35b-axq-mxfp4",
+        "cyber-tiel-coder-35b-axq-mxfp8",
+        "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP8-MTP",
+        "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP8-MTP",
+    }
+
+
 def is_qwen35_class_named_finetune(model_id: str) -> bool:
     normalized = model_id.lower()
-    return "holo3" in normalized or "holo-3" in normalized or "ornith" in normalized
+    return (
+        "holo3" in normalized
+        or "holo-3" in normalized
+        or "ornith" in normalized
+        or is_tiel_coder_model(model_id)
+    )
 
 
 def qwen_tool_contract_style(model_id: str) -> str:
     """Mirror `qwen_tool_contract_style` in the server's chat_requests.rs.
 
-    Hub Qwen3.6 templates match Qwen3.5 (JSON tool schemas + `function=`
+    Hub Qwen3.6/Qwen3.8 templates match Qwen3.5 (JSON tool schemas + `function=`
     calls), not the Coder-Next XML declarations.
     """
     normalized = normalize_model_id_token(model_id)
     if uses_qwen_coder_xml_tool_contract(model_id):
         return "coder_xml"
-    if any(
-        marker in normalized for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
-    ) or is_qwen35_class_named_finetune(model_id):
+    if (
+        any(
+            marker in normalized
+            for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
+        )
+        or is_qwen38_model_id(model_id)
+        or is_qwen35_class_named_finetune(model_id)
+    ):
         return "function_xml"
     return "json_tools"
 

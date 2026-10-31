@@ -918,9 +918,9 @@ fn is_false(value: &bool) -> bool {
 /// field, the AXQuant exporter identity, or an explicit
 /// `axquant_manifest.json` field (`runtime.ax_engine.weight_layout.norm_weights`
 /// of `raw_delta` or `folded`, or `weight_sanitize` of `hf_norm_only`,
-/// `hf_to_mlx`, or `folded`). `HfNormOnly` and `HfToMlx` store a delta
-/// (`effective gain = 1 + weight`), added once in fp32. `Folded` stores the
-/// effective multiplier already and is accepted only for `qwen4_exp`; every
+/// `hf_to_mlx`, `hf_conv_only`, or `folded`). `HfNormOnly` and `HfToMlx` store
+/// a delta (`effective gain = 1 + weight`), added once in fp32. `HfConvOnly`
+/// and `Folded` store the effective multiplier already. `Folded` is accepted only for `qwen4_exp`; every
 /// other family rejects it. `None` does not declare either contract. The
 /// loader refuses a missing or contradictory contract instead of inspecting
 /// tensor values or file names. GDN norms are never offset.
@@ -946,6 +946,10 @@ pub enum WeightSanitize {
     /// zero-centered deltas. The loader adds 1.0 to norm weights only; it does
     /// NOT re-swap the conv1d axes.
     HfNormOnly,
+    /// Partially-sanitized HuggingFace convention: RMSNorm weights already
+    /// store effective gains, but conv1d axes still use HF `(out, in, kernel)`
+    /// layout. The loader swaps conv1d axes without changing norm weights.
+    HfConvOnly,
     /// Like `HfNormOnly`, but only the per-layer sandwich norms carry
     /// zero-centered deltas; the final `model.norm` is already a plain gain
     /// and must NOT get `+1` (Muse Glimmer: `MuseRmsNorm::centered` for the
@@ -1242,6 +1246,7 @@ pub struct NativeModelManifest {
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
     /// have the loader apply the norm-delta and conv1d-axis transforms.
+    /// `hf_conv_only` swaps conv1d axes without changing effective norm gains.
     /// Flash Next requires an explicit delta or folded contract. Set this
     /// field to `folded` when the pack stored effective gains and has no
     /// `axquant_manifest.json`. An omitted value is not a folded-norm
