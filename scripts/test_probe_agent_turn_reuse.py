@@ -149,6 +149,38 @@ class SummaryTests(unittest.TestCase):
         )
 
 
+class RequestErrorTests(unittest.TestCase):
+    def test_http_error_becomes_an_error_row_that_summary_skips(self):
+        import io
+        import urllib.error
+
+        exc = urllib.error.HTTPError(
+            "http://x/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":{"code":"context_length_exceeded"}}'),
+        )
+        row = probe.error_row(7, probe.request_error(exc))
+        self.assertEqual(row["error"]["http_status"], 400)
+        self.assertIn("context_length_exceeded", row["error"]["body"])
+        self.assertIsNone(row["reply_sha256"])
+        ok = {
+            "turn": 1,
+            "ttft_ms": 10.0,
+            "recomputed_tokens": 5,
+            "cached_tokens": 95,
+            "error": None,
+        }
+        self.assertEqual(probe.summarize([ok, row])["followup_turns"], 1)
+
+    def test_other_failures_keep_their_type(self):
+        self.assertEqual(
+            probe.request_error(ConnectionResetError("peer"))["exception"],
+            "ConnectionResetError",
+        )
+
+
 class ArgumentTests(unittest.TestCase):
     def test_settings_parse_and_reject_unknown_values(self):
         self.assertEqual(probe.parse_settings("off, on"), ["off", "on"])

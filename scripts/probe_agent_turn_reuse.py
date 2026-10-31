@@ -34,6 +34,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
@@ -194,6 +195,33 @@ def next_messages(
     return out
 
 
+def error_row(turn: int, error: dict[str, Any]) -> dict[str, Any]:
+    """A turn the server refused (for example a prompt past the KV pool)."""
+    return {
+        "turn": turn,
+        "ttft_ms": None,
+        "prompt_tokens": 0,
+        "cached_tokens": 0,
+        "recomputed_tokens": 0,
+        "completion_tokens": 0,
+        "finish_reason": None,
+        "tool_calls": 0,
+        "reply_sha256": None,
+        "error": error,
+    }
+
+
+def request_error(exc: Exception) -> dict[str, Any]:
+    """Describe a failed request so the session still records it and ends."""
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read().decode("utf-8", "replace")[:500]
+        except OSError:
+            body = ""
+        return {"http_status": exc.code, "body": body}
+    return {"exception": type(exc).__name__, "message": str(exc)[:500]}
+
+
 def turn_row(turn: int, started: float, result: dict[str, Any]) -> dict[str, Any]:
     usage = result["usage"]
     prompt = int(usage.get("prompt_tokens") or 0)
@@ -279,7 +307,15 @@ def run_session(args: argparse.Namespace) -> list[dict[str, Any]]:
         }
         if args.no_thinking:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
-        started, result = stream_chat(url, payload, args.request_timeout)
+        try:
+            started, result = stream_chat(url, payload, args.request_timeout)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            # Keep the turns already measured: a refused request (a prompt
+            # past the KV pool, a dropped connection) ends this setting.
+            row = error_row(turn, request_error(exc))
+            rows.append(row)
+            print(f"turn={turn:2d} request failed: {row['error']}", file=sys.stderr)
+            break
         row = turn_row(turn, started, result)
         rows.append(row)
         print(
