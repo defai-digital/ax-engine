@@ -13,7 +13,11 @@ the source-layout MXFP8 expert matrices, and the existing dual vision tower.
 The helper accepts 1..32 ordered page images and requires one
 `<PAGE><image>` pair per image. It expands placeholders and attaches RGB
 pixels for native processing. Single-page requests use dynamic tiles by
-default (up to 16); multi-page requests default to global views.
+default (up to 16); multi-page requests default to global views. Image
+prefill runs in one scheduler step, so the prompt must fit `max_batch_tokens`;
+Unlimited-OCR-2 sessions raise it to at least 8,192 tokens, which admits about
+eight dynamic-tile pages (each costs about 890 prompt tokens; a global view
+about 280). Pass a larger `max_batch_tokens` for more tiled pages.
 
 ```python
 from tokenizers import Tokenizer

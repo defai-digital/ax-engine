@@ -1686,6 +1686,12 @@ fn build_live_state_inner(
         env.embed_microbatch_max_batch,
         env.embed_microbatch_queue_capacity,
     );
+    // The worker's session raised its budget to the loaded family's floor;
+    // keep the advertised configuration in step with it.
+    let session_config = match runtime_report.mlx_model.as_ref() {
+        Some(model) => session_config.with_native_model_family_batch_floor(&model.model_family),
+        None => session_config,
+    };
     Ok(LiveState {
         generation: 0,
         model_id: Arc::new(model_id),

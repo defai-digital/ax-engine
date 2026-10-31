@@ -156,7 +156,8 @@ It does not qualify Chinese OCR, full documents, the broad table/formula/layout
 metrics, official leaderboard scores, or full-model BF16 parity. Cancellation
 and interleaving stress remain unqualified. MTP is unsupported. Full K/V and
 router keys are retained, so total memory grows with document length.
-Four-page dynamic-tile prompts (3,581 tokens) exceed the default
-`max_batch_tokens` of 2,048.
+At the tested commit, four-page dynamic-tile prompts (3,581 tokens) exceeded
+the default `max_batch_tokens` of 2,048; later commits raise Unlimited-OCR-2
+sessions to at least 8,192.
 
 For operator usage, see [Unlimited-OCR-2 native preview](UNLIMITED-OCR-2.md).

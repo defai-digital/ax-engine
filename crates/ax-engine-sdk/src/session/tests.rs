@@ -3189,3 +3189,34 @@ fn coalesced_stream_steps_keep_every_folded_steps_model_time() {
         (1000, 700, 2)
     );
 }
+
+#[test]
+fn unlimited_ocr2_sessions_get_a_batch_budget_floor() {
+    let config = EngineSessionConfig {
+        max_batch_tokens: 2048,
+        ..EngineSessionConfig::default()
+    };
+    assert_eq!(
+        config
+            .clone()
+            .with_native_model_family_batch_floor("unlimited_ocr2")
+            .max_batch_tokens,
+        UNLIMITED_OCR2_MIN_MAX_BATCH_TOKENS
+    );
+    // A larger configured budget is kept, and other families are untouched.
+    let wide = EngineSessionConfig {
+        max_batch_tokens: 16_384,
+        ..EngineSessionConfig::default()
+    };
+    assert_eq!(
+        wide.with_native_model_family_batch_floor("unlimited_ocr2")
+            .max_batch_tokens,
+        16_384
+    );
+    assert_eq!(
+        config
+            .with_native_model_family_batch_floor("qwen3_5")
+            .max_batch_tokens,
+        2048
+    );
+}

@@ -105,5 +105,5 @@ pub use session::{
     GenerateStreamPerformance, GenerateStreamState, MlxMtpPolicy, MlxNumericsMode,
     MlxStreamExpertsMode, PreviewSessionConfigError, PreviewSessionConfigRequest,
     ResolvedSessionConfigRequest, SpeechTranscription, StatelessGenerateContext,
-    install_mlx_numerics_mode, installed_mlx_numerics_name,
+    UNLIMITED_OCR2_MIN_MAX_BATCH_TOKENS, install_mlx_numerics_mode, installed_mlx_numerics_name,
 };

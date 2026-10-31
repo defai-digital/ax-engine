@@ -20,6 +20,11 @@ use super::artifacts::{
 use super::errors::EngineSessionError;
 
 const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
+/// Smallest per-step token budget for an Unlimited-OCR-2 session. Its image
+/// prefill is atomic, so a prompt over the budget can never be scheduled; a
+/// dynamic-tile page costs about 890 prompt tokens, so this admits eight tiled
+/// pages (four need 3,581) while staying well inside the default KV pool.
+pub const UNLIMITED_OCR2_MIN_MAX_BATCH_TOKENS: u32 = 8192;
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 
 /// Controls whether native MLX generation may use a packaged multi-token
@@ -392,6 +397,17 @@ impl Default for EngineSessionConfig {
 }
 
 impl EngineSessionConfig {
+    /// Raise `max_batch_tokens` to the loaded model family's floor, if any.
+    /// Larger configured budgets are kept.
+    pub fn with_native_model_family_batch_floor(mut self, model_family: &str) -> Self {
+        if model_family == "unlimited_ocr2" {
+            self.max_batch_tokens = self
+                .max_batch_tokens
+                .max(UNLIMITED_OCR2_MIN_MAX_BATCH_TOKENS);
+        }
+        self
+    }
+
     pub fn mlx_model_artifacts_dir(&self) -> Option<&Path> {
         self.mlx_model_artifacts_dir.as_deref()
     }

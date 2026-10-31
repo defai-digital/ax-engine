@@ -30,7 +30,7 @@ use artifacts::resolve_native_model_report;
 pub use config::{
     EngineSessionConfig, MlxMtpPolicy, MlxNumericsMode, MlxStreamExpertsMode,
     PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
-    install_mlx_numerics_mode, installed_mlx_numerics_name,
+    UNLIMITED_OCR2_MIN_MAX_BATCH_TOKENS, install_mlx_numerics_mode, installed_mlx_numerics_name,
 };
 use delegated::{
     run_delegated_generate_prevalidated, run_delegated_generate_with_config,
@@ -714,9 +714,12 @@ impl EngineSession {
     ) -> Result<Self, EngineSessionError> {
         #[cfg(feature = "mlx-native")]
         let whisper = load_native_whisper_model(&config)?;
-        let runtime = config
-            .runtime_report()
-            .with_mlx_model(resolve_native_model_report(&config, &core));
+        let mlx_model = resolve_native_model_report(&config, &core);
+        let config = match mlx_model.as_ref() {
+            Some(model) => config.with_native_model_family_batch_floor(&model.model_family),
+            None => config,
+        };
+        let runtime = config.runtime_report().with_mlx_model(mlx_model);
         Ok(Self {
             core,
             config,
