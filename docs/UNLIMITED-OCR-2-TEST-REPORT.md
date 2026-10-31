@@ -4,6 +4,13 @@ Test date: 2026-10-29. Report published: 2026-10-30.
 Implementation: [`ff1ecb0a8`](https://github.com/defai-digital/ax-engine/commit/ff1ecb0a8ab78c4a96b43b70caaa17601f4ce85e).
 Status: experimental native functionality with bounded English quality evidence.
 
+> **Superseded encoder numerics.** These results were produced before the
+> shared Unlimited-OCR vision encoder was aligned with the released
+> `deepencoder.py`: CLIP MLP QuickGELU, CLIP LayerNorm epsilon `1e-5`, and
+> tile-path position resizes (antialiased bicubic CLIP positions, half-pixel
+> SAM `rel_pos`). The functional and quality numbers below describe the
+> earlier encoder and must be re-run before they are quoted for current code.
+
 ## Environment and artifact identity
 
 | Item | Tested value |

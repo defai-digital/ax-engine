@@ -13,8 +13,8 @@ use image::{Rgb, RgbImage, imageops};
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype, broadcast_to,
     concatenate, conv2d, expand_dims, flatten, gelu, layer_norm, matmul, multiply, pad, reshape,
-    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, slice, slice_update,
-    split, subtract, take, transpose, zeros,
+    scaled_dot_product_attention, scaled_dot_product_attention_with_mask, sigmoid, slice,
+    slice_update, split, subtract, take, transpose, zeros,
 };
 use thiserror::Error;
 
@@ -41,8 +41,12 @@ const CLIP_INTERMEDIATE: i32 = 4096;
 const SAM_LN_EPS: f32 = 1.0e-6;
 /// The CLIP embedding pre-normalization keeps MLX LayerNorm's 1e-5 default.
 const CLIP_PRE_LN_EPS: f32 = 1.0e-5;
-/// Unlimited-OCR's transformer ``VisionConfig.layer_norm_eps`` is 1e-6.
-const CLIP_LAYER_LN_EPS: f32 = 1.0e-6;
+/// CLIP transformer LayerNorm epsilon: `layernorm_epsilon = 1e-5` in the
+/// released `deepencoder.py` (shipped with the v1 and v2 checkpoints).
+const CLIP_LAYER_LN_EPS: f32 = 1.0e-5;
+/// OpenCLIP QuickGELU coefficient: `deepencoder.py` `quick_gelu(x) =
+/// x * sigmoid(1.702 * x)` in the CLIP MLP.
+const QUICK_GELU_SCALE: f32 = 1.702;
 const DOWNSAMPLE_RATIO: i32 = 4;
 
 #[derive(Debug, Error)]
@@ -358,7 +362,8 @@ fn resize_clip_position_embedding(position: &MlxArray) -> Result<MlxArray, Unlim
     }
     let channels = shape[1] as usize;
     let values = array_f32_values(position);
-    let resized = resize_hwc_cubic(&values[channels..], 16, 16, channels, 10, 10, false);
+    // `get_abs_pos`: bicubic, `antialias=True`, `align_corners=False`.
+    let resized = resize_hwc_cubic(&values[channels..], 16, 16, channels, 10, 10, true);
     let mut combined = Vec::with_capacity((1 + 100) * channels);
     combined.extend_from_slice(&values[..channels]);
     combined.extend_from_slice(&resized);
@@ -376,8 +381,10 @@ fn resize_relative_position(position: &MlxArray, output_length: usize) -> MlxArr
     let values = array_f32_values(position);
     let scale = input_length as f32 / output_length as f32;
     let mut resized = vec![0.0_f32; output_length * channels];
+    // `get_rel_pos`: `F.interpolate(mode="linear")` with the default
+    // `align_corners=False`, i.e. half-pixel centres clamped at the start.
     for output in 0..output_length {
-        let coordinate = output as f32 * scale;
+        let coordinate = ((output as f32 + 0.5) * scale - 0.5).max(0.0);
         let lower = (coordinate.floor() as usize).min(input_length - 1);
         let upper = (lower + 1).min(input_length - 1);
         let weight = coordinate - lower as f32;
@@ -1014,15 +1021,19 @@ fn clip_attention(attn: &ClipAttention, x: &MlxArray) -> MlxArray {
     attn.out_proj.forward(&out)
 }
 
+/// The CLIP MLP activation (`deepencoder.py` `quick_gelu`); SAM keeps the
+/// erf GELU of its `nn.GELU` MLP blocks.
+fn quick_gelu(x: &MlxArray) -> MlxArray {
+    let scale = mlx_sys::ops::cached_scalar(QUICK_GELU_SCALE, x.dtype());
+    multiply(x, &sigmoid(&multiply(x, &scale, None), None), None)
+}
+
 fn clip_layer_forward(layer: &ClipEncoderLayer, x: &MlxArray) -> MlxArray {
     let y = clip_attention(&layer.attn, &layer.ln1.forward(x));
     let x = add(x, &y, None);
-    // The released Unlimited-OCR MLX checkpoint uses the same erf-based GELU
-    // as mlx-vlm's deepseekocr VisionModel. QuickGELU produces materially
-    // different image embeddings with these weights.
     let y = layer
         .fc2
-        .forward(&gelu(&layer.fc1.forward(&layer.ln2.forward(&x)), None));
+        .forward(&quick_gelu(&layer.fc1.forward(&layer.ln2.forward(&x))));
     add(&x, &y, None)
 }
 
@@ -1329,13 +1340,247 @@ mod tests {
 
     #[test]
     fn layer_norm_eps_constants_match_reference_towers() {
-        // SAM and CLIP transformer blocks use 1e-6.  Only CLIP's input
-        // pre-layer norm uses 1e-5 in the released Unlimited-OCR model.
+        // `deepencoder.py`: SAM blocks and LayerNorm2d use 1e-6; the CLIP
+        // tower uses `layernorm_epsilon = pre_layernorm_epsilon = 1e-5`.
         assert!((SAM_LN_EPS - 1.0e-6).abs() < f32::EPSILON);
         assert!((CLIP_PRE_LN_EPS - 1.0e-5).abs() < f32::EPSILON);
-        assert!((CLIP_LAYER_LN_EPS - 1.0e-6).abs() < f32::EPSILON);
-        const {
-            assert!(CLIP_PRE_LN_EPS > CLIP_LAYER_LN_EPS);
+        assert!((CLIP_LAYER_LN_EPS - 1.0e-5).abs() < f32::EPSILON);
+    }
+
+    // Expected values below come from torch 2.x `F.interpolate` / `sigmoid`
+    // in float32, called exactly as `deepencoder.py` calls them, on the
+    // deterministic inputs each test builds.
+    const TORCH_REL_POS_127_TO_79: [f32; 79] = [
+        0.1098579,
+        0.6465828,
+        0.947692,
+        0.9404259,
+        0.5964866,
+        0.05486142,
+        -0.5124924,
+        -0.8911532,
+        -0.9783576,
+        -0.7201429,
+        -0.2177591,
+        0.3633894,
+        0.8098358,
+        0.9889616,
+        0.824126,
+        0.3743901,
+        -0.2026329,
+        -0.7059373,
+        -0.9720635,
+        -0.905504,
+        -0.5204864,
+        0.03645635,
+        0.5822644,
+        0.9282284,
+        0.9619405,
+        0.6520658,
+        0.1299254,
+        -0.4421607,
+        -0.858742,
+        -0.9917601,
+        -0.7655405,
+        -0.2919471,
+        0.2894211,
+        0.765573,
+        0.9939975,
+        0.8578072,
+        0.4451947,
+        -0.1281931,
+        -0.651319,
+        -0.9684294,
+        -0.9263296,
+        -0.5855127,
+        -0.03713155,
+        0.5191366,
+        0.9109223,
+        0.9692057,
+        0.7091194,
+        0.2020251,
+        -0.3726559,
+        -0.8283497,
+        -0.9852178,
+        -0.8126929,
+        -0.3619572,
+        0.2158909,
+        0.7231225,
+        0.9738674,
+        0.8934631,
+        0.5124952,
+        -0.05312027,
+        -0.5982479,
+        -0.9353912,
+        -0.9492854,
+        -0.6494423,
+        -0.1112054,
+        0.4572375,
+        0.8707539,
+        0.9786844,
+        0.7676132,
+        0.2726015,
+        -0.3040251,
+        -0.7816319,
+        -0.9808996,
+        -0.8615681,
+        -0.426645,
+        0.1428434,
+        0.6703718,
+        0.9558984,
+        0.9310724,
+        0.569112,
+    ];
+
+    const TORCH_CLIP_POS_16_TO_10: [f32; 100] = [
+        0.5729402,
+        0.2175829,
+        -0.2837713,
+        -0.3436106,
+        0.08729513,
+        0.538159,
+        0.4875561,
+        0.002273378,
+        -0.3669515,
+        -0.2314915,
+        1.005344,
+        0.6499867,
+        0.1486325,
+        0.08879324,
+        0.5196989,
+        0.9705626,
+        0.9199598,
+        0.4346772,
+        0.06545231,
+        0.2009123,
+        1.343032,
+        0.9876751,
+        0.486321,
+        0.4264817,
+        0.8573872,
+        1.308251,
+        1.257648,
+        0.7723657,
+        0.4031408,
+        0.5386007,
+        1.47027,
+        1.114913,
+        0.6135585,
+        0.5537193,
+        0.9846249,
+        1.435489,
+        1.384886,
+        0.8996032,
+        0.5303783,
+        0.6658382,
+        1.379007,
+        1.023649,
+        0.5222952,
+        0.4624559,
+        0.8933615,
+        1.344225,
+        1.293622,
+        0.8083399,
+        0.439115,
+        0.5745749,
+        1.080522,
+        0.7251652,
+        0.2238111,
+        0.1639718,
+        0.5948774,
+        1.045741,
+        0.9951384,
+        0.5098558,
+        0.1406308,
+        0.2760908,
+        0.64342,
+        0.2880628,
+        -0.2132914,
+        -0.2731307,
+        0.157775,
+        0.6086388,
+        0.5580359,
+        0.07275323,
+        -0.2964716,
+        -0.1610117,
+        0.1697001,
+        -0.1856571,
+        -0.6870114,
+        -0.7468506,
+        -0.3159449,
+        0.134919,
+        0.08431608,
+        -0.4009667,
+        -0.7701915,
+        -0.6347316,
+        -0.235455,
+        -0.5908122,
+        -1.092166,
+        -1.152006,
+        -0.7210999,
+        -0.2702362,
+        -0.3208391,
+        -0.8061217,
+        -1.175346,
+        -1.039887,
+        -0.4753974,
+        -0.8307546,
+        -1.332109,
+        -1.391948,
+        -0.9610423,
+        -0.5101786,
+        -0.5607815,
+        -1.046064,
+        -1.415289,
+        -1.279829,
+    ];
+
+    const TORCH_QUICK_GELU: [f32; 6] = [
+        -0.01807131,
+        -0.1542042,
+        -0.09880035,
+        0.0,
+        0.3503884,
+        1.935659,
+    ];
+
+    fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32, label: &str) {
+        assert_eq!(actual.len(), expected.len(), "{label}");
+        for (index, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert!((a - e).abs() <= tolerance, "{label}[{index}]: {a} vs {e}");
         }
+    }
+
+    #[test]
+    fn relative_position_resize_matches_torch_linear_half_pixel() {
+        // The tile path resizes SAM's 127-entry rel_pos to 79 (`get_rel_pos`).
+        let input: Vec<f32> = (0..127).map(|i| (0.37 * i as f32).sin()).collect();
+        let position = array_from_f32(&input, &[127, 1], MlxDtype::Float32);
+        let resized = array_f32_values(&resize_relative_position(&position, 79));
+        assert_close(&resized, &TORCH_REL_POS_127_TO_79, 1e-5, "rel_pos");
+    }
+
+    #[test]
+    fn clip_position_resize_matches_torch_antialiased_bicubic() {
+        // The tile path resizes CLIP's 16x16 grid to 10x10 (`get_abs_pos`);
+        // the class row passes through unchanged.
+        let mut input = vec![7.0_f32];
+        for y in 0..16 {
+            for x in 0..16 {
+                input.push((0.3 * y as f32).sin() + 0.5 * (0.7 * x as f32).cos());
+            }
+        }
+        let position = array_from_f32(&input, &[257, 1], MlxDtype::Float32);
+        let resized = array_f32_values(&resize_clip_position_embedding(&position).expect("resize"));
+        assert_eq!(resized[0], 7.0);
+        assert_close(&resized[1..], &TORCH_CLIP_POS_16_TO_10, 1e-5, "clip_pos");
+    }
+
+    #[test]
+    fn clip_mlp_activation_is_quick_gelu() {
+        let x = [-3.0_f32, -1.0, -0.25, 0.0, 0.5, 2.0];
+        let input = array_from_f32(&x, &[6], MlxDtype::Float32);
+        let output = array_f32_values(&quick_gelu(&input));
+        assert_close(&output, &TORCH_QUICK_GELU, 1e-6, "quick_gelu");
     }
 }
