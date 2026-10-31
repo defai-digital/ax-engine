@@ -83,6 +83,10 @@ pub(crate) struct OpenAiResponseOptions {
     pub(crate) prepared_json_constraint: Option<ax_engine_sdk::PreparedJsonConstraint>,
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
+    /// The native prompt ends inside an open Qwen-ChatML `<think>` block, so
+    /// output with no think markers is entirely reasoning. Set by the native
+    /// chat builder from the resolved template, matching the streaming gate.
+    pub(crate) prompt_opens_think: bool,
     pub(crate) include_stream_usage: bool,
     pub(crate) validate_json_object: bool,
     pub(crate) json_schema: Option<Arc<JsonSchemaContract>>,
@@ -255,6 +259,7 @@ impl OpenAiResponseOptions {
             prepared_json_constraint: None,
             include_logprobs: request.logprobs.is_some(),
             include_reasoning: false,
+            prompt_opens_think: false,
             include_stream_usage: request.stream_options.include_usage,
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
@@ -301,6 +306,7 @@ impl OpenAiResponseOptions {
             prepared_json_constraint: None,
             include_logprobs: request.logprobs,
             include_reasoning: openai_chat_thinking_is_enabled(request),
+            prompt_opens_think: false,
             include_stream_usage: request.stream_options.include_usage,
             validate_json_object: openai_response_format_is_json_object(
                 request.response_format.as_ref(),
@@ -626,14 +632,23 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 .to_string(),
         ));
     }
+    let chat_template =
+        chat::resolve_chat_template(live.model_id.as_ref(), artifact_family.as_deref());
     let streaming_reasoning_supported = live.runtime_report.selected_backend
         == SelectedBackend::Mlx
         && matches!(
-            chat::resolve_chat_template(live.model_id.as_ref(), artifact_family.as_deref()),
+            chat_template,
             chat::ChatPromptTemplate::QwenChatMl
                 | chat::ChatPromptTemplate::Gemma4
                 | chat::ChatPromptTemplate::DeepSeekChat
         );
+    // Every thinking Qwen-ChatML render pre-fills `<think>\n` (not only the
+    // ids `is_qwen_thinking_model` lists, e.g. Nemotron 3), and the stream
+    // already treats marker-less output as reasoning for these templates.
+    response_options.prompt_opens_think = prompt_options.enable_thinking
+        && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && chat_template == chat::ChatPromptTemplate::QwenChatMl
+        && !chat::is_qwen_non_thinking_only_model(live.model_id.as_ref());
     response_options
         .reject_unsupported_streaming_contract(request.stream, streaming_reasoning_supported)?;
     let mut input_tokens = request.input_tokens;

@@ -277,6 +277,22 @@ fn translate_tool_choice(choice: &Value) -> Result<Value, HttpError> {
     }
 }
 
+/// Anthropic-defined tools (`web_search_*`, `bash_*`, `text_editor_*`,
+/// `computer_*`, ...) carry a versioned `type` and no `input_schema`: their
+/// schema and, for server tools, their execution live with Anthropic. Mapping
+/// one to a schema-less function would let the model emit a `tool_use` that
+/// nothing executes, so only user-defined (`custom` or untyped) tools pass.
+fn reject_anthropic_typed_tool(tool: &Value) -> Result<(), HttpError> {
+    match tool.get("type") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(kind)) if kind == "custom" => Ok(()),
+        Some(kind) => Err(invalid(format!(
+            "Anthropic-defined tool type {kind} is not supported; \
+             declare a custom tool with name and input_schema"
+        ))),
+    }
+}
+
 /// Rewrite an Anthropic Messages body as an OpenAI chat completion body.
 pub(crate) fn to_openai_chat_body(body: &Value) -> Result<Value, HttpError> {
     let max_tokens = body
@@ -322,6 +338,7 @@ pub(crate) fn to_openai_chat_body(body: &Value) -> Result<Value, HttpError> {
     {
         let mut converted = Vec::with_capacity(tools.len());
         for tool in tools {
+            reject_anthropic_typed_tool(tool)?;
             let name = tool
                 .get("name")
                 .and_then(Value::as_str)
@@ -821,6 +838,34 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), upstream_tx.closed())
             .await
             .expect("disconnect must release upstream even while no model output is arriving");
+    }
+
+    #[test]
+    fn anthropic_defined_tool_types_are_rejected() {
+        let body = |tool: Value| {
+            json!({
+                "model": "m",
+                "max_tokens": 16,
+                "tools": [tool],
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+        };
+        for tool in [
+            json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3}),
+            json!({"type": "bash_20250124", "name": "bash"}),
+            json!({"type": 7, "name": "odd"}),
+        ] {
+            let err = to_openai_chat_body(&body(tool.clone())).unwrap_err();
+            assert_eq!(err.0, StatusCode::BAD_REQUEST, "{tool}");
+        }
+        for tool in [
+            json!({"name": "a", "input_schema": {"type": "object"}}),
+            json!({"type": "custom", "name": "b", "input_schema": {"type": "object"}}),
+            json!({"type": null, "name": "c"}),
+        ] {
+            let chat = to_openai_chat_body(&body(tool.clone())).unwrap();
+            assert_eq!(chat["tools"][0]["type"], json!("function"), "{tool}");
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use ax_engine_sdk::{EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateRouteReport};
 use axum::Json;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::Value;
 
@@ -14,6 +15,7 @@ use super::schema::{
 use super::tool_names;
 use super::validation::unix_timestamp_secs;
 use crate::app_state::LiveState;
+use crate::errors::{ErrorResponse, error_response};
 
 impl OpenAiStreamKind {
     pub(crate) fn response_id(self, request_id: u64) -> String {
@@ -135,7 +137,7 @@ pub(crate) fn openai_chat_completion_response(
         && !content.trim().is_empty()
         && !content.contains("<think>")
         && !content.contains("</think>")
-        && crate::chat::is_qwen_thinking_model(&response.model_id)
+        && (options.prompt_opens_think || crate::chat::is_qwen_thinking_model(&response.model_id))
     {
         (String::new(), Some(content.trim().to_string()))
     } else {
@@ -530,6 +532,77 @@ fn extract_xml_tool_call_payload(
     Some((function, content[..start].to_string()))
 }
 
+/// Whether the text after an unterminated `<tool_call>` opener is the start
+/// of a call payload (the JSON, Qwen `<function=` or GLM `<arg_key>` bodies
+/// `parse_tool_call_body` accepts) rather than prose that quotes the marker.
+pub(crate) fn is_tool_call_payload_start(body: &str) -> bool {
+    let body = body.trim_start();
+    body.is_empty()
+        || body.starts_with('{')
+        || body.starts_with("<function=")
+        || body.contains("<arg_key>")
+}
+
+/// A natural stop inside a `<tool_call>` that never closed and does not
+/// parse: the agent asked for a call the model never finished. Reported as
+/// an error so clients retry instead of reading the markup as a final
+/// answer with `finish_reason: "stop"`. A length cut keeps its `length`
+/// finish and partial text.
+pub(crate) fn incomplete_tool_call_response() -> (StatusCode, Json<ErrorResponse>) {
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        "incomplete_tool_call",
+        "model output ended inside an unterminated tool call".to_string(),
+    )
+}
+
+pub(crate) fn incomplete_tool_call_error() -> ErrorResponse {
+    incomplete_tool_call_response().1.0
+}
+
+/// Non-streaming twin of `ToolCallStreamScanner::ended_in_incomplete_call`,
+/// evaluated on the content the chat response would expose.
+pub(crate) fn output_ends_in_incomplete_tool_call(
+    response: &GenerateResponse,
+    options: &OpenAiResponseOptions,
+) -> bool {
+    if !options.parse_tool_calls
+        || response.runtime.selected_backend != ax_engine_sdk::SelectedBackend::Mlx
+        || !tool_call_finish_allowed(response.finish_reason)
+    {
+        return false;
+    }
+    let (content, reasoning) = split_reasoning_content(
+        response.output_text.as_deref().unwrap_or(""),
+        options.include_reasoning,
+    );
+    // Marker-less output after a prompt-opened `<think>` is reasoning (see
+    // `openai_chat_completion_response`), so a call written there is not one.
+    if options.include_reasoning
+        && reasoning.is_none()
+        && !content.trim().is_empty()
+        && !content.contains("<think>")
+        && !content.contains("</think>")
+        && (options.prompt_opens_think || crate::chat::is_qwen_thinking_model(&response.model_id))
+    {
+        return false;
+    }
+    let Some(opener) = content.rfind("<tool_call>") else {
+        return false;
+    };
+    let body = &content[opener + "<tool_call>".len()..];
+    if body.contains("</tool_call>") || !is_tool_call_payload_start(body) {
+        return false;
+    }
+    if crate::openai::stop::find_earliest_stop(&content, &options.client_stop_sequences)
+        .is_some_and(|(index, _)| index < opener)
+    {
+        return false;
+    }
+    let mut probe = content;
+    extract_tool_calls(&mut probe, options.tool_contract.as_deref()).is_none()
+}
+
 pub(crate) fn extract_gemma4_tool_call_payload_at(
     content: &str,
     start: usize,
@@ -747,14 +820,35 @@ fn parse_gemma4_arguments(body: &str) -> Option<String> {
     serde_json::to_string(&value).ok()
 }
 
+/// Nesting cap for model-written Gemma 4 arguments: the parser recurses per
+/// `{` / `[`, so unbounded model output could otherwise overflow the worker
+/// stack. Matches the streaming JSON and schema depth caps.
+const GEMMA4_ARGUMENT_MAX_DEPTH: usize = 64;
+
 struct Gemma4DslParser<'a> {
     input: &'a str,
     index: usize,
+    depth: usize,
 }
 
 impl<'a> Gemma4DslParser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, index: 0 }
+        Self {
+            input,
+            index: 0,
+            depth: 0,
+        }
+    }
+
+    /// Parse one nested `{...}` or `[...]` body under the depth cap.
+    fn parse_nested(&mut self, parse: fn(&mut Self) -> Option<Value>) -> Option<Value> {
+        if self.depth >= GEMMA4_ARGUMENT_MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let value = parse(self);
+        self.depth -= 1;
+        value
     }
 
     fn parse_object_body(&mut self) -> Option<Value> {
@@ -785,34 +879,39 @@ impl<'a> Gemma4DslParser<'a> {
         match self.peek_char()? {
             '{' => {
                 self.index += 1;
-                let value = self.parse_braced_object()?;
+                let value = self.parse_nested(Self::parse_braced_object)?;
                 self.consume_char('}')?;
                 Some(value)
             }
             '[' => {
                 self.index += 1;
-                let mut values = Vec::new();
-                loop {
-                    self.skip_ws();
-                    if self.peek_char() == Some(']') {
-                        self.index += 1;
-                        break;
-                    }
-                    values.push(self.parse_value()?);
-                    self.skip_ws();
-                    match self.peek_char()? {
-                        ',' => self.index += 1,
-                        ']' => {
-                            self.index += 1;
-                            break;
-                        }
-                        _ => return None,
-                    }
-                }
-                Some(Value::Array(values))
+                self.parse_nested(Self::parse_array_items)
             }
             _ => self.parse_atom(),
         }
+    }
+
+    /// Items after an opening `[`, through the closing `]`.
+    fn parse_array_items(&mut self) -> Option<Value> {
+        let mut values = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.peek_char() == Some(']') {
+                self.index += 1;
+                break;
+            }
+            values.push(self.parse_value()?);
+            self.skip_ws();
+            match self.peek_char()? {
+                ',' => self.index += 1,
+                ']' => {
+                    self.index += 1;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        Some(Value::Array(values))
     }
 
     fn parse_braced_object(&mut self) -> Option<Value> {
