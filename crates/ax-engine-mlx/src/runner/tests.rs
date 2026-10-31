@@ -3904,7 +3904,7 @@ fn discard_probe_shorter_than_scheduler_claim_rejects_partial_restore() {
     let item = scheduler_claim_item(vec![1, 2, 3, 4, 5, 6, 7, 8]);
     let probed = vec![1, 2, 3, 4];
 
-    let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed, &item);
+    let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed, &item, false);
 
     assert!(
         result.is_empty(),
@@ -3919,7 +3919,8 @@ fn discard_probe_shorter_than_scheduler_claim_keeps_full_length_match() {
     let item = scheduler_claim_item(vec![1, 2, 3, 4]);
     let probed = vec![1, 2, 3, 4];
 
-    let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed.clone(), &item);
+    let result =
+        MlxRunner::discard_probe_shorter_than_scheduler_claim(probed.clone(), &item, false);
 
     assert_eq!(result, probed);
 }
@@ -3934,16 +3935,41 @@ fn discard_probe_shorter_than_scheduler_claim_keeps_bonus_when_claim_is_empty() 
     let item = scheduler_claim_item(Vec::new());
     let probed = vec![1, 2, 3, 4, 5, 6];
 
-    let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(probed.clone(), &item);
+    let result =
+        MlxRunner::discard_probe_shorter_than_scheduler_claim(probed.clone(), &item, false);
 
     assert_eq!(result, probed);
+}
+
+#[test]
+fn shorter_probe_survives_for_gap_replay_only_when_it_prefixes_the_claim() {
+    // Regression (2026-10-31 agent turn-reuse probe, 27B on M5 Max and M4
+    // Pro): from the second follow-up on, the scheduler's block tracking
+    // claimed ~10k reusable tokens while the runner's linear snapshots
+    // stopped at the 5,120-token rung, so the discard re-prefilled the whole
+    // prompt every turn. With gap replay the shorter rung is restored and
+    // the claimed gap is recomputed at its real positions.
+    let item = scheduler_claim_item(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        MlxRunner::discard_probe_shorter_than_scheduler_claim(vec![1, 2, 3, 4], &item, true),
+        vec![1, 2, 3, 4]
+    );
+    // A probe that is not a prefix of the claim could not be spliced by
+    // `scheduler_gap_replay_tokens`; keep the full-recompute fallback.
+    assert!(
+        MlxRunner::discard_probe_shorter_than_scheduler_claim(vec![1, 2, 9, 4], &item, true)
+            .is_empty()
+    );
+    assert!(
+        MlxRunner::discard_probe_shorter_than_scheduler_claim(Vec::new(), &item, true).is_empty()
+    );
 }
 
 #[test]
 fn discard_probe_shorter_than_scheduler_claim_is_noop_on_already_empty_probe() {
     let item = scheduler_claim_item(vec![1, 2, 3, 4]);
 
-    let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(Vec::new(), &item);
+    let result = MlxRunner::discard_probe_shorter_than_scheduler_claim(Vec::new(), &item, false);
 
     assert!(result.is_empty());
 }

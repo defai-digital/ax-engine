@@ -9350,17 +9350,47 @@ impl MlxRunner {
     /// beyond the scheduler's expectation of zero reuse — never discarded
     /// here; the existing `probe_over_claim` slicing in the caller already
     /// handles trimming that case safely.
+    ///
+    /// With `gap_replay` (see [`Self::prefix_gap_replay_enabled`]) a shorter
+    /// probe that is a prefix of the claim is kept: the restore floors it onto
+    /// the chunk grid and `scheduler_gap_replay_tokens` recomputes the claimed
+    /// tokens past it at their real positions, the same path a grid floor
+    /// below the claim already takes. Discarding it re-prefilled whole
+    /// multi-turn agent prompts whenever the scheduler's block tracking
+    /// outgrew the runner's snapshots (every follow-up after the first).
     fn discard_probe_shorter_than_scheduler_claim(
         probed_tokens: Vec<u32>,
         item: &ax_engine_core::ExecutionItem,
+        gap_replay: bool,
     ) -> Vec<u32> {
-        if restore_gap_tokens(item.reused_prefix_token_slice.len(), probed_tokens.len()) > 0
-            && !item.reused_prefix_token_slice.is_empty()
-        {
-            Vec::new()
-        } else {
-            probed_tokens
+        let claim = &item.reused_prefix_token_slice;
+        if restore_gap_tokens(claim.len(), probed_tokens.len()) == 0 || claim.is_empty() {
+            return probed_tokens;
         }
+        if gap_replay && claim.starts_with(&probed_tokens) {
+            tracing::debug!(
+                target: "ax_engine_mlx::prefix_cache",
+                claim = claim.len(),
+                probed = probed_tokens.len(),
+                "keeping a probe shorter than the scheduler claim for gap replay"
+            );
+            return probed_tokens;
+        }
+        tracing::debug!(
+            target: "ax_engine_mlx::prefix_cache",
+            claim = claim.len(),
+            probed = probed_tokens.len(),
+            "discarding a probe shorter than the scheduler claim; full recompute"
+        );
+        Vec::new()
+    }
+
+    /// Whether a restore may stop short of the scheduler claim and replay the
+    /// gap (`scheduler_gap_replay_tokens`): linear-attention models with the
+    /// prefill-grid rung capture on, whose snapshots sit on the cold chunk
+    /// grid so the replay runs the cold partition.
+    fn prefix_gap_replay_enabled(&self) -> bool {
+        self.cfg.linear_attention.is_some() && crate::fastpath::linear_prefix_grid_rung_enabled()
     }
 
     /// Per-layer mask of positions that must carry complete linear
@@ -9609,7 +9639,11 @@ impl MlxRunner {
         }
         let probed_tokens = match priced_tokens {
             Some(tokens) => tokens.to_vec(),
-            None => Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item),
+            None => Self::discard_probe_shorter_than_scheduler_claim(
+                probed_tokens,
+                item,
+                self.prefix_gap_replay_enabled(),
+            ),
         };
         let reused_tokens: &[u32] = if !probed_tokens.is_empty() {
             &probed_tokens
@@ -9641,8 +9675,7 @@ impl MlxRunner {
                     item,
                     reused_tokens.len(),
                     self.prefill_chunk.max(1),
-                    self.cfg.linear_attention.is_some()
-                        && crate::fastpath::linear_prefix_grid_rung_enabled(),
+                    self.prefix_gap_replay_enabled(),
                 )
             })
         else {
