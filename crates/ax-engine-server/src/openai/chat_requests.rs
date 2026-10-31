@@ -379,7 +379,17 @@ fn render_deepseek_openai_chat_prompt(
                 thinking && (tool_context || last_user_idx.is_some_and(|last| index > last));
             if keep_reasoning {
                 full.push_str(chat::DEEPSEEK_THINK_OPEN);
-                if let Some(reasoning) = message.reasoning_content.as_deref() {
+                // Must-echo clients replay a turn that produced no reasoning
+                // as " " (the hosted API rejects ""). That whitespace is a
+                // token the model never sampled, so the replay would stop
+                // re-tokenizing to the cached prefix and re-prefill every
+                // later turn. Whitespace-only reasoning renders as absent;
+                // real reasoning stays byte-exact.
+                if let Some(reasoning) = message
+                    .reasoning_content
+                    .as_deref()
+                    .filter(|reasoning| !reasoning.trim().is_empty())
+                {
                     full.push_str(reasoning);
                 }
                 full.push_str(chat::DEEPSEEK_THINK_CLOSE);
@@ -5610,6 +5620,44 @@ mod deepseek_dsml_contract_tests {
         )
         .expect("render");
         assert!(prompt.contains("<think>thinking out loud</think>"));
+    }
+
+    #[test]
+    fn deepseek_blank_replayed_reasoning_renders_like_absent_reasoning() {
+        // Must-echo clients replay "no reasoning" as " "; the prompt must
+        // re-tokenize to the cached prefix, so " ", "" and an absent key
+        // render identically. Non-blank reasoning keeps its exact bytes.
+        let render = |reasoning: Option<&str>| {
+            let mut assistant = serde_json::json!({"role": "assistant", "content": "Done."});
+            if let Some(reasoning) = reasoning {
+                assistant["reasoning_content"] = serde_json::json!(reasoning);
+            }
+            let messages: Vec<OpenAiChatMessage> = vec![
+                serde_json::from_value(serde_json::json!({"role": "user", "content": "Hi"}))
+                    .expect("user message"),
+                serde_json::from_value(assistant).expect("assistant message"),
+                serde_json::from_value(serde_json::json!({"role": "tool", "content": "ok"}))
+                    .expect("tool message"),
+            ];
+            render_deepseek_openai_chat_prompt(
+                "deepseek-ai/DeepSeek-V4",
+                &messages,
+                None,
+                None,
+                ChatPromptRenderOptions {
+                    enable_thinking: true,
+                    preserve_thinking: false,
+                    deepseek_v4_framing: None,
+                    api_polish: crate::openai::schema::ApiPolish::default(),
+                },
+            )
+            .expect("render")
+        };
+        let absent = render(None);
+        assert_eq!(render(Some(" ")), absent);
+        assert_eq!(render(Some("\n\t ")), absent);
+        assert_eq!(render(Some("")), absent);
+        assert!(render(Some(" plan ")).contains(" plan "));
     }
 
     #[test]
