@@ -237,6 +237,7 @@ impl AnthropicMessagesRequest {
             top_logprobs: None,
             reasoning: None,
             reasoning_effort: None,
+            thinking: None,
             ax_max_think_tokens: None,
             ax_answer_reserve_tokens: None,
             chat_template_kwargs: None,

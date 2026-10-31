@@ -294,6 +294,9 @@ impl OpenAiResponseOptions {
             request.grammar_budget,
             request.response_format.as_ref(),
         )?;
+        openai_thinking_switch(request.thinking.as_ref()).map_err(|message| {
+            error_response(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+        })?;
         // `parallel_tool_calls: false` is only meaningful when tools are
         // actually enabled; without `tools` / `tool_choice` the constraint is
         // vacuously satisfied and echoing `false` misrepresents nothing.
@@ -1942,6 +1945,12 @@ fn openai_chat_prompt_render_options_for_model(
     ChatPromptRenderOptions {
         enable_thinking: template
             .and_then(|kwargs| kwargs.enable_thinking)
+            // Invalid values are rejected when the request options are built.
+            .or_else(|| {
+                openai_thinking_switch(request.thinking.as_ref())
+                    .ok()
+                    .flatten()
+            })
             .unwrap_or_else(|| {
                 openai_reasoning_is_enabled(request.reasoning.as_ref())
                     || chat::is_deepseek_thinking_model(model_id)
@@ -1955,6 +1964,30 @@ fn openai_chat_prompt_render_options_for_model(
         // wrapper resolves the contract framing (ADR-025 Phase 2).
         deepseek_v4_framing: None,
         api_polish: request.api_polish,
+    }
+}
+
+/// DeepSeek-style top-level `thinking` switch: `Some(true)` for
+/// `{"type": "enabled"}`, `Some(false)` for `{"type": "disabled"}`, `None`
+/// when absent. Anything else fails closed instead of being ignored.
+fn openai_thinking_switch(thinking: Option<&Value>) -> Result<Option<bool>, String> {
+    let Some(thinking) = thinking.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let Some(object) = thinking.as_object() else {
+        return Err(r#"thinking must be an object such as {"type": "disabled"}"#.to_string());
+    };
+    if let Some(key) = object.keys().find(|key| key.as_str() != "type") {
+        return Err(format!(
+            "unsupported thinking field {key:?}; use ax_max_think_tokens for a thinking budget"
+        ));
+    }
+    match object.get("type").and_then(Value::as_str) {
+        Some("enabled") => Ok(Some(true)),
+        Some("disabled") => Ok(Some(false)),
+        other => Err(format!(
+            r#"thinking.type must be "enabled" or "disabled", got {other:?}"#
+        )),
     }
 }
 
