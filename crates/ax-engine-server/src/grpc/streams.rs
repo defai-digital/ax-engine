@@ -600,7 +600,13 @@ where
                 if delta_text.is_empty() {
                     continue;
                 }
-                if let Some(filter) = channel_filter.as_mut() {
+                // Whitespace-only text is not an answer. The non-stream path
+                // trims kept text before serving a channel body, and marking
+                // it here would suppress that fallback. The decoder tail below
+                // uses the same trim.
+                if !delta_text.trim().is_empty()
+                    && let Some(filter) = channel_filter.as_mut()
+                {
                     filter.mark_kept_output();
                 }
                 let delta_text = cut_think(&mut think_cutter, delta_text);
@@ -1275,5 +1281,100 @@ mod tests {
         })
         .await
         .expect("producer should release its permit");
+    }
+
+    /// Word-level fixture: token 1 is `answer`, token 2 is a single space,
+    /// tokens 10/11 are the Gemma 4 channel markers. A whitespace piece is
+    /// outside the channel; the answer sits entirely in the channel body.
+    fn channel_whitespace_tokenizer(label: &str) -> EngineTokenizer {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ax-engine-channel-ws-{label}-{unique}"));
+        std::fs::create_dir_all(&dir).expect("tokenizer dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":11}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 10, "content": "<|channel>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 11, "content": "<channel|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null,
+  "pre_tokenizer": null,
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "answer": 1, " ": 2, "<|channel>": 10, "<channel|>": 11},
+    "unk_token": "[UNK]"
+  }
+}"#,
+        )
+        .expect("tokenizer json");
+        EngineTokenizer::from_model_dir(&dir).expect("channel fixture tokenizer loads")
+    }
+
+    #[test]
+    fn whitespace_only_channel_delta_does_not_suppress_the_fallback() {
+        // The answer lives only in the channel body. A whitespace-only delta
+        // that survives the filter must not mark kept output, or the fallback
+        // is dropped and the client receives a bare space.
+        let tokenizer = channel_whitespace_tokenizer("grpc");
+        assert_eq!(
+            tokenizer.decode(&[1], true).expect("decode answer"),
+            "answer"
+        );
+        assert_eq!(tokenizer.decode(&[2], true).expect("decode space"), " ");
+        let mut filter = ChatChannelStreamFilter::from_tokenizer(&tokenizer)
+            .expect("fixture installs a channel filter");
+        let mut decoder = IncrementalDecoder::new(tokenizer);
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut role = false;
+        let events = [
+            Ok(Some(step_with_delta_tokens(vec![10, 1]))),
+            Ok(Some(step_with_delta_tokens(vec![11, 2]))),
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            Some(&mut decoder),
+            Some(&mut filter),
+            GrpcStops::new(Vec::new()),
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+        drop(tx);
+
+        let mut pieces = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            let chunk = chunk.expect("chunk ok");
+            if let Some(delta) = chunk.choices[0].delta.as_ref()
+                && !delta.content.is_empty()
+            {
+                pieces.push(delta.content.clone());
+            }
+        }
+        assert!(
+            pieces.iter().any(|piece| piece.contains("answer")),
+            "whitespace must not suppress the channel-body fallback: {pieces:?}"
+        );
+        assert!(
+            pieces.iter().any(|piece| piece.trim().is_empty()),
+            "the whitespace delta is still emitted: {pieces:?}"
+        );
     }
 }

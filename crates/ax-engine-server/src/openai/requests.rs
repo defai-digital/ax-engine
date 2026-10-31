@@ -1784,6 +1784,26 @@ fn reject_unsupported_completion_logprobs(
 const REASONING_ENABLE_STRINGS: &[&str] = &["true", "auto", "exposed", "include", "enabled"];
 const REASONING_DISABLE_STRINGS: &[&str] = &["false", "off", "disabled"];
 
+/// On/off reading of a reasoning string. Disable words win, then the enable
+/// set; any other string (effort levels, `"on"`, `"none"`) does not enable.
+fn reasoning_string_switch_is_enabled(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    if REASONING_DISABLE_STRINGS.contains(&value.as_str()) {
+        return false;
+    }
+    REASONING_ENABLE_STRINGS.contains(&value.as_str())
+}
+
+/// A `reasoning` object's `enabled` / `include` / `mode` value. Strings use
+/// the same on/off sets as a bare reasoning string. Other JSON types keep
+/// [`openai_value_is_present`].
+fn reasoning_switch_value_is_enabled(value: &Value) -> bool {
+    match value {
+        Value::String(value) => reasoning_string_switch_is_enabled(value),
+        other => openai_value_is_present(other),
+    }
+}
+
 pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     let Some(reasoning) = reasoning else {
         return false;
@@ -1791,14 +1811,12 @@ pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     match reasoning {
         Value::Null => false,
         Value::Bool(value) => *value,
-        Value::String(value) => {
-            REASONING_ENABLE_STRINGS.contains(&value.trim().to_ascii_lowercase().as_str())
-        }
+        Value::String(value) => reasoning_string_switch_is_enabled(value),
         Value::Object(object) => object
             .get("enabled")
             .or_else(|| object.get("include"))
             .or_else(|| object.get("mode"))
-            .map(openai_value_is_present)
+            .map(reasoning_switch_value_is_enabled)
             .unwrap_or(!object.is_empty()),
         value => openai_value_is_present(value),
     }
@@ -2019,5 +2037,61 @@ mod tests {
         assert!(openai_value_is_present(&json!(0.5)));
         assert!(openai_tool_choice_enables_tool_call(&json!(-1)));
         assert!(openai_tool_choice_enables_tool_call(&json!(0.5)));
+    }
+
+    #[test]
+    fn reasoning_object_string_switches_follow_the_on_off_sets() {
+        // String values of enabled/include/mode are on/off switches, same as a
+        // bare reasoning string. Disable words and unsupported effort-like
+        // strings must not enable thinking. Bool switches and a non-empty
+        // object with no switch key keep their existing meaning.
+        for (value, enabled) in [
+            (json!({"enabled": "off"}), false),
+            (json!({"enabled": "false"}), false),
+            (json!({"enabled": "disabled"}), false),
+            (json!({"include": "off"}), false),
+            (json!({"mode": "disabled"}), false),
+            (json!({"enabled": "OFF"}), false),
+            (json!({"mode": " False "}), false),
+            (json!({"include": " Disabled "}), false),
+            (json!({"enabled": "true"}), true),
+            (json!({"enabled": "enabled"}), true),
+            (json!({"include": "auto"}), true),
+            (json!({"mode": "exposed"}), true),
+            (json!({"mode": "include"}), true),
+            (json!({"enabled": " TRUE "}), true),
+            (json!({"mode": "Enabled"}), true),
+            (json!({"enabled": "high"}), false),
+            (json!({"mode": "low"}), false),
+            (json!({"include": "medium"}), false),
+            (json!({"enabled": "max"}), false),
+            (json!({"mode": "none"}), false),
+            (json!({"enabled": "on"}), false),
+            (json!({"enabled": "off", "mode": "enabled"}), false),
+            (json!({"include": "true", "mode": "off"}), true),
+            (json!({"mode": "off", "effort": "high"}), false),
+            (json!({"enabled": false}), false),
+            (json!({"enabled": true}), true),
+            (json!({"enabled": null}), false),
+            (json!({"summary": "auto"}), true),
+            (json!({}), false),
+            (json!("off"), false),
+            (json!("false"), false),
+            (json!("disabled"), false),
+            (json!("OFF"), false),
+            (json!(" true "), true),
+            (json!("Enabled"), true),
+            (json!("high"), false),
+            (json!(true), true),
+            (json!(false), false),
+            (json!(null), false),
+        ] {
+            assert_eq!(
+                openai_reasoning_is_enabled(Some(&value)),
+                enabled,
+                "{value}"
+            );
+        }
+        assert!(!openai_reasoning_is_enabled(None));
     }
 }

@@ -34,6 +34,25 @@ pub fn stream_delta<'a>(already_emitted: &str, next_full_decode: &'a str) -> Opt
     if delta.is_empty() { None } else { Some(delta) }
 }
 
+/// Final delta at normal termination: the complete remaining suffix of the
+/// final decode, including any trailing U+FFFD run that [`stream_delta`]
+/// held back. Callers emit this exactly once after a successful generation
+/// so streamed text equals the final non-streamed decode. Returns `None`
+/// when nothing remains or the cursor no longer prefixes the decode.
+pub fn final_stream_delta<'a>(already_emitted: &str, final_decode: &'a str) -> Option<&'a str> {
+    if final_decode.len() <= already_emitted.len() {
+        return None;
+    }
+    if !final_decode.starts_with(already_emitted) {
+        return None;
+    }
+    if !final_decode.is_char_boundary(already_emitted.len()) {
+        return None;
+    }
+    let delta = &final_decode[already_emitted.len()..];
+    if delta.is_empty() { None } else { Some(delta) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +139,55 @@ mod tests {
             ]),
             "叫好"
         );
+    }
+
+    /// Replay streaming plus the final flush used at normal termination,
+    /// returning the text a client would receive in total.
+    fn replay_stream_with_final_flush(decodes: &[&str]) -> String {
+        let mut streamed = replay_stream_decodes(decodes);
+        if let Some(final_decode) = decodes.last() {
+            let emitted = streamed.clone();
+            if let Some(delta) = final_stream_delta(&emitted, final_decode) {
+                streamed.push_str(delta);
+            }
+        }
+        streamed
+    }
+
+    #[test]
+    fn final_stream_delta_flushes_trailing_replacement_run_exactly_once() {
+        assert_eq!(final_stream_delta("ab", "ab\u{FFFD}"), Some("\u{FFFD}"));
+        assert_eq!(
+            final_stream_delta("ab", "ab\u{FFFD}\u{FFFD}"),
+            Some("\u{FFFD}\u{FFFD}")
+        );
+        assert_eq!(final_stream_delta("", "\u{FFFD}"), Some("\u{FFFD}"));
+        // Nothing left, prefix mismatch, and already-flushed cases emit nothing.
+        assert_eq!(final_stream_delta("ab", "ab"), None);
+        assert_eq!(final_stream_delta("xy", "ab\u{FFFD}"), None);
+        assert_eq!(final_stream_delta("ab\u{FFFD}", "ab\u{FFFD}"), None);
+    }
+
+    #[test]
+    fn streamed_text_equals_final_decode_for_trailing_replacement_and_incomplete_tails() {
+        // Generation ends while the tail is still incomplete: the held-back
+        // U+FFFD suffix must be flushed once so the stream matches decode.
+        for decodes in [
+            &["ab\u{FFFD}"][..],
+            &["ab", "ab\u{FFFD}\u{FFFD}"][..],
+            &["\u{FFFD}", "\u{FFFD}\u{FFFD}"][..],
+            &["你好", "你好\u{FFFD}"][..],
+            // A tail that completes streams normally; final flush is a no-op.
+            &["ab\u{FFFD}", "ab你"][..],
+            &["hello"][..],
+        ] {
+            let final_decode = decodes.last().expect("non-empty decodes");
+            assert_eq!(
+                replay_stream_with_final_flush(decodes),
+                *final_decode,
+                "streamed text must equal final decode for {decodes:?}"
+            );
+        }
     }
 
     #[test]

@@ -1174,6 +1174,111 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.llama_model_path, "/tmp/mlx-model")
         self.assertIsNone(native.mlx_model_artifacts_dir)
 
+    def _chat_prompt_for_pack(
+        self,
+        artifacts_dir: str,
+        *,
+        model_id: str = "qwen3_dense",
+    ) -> str:
+        """Prompt the wrapper renders for a fake MLX session over a fake pack."""
+        with self.ax_engine.Session(
+            model_id=model_id, mlx=True, mlx_model_artifacts_dir=artifacts_dir
+        ) as session:
+            result = session.chat([{"role": "user", "content": "hi"}], max_output_tokens=2)
+        self.assertIsNotNone(result.prompt_text)
+        return str(result.prompt_text)
+
+    def test_mlx_chat_prompt_uses_no_think_prefill_for_coder_pack_name(self) -> None:
+        # Qwen3-Coder-Next declares model_type "qwen3_next", so only the pack's
+        # own `_name_or_path` can distinguish it from an ordinary Qwen3-Next.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "config.json").write_text(
+                json.dumps(
+                    {
+                        "model_type": "qwen3_next",
+                        "_name_or_path": "Qwen/Qwen3-Coder-Next-80B-A3B-Instruct",
+                    }
+                )
+            )
+            prompt = self._chat_prompt_for_pack(temp_dir)
+
+        self.assertEqual(prompt, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n")
+
+    def test_mlx_chat_prompt_uses_no_think_prefill_for_coder_download_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "config.json").write_text(json.dumps({"model_type": "qwen3_next"}))
+            Path(temp_dir, ".ax-engine-download.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "ax.download_provenance.v1",
+                        "repo_id": "Qwen/Qwen3-Coder-Next-80B-A3B-Instruct",
+                        "revision": None,
+                    }
+                )
+            )
+            prompt = self._chat_prompt_for_pack(temp_dir)
+
+        self.assertEqual(prompt, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n")
+
+    def test_mlx_chat_prompt_keeps_thinking_prefill_for_ordinary_qwen3_next_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "config.json").write_text(
+                json.dumps(
+                    {
+                        "model_type": "qwen3_next",
+                        "_name_or_path": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+                    }
+                )
+            )
+            prompt = self._chat_prompt_for_pack(temp_dir)
+
+        self.assertEqual(
+            prompt,
+            "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        )
+
+    def test_mlx_chat_prompt_keeps_thinking_prefill_for_unidentifiable_pack(self) -> None:
+        # model_type alone must never imply coder: an unidentified pack keeps
+        # the thinking prefill it rendered before this fix.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "config.json").write_text(json.dumps({"model_type": "qwen3_next"}))
+            prompt = self._chat_prompt_for_pack(temp_dir)
+
+        self.assertEqual(
+            prompt,
+            "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        )
+
+    def test_explicit_model_id_label_takes_precedence_over_artifact_identity(self) -> None:
+        thinking = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        no_thinking = "<|im_start|>assistant\n"
+        cases = (
+            # A coder pack under an explicit ordinary label keeps thinking.
+            (
+                {
+                    "model_type": "qwen3_next",
+                    "_name_or_path": "Qwen/Qwen3-Coder-Next-80B-A3B-Instruct",
+                },
+                "Qwen/Qwen3-Next-80B-A3B-Instruct",
+                thinking,
+            ),
+            # An ordinary pack under an explicit coder label stays no-think.
+            (
+                {
+                    "model_type": "qwen3_next",
+                    "_name_or_path": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+                },
+                "Qwen/Qwen3-Coder-Next-80B-A3B-Instruct",
+                no_thinking,
+            ),
+        )
+        for config, model_id, suffix in cases:
+            with self.subTest(model_id=model_id):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    Path(temp_dir, "config.json").write_text(json.dumps(config))
+                    prompt = self._chat_prompt_for_pack(temp_dir, model_id=model_id)
+                self.assertEqual(prompt, f"<|im_start|>user\nhi<|im_end|>\n{suffix}")
+
     def test_generate_submit_and_stream_forward_ignore_eos(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense", mlx=True, mlx_model_artifacts_dir="/tmp/mlx-model"
