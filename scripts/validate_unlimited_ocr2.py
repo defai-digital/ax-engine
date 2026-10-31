@@ -22,11 +22,24 @@ PACK_SHA256 = {
 }
 
 
+def output_page_count(text: str) -> int:
+    """`<PAGE>` markers that open a page; one empty trailing marker is not a page.
+
+    The released generation's page-count guard lets the marker after the last
+    page through and then forces EOS, so a complete output can end with an
+    empty `<PAGE>`. An empty page anywhere else still counts.
+    """
+    segments = text.split("<PAGE>")[1:]
+    if segments and not segments[-1].strip():
+        segments.pop()
+    return len(segments)
+
+
 def ocr_text_matches(text: str, expected: list[str], pages: int) -> tuple[bool, str]:
     body = " ".join(re.findall(r"<FORK>(.*?)(?=<BLOCK>|<PAGE>|$)", text, re.S))
     normalized = " ".join(body.upper().split())
     expected_body = " ".join(" ".join(expected).upper().split())
-    return normalized == expected_body and text.count("<PAGE>") == pages, body
+    return normalized == expected_body and output_page_count(text) == pages, body
 
 
 def main() -> None:

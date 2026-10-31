@@ -588,10 +588,10 @@ fn sampling_context_honors_explicit_zero_seed() {
     ctx.temperature = 0.8;
     ctx.seed = 0;
     ctx.seed_explicit = true;
-    assert_eq!(sampling_params_from_context(&ctx).seed, Some(0));
+    assert_eq!(sampling_params_from_context(&ctx, false).seed, Some(0));
 
     ctx.seed_explicit = false;
-    assert_eq!(sampling_params_from_context(&ctx).seed, None);
+    assert_eq!(sampling_params_from_context(&ctx, false).seed, None);
 }
 
 fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext {

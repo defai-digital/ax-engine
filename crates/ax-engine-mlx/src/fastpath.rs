@@ -1696,6 +1696,16 @@ pub(crate) fn dflash2_dir() -> Option<&'static std::path::Path> {
 }
 
 env_flag_default_on!(
+    /// `AX_MLX_UNLIMITED_OCR_PAGE_GUARD` - keep Unlimited-OCR-2 output to one
+    /// `<PAGE>` per prompt page (EOS banned until the last page, only EOS after
+    /// an extra marker, 20,000-token page cap), as the released generation does.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_UNLIMITED_OCR_PAGE_GUARD=0`).
+    unlimited_ocr_page_guard_enabled,
+    "AX_MLX_UNLIMITED_OCR_PAGE_GUARD"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DFLASH2` - DFlash2 block speculation for greedy text requests on
     /// the Qwen 3.8 27B target whenever a drafter checkpoint can be found
     /// (ADR-045). `--mlx-mtp-policy disabled`, the direct baseline switches and

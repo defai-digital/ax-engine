@@ -97,6 +97,10 @@ pub struct MlxSamplingParams {
     /// allowed-token mask of each sampled row with [`scoped_token_mask`];
     /// like `logit_bias` this always routes to the host sampler.
     pub json_grammar_active: bool,
+    /// Unlimited-OCR-2 page-count guard: the runner installs the step's
+    /// allowed-token mask with [`scoped_token_mask`], so like the grammar it
+    /// routes every row to the host sampler.
+    pub page_guard_active: bool,
     /// Explicit sampling seed. `Some(seed)` marks a reproducible request whose
     /// pure-temperature draw must go through the seeded host path; `None`
     /// keeps the unseeded stream so pure-temperature sampling stays on the GPU.
@@ -118,6 +122,7 @@ impl MlxSamplingParams {
             ngram_window: 128,
             logit_bias_active: false,
             json_grammar_active: false,
+            page_guard_active: false,
             seed: None,
         }
     }
@@ -217,9 +222,19 @@ impl MlxSamplingParams {
         self
     }
 
+    pub(crate) const fn with_page_guard_active(mut self, page_guard_active: bool) -> Self {
+        self.page_guard_active = page_guard_active;
+        self
+    }
+
+    /// A hard allowed-token mask (grammar or page guard) is installed.
+    pub(crate) const fn uses_token_mask(self) -> bool {
+        self.json_grammar_active || self.page_guard_active
+    }
+
     /// Processors that need no token history but a per-item scope.
     pub(crate) const fn uses_scoped_processors(self) -> bool {
-        self.logit_bias_active || self.json_grammar_active
+        self.logit_bias_active || self.json_grammar_active || self.page_guard_active
     }
 
     /// Whether any processor reads the token history (`logit_bias` does not).
@@ -415,7 +430,7 @@ pub(crate) fn processed_logits<'a>(
         if sampling.logit_bias_active {
             apply_scoped_logit_bias(logits_buf);
         }
-        if sampling.json_grammar_active {
+        if sampling.uses_token_mask() {
             apply_scoped_token_mask(logits_buf);
         }
         if sampling.uses_repetition_penalty() {
@@ -425,11 +440,10 @@ pub(crate) fn processed_logits<'a>(
                 recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
             );
         }
-        // The n-gram ban can remove every token the grammar still allows;
-        // an all -inf row then fell back to token 0, which the grammar
-        // forbids. The grammar is the hard constraint: drop the ban for
-        // that step instead.
-        let before_ngram_ban = (sampling.json_grammar_active && sampling.uses_no_repeat_ngram())
+        // The n-gram ban can remove every token the mask still allows; an
+        // all -inf row then fell back to token 0, which the mask forbids. The
+        // mask is the hard constraint: drop the ban for that step instead.
+        let before_ngram_ban = (sampling.uses_token_mask() && sampling.uses_no_repeat_ngram())
             .then(|| logits_buf.clone());
         logits_with_no_repeat_ngram_in_place(
             logits_buf,
@@ -1744,6 +1758,23 @@ mod tests {
             .with_no_repeat_ngram(2, 128);
         let _scope = scoped_token_mask(Some(vec![0b1000u64]));
         assert_eq!(sample_categorical(&logits, greedy, &[2, 3, 2], &mut rng), 3);
+    }
+
+    #[test]
+    fn page_guard_mask_is_a_hard_constraint_like_the_grammar() {
+        let logits = vec![4.0, 3.0, 0.0, 1.0];
+        let mut rng = Xorshift64::new(5);
+        let guarded = MlxSamplingParams::greedy()
+            .with_page_guard_active(true)
+            .with_no_repeat_ngram(2, 128);
+        assert!(guarded.uses_token_mask() && guarded.uses_scoped_processors());
+        // Only token 3 (say, EOS after an extra page) is allowed, and the
+        // 2-gram ban over [2, 3, 2] would forbid it.
+        let _scope = scoped_token_mask(Some(vec![0b1000u64]));
+        assert_eq!(
+            sample_categorical(&logits, guarded, &[2, 3, 2], &mut rng),
+            3
+        );
     }
 
     #[test]
