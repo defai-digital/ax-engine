@@ -2918,3 +2918,80 @@ fn mini_transformer_forward_pass_chains_many_ops() {
         assert_close_f32(&[s], &[1.0], 1e-4);
     }
 }
+
+/// MLX 0.32.4's Metal affine quantizer starts each group's running max at 0
+/// (`kernels/quantized.h`, `w_max = 0`), so an all-negative group quantizes
+/// over `[min, 0]` instead of `[min, max]` and loses resolution; the CPU path
+/// is correct. Fixed upstream after 0.32.4 (ml-explore/mlx 32a183e12, #4775).
+///
+/// AX ships no workaround. On 2026-10-31 the pinned Qwen 3.8 27B pack had no
+/// all-negative group in its lm_head (the gs64 MTP draft-head requant) or in
+/// 24 sampled FFN / linear-attention weights (gs32 and gs64), and neither
+/// primary pin enables KV-cache quantization. This tripwire pins the defect:
+/// an MLX bump that fixes it fails here, and the GPU assertion should then
+/// match the CPU one and this note go.
+#[test]
+fn affine_quantize_all_negative_group_tracks_mlx_0_32_4_metal_defect() {
+    let _guard = lock_process_global();
+    let cpu = MlxStream::default_cpu();
+    let group = 32_usize;
+    for bits in [2, 3, 4, 8] {
+        let n_bins = (1_u32 << bits) - 1;
+        // Unit-spaced integer grid spanning exactly `n_bins`: a correct
+        // quantizer represents every value without error.
+        let mut grid: Vec<f32> = (0..group)
+            .map(|i| (i as u32 % (n_bins + 1)) as f32)
+            .collect();
+        grid[group - 1] = n_bins as f32;
+        let shifted = |shift: f32| grid.iter().map(|v| v + shift).collect::<Vec<_>>();
+        let all_negative = shifted(-2.0 * n_bins as f32);
+        let mixed = shifted(-((1_u32 << (bits - 1)) as f32));
+        let all_positive = shifted(n_bins as f32);
+        let max_error = |values: &[f32], stream: Option<&MlxStream>| -> f32 {
+            let w = reshape(&MlxArray::from_f32_slice(values), &[1, group as i32], None);
+            let parts = quantize(
+                &w,
+                Some(group as i32),
+                Some(bits),
+                MlxQuantizationMode::Affine,
+                None,
+                stream,
+            );
+            let restored = dequantize(
+                &parts[0],
+                &parts[1],
+                Some(&parts[2]),
+                Some(group as i32),
+                Some(bits),
+                Some(&cpu),
+            );
+            eval(&[&restored]);
+            restored
+                .data_f32()
+                .iter()
+                .zip(values)
+                .map(|(restored, value)| (restored - value).abs())
+                .fold(0.0, f32::max)
+        };
+        for (name, values) in [
+            ("all-negative", &all_negative),
+            ("mixed", &mixed),
+            ("all-positive", &all_positive),
+        ] {
+            assert!(
+                max_error(values, Some(&cpu)) < 1e-5,
+                "cpu {name} bits={bits}"
+            );
+        }
+        assert!(max_error(&mixed, None) < 1e-5, "gpu mixed bits={bits}");
+        assert!(
+            max_error(&all_positive, None) < 1e-5,
+            "gpu all-positive bits={bits}"
+        );
+        assert!(
+            max_error(&all_negative, None) >= 0.5,
+            "gpu all-negative bits={bits}: the MLX 0.32.4 defect is gone; \
+             assert CPU parity instead and drop this tripwire's note"
+        );
+    }
+}
