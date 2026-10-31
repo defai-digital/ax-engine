@@ -35,6 +35,14 @@ pub(crate) struct ThinkTagScanner {
     /// Treat leading text without an opener as reasoning (see
     /// [`Self::new_lead_or_inside_think`]).
     fallback_inside_think: bool,
+    /// The non-streaming split trims the reasoning and the content after
+    /// `</think>`; these keep the joined stream equal to it. Reasoning drops
+    /// its leading whitespace and holds trailing whitespace until more
+    /// reasoning follows (dropped at the close tag or the end of stream).
+    reasoning_started: bool,
+    held_reasoning_whitespace: String,
+    /// Set at `</think>`: drop content whitespace until the answer starts.
+    trim_content_lead: bool,
 }
 
 impl ThinkTagScanner {
@@ -43,6 +51,9 @@ impl ThinkTagScanner {
             state: ThinkScanState::Lead,
             buffer: String::new(),
             fallback_inside_think: false,
+            reasoning_started: false,
+            held_reasoning_whitespace: String::new(),
+            trim_content_lead: false,
         }
     }
 
@@ -51,8 +62,7 @@ impl ThinkTagScanner {
     pub(crate) fn new_inside_think() -> Self {
         Self {
             state: ThinkScanState::InThink,
-            buffer: String::new(),
-            fallback_inside_think: false,
+            ..Self::new()
         }
     }
 
@@ -70,7 +80,7 @@ impl ThinkTagScanner {
     pub(crate) fn push(&mut self, text: &str) -> ThinkScanStep {
         let mut step = ThinkScanStep::default();
         if self.state == ThinkScanState::Passed {
-            step.content.push_str(text);
+            self.push_content(&mut step.content, text);
             return step;
         }
         self.buffer.push_str(text);
@@ -80,7 +90,8 @@ impl ThinkTagScanner {
                     let lead_ws = self.buffer.len() - self.buffer.trim_start().len();
                     let rest = &self.buffer[lead_ws..];
                     if let Some(after) = rest.strip_prefix(THINK_OPEN) {
-                        step.content.push_str(&self.buffer[..lead_ws]);
+                        // Whitespace before the opener is trimmed from the
+                        // content by the non-streaming split as well.
                         self.buffer = after.to_string();
                         self.state = ThinkScanState::InThink;
                         continue;
@@ -105,11 +116,14 @@ impl ThinkTagScanner {
                 }
                 ThinkScanState::InThink => {
                     if let Some(close_at) = self.buffer.find(THINK_CLOSE) {
-                        step.reasoning.push_str(&self.buffer[..close_at]);
+                        let body = self.buffer[..close_at].to_string();
+                        self.push_reasoning(&mut step.reasoning, &body);
+                        self.held_reasoning_whitespace.clear();
                         let after = self.buffer[close_at + THINK_CLOSE.len()..].to_string();
                         self.buffer.clear();
                         self.state = ThinkScanState::Passed;
-                        step.content.push_str(&after);
+                        self.trim_content_lead = true;
+                        self.push_content(&mut step.content, &after);
                         return step;
                     }
                     // Release all but the longest suffix that could still
@@ -117,17 +131,49 @@ impl ThinkTagScanner {
                     let hold = longest_suffix_prefix_of(&self.buffer, THINK_CLOSE);
                     let release = self.buffer.len() - hold;
                     if release > 0 {
-                        step.reasoning.push_str(&self.buffer[..release]);
-                        self.buffer.drain(..release);
+                        let released: String = self.buffer.drain(..release).collect();
+                        self.push_reasoning(&mut step.reasoning, &released);
                     }
                     return step;
                 }
                 ThinkScanState::Passed => {
-                    step.content.push_str(&self.buffer);
-                    self.buffer.clear();
+                    let rest = std::mem::take(&mut self.buffer);
+                    self.push_content(&mut step.content, &rest);
                     return step;
                 }
             }
+        }
+    }
+
+    fn push_reasoning(&mut self, out: &mut String, text: &str) {
+        let text = if self.reasoning_started {
+            text
+        } else {
+            text.trim_start()
+        };
+        let body = text.trim_end();
+        if body.is_empty() {
+            if self.reasoning_started {
+                self.held_reasoning_whitespace.push_str(text);
+            }
+            return;
+        }
+        self.reasoning_started = true;
+        out.push_str(&self.held_reasoning_whitespace);
+        self.held_reasoning_whitespace.clear();
+        out.push_str(body);
+        self.held_reasoning_whitespace.push_str(&text[body.len()..]);
+    }
+
+    fn push_content(&mut self, out: &mut String, text: &str) {
+        if !self.trim_content_lead {
+            out.push_str(text);
+            return;
+        }
+        let answer = text.trim_start();
+        if !answer.is_empty() {
+            self.trim_content_lead = false;
+            out.push_str(answer);
         }
     }
 
@@ -138,12 +184,16 @@ impl ThinkTagScanner {
         let mut step = ThinkScanStep::default();
         let leftover = std::mem::take(&mut self.buffer);
         match self.state {
-            ThinkScanState::InThink => step.reasoning.push_str(&leftover),
+            ThinkScanState::InThink => self.push_reasoning(&mut step.reasoning, &leftover),
             ThinkScanState::Lead if self.fallback_inside_think => {
-                step.reasoning.push_str(&leftover);
+                self.push_reasoning(&mut step.reasoning, &leftover);
             }
-            ThinkScanState::Lead | ThinkScanState::Passed => step.content.push_str(&leftover),
+            ThinkScanState::Lead | ThinkScanState::Passed => {
+                self.push_content(&mut step.content, &leftover);
+            }
         }
+        // Trailing reasoning whitespace is never sent (the split trims it).
+        self.held_reasoning_whitespace.clear();
         self.state = ThinkScanState::Passed;
         step
     }
@@ -258,10 +308,11 @@ mod tests {
         let step = scanner.push("<th");
         assert_eq!(step, ThinkScanStep::default());
         let step = scanner.push("ink>reasoning ");
-        assert_eq!(step.reasoning, "reasoning ");
+        // Trailing whitespace waits until more reasoning follows it.
+        assert_eq!(step.reasoning, "reasoning");
         assert_eq!(step.content, "");
         let step = scanner.push("done</think>answer");
-        assert_eq!(step.reasoning, "done");
+        assert_eq!(step.reasoning, " done");
         assert_eq!(step.content, "answer");
     }
 
@@ -295,18 +346,56 @@ mod tests {
         let mut scanner = ThinkTagScanner::new();
         let step = scanner.push("<think>half a thought <");
         // The trailing "<" could begin "</think>", so it is withheld.
-        assert_eq!(step.reasoning, "half a thought ");
+        assert_eq!(step.reasoning, "half a thought");
         let step = scanner.finish();
-        assert_eq!(step.reasoning, "<");
+        assert_eq!(step.reasoning, " <");
         assert_eq!(step.content, "");
     }
 
     #[test]
-    fn leading_whitespace_before_think_is_content() {
+    fn whitespace_around_the_think_block_is_trimmed() {
         let mut scanner = ThinkTagScanner::new();
-        let step = scanner.push("\n<think>x</think>y");
-        assert_eq!(step.content, "\ny");
+        let step = scanner.push("\n<think>\nx\n</think>\n\ny");
+        assert_eq!(step.content, "y");
         assert_eq!(step.reasoning, "x");
+    }
+
+    /// Joined stream output equals the non-streaming split for every chunking.
+    /// Content trailing whitespace is not held back (the stream cannot know
+    /// it is trailing), so content is compared without it.
+    #[test]
+    fn streamed_reasoning_equals_the_whole_reply_at_every_stride() {
+        let cases = [
+            "<think>\nplan the fix\n</think>\n\nthe answer",
+            "<think>  lead and   interior\n\nspaces  </think>answer",
+            "<think>\n\n</think>\n\nonly whitespace reasoning",
+            "\n\n<think>x</think>\ny",
+            "<think>\nline one\n\nline two\n</think>\n\n```\ncode\n```",
+        ];
+        for text in cases {
+            let (want_content, want_reasoning) =
+                crate::openai::responses::split_reasoning_content(text, true);
+            let want_reasoning = want_reasoning.expect("case has a think block");
+            for stride in [1, 2, 3, 5, 8, usize::MAX] {
+                let mut scanner = ThinkTagScanner::new();
+                let (mut reasoning, mut content) = (String::new(), String::new());
+                let chars: Vec<char> = text.chars().collect();
+                for chunk in chars.chunks(stride.min(chars.len())) {
+                    let step = scanner.push(&chunk.iter().collect::<String>());
+                    reasoning.push_str(&step.reasoning);
+                    content.push_str(&step.content);
+                }
+                let tail = scanner.finish();
+                reasoning.push_str(&tail.reasoning);
+                content.push_str(&tail.content);
+                assert_eq!(reasoning, want_reasoning, "stride {stride}: {text:?}");
+                assert_eq!(
+                    content.trim_end(),
+                    want_content,
+                    "stride {stride}: {text:?}"
+                );
+            }
+        }
     }
 }
 
@@ -322,7 +411,8 @@ mod lead_or_inside_tests {
             assert!(step.content.is_empty());
             assert!(step.reasoning.is_empty());
             let tail = scanner.finish();
-            assert_eq!(tail.reasoning, text);
+            // The non-streaming fallback trims a marker-less reasoning body.
+            assert_eq!(tail.reasoning, text.trim());
             assert!(tail.content.is_empty());
 
             let mut plain_scanner = ThinkTagScanner::new();
@@ -337,7 +427,7 @@ mod lead_or_inside_tests {
     fn qwen_prefilled_think_streams_reasoning_without_an_opener() {
         let mut scanner = ThinkTagScanner::new_lead_or_inside_think();
         let first = scanner.push("Let me check the files\n");
-        assert_eq!(first.reasoning, "Let me check the files\n");
+        assert_eq!(first.reasoning, "Let me check the files");
         assert!(first.content.is_empty());
         let second = scanner.push("</think>The answer is 42");
         assert!(second.reasoning.is_empty());
