@@ -658,6 +658,10 @@ impl StreamTranslator {
     }
 }
 
+fn anthropic_ping() -> String {
+    event("ping", &json!({"type": "ping"}))
+}
+
 fn anthropic_stream_error(message: &str) -> String {
     event(
         "error",
@@ -740,6 +744,15 @@ fn bridge_stream(body: Body, id: String, model: String) -> Response {
             while let Some(end) = buffer.find("\n\n") {
                 let raw: String = buffer.drain(..end + 2).collect();
                 for line in raw.lines() {
+                    // An SSE comment is the upstream keep-alive (sent while
+                    // prefill produces no tokens); forward it as Anthropic's
+                    // `ping` so the client still sees traffic.
+                    if line.starts_with(':') {
+                        if tx.send(Ok(anthropic_ping())).await.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     let Some(data) = line.strip_prefix("data:") else {
                         continue;
                     };
@@ -838,6 +851,44 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), upstream_tx.closed())
             .await
             .expect("disconnect must release upstream even while no model output is arriving");
+    }
+
+    #[tokio::test]
+    async fn upstream_keep_alive_becomes_anthropic_ping() {
+        let (upstream_tx, upstream_rx) = mpsc::channel::<Result<String, std::io::Error>>(4);
+        let response = bridge_stream(
+            Body::from_stream(ReceiverStream::new(upstream_rx)),
+            "msg-ping".to_string(),
+            "m".to_string(),
+        );
+        let mut downstream = response.into_body().into_data_stream();
+        let _start = downstream.next().await.unwrap().unwrap();
+
+        // What axum's `KeepAlive::text("keep-alive")` writes during prefill.
+        upstream_tx
+            .send(Ok(":keep-alive\n\n".to_string()))
+            .await
+            .unwrap();
+        let ping = tokio::time::timeout(std::time::Duration::from_secs(1), downstream.next())
+            .await
+            .expect("a keep-alive must reach the client as a ping")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&ping).unwrap(),
+            "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+        );
+
+        upstream_tx
+            .send(Ok(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_string(),
+            ))
+            .await
+            .unwrap();
+        let text = downstream.next().await.unwrap().unwrap();
+        let text = std::str::from_utf8(&text).unwrap();
+        assert!(text.contains("content_block_start"), "{text}");
+        assert!(text.contains("\"text\":\"hi\""), "{text}");
     }
 
     #[test]
