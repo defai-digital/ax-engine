@@ -589,6 +589,8 @@ struct RequestState {
     ngram_in_think: bool,
     /// Grammar progress of a `response_format`-constrained request.
     json_grammar: Option<grammar::RequestGrammar>,
+    /// Unlimited-OCR-2 output page-count contract, built from the prompt.
+    page_guard: Option<crate::unlimited_ocr_page_guard::PageCountGuard>,
     /// Tokens emitted while inside an open think block (budget controller).
     think_emitted_tokens: u32,
     /// Recomputed each decode step: inside an open think block within the
@@ -1329,6 +1331,7 @@ impl RequestState {
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
             json_grammar: None,
+            page_guard: None,
             think_emitted_tokens: 0,
             think_soft_close_armed: false,
             ngram_self_tune: NgramSelfTuneState::default(),
@@ -2186,6 +2189,23 @@ impl MlxRunner {
             && self.mtp_model_policy.is_flash_next_candidate()
             && self.weights.qwen4_exp.is_some()
             && self.weights.qwen4_exp_mtp.is_some()
+    }
+
+    /// Whether the Unlimited-OCR-2 page-count guard constrains this request.
+    /// `ignore_eos` decodes to the budget, so no terminal can be banned or forced.
+    fn unlimited_ocr_page_guard_applies(&self, ctx: Option<&RunnerRequestContext>) -> bool {
+        self.cfg.model_family == "unlimited_ocr2"
+            && !ctx.is_some_and(|ctx| ctx.ignore_eos)
+            && crate::fastpath::unlimited_ocr_page_guard_enabled()
+    }
+
+    fn unlimited_ocr2_page_token_id(&self) -> Option<u32> {
+        self.weights
+            .layers
+            .first()?
+            .unlimited_ocr2
+            .as_ref()
+            .map(|weights| weights.config.page_token_id)
     }
 
     /// Grammar masks of the MTP verify rows after `drafts` (one more row
@@ -3547,13 +3567,17 @@ pub(crate) fn embedding_single_item_uses_gemma3_path(model_family: &str) -> bool
 /// Build the sampling parameters for a request exactly as the per-item decode
 /// path does (see `run_item`), so the batched path classifies and samples each
 /// request identically to its single-sequence decode.
-fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams {
+fn sampling_params_from_context(
+    ctx: &RunnerRequestContext,
+    page_guard_active: bool,
+) -> MlxSamplingParams {
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
         .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_presence_frequency_penalty(ctx.presence_penalty, ctx.frequency_penalty)
         .with_logit_bias_active(ctx.logit_bias_active)
         .with_json_grammar_active(ctx.json_grammar_active)
+        .with_page_guard_active(page_guard_active)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
         .with_seed((ctx.seed != 0 || ctx.seed_explicit).then_some(ctx.seed))
 }
@@ -3659,7 +3683,7 @@ impl MlxRunner {
             return false;
         }
         match batched_sampling_class(
-            sampling_params_from_context(ctx),
+            sampling_params_from_context(ctx, self.unlimited_ocr_page_guard_applies(Some(ctx))),
             ctx.deterministic_argmax_sampling,
         ) {
             Some(BatchedSamplingClass::Greedy) => true,
@@ -4001,7 +4025,8 @@ impl MlxRunner {
         if think_budget_controller_active(ctx.max_think_tokens, ctx.answer_reserve_tokens) {
             return false;
         }
-        let sampling = sampling_params_from_context(ctx);
+        let sampling =
+            sampling_params_from_context(ctx, self.unlimited_ocr_page_guard_applies(Some(ctx)));
         let states = self.states.lock();
         let Some(state) = states.get(&item.request_id) else {
             return false;
@@ -4091,7 +4116,10 @@ impl MlxRunner {
                     continue;
                 }
 
-                let sampling = sampling_params_from_context(ctx);
+                let sampling = sampling_params_from_context(
+                    ctx,
+                    self.unlimited_ocr_page_guard_applies(Some(ctx)),
+                );
                 let (rotate_sliding, rotate_slack) = cache_rotation_for_execution(
                     item.mode,
                     state.rotating_sliding_latch,
@@ -4741,7 +4769,12 @@ impl MlxRunner {
             .map(|&id| {
                 let ctx = contexts.iter().find(|c| c.request_id.0 == id);
                 let sampling = ctx
-                    .map(sampling_params_from_context)
+                    .map(|c| {
+                        sampling_params_from_context(
+                            c,
+                            self.unlimited_ocr_page_guard_applies(Some(c)),
+                        )
+                    })
                     .unwrap_or_else(MlxSamplingParams::greedy);
                 let class = ctx.and_then(|c| {
                     batched_sampling_class(sampling, c.deterministic_argmax_sampling)
@@ -5302,7 +5335,10 @@ impl ExecutionRunner for MlxRunner {
                 ctx.generated_len >= 1
                     && matches!(
                         batched_sampling_class(
-                            sampling_params_from_context(ctx),
+                            sampling_params_from_context(
+                                ctx,
+                                self.unlimited_ocr_page_guard_applies(Some(ctx))
+                            ),
                             ctx.deterministic_argmax_sampling,
                         ),
                         Some(BatchedSamplingClass::Greedy)
@@ -7264,6 +7300,7 @@ impl MlxRunner {
                     .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
                     .with_logit_bias_active(c.logit_bias_active)
                     .with_json_grammar_active(c.json_grammar_active)
+                    .with_page_guard_active(self.unlimited_ocr_page_guard_applies(Some(c)))
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
                     // Non-zero seeds are explicit for backward compatibility;
                     // `seed_explicit` additionally makes seed 0 reproducible.
@@ -7351,6 +7388,25 @@ impl MlxRunner {
             Ok(mask) => mask.flatten(),
             Err(error) => return errored_item_run(item.request_id, error.to_string()),
         };
+        let page_mask = if sampling.page_guard_active {
+            if is_prefill
+                && state.page_guard.is_none()
+                && let Some(page_token_id) = self.unlimited_ocr2_page_token_id()
+            {
+                let prompt = [state.prompt_prefix_tokens.as_slice(), token_ids].concat();
+                state.page_guard = crate::unlimited_ocr_page_guard::PageCountGuard::from_prompt(
+                    &prompt,
+                    page_token_id,
+                );
+            }
+            state.page_guard.as_mut().and_then(|guard| {
+                guard.observe(&state.generated_tokens);
+                guard.mask(self.cfg.vocab_size, terminal_token_ids)
+            })
+        } else {
+            None
+        };
+        let token_mask = crate::unlimited_ocr_page_guard::intersect_masks(token_mask, page_mask);
         let _token_mask_scope = crate::sampling::scoped_token_mask(token_mask);
         // A fresh media request must project its media before decode, regardless
         // of the reuse flag or a token-only scheduler claim. A cache miss here

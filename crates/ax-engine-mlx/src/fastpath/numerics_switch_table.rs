@@ -86,6 +86,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_DIR", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2", shipped: "on", class: SwitchClass::NonNumeric("draft") },
+    SwitchRow { env: "AX_MLX_UNLIMITED_OCR_PAGE_GUARD", shipped: "on", class: SwitchClass::NonNumeric("sampling") },
     SwitchRow { env: "AX_MLX_DFLASH2_WINDOW", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_BF16", shipped: "off", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_TREE_VERIFY", shipped: "off", class: SwitchClass::NonNumeric("draft") },

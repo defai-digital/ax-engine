@@ -43,7 +43,12 @@ if result.status == "failed":
 print(tokenizer.decode(result.output_tokens, skip_special_tokens=False))
 ```
 
-Outputs retain `<PAGE>`, `<BLOCK>` and `<FORK>` layout markers. A model
+Outputs retain `<PAGE>`, `<BLOCK>` and `<FORK>` layout markers. As in the
+released generation, a page-count guard keeps the output to one page per input
+image: EOS is blocked until every page has started, only EOS may follow an extra
+`<PAGE>` (so a complete output can end with one empty `<PAGE>` marker), and a
+page reaching 20,000 tokens is closed. `ignore_eos` disables it, and
+`AX_MLX_UNLIMITED_OCR_PAGE_GUARD=0` is the kill switch. A model
 directory without a native manifest is mapped automatically; a stale v1
 manifest must be regenerated. Unsupported sparse configurations, incomplete
 experts, protected router quantization and conflicting marker ids fail closed.

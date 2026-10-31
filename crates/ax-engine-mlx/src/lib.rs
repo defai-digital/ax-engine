@@ -31,6 +31,7 @@ pub mod qwen4_exp_ngram;
 pub mod qwen4_exp_qsa;
 pub mod unlimited_ocr;
 pub mod unlimited_ocr2;
+mod unlimited_ocr_page_guard;
 pub mod whisper;
 mod whisper_mel;
 mod whisper_tokenizer;
