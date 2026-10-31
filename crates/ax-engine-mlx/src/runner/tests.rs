@@ -4311,6 +4311,33 @@ fn legacy_grid_rung_requires_the_original_item_start() {
 }
 
 #[test]
+fn walk_down_grid_rungs_finds_the_nearest_stored_rung_below_the_floor() {
+    // Turn 2 of the 2026-10-31 agent probe: claim 9,952 floored to 9,216,
+    // but the only stored rung is turn 0's at 5,120.
+    let stored = |len: usize| len == 5120;
+    assert_eq!(walk_down_grid_rungs(9216, 1024, stored), Some(5120));
+    // The floored length itself wins when stored.
+    assert_eq!(
+        walk_down_grid_rungs(9216, 1024, |len| len == 9216),
+        Some(9216)
+    );
+    // An unfloored length is floored first; nothing stored yields None.
+    assert_eq!(walk_down_grid_rungs(9957, 1024, stored), Some(5120));
+    assert_eq!(walk_down_grid_rungs(9216, 1024, |_| false), None);
+    assert_eq!(walk_down_grid_rungs(9216, 0, |_| true), None);
+    // The walk never probes zero.
+    let mut probed = Vec::new();
+    assert_eq!(
+        walk_down_grid_rungs(2048, 1024, |len| {
+            probed.push(len);
+            false
+        }),
+        None
+    );
+    assert_eq!(probed, vec![2048, 1024]);
+}
+
+#[test]
 fn scheduler_gap_replay_runs_claimed_tokens_past_the_restored_rung() {
     let item = ax_engine_core::ExecutionItem {
         request_id: RequestId(23),

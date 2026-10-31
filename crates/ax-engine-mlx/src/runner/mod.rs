@@ -7941,22 +7941,43 @@ impl MlxRunner {
                         prefill_chunk_for_request
                     };
                     // The disabled path keeps its existing grid and final-token schedule.
+                    // Every item that starts on the grid captures its last
+                    // rung, not only the one that completes the prompt: with
+                    // the request chunk equal to the grid, that rung is
+                    // already a chunk boundary of this item, so the capture
+                    // changes no arithmetic, and a later turn's restore is
+                    // floored onto exactly these rungs. Capturing only in the
+                    // completing item left multi-turn agent prompts without
+                    // the rung the next turn needed (2026-10-31 probe).
                     let rung_head = if !semantic_capture
                         && self.cfg.linear_attention.is_some()
                         && !flash_next_mtp_prefill
-                        && prefill_completes_prompt
                         && crate::fastpath::linear_prefix_grid_rung_enabled()
                         && self.prefix_cache.lock().enabled()
                     {
-                        Self::linear_grid_rung_head_len(
+                        let head = Self::linear_grid_rung_head_len(
                             block_size_tokens as usize,
                             self.prefill_chunk,
                             prefill_chunk_for_request,
                             state.cache.seq_len(),
                             prefill_tokens.len(),
                         )
-                        // A rung this item just restored is already stored.
-                        .filter(|&head| head > 0 || prefix_cache.hits == 0)
+                        // A rung this item just restored is already stored;
+                        // one a previous item ended on is not.
+                        .filter(|&head| {
+                            head > 0 || prefix_cache.reused_tokens as usize != state.cache.seq_len()
+                        });
+                        tracing::debug!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            prior_seq_len = state.cache.seq_len(),
+                            item_len = prefill_tokens.len(),
+                            grid = self.prefill_chunk,
+                            request_chunk = prefill_chunk_for_request,
+                            completes_prompt = prefill_completes_prompt,
+                            rung_head = ?head,
+                            "linear grid rung capture decision"
+                        );
+                        head
                     } else {
                         None
                     };
@@ -9095,6 +9116,43 @@ impl MlxRunner {
         }
     }
 
+    /// The longest grid rung at or below `floored.len()` with a stored
+    /// snapshot, walking down one grid step at a time; `None` when no rung
+    /// down to the first is stored (the caller then keeps the floored length
+    /// and misses as before). `floored` is the claim cut at the grid floor.
+    fn nearest_stored_grid_rung(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        floored: &[u32],
+        grid: usize,
+        media_key: &str,
+        semantic_starts: &[u32],
+    ) -> Option<usize> {
+        let block_size = block_size_tokens as usize;
+        if block_size == 0 || grid == 0 || !grid.is_multiple_of(block_size) {
+            return None;
+        }
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, floored, media_key);
+        let block_hashes = block_aligned_prefix_hashes(floored, block_size);
+        let found = walk_down_grid_rungs(floored.len(), grid, |len| {
+            key.token_count = saturating_u32(len);
+            key.token_hash = block_hashes[len / block_size - 1];
+            self.bind_semantic_partition(&mut key, len, semantic_starts);
+            self.prefix_snapshot_present(&key, &floored[..len])
+        });
+        if found.is_some_and(|len| len < floored.len()) {
+            tracing::debug!(
+                target: "ax_engine_mlx::prefix_cache",
+                floored = floored.len(),
+                rung = ?found,
+                "floored restore rung has no snapshot; using the nearest stored rung below"
+            );
+        }
+        found
+    }
+
     /// Whether a prefix of `tokens` is stored in either tier (exact token
     /// equality, no LRU touch). Shared by the aligned walk and the exact-bound
     /// check so both consult the same two layers in the same order.
@@ -9367,7 +9425,7 @@ impl MlxRunner {
         if restore_gap_tokens(claim.len(), probed_tokens.len()) == 0 || claim.is_empty() {
             return probed_tokens;
         }
-        if gap_replay && claim.starts_with(&probed_tokens) {
+        if gap_replay && !probed_tokens.is_empty() && claim.starts_with(&probed_tokens) {
             tracing::debug!(
                 target: "ax_engine_mlx::prefix_cache",
                 claim = claim.len(),
@@ -9669,21 +9727,52 @@ impl MlxRunner {
         // restored, not only the priced choice: the terminal anchor is
         // block-aligned by construction, so the unpriced probe can land on a
         // planned cut too.
-        let Some(restore_len) = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len())
-            .or_else(|| {
-                grid_aligned_prefix_restore_len(
-                    item,
-                    reused_tokens.len(),
-                    self.prefill_chunk.max(1),
-                    self.prefix_gap_replay_enabled(),
-                )
-            })
-        else {
+        let planned_restore_len = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len());
+        let Some(restore_len) = planned_restore_len.or_else(|| {
+            grid_aligned_prefix_restore_len(
+                item,
+                reused_tokens.len(),
+                self.prefill_chunk.max(1),
+                self.prefix_gap_replay_enabled(),
+            )
+        }) else {
             // The scheduler already removed this prefix from the input slice.
             // Recompute prefix+suffix together instead of leaving a context gap.
             telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
             return telemetry;
         };
+        // The floor names the rung a cold run would have crossed, not one a
+        // snapshot was captured at: the longest probed prefix is usually the
+        // previous turn's end-of-prompt boundary, and the rung below it may
+        // never have been stored. Step down the grid to the nearest stored
+        // rung; the gap replay recomputes the claimed tokens above it at
+        // their real positions, so a shorter restore stays exact.
+        let restore_len = if planned_restore_len.is_none()
+            && self.prefix_gap_replay_enabled()
+            && restore_len < reused_tokens.len()
+        {
+            self.nearest_stored_grid_rung(
+                model_id,
+                block_size_tokens,
+                &reused_tokens[..restore_len],
+                self.prefill_chunk.max(1),
+                media_key,
+                prefill_hints
+                    .map(|hints| hints.semantic_cut_tokens.as_slice())
+                    .unwrap_or(&[]),
+            )
+            .unwrap_or(restore_len)
+        } else {
+            restore_len
+        };
+        tracing::debug!(
+            target: "ax_engine_mlx::prefix_cache",
+            claim = item.reused_prefix_token_slice.len(),
+            probed = probed_tokens.len(),
+            restore_len,
+            planned_cut = planned_restore_len.is_some(),
+            "prefix restore length"
+        );
         let reused_tokens = &reused_tokens[..restore_len];
         if reused_tokens.is_empty() {
             return telemetry;
@@ -18594,6 +18683,27 @@ fn grid_aligned_prefix_restore_len(
     } else {
         Some(restore_len)
     }
+}
+
+/// Walk grid rungs down from `floored_len` (itself floored onto `grid`) and
+/// return the first length `stored` accepts; `None` when none down to one
+/// grid step is stored.
+fn walk_down_grid_rungs(
+    floored_len: usize,
+    grid: usize,
+    mut stored: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    if grid == 0 {
+        return None;
+    }
+    let mut len = floored_len / grid * grid;
+    while len >= grid {
+        if stored(len) {
+            return Some(len);
+        }
+        len -= grid;
+    }
+    None
 }
 
 /// The restore length a planned cut pins, bypassing the cold-grid floor.
