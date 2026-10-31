@@ -14,7 +14,8 @@ use crate::openai::requests::OpenAiToolContract;
 use crate::openai::responses::{
     Gemma4ObjectScan, extract_bare_gemma4_tool_call_payload_at,
     extract_closed_xml_tool_call_payload_at, extract_gemma4_tool_call_payload_at,
-    extract_xml_tool_call_payload_at, find_bare_gemma4_call, scan_gemma4_object_body,
+    extract_xml_tool_call_payload_at, find_bare_gemma4_call, is_tool_call_payload_start,
+    scan_gemma4_object_body,
 };
 use crate::openai::schema::{OpenAiFunctionCall, OpenAiToolCall};
 
@@ -89,6 +90,9 @@ pub(crate) struct ToolCallStreamScanner {
     /// This span cannot stream raw arguments (the parser cannot delimit a
     /// contiguous arguments substring, or canonicalization would rewrite it).
     incremental_blocked: bool,
+    /// `finish` met an open `<tool_call>` span that never closed and did not
+    /// parse, i.e. the generation ended mid-call.
+    unparsed_xml_span_at_end: bool,
 }
 
 impl ToolCallStreamScanner {
@@ -119,6 +123,7 @@ impl ToolCallStreamScanner {
             header_sent: false,
             streamed_arguments: String::new(),
             incremental_blocked: false,
+            unparsed_xml_span_at_end: false,
         }
     }
 
@@ -131,6 +136,13 @@ impl ToolCallStreamScanner {
     /// excluded, including when incremental deltas already left the server.
     pub(crate) fn parsed_calls(&self) -> u32 {
         self.parsed_calls
+    }
+
+    /// After `finish`: the output ended inside an unterminated `<tool_call>`
+    /// that does not parse and no call was accepted. The same condition makes
+    /// the non-streaming path answer `incomplete_tool_call`.
+    pub(crate) fn ended_in_incomplete_call(&self) -> bool {
+        self.unparsed_xml_span_at_end && self.parsed_calls == 0
     }
 
     #[cfg(test)]
@@ -171,10 +183,20 @@ impl ToolCallStreamScanner {
         let mut events = self.drain_events(true);
         if let Some(kind) = self.span.take()
             && !self.buffer.is_empty()
-            && let Some((function, remaining)) = self.extract_span_at_start(kind, true)
         {
-            self.push_parsed_call(function, &mut events);
-            self.buffer = remaining;
+            match self.extract_span_at_start(kind, true) {
+                Some((function, remaining)) => {
+                    self.push_parsed_call(function, &mut events);
+                    self.buffer = remaining;
+                }
+                None => {
+                    self.unparsed_xml_span_at_end = kind == ToolSpanKind::Xml
+                        && self
+                            .buffer
+                            .strip_prefix("<tool_call>")
+                            .is_some_and(is_tool_call_payload_start);
+                }
+            }
         }
         if !self.buffer.is_empty() {
             let content = std::mem::take(&mut self.buffer);
@@ -1482,6 +1504,27 @@ mod tests {
         let calls = calls(&events);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "f");
+    }
+
+    #[test]
+    fn unterminated_unparsable_xml_call_is_flagged_incomplete_at_finish() {
+        let mut truncated = scanner();
+        let _ = truncated.push("ok <tool_call>{\"name\":\"f\",\"arguments\":{\"x\"");
+        let events = truncated.finish();
+        assert!(calls(&events).is_empty());
+        assert!(truncated.ended_in_incomplete_call());
+
+        // Prose quoting the marker and parsable spans are not incomplete.
+        for (text, incomplete) in [
+            ("Use a <tool_call> tag", false),
+            ("<tool_call>{\"name\":\"f\",\"arguments\":{}}", false),
+            ("<tool_call>", true),
+        ] {
+            let mut scanner = scanner();
+            let _ = scanner.push(text);
+            let _ = scanner.finish();
+            assert_eq!(scanner.ended_in_incomplete_call(), incomplete, "{text}");
+        }
     }
 
     #[test]

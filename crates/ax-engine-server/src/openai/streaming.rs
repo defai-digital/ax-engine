@@ -466,7 +466,7 @@ impl OpenAiStreamDriver {
                         return false;
                     }
                 }
-                if !self.flush_pipeline(tx, request_id, &model_id) {
+                if !self.flush_pipeline(tx, request_id, &model_id, payload.response.finish_reason) {
                     return false;
                 }
                 let mut usage = self
@@ -871,11 +871,33 @@ impl OpenAiStreamDriver {
     }
 
     /// End of stream: drain the tool scanner (an unterminated span may still
-    /// parse), then release the stop scanner's withheld tail.
-    fn flush_pipeline(&mut self, tx: &StreamEventSender, request_id: u64, model_id: &str) -> bool {
+    /// parse), then release the stop scanner's withheld tail. A natural stop
+    /// inside an unparsable `<tool_call>` ends the stream with an
+    /// `incomplete_tool_call` error instead of flushing the markup as content
+    /// with `finish_reason: "stop"`, matching the non-streaming response.
+    fn flush_pipeline(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+        finish_reason: Option<ax_engine_sdk::GenerateFinishReason>,
+    ) -> bool {
         if let Some(mut tool_scanner) = self.pipeline.tool_scanner.take() {
-            let events = tool_scanner.finish();
+            let mut events = tool_scanner.finish();
+            let incomplete = tool_scanner.ended_in_incomplete_call()
+                && crate::openai::responses::tool_call_finish_allowed(finish_reason);
             self.pipeline.tool_scanner = Some(tool_scanner);
+            if incomplete {
+                // The withheld span is the trailing content event; drop it and
+                // emit anything that resolved before it.
+                if matches!(events.last(), Some(ToolScanEvent::Content(_))) {
+                    events.pop();
+                }
+                if self.emit_tool_events(tx, request_id, model_id, events) {
+                    send_stream_error(tx, crate::openai::responses::incomplete_tool_call_error());
+                }
+                return false;
+            }
             if !self.emit_tool_events(tx, request_id, model_id, events) {
                 return false;
             }
@@ -2548,14 +2570,16 @@ mod openai_stream_driver_tests {
     }
 
     #[test]
-    fn unparsed_tool_span_does_not_finish_tool_calls() {
-        // Incremental deltas off: no header is sent, matching non-streaming,
-        // which suppresses a span that never parses.
+    fn unparsed_tool_span_ends_with_incomplete_tool_call() {
+        // A natural stop inside a span that never parses ends with an
+        // `incomplete_tool_call` error, as the non-streaming response does,
+        // instead of flushing the markup with `finish_reason: "stop"`.
+        // Incremental deltas off: no header is sent.
         let partial = "<tool_call>{\"name\":\"lookup\",\"arguments\":{\"city\":\"Tai";
         let (tx, mut rx) = mpsc::channel(64);
         let mut driver = chat_driver(&[]);
         assert!(driver.process_text(&tx, 1, "qwen3", partial.to_string()));
-        assert!(driver.handle_event(
+        assert!(!driver.handle_event(
             &tx,
             GenerateStreamEvent::Response(GenerateStreamResponseEvent {
                 response: sample_response(),
@@ -2567,7 +2591,8 @@ mod openai_stream_driver_tests {
             .iter()
             .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
             .collect();
-        assert_eq!(reasons, vec!["stop"]);
+        assert!(reasons.is_empty(), "{reasons:?}");
+        assert_incomplete_tool_call_error(&payloads);
         assert!(
             payloads
                 .iter()
@@ -2581,7 +2606,7 @@ mod openai_stream_driver_tests {
         let mut driver = chat_driver(&[]);
         driver.pipeline.tool_scanner = Some(ToolCallStreamScanner::with_incremental(None, true));
         assert!(driver.process_text(&tx, 1, "qwen3", partial.to_string()));
-        assert!(driver.handle_event(
+        assert!(!driver.handle_event(
             &tx,
             GenerateStreamEvent::Response(GenerateStreamResponseEvent {
                 response: sample_response(),
@@ -2599,11 +2624,11 @@ mod openai_stream_driver_tests {
             .iter()
             .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
             .collect();
-        assert_eq!(
-            reasons,
-            vec!["stop"],
-            "finish_reason must not claim tool_calls when no call parsed"
+        assert!(
+            reasons.is_empty(),
+            "finish_reason must not claim tool_calls when no call parsed: {reasons:?}"
         );
+        assert_incomplete_tool_call_error(&payloads);
         assert_eq!(
             driver
                 .pipeline
@@ -2612,6 +2637,23 @@ mod openai_stream_driver_tests {
                 .expect("scanner")
                 .parsed_calls(),
             0
+        );
+    }
+
+    fn assert_incomplete_tool_call_error(payloads: &[Value]) {
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload["error"]["code"] == "incomplete_tool_call"),
+            "{payloads:?}"
+        );
+        assert!(
+            payloads
+                .iter()
+                .all(|payload| !payload["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("<tool_call>"))),
+            "the unparsed span must not leak as content"
         );
     }
 

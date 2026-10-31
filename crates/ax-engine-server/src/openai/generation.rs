@@ -342,6 +342,9 @@ pub(crate) fn validate_openai_response_format(
     response: &GenerateResponse,
     options: &OpenAiResponseOptions,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if crate::openai::responses::output_ends_in_incomplete_tool_call(response, options) {
+        return Err(crate::openai::responses::incomplete_tool_call_response());
+    }
     if !options.validate_json_object && options.json_schema.is_none() {
         return Ok(());
     }

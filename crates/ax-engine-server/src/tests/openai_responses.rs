@@ -1552,6 +1552,117 @@ fn usage_does_not_report_scheduler_affinity_for_partial_mlx_telemetry() {
     );
 }
 
+#[test]
+fn prompt_opened_think_routes_marker_less_output_to_reasoning_for_any_qwen_chatml_model() {
+    // `qwen3` is not on the Qwen thinking-model id list, but a Qwen-ChatML
+    // thinking prompt still pre-fills `<think>`; a tool call written in that
+    // unclosed block is reasoning, not an executable call.
+    let response = sample_generate_response(
+        "Maybe <tool_call>{\"name\":\"rm\",\"arguments\":{}}</tool_call> would work",
+        Vec::new(),
+        Vec::new(),
+    );
+    let options = OpenAiResponseOptions {
+        include_reasoning: true,
+        prompt_opens_think: true,
+        parse_tool_calls: true,
+        ..Default::default()
+    };
+    let chat = openai_chat_completion_response(
+        &response,
+        "chatcmpl-think".into(),
+        options.clone(),
+        None,
+        None,
+    );
+    let choice = &chat.choices[0];
+    assert!(choice.message.tool_calls.is_none());
+    assert_eq!(choice.message.content, "");
+    assert_eq!(choice.finish_reason, Some("stop"));
+    assert!(validate_openai_response_format(&response, &options).is_ok());
+
+    // Without the prompt flag the historical behavior stands.
+    let chat = openai_chat_completion_response(
+        &response,
+        "chatcmpl-think".into(),
+        OpenAiResponseOptions {
+            prompt_opens_think: false,
+            ..options
+        },
+        None,
+        None,
+    );
+    assert!(chat.choices[0].message.tool_calls.is_some());
+}
+
+#[test]
+fn unterminated_unparsable_tool_call_fails_as_incomplete_tool_call() {
+    let options = OpenAiResponseOptions {
+        parse_tool_calls: true,
+        ..Default::default()
+    };
+    let truncated = "I'll check.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"pa";
+    let response = sample_generate_response(truncated, Vec::new(), Vec::new());
+    let error = validate_openai_response_format(&response, &options)
+        .expect_err("a natural stop inside an unparsable call must not finish as stop");
+    assert_eq!(error.0, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("incomplete_tool_call")
+    );
+
+    // A length cut keeps its partial text and `length` finish.
+    let mut length_cut = sample_generate_response(truncated, Vec::new(), Vec::new());
+    length_cut.finish_reason = Some(GenerateFinishReason::MaxOutputTokens);
+    assert!(validate_openai_response_format(&length_cut, &options).is_ok());
+
+    // Unterminated but parsable calls still succeed (EOF fallback).
+    let parsable = sample_generate_response(
+        "<tool_call>{\"name\": \"read_file\", \"arguments\": {}}",
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(validate_openai_response_format(&parsable, &options).is_ok());
+
+    // Prose that quotes the marker is content, as is any output when tool
+    // parsing is off.
+    let prose =
+        sample_generate_response("Wrap calls in a <tool_call> tag.", Vec::new(), Vec::new());
+    assert!(validate_openai_response_format(&prose, &options).is_ok());
+    assert!(validate_openai_response_format(&response, &OpenAiResponseOptions::default()).is_ok());
+}
+
+#[test]
+fn gemma4_arguments_beyond_the_depth_cap_do_not_parse() {
+    let nested = |depth: usize| {
+        format!(
+            "<|tool_call>call:f{{v:{}1{}}}<tool_call|>",
+            "[".repeat(depth),
+            "]".repeat(depth)
+        )
+    };
+    let options = OpenAiResponseOptions {
+        parse_tool_calls: true,
+        ..Default::default()
+    };
+    let parse = |text: String| {
+        openai_chat_completion_response(
+            &sample_generate_response(&text, Vec::new(), Vec::new()),
+            "chatcmpl-gemma".into(),
+            options.clone(),
+            None,
+            None,
+        )
+        .choices[0]
+            .message
+            .tool_calls
+            .clone()
+    };
+    assert!(parse(nested(8)).is_some());
+    // Far past the cap: rejected without recursing through every level.
+    assert!(parse(nested(100_000)).is_none());
+}
+
 fn sample_generate_response(
     output_text: &str,
     output_tokens: Vec<u32>,

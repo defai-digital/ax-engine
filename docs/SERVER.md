@@ -533,7 +533,12 @@ than silently dropped.
   0-based stream-wide `index`, `id`, `type`, `function.name`, and the full
   `function.arguments` string, with `finish_reason:"tool_calls"` in the final
   chunk. Marker text withheld during scanning never leaks into content, and
-  unparseable tool-ish spans fall back to content deltas. Argument text is
+  unparseable tool-ish spans fall back to content deltas. On native MLX,
+  output that stops naturally inside an unterminated `<tool_call>` payload
+  that does not parse returns `502 incomplete_tool_call` (non-streaming) or
+  ends the stream with an `incomplete_tool_call` error event, instead of
+  returning the markup as content with `finish_reason:"stop"`; a
+  `max_tokens` cut keeps `finish_reason:"length"`. Argument text is
   not streamed token-by-token — a call is emitted once complete. GLM 4.x and
   GPT-OSS tool streams keep the previous buffered single-chunk behavior
   (their tool markers do not survive the incremental stream decode).
