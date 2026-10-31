@@ -5,7 +5,22 @@ streaming chat and runtime metrics. The CLI remains available; the TUI is retire
 The app targets Apple Silicon and macOS 26.2 or later. Inference stays in the
 AX Engine runtime; the GUI does not change model support or certification.
 
-## Build and open
+## Install and update
+
+Install the signed app and its bundled runtime with:
+
+```bash
+curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
+```
+
+Quit AX Engine first. Open AX Engine from Applications after installation.
+Homebrew, Python and Xcode are not required. Run the same command again to
+upgrade; models, settings and conversations are preserved. Use
+`bash -s -- --verify-only` to verify the download without installing. Automatic
+app updates remain future work. See the [README](../README.md#install-ax-engine-for-macos)
+for requirements and installer options.
+
+## Build and open from source
 
 Install Xcode with the macOS 26 SDK and Swift 6 support, plus Python 3.12 or
 later with Pillow 13.0.0. From this checkout:
@@ -26,7 +41,8 @@ rounded-plate and multi-resolution checks used by AX Code Desktop.
 
 ## Runtime setup
 
-Install AX Engine using the main README's installation instructions. The app
+The curl distribution bundles its runtime. For a source build, install a runtime
+using the README's advanced CLI/Python instructions or bundle one explicitly. The app
 honors an explicit executable in Settings or `AX_ENGINE_BIN`, then searches
 an app-bundled runtime, PATH and standard install directories (including the curl
 installer at `~/.local/ax-engine/ax-engine`), the complete AX Code managed

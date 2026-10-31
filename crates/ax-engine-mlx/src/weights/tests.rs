@@ -59,6 +59,55 @@ fn mmap_weights_env_requires_a_nonzero_nonempty_value() {
 }
 
 #[test]
+fn merge_weight_file_tensors_rejects_duplicate_names_with_both_sources() {
+    let first_path = PathBuf::from("model-00001-of-00002.safetensors");
+    let second_path = PathBuf::from("model-00002-of-00002.safetensors");
+    let mut name_map = HashMap::new();
+    let mut source_files = HashMap::new();
+    merge_weight_file_tensors(
+        &mut name_map,
+        &mut source_files,
+        &first_path,
+        HashMap::from([
+            (
+                "shared.weight".to_string(),
+                zeros(&[1], MlxDtype::Float32, None),
+            ),
+            (
+                "first-only.weight".to_string(),
+                zeros(&[1], MlxDtype::Float32, None),
+            ),
+        ]),
+    )
+    .expect("first shard should merge");
+
+    let error = merge_weight_file_tensors(
+        &mut name_map,
+        &mut source_files,
+        &second_path,
+        HashMap::from([(
+            "shared.weight".to_string(),
+            zeros(&[1], MlxDtype::Float32, None),
+        )]),
+    )
+    .expect_err("a duplicate tensor must fail closed");
+    let message = match error {
+        WeightLoadError::DuplicateTensor(message) => message,
+        other => panic!("expected duplicate-tensor error, got {other}"),
+    };
+    assert!(message.contains("shared.weight"), "{message}");
+    assert!(
+        message.contains(first_path.to_str().expect("UTF-8 path")),
+        "{message}"
+    );
+    assert!(
+        message.contains(second_path.to_str().expect("UTF-8 path")),
+        "{message}"
+    );
+    assert_eq!(name_map.len(), 2, "the first shard remains intact");
+}
+
+#[test]
 fn default_draft_head_requantizes_dense_and_wide_quantized_heads() {
     // Dense head: requantized when the dense switch is on.
     assert_eq!(
@@ -726,7 +775,7 @@ fn apply_hf_sanitize_transforms_lifts_norm_deltas_and_swaps_conv1d_axes() {
         make_spec("layers.0.conv1d", NativeTensorRole::LinearAttentionConv1d),
     ];
 
-    apply_hf_sanitize_transforms(&specs, &mut name_map, true, true);
+    apply_hf_sanitize_transforms(&specs, &mut name_map, true, true, true);
 
     let sanitized_norm = name_map
         .get("layers.0.attn_norm")
@@ -836,7 +885,7 @@ fn apply_hf_sanitize_transforms_hf_norm_only_lifts_norm_but_preserves_conv1d_axe
         make_spec("conv1d", NativeTensorRole::LinearAttentionConv1d),
     ];
 
-    apply_hf_sanitize_transforms(&specs, &mut name_map, false, true);
+    apply_hf_sanitize_transforms(&specs, &mut name_map, false, true, true);
 
     let norm_out = name_map.get("attn_norm").expect("attn_norm present");
     for (got, want) in norm_out
@@ -1038,6 +1087,44 @@ fn auto_detect_returns_none_for_sanitized_norm_with_hf_conv1d() {
     assert_eq!(chosen, WeightSanitize::None);
 }
 
+#[test]
+fn nemotron_hf_conv_only_swaps_conv_without_lifting_norms() {
+    let norm_data = vec![1.0_f32; 256];
+    let gated_norm_data = vec![0.011_f32; 256];
+    let (specs, mut name_map) =
+        fixture_layer0_linear_attention(&norm_data, &gated_norm_data, &[64, 1, 4]);
+
+    assert_eq!(
+        auto_detect_weight_sanitize("nemotron_h", &specs, &name_map),
+        WeightSanitize::HfConvOnly
+    );
+    apply_hf_sanitize_transforms(&specs, &mut name_map, true, false, false);
+
+    assert_eq!(
+        name_map
+            .get("layers.0.attn_norm")
+            .expect("attention norm")
+            .data_f32(),
+        norm_data.as_slice(),
+        "multiplicative attention norms must not be lifted"
+    );
+    assert_eq!(
+        name_map
+            .get("layers.0.linear_attn.gated_norm")
+            .expect("gated norm")
+            .data_f32(),
+        gated_norm_data.as_slice(),
+        "gated norms must remain untouched"
+    );
+    assert_eq!(
+        name_map
+            .get("layers.0.linear_attn.conv1d")
+            .expect("conv1d")
+            .shape(),
+        vec![64, 4, 1]
+    );
+}
+
 /// Dense (non-hybrid) fixture: one layer of ordinary block norms plus the
 /// final norm, mirroring a dense checkpoint's block-level RMSNorm tensors
 /// (used for both Gemma-family and non-Gemma family cases).
@@ -1173,7 +1260,7 @@ fn apply_hf_sanitize_transforms_skips_non_norm_non_conv1d_roles() {
         length_bytes: 4,
     }];
 
-    apply_hf_sanitize_transforms(&specs, &mut name_map, true, true);
+    apply_hf_sanitize_transforms(&specs, &mut name_map, true, true, true);
 
     let preserved = name_map.get("q_proj").expect("q_proj tensor still present");
     let values = preserved.data_f32();
@@ -1226,7 +1313,7 @@ fn apply_hf_sanitize_transforms_preserves_norm_dtype() {
         length_bytes: 2,
     }];
 
-    apply_hf_sanitize_transforms(&specs, &mut name_map, true, true);
+    apply_hf_sanitize_transforms(&specs, &mut name_map, true, true, true);
 
     let sanitized = name_map
         .get("layers.0.attn_norm")
@@ -1415,6 +1502,61 @@ fn load_glm_mla_attention_weights_splits_deepseek_kv_b_projection() {
     assert!(weights.embed_q.scales.is_none());
     assert!(weights.unembed_out.scales.is_none());
     assert!(name_map.is_empty());
+}
+
+#[test]
+fn split_deepseek_kv_b_projection_preserves_mxfp_source_modes() {
+    let mla_attention = NativeMlaAttentionConfig {
+        q_lora_rank: Some(1),
+        kv_lora_rank: Some(32),
+        qk_nope_head_dim: Some(32),
+        qk_rope_head_dim: Some(1),
+        value_head_dim: Some(32),
+    };
+    let dense_values = vec![0.25_f32; 32 * 32]
+        .into_iter()
+        .chain(vec![0.5_f32; 32 * 32])
+        .collect::<Vec<_>>();
+    let dense = MlxArray::from_f32_slice(&dense_values);
+    let dense = astype(&reshape(&dense, &[64, 32], None), MlxDtype::Bfloat16, None);
+
+    for (source_mode, source_bits, mode_name) in [
+        (MlxQuantizationMode::Mxfp4, 4, "mxfp4"),
+        (MlxQuantizationMode::Mxfp8, 8, "mxfp8"),
+    ] {
+        let mut parts = quantize(&dense, Some(32), Some(source_bits), source_mode, None, None);
+        assert_eq!(parts.len(), 2);
+        let weight = parts.remove(0);
+        let scales = parts.remove(0);
+        let mut source = QuantizedWeight::new(weight, Some(scales), None);
+        source.group_size = 32;
+        source.bits = source_bits;
+        source.mode = mode_name.to_string();
+
+        let (embed_q, unembed_out) = split_deepseek_kv_b_projection(source, &mla_attention, 1)
+            .expect("MXFP KV-B should dequantize with its declared mode");
+        for (split, expected_value) in [(embed_q, 0.25), (unembed_out, 0.5)] {
+            let dense = dequantize(
+                &split.weight,
+                split.scales.as_ref().expect("affine scales"),
+                split.biases.as_ref(),
+                Some(split.group_size),
+                Some(split.bits),
+                None,
+            );
+            let dense = astype(&dense, MlxDtype::Float32, None);
+            eval(&[&dense]);
+            assert_eq!(dense.shape(), vec![1, 32, 32]);
+            assert!(
+                dense
+                    .data_f32()
+                    .iter()
+                    .all(|value| (value - expected_value).abs() < 1e-6),
+                "{mode_name} split changed the source values: {:?}",
+                dense.data_f32()
+            );
+        }
+    }
 }
 
 fn glm_quantized_weight(group_size: i32, bits: i32, with_biases: bool) -> QuantizedWeight {

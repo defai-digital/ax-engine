@@ -18,6 +18,9 @@ const RECOVERY: Duration = Duration::from_secs(10);
 pub struct PressureLatch {
     level: HostPressure,
     recovery: Option<(HostPressure, Duration)>,
+    /// A run strictly below the recovery candidate, so a two-level drop
+    /// does not restart its interval when the first level is reached.
+    lower: Option<(HostPressure, Duration)>,
     last_observed: Option<Duration>,
 }
 
@@ -25,6 +28,7 @@ impl PressureLatch {
     pub fn observe(&mut self, sample: Option<u32>, now: Duration) -> HostPressure {
         if self.last_observed.is_some_and(|last| now < last) {
             self.recovery = None;
+            self.lower = None;
             // Keep the high-water mark: a later jump back to the old time
             // must not count an interval that the clock never observed.
             self.level = self.level.max(match sample {
@@ -41,22 +45,33 @@ impl PressureLatch {
             Some(4 | 8) => HostPressure::Critical,
             _ => {
                 self.recovery = None;
+                self.lower = None;
                 return self.level;
             }
         };
         if observed >= self.level {
             self.level = observed;
             self.recovery = None;
-        } else {
-            match self.recovery {
-                Some((candidate, since)) if observed <= candidate => {
-                    if now.saturating_sub(since) >= RECOVERY {
-                        self.level = candidate;
-                        self.recovery = None;
-                    }
-                }
-                _ => self.recovery = Some((observed, now)),
+            self.lower = None;
+            return self.level;
+        }
+        match self.recovery {
+            Some((candidate, _)) if observed <= candidate => match self.lower {
+                Some((lower, _)) if observed <= lower => {}
+                _ if observed < candidate => self.lower = Some((observed, now)),
+                _ => self.lower = None,
+            },
+            _ => {
+                self.recovery = Some((observed, now));
+                self.lower = None;
             }
+        }
+        while let Some((candidate, since)) = self.recovery {
+            if now.saturating_sub(since) < RECOVERY {
+                break;
+            }
+            self.level = candidate;
+            self.recovery = self.lower.take();
         }
         self.level
     }
@@ -104,6 +119,19 @@ mod tests {
             at(Some(1), 32);
             assert_eq!(at(Some(1), 42), HostPressure::Normal);
         }
+    }
+
+    #[test]
+    fn two_level_recovery_counts_the_lower_run_from_its_start() {
+        let mut latch = PressureLatch::default();
+        let mut at = |level, time| latch.observe(level, Duration::from_secs(time));
+        assert_eq!(at(Some(4), 0), HostPressure::Critical);
+        assert_eq!(at(Some(2), 1), HostPressure::Critical);
+        for time in 2..11 {
+            assert_eq!(at(Some(1), time), HostPressure::Critical);
+        }
+        assert_eq!(at(Some(1), 11), HostPressure::Warning);
+        assert_eq!(at(Some(1), 12), HostPressure::Normal);
     }
 
     #[test]

@@ -119,7 +119,13 @@ impl OpenAiToolContract {
         let tools = value.and_then(Value::as_array)?;
         let mut contract = OpenAiToolContract::default();
         for tool in tools {
-            let Some(function) = tool.get("function").and_then(Value::as_object) else {
+            // Accept the nested chat shape and the flat Responses shape the
+            // prompt renderer also accepts.
+            let Some(function) = tool
+                .get("function")
+                .and_then(Value::as_object)
+                .or_else(|| tool.as_object())
+            else {
                 continue;
             };
             let Some(name) = function.get("name").and_then(Value::as_str) else {
@@ -614,6 +620,18 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 .to_string(),
         ));
     }
+    if live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && native_family == Some("qwen4_exp")
+        && !crate::metadata::model_supports_image(live)
+        && messages_contain_inline_media(&request.messages)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "Flash Next image input needs a loadable vision tower; this pack has none the runtime can load"
+                .to_string(),
+        ));
+    }
     let chat_template =
         chat::resolve_chat_template(live.model_id.as_ref(), artifact_family.as_deref());
     let streaming_reasoning_supported = live.runtime_report.selected_backend
@@ -641,6 +659,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
     )?;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
         !input_tokens.is_empty() || messages_contain_inline_media(&request.messages),
@@ -837,6 +856,7 @@ fn validate_native_chat_artifacts(
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     chat::validate_native_chat_artifact(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         live.session_config.mlx_model_artifacts_dir.as_deref(),
     )
     .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))
@@ -857,6 +877,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         openai_chat_prompt_render_options_for_live(&request, live).enable_thinking;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
         true,
@@ -923,6 +944,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         openai_chat_prompt_render_options_for_live(&request, live).enable_thinking;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
         request.tools.as_ref(),
         request.tool_choice.as_ref(),
         true,
@@ -1020,6 +1042,10 @@ fn build_openai_generate_request(
 /// Append `instruction` to a leading text system message, or add one.
 /// A leading multi-part system message is left alone.
 fn add_system_instruction(messages: &mut Vec<OpenAiChatMessage>, instruction: &str) {
+    // An empty conversation must still reach the empty-messages rejection.
+    if messages.is_empty() {
+        return;
+    }
     match messages.first_mut() {
         Some(OpenAiChatMessage {
             role,
@@ -1553,12 +1579,15 @@ pub(crate) fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Optio
 
 fn reject_gemma4_tools_when_ax_cannot_render_them(
     model_id: &str,
+    family_hint: Option<&str>,
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
     cannot_render_ax_gemma4_dsl: bool,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    // Resolve like the prompt renderer (ADR-025): a Gemma 4 manifest family
+    // renders the Gemma 4 DSL even when the model id does not say so.
     if !matches!(
-        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::Gemma4
     ) || !openai_tools_are_enabled(tools, tool_choice)
         || !cannot_render_ax_gemma4_dsl
@@ -1782,6 +1811,26 @@ fn reject_unsupported_completion_logprobs(
 const REASONING_ENABLE_STRINGS: &[&str] = &["true", "auto", "exposed", "include", "enabled"];
 const REASONING_DISABLE_STRINGS: &[&str] = &["false", "off", "disabled"];
 
+/// On/off reading of a reasoning string. Disable words win, then the enable
+/// set; any other string (effort levels, `"on"`, `"none"`) does not enable.
+fn reasoning_string_switch_is_enabled(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    if REASONING_DISABLE_STRINGS.contains(&value.as_str()) {
+        return false;
+    }
+    REASONING_ENABLE_STRINGS.contains(&value.as_str())
+}
+
+/// A `reasoning` object's `enabled` / `include` / `mode` value. Strings use
+/// the same on/off sets as a bare reasoning string. Other JSON types keep
+/// [`openai_value_is_present`].
+fn reasoning_switch_value_is_enabled(value: &Value) -> bool {
+    match value {
+        Value::String(value) => reasoning_string_switch_is_enabled(value),
+        other => openai_value_is_present(other),
+    }
+}
+
 pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     let Some(reasoning) = reasoning else {
         return false;
@@ -1789,14 +1838,12 @@ pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     match reasoning {
         Value::Null => false,
         Value::Bool(value) => *value,
-        Value::String(value) => {
-            REASONING_ENABLE_STRINGS.contains(&value.trim().to_ascii_lowercase().as_str())
-        }
+        Value::String(value) => reasoning_string_switch_is_enabled(value),
         Value::Object(object) => object
             .get("enabled")
             .or_else(|| object.get("include"))
             .or_else(|| object.get("mode"))
-            .map(openai_value_is_present)
+            .map(reasoning_switch_value_is_enabled)
             .unwrap_or(!object.is_empty()),
         value => openai_value_is_present(value),
     }
@@ -1879,6 +1926,50 @@ fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_contract_accepts_flat_function_tools() {
+        let tools = serde_json::json!([{
+            "type": "function",
+            "name": "edit",
+            "parameters": {"type": "object", "properties": {"filePath": {}}}
+        }]);
+        let contract = OpenAiToolContract::from_tools(Some(&tools)).expect("contract");
+        assert_eq!(contract.canonical_tool_name("edit"), "edit");
+        assert!(contract.tools["edit"].properties.contains("filePath"));
+    }
+
+    #[test]
+    fn system_instruction_is_not_added_to_an_empty_conversation() {
+        let mut messages = Vec::new();
+        add_system_instruction(&mut messages, "Respond only with JSON.");
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn gemma4_tool_gate_uses_the_manifest_family() {
+        let tools = serde_json::json!([{"type": "function", "function": {"name": "f"}}]);
+        assert!(
+            reject_gemma4_tools_when_ax_cannot_render_them(
+                "local-model",
+                Some("gemma4"),
+                Some(&tools),
+                None,
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            reject_gemma4_tools_when_ax_cannot_render_them(
+                "local-model",
+                None,
+                Some(&tools),
+                None,
+                true
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn canonical_arguments_never_steal_a_declared_sibling_property() {
@@ -1973,5 +2064,61 @@ mod tests {
         assert!(openai_value_is_present(&json!(0.5)));
         assert!(openai_tool_choice_enables_tool_call(&json!(-1)));
         assert!(openai_tool_choice_enables_tool_call(&json!(0.5)));
+    }
+
+    #[test]
+    fn reasoning_object_string_switches_follow_the_on_off_sets() {
+        // String values of enabled/include/mode are on/off switches, same as a
+        // bare reasoning string. Disable words and unsupported effort-like
+        // strings must not enable thinking. Bool switches and a non-empty
+        // object with no switch key keep their existing meaning.
+        for (value, enabled) in [
+            (json!({"enabled": "off"}), false),
+            (json!({"enabled": "false"}), false),
+            (json!({"enabled": "disabled"}), false),
+            (json!({"include": "off"}), false),
+            (json!({"mode": "disabled"}), false),
+            (json!({"enabled": "OFF"}), false),
+            (json!({"mode": " False "}), false),
+            (json!({"include": " Disabled "}), false),
+            (json!({"enabled": "true"}), true),
+            (json!({"enabled": "enabled"}), true),
+            (json!({"include": "auto"}), true),
+            (json!({"mode": "exposed"}), true),
+            (json!({"mode": "include"}), true),
+            (json!({"enabled": " TRUE "}), true),
+            (json!({"mode": "Enabled"}), true),
+            (json!({"enabled": "high"}), false),
+            (json!({"mode": "low"}), false),
+            (json!({"include": "medium"}), false),
+            (json!({"enabled": "max"}), false),
+            (json!({"mode": "none"}), false),
+            (json!({"enabled": "on"}), false),
+            (json!({"enabled": "off", "mode": "enabled"}), false),
+            (json!({"include": "true", "mode": "off"}), true),
+            (json!({"mode": "off", "effort": "high"}), false),
+            (json!({"enabled": false}), false),
+            (json!({"enabled": true}), true),
+            (json!({"enabled": null}), false),
+            (json!({"summary": "auto"}), true),
+            (json!({}), false),
+            (json!("off"), false),
+            (json!("false"), false),
+            (json!("disabled"), false),
+            (json!("OFF"), false),
+            (json!(" true "), true),
+            (json!("Enabled"), true),
+            (json!("high"), false),
+            (json!(true), true),
+            (json!(false), false),
+            (json!(null), false),
+        ] {
+            assert_eq!(
+                openai_reasoning_is_enabled(Some(&value)),
+                enabled,
+                "{value}"
+            );
+        }
+        assert!(!openai_reasoning_is_enabled(None));
     }
 }

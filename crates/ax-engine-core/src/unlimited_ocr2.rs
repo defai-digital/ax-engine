@@ -58,15 +58,26 @@ impl UnlimitedOcr2Config {
             ("dash_image_only", serde_json::json!(true)),
             ("image_bucket_constraint", serde_json::json!(true)),
         ] {
-            if s.get(key) != Some(&expected) {
+            // `10000` and `10000.0` are distinct `Value`s but the same setting.
+            let matches = match (s.get(key), &expected) {
+                (Some(serde_json::Value::Number(got)), serde_json::Value::Number(want)) => {
+                    got.as_f64() == want.as_f64()
+                }
+                (got, want) => got == Some(want),
+            };
+            if !matches {
                 return Err(format!(
                     "unsupported Unlimited-OCR-2 {key}: expected {expected}"
                 ));
             }
         }
-        if s.get("sparse_attention_freq") != Some(&serde_json::json!(vec![1; layers]))
-            || s.get("sparse_inconsistency_freq").is_some()
-        {
+        let every_layer = s
+            .get("sparse_attention_freq")
+            .and_then(|v| v.as_array())
+            .is_some_and(|freq| {
+                freq.len() == layers && freq.iter().all(|v| v.as_f64() == Some(1.0))
+            });
+        if !every_layer || s.get("sparse_inconsistency_freq").is_some() {
             return Err("Unlimited-OCR-2 requires independent DASH routing at every layer".into());
         }
         let integer = |key: &str| -> Result<usize, String> {
@@ -388,14 +399,19 @@ impl Ocr2PageState {
         for id in ids {
             if *id == cfg.page_token_id {
                 self.response_markers += 1;
-                self.decode_page = (self.decode_page + 1).min(self.page_count);
+            }
+            // A marker past the last page continues that page: restarting its
+            // token index would reuse 2D RoPE coordinates already emitted.
+            if *id == cfg.page_token_id && self.decode_page < self.page_count {
+                self.decode_page += 1;
                 self.decode_tok = self.prefill_counts[self.decode_page];
             } else {
                 self.decode_tok += 1;
             }
             self.coordinates.push((self.decode_tok, self.decode_page));
             self.image_pages.push(None);
-            self.query_pages.push(self.response_markers.checked_sub(1));
+            // Same mapping as prefill: response page `p` queries image page `p - 1`.
+            self.query_pages.push(self.decode_page.checked_sub(1));
         }
     }
 
@@ -536,6 +552,16 @@ mod tests {
         });
         let value = serde_json::json!({"sparse_attention_config": s});
         assert!(UnlimitedOcr2Config::from_hf(&value, 12).unwrap().is_some());
+        let mut integral = value.clone();
+        integral["sparse_attention_config"]["sparse_rope_tok_theta"] = serde_json::json!(10000);
+        integral["sparse_attention_config"]["sparse_rope_page_pairs"] = serde_json::json!(1.0);
+        integral["sparse_attention_config"]["sparse_attention_freq"] =
+            serde_json::json!(vec![1.0; 12]);
+        assert!(
+            UnlimitedOcr2Config::from_hf(&integral, 12)
+                .unwrap()
+                .is_some()
+        );
         let mut wrong = value.clone();
         wrong["sparse_attention_config"]["dash_stage0"] = serde_json::json!("indexer");
         assert!(UnlimitedOcr2Config::from_hf(&wrong, 12).is_err());
@@ -605,6 +631,12 @@ mod tests {
             &state.query_pages[8..],
             [Some(0), Some(0), Some(1), Some(1)]
         );
+        // A marker past the last page continues it without reusing positions
+        // and never queries a page that has no image.
+        let mut extra = state.clone();
+        extra.append(&[3, 11], &cfg);
+        assert_eq!(&extra.coordinates[12..], [(5, 2), (6, 2)]);
+        assert_eq!(&extra.query_pages[12..], [Some(1), Some(1)]);
         let cloned = state.clone();
         assert!(state.trim(10, &[3, 9], &cfg));
         assert_eq!(state.coordinates.len(), 10);

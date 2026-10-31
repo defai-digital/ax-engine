@@ -41,7 +41,7 @@ def prepare_unlimited_ocr_image_request(
 
     directory = Path(model_dir).expanduser()
     config = _load_json_object(directory / "config.json", "Unlimited-OCR config")
-    sparse = config.get("sparse_attention_config")
+    sparse = _sparse_attention_config(config)
     is_v2 = isinstance(sparse, dict) and sparse.get("use_sparse_attention") is True
     image_token_id = _load_image_token_id(directory)
     tokens = _validate_input_tokens(input_tokens)
@@ -76,17 +76,19 @@ def prepare_unlimited_ocr_image_request(
             raise ValueError("Unlimited-OCR-2 requires <PAGE><image> for each source image")
     payloads = []
     counts = []
+    total_rgb_bytes = 0
     for source in images:
         image = _load_rgb_image(source)
         try:
             width, height = image.size
             _validate_dimensions(width, height)
+            total_rgb_bytes += width * height * 3
+            if total_rgb_bytes > _MAX_RGB_BYTES:
+                raise ValueError("Unlimited-OCR total RGB payload exceeds the request limit")
             payloads.append({"width": width, "height": height, "rgb_bytes": image.tobytes()})
             counts.append(_soft_token_count(width, height, cropping, 16 if is_v2 else 32))
         finally:
             image.close()
-    if sum(len(p["rgb_bytes"]) for p in payloads) > _MAX_RGB_BYTES:
-        raise ValueError("Unlimited-OCR total RGB payload exceeds the request limit")
     expanded_tokens = []
     index = 0
     for token in tokens:
@@ -160,6 +162,33 @@ def _validate_input_tokens(input_tokens: list[int]) -> list[int]:
     return list(input_tokens)
 
 
+def _same_json_value(first: Any, second: Any) -> bool:
+    # JSON booleans and number representations must match the native Value comparison.
+    if type(first) is not type(second):
+        return False
+    if isinstance(first, dict):
+        return first.keys() == second.keys() and all(
+            _same_json_value(value, second[key]) for key, value in first.items()
+        )
+    if isinstance(first, list):
+        return len(first) == len(second) and all(
+            _same_json_value(left, right) for left, right in zip(first, second, strict=True)
+        )
+    return bool(first == second)
+
+
+def _sparse_attention_config(config: dict[str, Any]) -> object:
+    # Same scopes and conflict rule as the native OCR-2 config contract.
+    found = [
+        scope["sparse_attention_config"]
+        for scope in (config, config.get("language_config"), config.get("text_config"))
+        if isinstance(scope, dict) and scope.get("sparse_attention_config") is not None
+    ]
+    if any(not _same_json_value(other, found[0]) for other in found[1:]):
+        raise ValueError("Unlimited-OCR config has conflicting sparse attention scopes")
+    return found[0] if found else None
+
+
 def _load_image_token_id(model_dir: Path) -> int:
     config = _load_json_object(model_dir / "config.json", "Unlimited-OCR config")
     model_type = str(config.get("model_type", "")).replace("-", "_")
@@ -167,7 +196,7 @@ def _load_image_token_id(model_dir: Path) -> int:
         raise ValueError(
             "Unlimited-OCR config model_type must be unlimited-ocr, unlimited_ocr, or deepseekocr"
         )
-    sparse = config.get("sparse_attention_config")
+    sparse = _sparse_attention_config(config)
     configured = config.get(
         "image_token_id", sparse.get("image_token_id") if isinstance(sparse, dict) else None
     )

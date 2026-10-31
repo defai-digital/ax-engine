@@ -198,6 +198,8 @@ class GenerateResult:
     route: GenerateRoute
     runtime: RuntimeInfo
     output_token_logprobs: list[float | None] = ...
+    prompt_token_count: int | None = None
+    output_token_count: int | None = None
 
 @dataclass(frozen=True)
 class RequestReport:
@@ -215,6 +217,7 @@ class RequestReport:
     route: GenerateRoute
     finish_reason: str | None = None
     terminal_stop_reason: str | None = None
+    last_error: str | None = None
     output_token_logprobs: list[float | None] = ...
 
 @dataclass(frozen=True)

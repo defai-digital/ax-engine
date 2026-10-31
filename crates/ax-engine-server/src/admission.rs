@@ -18,7 +18,9 @@ impl AdmissionController {
             active_jobs: AtomicUsize::new(0),
             draining: parking_lot::Mutex::new(0),
             idle_notify: Notify::new(),
-            semaphore: limit.map(|limit| Arc::new(Semaphore::new(limit))),
+            // Tokio panics above MAX_PERMITS; a larger cap is effectively unlimited.
+            semaphore: limit
+                .map(|limit| Arc::new(Semaphore::new(limit.min(Semaphore::MAX_PERMITS)))),
         }
     }
 
@@ -176,6 +178,14 @@ mod tests {
         drop(permit);
         assert_eq!(controller.active_jobs(), 0);
         assert!(controller.try_admit().is_ok());
+    }
+
+    #[test]
+    fn limit_above_semaphore_max_permits_is_clamped_instead_of_panicking() {
+        let controller = Arc::new(AdmissionController::new(Some(usize::MAX)));
+        let permit = controller.try_admit().expect("job should be admitted");
+        assert_eq!(controller.active_jobs(), 1);
+        drop(permit);
     }
 
     #[test]

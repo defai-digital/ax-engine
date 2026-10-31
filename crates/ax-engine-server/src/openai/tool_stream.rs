@@ -71,8 +71,9 @@ pub(crate) struct ToolCallStreamScanner {
     bare_scan_from: usize,
     bare_scan_depth: usize,
     calls_emitted: u32,
-    /// Calls the shared extractor accepted. A streamed header that never
-    /// parses does not count, so the stream must not finish `tool_calls`.
+    /// Calls that qualify a stream to finish `tool_calls`: an intact emitted
+    /// call, or a canonical continuation applied onto a streamed header. A
+    /// rejected continuation does not count.
     parsed_calls: u32,
     /// Times the canonical arguments were not a continuation of the text
     /// already streamed. The call closes on that streamed text.
@@ -132,8 +133,9 @@ impl ToolCallStreamScanner {
         self.calls_emitted
     }
 
-    /// Calls the extractor accepted. Headers of spans that never parsed are
-    /// excluded, including when incremental deltas already left the server.
+    /// Calls that qualify the stream to finish `tool_calls`. A header whose
+    /// canonical continuation was rejected is excluded, as is a span that
+    /// never parsed.
     pub(crate) fn parsed_calls(&self) -> u32 {
         self.parsed_calls
     }
@@ -580,9 +582,11 @@ impl ToolCallStreamScanner {
             function.name = contract.canonical_tool_name(&function.name);
             function.arguments = contract.canonical_arguments(&function.name, function.arguments);
         }
-        self.parsed_calls = self.parsed_calls.saturating_add(1);
         if self.header_sent {
             if let Some(rest) = function.arguments.strip_prefix(&self.streamed_arguments) {
+                // Applied continuation: the client already has a prefix of
+                // the canonical arguments, so this call qualifies.
+                self.parsed_calls = self.parsed_calls.saturating_add(1);
                 if !rest.is_empty() {
                     events.push(ToolScanEvent::Arguments {
                         id: None,
@@ -593,7 +597,8 @@ impl ToolCallStreamScanner {
             } else {
                 // The canonical text is not a continuation of what the client
                 // already has. Appending it would corrupt the JSON. Close on
-                // the streamed prefix and record the rejection.
+                // the streamed prefix and record the rejection. Do not count
+                // the call: the stream must not finish `tool_calls`.
                 tracing::warn!(
                     streamed_bytes = self.streamed_arguments.len(),
                     canonical_bytes = function.arguments.len(),
@@ -606,6 +611,7 @@ impl ToolCallStreamScanner {
             self.streamed_arguments.clear();
             return;
         }
+        self.parsed_calls = self.parsed_calls.saturating_add(1);
         events.push(ToolScanEvent::Call(self.build_call(function)));
     }
 
@@ -1856,6 +1862,60 @@ mod tests {
             concatenated, "{\"text\":\"abc\"}",
             "a non-continuation must not be spliced into the canonical object"
         );
-        assert_eq!(scanner.parsed_calls(), 1);
+        assert_eq!(
+            scanner.parsed_calls(),
+            0,
+            "a rejected continuation must not qualify for tool_calls"
+        );
+    }
+
+    #[test]
+    fn rejected_canonical_continuation_does_not_qualify_for_tool_calls() {
+        // `parsed_calls` is what the stream finish consults. A header whose
+        // canonical arguments are not a continuation must not qualify, while
+        // an applied continuation and an intact one-shot call still do.
+        let mut scanner = ToolCallStreamScanner::with_incremental(None, true);
+        let _opened = scanner.push("<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"ab");
+        scanner.testing_overwrite_streamed_arguments("XXXX");
+        let mut events = scanner.push("c\"}}</tool_call>");
+        assert_eq!(scanner.argument_continuations_rejected(), 1);
+        assert_eq!(
+            scanner.parsed_calls(),
+            0,
+            "a rejected continuation must not qualify for tool_calls"
+        );
+
+        events
+            .extend(scanner.push(
+                "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"ok\"}}</tool_call>",
+            ));
+        events.extend(scanner.finish());
+        assert_eq!(scanner.argument_continuations_rejected(), 1);
+        assert_eq!(
+            scanner.parsed_calls(),
+            1,
+            "a later valid streamed call still qualifies for tool_calls"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ToolScanEvent::Arguments { arguments, .. } if arguments.contains("ok")
+            )) || calls(&events)
+                .iter()
+                .any(|call| call.function.arguments.contains("ok")),
+            "the valid call is still emitted: {events:?}"
+        );
+
+        let mut intact = ToolCallStreamScanner::with_incremental(None, false);
+        let mut intact_events = intact
+            .push("<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"ab\"}}</tool_call>");
+        intact_events.extend(intact.finish());
+        assert_eq!(intact.argument_continuations_rejected(), 0);
+        assert_eq!(
+            intact.parsed_calls(),
+            1,
+            "an intact emitted call still qualifies for tool_calls"
+        );
+        assert_eq!(calls(&intact_events).len(), 1);
     }
 }

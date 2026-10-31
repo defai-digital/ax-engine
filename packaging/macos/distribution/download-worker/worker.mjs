@@ -33,7 +33,7 @@ export default {
     // second mutable feed can advance during a failed release cutover.
     if (key === "appcast.xml") {
       const pointer = await env.ENGINE_GUI_RELEASES.get("latest.json")
-      if (!pointer || pointer.size > 16384) return error("Update feed unavailable", 503)
+      if (!pointer || pointer.size >= 16384) return error("Update feed unavailable", 503)
       try {
         const envelope = await pointer.json()
         const payload = atob(envelope.payload)
@@ -62,7 +62,8 @@ export default {
       request.headers
         .get("If-None-Match")
         ?.split(/\s*,\s*/)
-        .some((etag) => etag === metadata.httpEtag || etag === "*")
+        // If-None-Match uses the weak comparison (RFC 9110 13.1.2).
+        .some((etag) => etag === "*" || etag.replace(/^W\//, "") === metadata.httpEtag.replace(/^W\//, ""))
     ) {
       return new Response(null, { status: 304, headers })
     }
