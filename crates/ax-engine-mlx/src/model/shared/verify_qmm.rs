@@ -33,6 +33,11 @@ const MSG_ROUTE_N: i32 = 100_000;
 /// `4 * rows` floats per simdgroup, which fits the 32-lane reduction up to 8
 /// rows; 7 and 8 rows serve DFlash2's 8-row windows.
 const AFFINE_MAX_ROWS: i32 = 8;
+/// Narrowest 6-bit window routed. MLX's stock QMM reads a 6-bit matrix about
+/// once for 3 rows on M4 Pro and M5 Max (stock 3-row cost ~1.0x one row), so
+/// the route only wins from 4 rows: 6-bit gate/up route/stock was 1.000/0.929
+/// at 3/4 rows on M4 Pro and 1.054/0.977 on M5 Max (0.56/0.44 on M2 Ultra).
+const SIX_BIT_MIN_ROWS: i32 = 4;
 const DEFAULT_MSG_SIMDGROUPS: i32 = 8;
 
 /// Minimum output width routed through the verify QMM.
@@ -130,7 +135,7 @@ fn verify_qmm_armed() -> bool {
 }
 
 static VERIFY_QMM_SPLIT_K: LazyKernel = LazyKernel::new(
-    "ax_qwen_mtp_verify_qmm_split_k_v4",
+    "ax_qwen_mtp_verify_qmm_split_k_v5",
     &["x", "weight", "scales", "biases"],
     &["out"],
     VERIFY_QMM_SPLIT_K_SOURCE,
@@ -138,7 +143,7 @@ static VERIFY_QMM_SPLIT_K: LazyKernel = LazyKernel::new(
     true,
 );
 static VERIFY_QMM_MSG: LazyKernel = LazyKernel::new(
-    "ax_qwen_mtp_verify_qmm_msg_v4",
+    "ax_qwen_mtp_verify_qmm_msg_v5",
     &["x", "weight", "scales", "biases"],
     &["out"],
     VERIFY_QMM_MSG_SOURCE,
@@ -293,14 +298,42 @@ const VERIFY_QMM_SPLIT_K_SOURCE: &str = r#"
                 }
             }
         } else {
-            uint pa0 = weight[(n0 + 0) * WordsPerRow + pair * 2];
-            uint pa1 = weight[(n0 + 1) * WordsPerRow + pair * 2];
-            uint pa2 = weight[(n0 + 2) * WordsPerRow + pair * 2];
-            uint pa3 = weight[(n0 + 3) * WordsPerRow + pair * 2];
-            uint pb0 = weight[(n0 + 0) * WordsPerRow + pair * 2 + 1];
-            uint pb1 = weight[(n0 + 1) * WordsPerRow + pair * 2 + 1];
-            uint pb2 = weight[(n0 + 2) * WordsPerRow + pair * 2 + 1];
-            uint pb3 = weight[(n0 + 3) * WordsPerRow + pair * 2 + 1];
+            // `pa` holds values 0..3 and `pb` values 4..7 of this pair. 8-bit:
+            // one word each, value i at bit 8*i. 6-bit (MLX packs 4 values per
+            // 3 bytes): the pair is 6 bytes at a 2-byte-aligned offset, read
+            // as three halves into two 24-bit packs, value i at bit 6*i.
+            uint pa0, pa1, pa2, pa3, pb0, pb1, pb2, pb3;
+            if (Bits == 6) {
+                const device ushort* w16 = reinterpret_cast<const device ushort*>(weight);
+                const int HalvesPerRow = WordsPerRow * 2;
+                int h0 = (n0 + 0) * HalvesPerRow + pair * 3;
+                int h1 = (n0 + 1) * HalvesPerRow + pair * 3;
+                int h2 = (n0 + 2) * HalvesPerRow + pair * 3;
+                int h3 = (n0 + 3) * HalvesPerRow + pair * 3;
+                uint u00 = w16[h0], u01 = w16[h0 + 1], u02 = w16[h0 + 2];
+                uint u10 = w16[h1], u11 = w16[h1 + 1], u12 = w16[h1 + 2];
+                uint u20 = w16[h2], u21 = w16[h2 + 1], u22 = w16[h2 + 2];
+                uint u30 = w16[h3], u31 = w16[h3 + 1], u32 = w16[h3 + 2];
+                pa0 = u00 | ((u01 & 0xFFu) << 16);
+                pa1 = u10 | ((u11 & 0xFFu) << 16);
+                pa2 = u20 | ((u21 & 0xFFu) << 16);
+                pa3 = u30 | ((u31 & 0xFFu) << 16);
+                pb0 = (u01 >> 8) | (u02 << 8);
+                pb1 = (u11 >> 8) | (u12 << 8);
+                pb2 = (u21 >> 8) | (u22 << 8);
+                pb3 = (u31 >> 8) | (u32 << 8);
+            } else {
+                pa0 = weight[(n0 + 0) * WordsPerRow + pair * 2];
+                pa1 = weight[(n0 + 1) * WordsPerRow + pair * 2];
+                pa2 = weight[(n0 + 2) * WordsPerRow + pair * 2];
+                pa3 = weight[(n0 + 3) * WordsPerRow + pair * 2];
+                pb0 = weight[(n0 + 0) * WordsPerRow + pair * 2 + 1];
+                pb1 = weight[(n0 + 1) * WordsPerRow + pair * 2 + 1];
+                pb2 = weight[(n0 + 2) * WordsPerRow + pair * 2 + 1];
+                pb3 = weight[(n0 + 3) * WordsPerRow + pair * 2 + 1];
+            }
+            const uint VShift = Bits == 6 ? 6u : 8u;
+            const uint VMask = Bits == 6 ? 0x3Fu : 0xFFu;
             {
                 uint pa = pa0;
                 uint pb = pb0;
@@ -308,8 +341,8 @@ const VERIFY_QMM_SPLIT_K_SOURCE: &str = r#"
                 float bias = b0;
                 _Pragma("unroll")
                 for (int ki = 0; ki < 4; ++ki) {
-                    float wa = float((pa >> (ki * 8)) & 0xFFu) * scale + bias;
-                    float wb = float((pb >> (ki * 8)) & 0xFFu) * scale + bias;
+                    float wa = float((pa >> (ki * VShift)) & VMask) * scale + bias;
+                    float wb = float((pb >> (ki * VShift)) & VMask) * scale + bias;
                     _Pragma("unroll")
                     for (int row = 0; row < MRows; ++row) {
                         accum[0 * MRows + row] += float(values[row][ki]) * wa;
@@ -324,8 +357,8 @@ const VERIFY_QMM_SPLIT_K_SOURCE: &str = r#"
                 float bias = b1;
                 _Pragma("unroll")
                 for (int ki = 0; ki < 4; ++ki) {
-                    float wa = float((pa >> (ki * 8)) & 0xFFu) * scale + bias;
-                    float wb = float((pb >> (ki * 8)) & 0xFFu) * scale + bias;
+                    float wa = float((pa >> (ki * VShift)) & VMask) * scale + bias;
+                    float wb = float((pb >> (ki * VShift)) & VMask) * scale + bias;
                     _Pragma("unroll")
                     for (int row = 0; row < MRows; ++row) {
                         accum[1 * MRows + row] += float(values[row][ki]) * wa;
@@ -340,8 +373,8 @@ const VERIFY_QMM_SPLIT_K_SOURCE: &str = r#"
                 float bias = b2;
                 _Pragma("unroll")
                 for (int ki = 0; ki < 4; ++ki) {
-                    float wa = float((pa >> (ki * 8)) & 0xFFu) * scale + bias;
-                    float wb = float((pb >> (ki * 8)) & 0xFFu) * scale + bias;
+                    float wa = float((pa >> (ki * VShift)) & VMask) * scale + bias;
+                    float wb = float((pb >> (ki * VShift)) & VMask) * scale + bias;
                     _Pragma("unroll")
                     for (int row = 0; row < MRows; ++row) {
                         accum[2 * MRows + row] += float(values[row][ki]) * wa;
@@ -356,8 +389,8 @@ const VERIFY_QMM_SPLIT_K_SOURCE: &str = r#"
                 float bias = b3;
                 _Pragma("unroll")
                 for (int ki = 0; ki < 4; ++ki) {
-                    float wa = float((pa >> (ki * 8)) & 0xFFu) * scale + bias;
-                    float wb = float((pb >> (ki * 8)) & 0xFFu) * scale + bias;
+                    float wa = float((pa >> (ki * VShift)) & VMask) * scale + bias;
+                    float wb = float((pb >> (ki * VShift)) & VMask) * scale + bias;
                     _Pragma("unroll")
                     for (int row = 0; row < MRows; ++row) {
                         accum[3 * MRows + row] += float(values[row][ki]) * wa;
@@ -455,24 +488,52 @@ const VERIFY_QMM_MSG_SOURCE: &str = r#"
                 }
             }
         } else {
-            uint pa0 = weight[(n0 + 0) * WordsPerRow + pair * 2];
-            uint pa1 = weight[(n0 + 1) * WordsPerRow + pair * 2];
-            uint pa2 = weight[(n0 + 2) * WordsPerRow + pair * 2];
-            uint pa3 = weight[(n0 + 3) * WordsPerRow + pair * 2];
-            uint pb0 = weight[(n0 + 0) * WordsPerRow + pair * 2 + 1];
-            uint pb1 = weight[(n0 + 1) * WordsPerRow + pair * 2 + 1];
-            uint pb2 = weight[(n0 + 2) * WordsPerRow + pair * 2 + 1];
-            uint pb3 = weight[(n0 + 3) * WordsPerRow + pair * 2 + 1];
+            // `pa` holds values 0..3 and `pb` values 4..7 of this pair. 8-bit:
+            // one word each, value i at bit 8*i. 6-bit (MLX packs 4 values per
+            // 3 bytes): the pair is 6 bytes at a 2-byte-aligned offset, read
+            // as three halves into two 24-bit packs, value i at bit 6*i.
+            uint pa0, pa1, pa2, pa3, pb0, pb1, pb2, pb3;
+            if (Bits == 6) {
+                const device ushort* w16 = reinterpret_cast<const device ushort*>(weight);
+                const int HalvesPerRow = WordsPerRow * 2;
+                int h0 = (n0 + 0) * HalvesPerRow + pair * 3;
+                int h1 = (n0 + 1) * HalvesPerRow + pair * 3;
+                int h2 = (n0 + 2) * HalvesPerRow + pair * 3;
+                int h3 = (n0 + 3) * HalvesPerRow + pair * 3;
+                uint u00 = w16[h0], u01 = w16[h0 + 1], u02 = w16[h0 + 2];
+                uint u10 = w16[h1], u11 = w16[h1 + 1], u12 = w16[h1 + 2];
+                uint u20 = w16[h2], u21 = w16[h2 + 1], u22 = w16[h2 + 2];
+                uint u30 = w16[h3], u31 = w16[h3 + 1], u32 = w16[h3 + 2];
+                pa0 = u00 | ((u01 & 0xFFu) << 16);
+                pa1 = u10 | ((u11 & 0xFFu) << 16);
+                pa2 = u20 | ((u21 & 0xFFu) << 16);
+                pa3 = u30 | ((u31 & 0xFFu) << 16);
+                pb0 = (u01 >> 8) | (u02 << 8);
+                pb1 = (u11 >> 8) | (u12 << 8);
+                pb2 = (u21 >> 8) | (u22 << 8);
+                pb3 = (u31 >> 8) | (u32 << 8);
+            } else {
+                pa0 = weight[(n0 + 0) * WordsPerRow + pair * 2];
+                pa1 = weight[(n0 + 1) * WordsPerRow + pair * 2];
+                pa2 = weight[(n0 + 2) * WordsPerRow + pair * 2];
+                pa3 = weight[(n0 + 3) * WordsPerRow + pair * 2];
+                pb0 = weight[(n0 + 0) * WordsPerRow + pair * 2 + 1];
+                pb1 = weight[(n0 + 1) * WordsPerRow + pair * 2 + 1];
+                pb2 = weight[(n0 + 2) * WordsPerRow + pair * 2 + 1];
+                pb3 = weight[(n0 + 3) * WordsPerRow + pair * 2 + 1];
+            }
+            const uint VShift = Bits == 6 ? 6u : 8u;
+            const uint VMask = Bits == 6 ? 0x3Fu : 0xFFu;
             _Pragma("unroll")
             for (int ki = 0; ki < 4; ++ki) {
-                float wa0 = float((pa0 >> (ki * 8)) & 0xFFu) * s0 + b0;
-                float wa1 = float((pa1 >> (ki * 8)) & 0xFFu) * s1 + b1;
-                float wa2 = float((pa2 >> (ki * 8)) & 0xFFu) * s2 + b2;
-                float wa3 = float((pa3 >> (ki * 8)) & 0xFFu) * s3 + b3;
-                float wb0 = float((pb0 >> (ki * 8)) & 0xFFu) * s0 + b0;
-                float wb1 = float((pb1 >> (ki * 8)) & 0xFFu) * s1 + b1;
-                float wb2 = float((pb2 >> (ki * 8)) & 0xFFu) * s2 + b2;
-                float wb3 = float((pb3 >> (ki * 8)) & 0xFFu) * s3 + b3;
+                float wa0 = float((pa0 >> (ki * VShift)) & VMask) * s0 + b0;
+                float wa1 = float((pa1 >> (ki * VShift)) & VMask) * s1 + b1;
+                float wa2 = float((pa2 >> (ki * VShift)) & VMask) * s2 + b2;
+                float wa3 = float((pa3 >> (ki * VShift)) & VMask) * s3 + b3;
+                float wb0 = float((pb0 >> (ki * VShift)) & VMask) * s0 + b0;
+                float wb1 = float((pb1 >> (ki * VShift)) & VMask) * s1 + b1;
+                float wb2 = float((pb2 >> (ki * VShift)) & VMask) * s2 + b2;
+                float wb3 = float((pb3 >> (ki * VShift)) & VMask) * s3 + b3;
                 _Pragma("unroll")
                 for (int row = 0; row < MRows; ++row) {
                     float xa = static_cast<float>(values[row][ki]);
@@ -689,13 +750,18 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
             weight.mlx_quantization_mode(),
             mlx_sys::MlxQuantizationMode::Affine
         )
-        || !matches!(weight.bits, 4 | 8)
+        || !matches!(weight.bits, 4 | 6 | 8)
         || !matches!(weight.group_size, 32 | 64 | 128)
     {
         return None;
     }
     let shape = x.shape();
-    if shape.len() != 3 || shape[0] != 1 || !(3..=AFFINE_MAX_ROWS).contains(&shape[1]) {
+    let min_rows = if weight.bits == 6 {
+        SIX_BIT_MIN_ROWS
+    } else {
+        3
+    };
+    if shape.len() != 3 || shape[0] != 1 || !(min_rows..=AFFINE_MAX_ROWS).contains(&shape[1]) {
         return None;
     }
     let m = shape[1];
@@ -863,7 +929,9 @@ fn try_qwen_mtp_verify_qmm_for_min_n(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlx_sys::{MlxQuantizationMode, astype, eval, quantize, quantized_matmul_with_mode};
+    use mlx_sys::{
+        MlxQuantizationMode, arange, astype, eval, quantize, quantized_matmul_with_mode,
+    };
 
     #[test]
     fn guard_restores_nested_state() {
@@ -955,15 +1023,27 @@ mod tests {
     }
 
     fn assert_route_matches_affine_qmm(n: i32, min_route_n: i32, m: i32, route: &str) {
-        let k = 64_i32;
+        assert_route_matches_affine_qmm_with(n, min_route_n, m, 4, 64, 32, route);
+    }
+
+    fn assert_route_matches_affine_qmm_with(
+        n: i32,
+        min_route_n: i32,
+        m: i32,
+        bits: i32,
+        k: i32,
+        group_size: i32,
+        route: &str,
+    ) {
+        let route = format!("{route} bits={bits} k={k} gs={group_size} m={m}");
         let dense_data: Vec<f32> = (0..(n * k) as usize)
             .map(|index| ((index % 127) as f32 - 63.0) / 512.0)
             .collect();
         let dense = reshape(&MlxArray::from_f32_slice(&dense_data), &[n, k], None);
         let quantized = quantize(
             &dense,
-            Some(32),
-            Some(4),
+            Some(group_size),
+            Some(bits),
             MlxQuantizationMode::Affine,
             None,
             None,
@@ -972,8 +1052,8 @@ mod tests {
             weight: quantized[0].clone(),
             scales: Some(astype(&quantized[1], MlxDtype::Bfloat16, None)),
             biases: Some(astype(&quantized[2], MlxDtype::Bfloat16, None)),
-            group_size: 32,
-            bits: 4,
+            group_size,
+            bits,
             mode: "affine".to_owned(),
             linear_bias: None,
             decode_weight_t: None,
@@ -1032,6 +1112,283 @@ mod tests {
         for m in [7, 8] {
             assert_route_matches_affine_qmm(SPLIT_K_TEST_N, SPLIT_K_TEST_N, m, "wide split-K");
             assert_route_matches_affine_qmm(MSG_ROUTE_N, MIN_ROUTE_N, m, "wide multi-simdgroup");
+        }
+    }
+
+    #[test]
+    fn six_and_eight_bit_windows_match_affine_qmm() {
+        // K spans several 8-value pairs per lane and both multi-group and
+        // single-group rows, so a misplaced 6-bit field or half-word cannot
+        // cancel out.
+        for bits in [6, 8] {
+            let rows: &[i32] = if bits == 6 { &[4, 5, 8] } else { &[3, 4, 8] };
+            for (k, group_size) in [(64, 32), (256, 64), (512, 128)] {
+                for &m in rows {
+                    assert_route_matches_affine_qmm_with(
+                        SPLIT_K_TEST_N,
+                        SPLIT_K_TEST_N,
+                        m,
+                        bits,
+                        k,
+                        group_size,
+                        "split-K",
+                    );
+                }
+            }
+            for &m in [rows[0], 8].iter() {
+                assert_route_matches_affine_qmm_with(
+                    MSG_ROUTE_N,
+                    MIN_ROUTE_N,
+                    m,
+                    bits,
+                    256,
+                    64,
+                    "multi-simdgroup",
+                );
+            }
+            assert_route_matches_affine_qmm_with(2048, 0, rows[0], bits, 256, 64, "small split-K");
+        }
+    }
+
+    #[test]
+    fn three_row_six_bit_windows_stay_on_stock_qmm() {
+        let (n, k, group_size) = (SPLIT_K_TEST_N, 256, 64);
+        let dense = reshape(
+            &MlxArray::from_f32_slice(&vec![0.25_f32; (n * k) as usize]),
+            &[n, k],
+            None,
+        );
+        let quantized = quantize(
+            &dense,
+            Some(group_size),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(astype(&quantized[1], MlxDtype::Bfloat16, None)),
+            biases: Some(astype(&quantized[2], MlxDtype::Bfloat16, None)),
+            group_size,
+            bits: 6,
+            mode: "affine".to_owned(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: Default::default(),
+        };
+        let input = |m: i32| {
+            astype(
+                &reshape(
+                    &MlxArray::from_f32_slice(&vec![0.5_f32; (m * k) as usize]),
+                    &[1, m, k],
+                    None,
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let _guard = QwenMtpVerifyQmmGuard::arm(true);
+        assert!(try_qwen_mtp_verify_qmm_for_min_n(&input(3), &weight, 0).is_none());
+        assert!(try_qwen_mtp_verify_qmm_for_min_n(&input(SIX_BIT_MIN_ROWS), &weight, 0).is_some());
+    }
+
+    #[test]
+    fn six_bit_one_hot_rows_read_every_field_of_a_pair() {
+        // Row r is one-hot at column 33 * r, which lands on position r of an
+        // 8-value pair, so each output is one dequantized weight value and a
+        // misplaced 6-bit field is off by at least one quantization step.
+        let (k, group_size, m) = (256_i32, 64_i32, 8_i32);
+        for (n, min_route_n) in [(SPLIT_K_TEST_N, SPLIT_K_TEST_N), (MSG_ROUTE_N, MIN_ROUTE_N)] {
+            let dense_data: Vec<f32> = (0..(n * k) as usize)
+                .map(|index| ((index * 37 % 1009) as f32 - 504.0) / 504.0)
+                .collect();
+            let dense = reshape(&MlxArray::from_f32_slice(&dense_data), &[n, k], None);
+            let quantized = quantize(
+                &dense,
+                Some(group_size),
+                Some(6),
+                MlxQuantizationMode::Affine,
+                None,
+                None,
+            );
+            let scales = astype(&quantized[1], MlxDtype::Bfloat16, None);
+            let biases = astype(&quantized[2], MlxDtype::Bfloat16, None);
+            let weight = QuantizedWeight {
+                weight: quantized[0].clone(),
+                scales: Some(scales.clone()),
+                biases: Some(biases.clone()),
+                group_size,
+                bits: 6,
+                mode: "affine".to_owned(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
+                weight_t_view: Default::default(),
+            };
+            let mut input_data = vec![0.0_f32; (m * k) as usize];
+            for row in 0..m {
+                input_data[(row * k + 33 * row) as usize] = 1.0;
+            }
+            let input = astype(
+                &reshape(&MlxArray::from_f32_slice(&input_data), &[1, m, k], None),
+                MlxDtype::Bfloat16,
+                None,
+            );
+
+            let _guard = QwenMtpVerifyQmmGuard::arm(true);
+            let routed = try_qwen_mtp_verify_qmm_for_min_n(&input, &weight, min_route_n)
+                .unwrap_or_else(|| panic!("eligible 6-bit route n={n}"));
+            let dequantized = mlx_sys::dequantize(
+                &weight.weight,
+                &scales,
+                Some(&biases),
+                Some(group_size),
+                Some(6),
+                None,
+            );
+            let routed_f32 = astype(&routed, MlxDtype::Float32, None);
+            let expected_f32 = astype(&dequantized, MlxDtype::Float32, None);
+            eval(&[&routed_f32, &expected_f32]);
+            let routed = routed_f32.data_f32();
+            let expected = expected_f32.data_f32();
+            for row in 0..m {
+                let column = (33 * row) as usize;
+                for out in 0..n as usize {
+                    let got = routed[row as usize * n as usize + out];
+                    let want = expected[out * k as usize + column];
+                    // One bf16 rounding of the same float on each side.
+                    assert!(
+                        (got - want).abs() <= want.abs() / 128.0 + 1e-6,
+                        "n={n} row={row} out={out}: got {got}, want {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Per-call cost of the verify route vs MLX's stock QMM at Qwen 3.8 27B
+    /// projection shapes (`m = 1` is the stock single-row decode baseline).
+    /// Values are arbitrary bit patterns: neither path branches on data.
+    /// Run: `cargo test -p ax-engine-mlx --release --lib bench_affine_verify_qmm
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing probe; run on Apple Silicon with --ignored --nocapture"]
+    fn bench_affine_verify_qmm_shapes() {
+        const CALLS: usize = 16;
+        const REPEATS: usize = 7;
+        let time_us = |build: &dyn Fn(&MlxArray) -> MlxArray, inputs: &[MlxArray]| {
+            let mut best = f64::INFINITY;
+            for _ in 0..REPEATS {
+                let start = std::time::Instant::now();
+                let outputs: Vec<MlxArray> = inputs.iter().map(build).collect();
+                eval(&outputs.iter().collect::<Vec<_>>());
+                best = best.min(start.elapsed().as_secs_f64() * 1e6 / CALLS as f64);
+            }
+            best
+        };
+        println!("bits      n      k  m   stock_us  route_us  route/stock  stock_m/stock_1");
+        for bits in [4, 6, 8] {
+            for (n, k) in [(17_408, 5_120), (16_384, 5_120), (248_320, 5_120)] {
+                let group_size = 32;
+                let words = k * bits / 32;
+                let packed = reshape(
+                    &arange(
+                        0.0,
+                        f64::from(n) * f64::from(words),
+                        1.0,
+                        MlxDtype::Uint32,
+                        None,
+                    ),
+                    &[n, words],
+                    None,
+                );
+                let scales = zeros(&[n, k / group_size], MlxDtype::Bfloat16, None);
+                let biases = zeros(&[n, k / group_size], MlxDtype::Bfloat16, None);
+                eval(&[&packed, &scales, &biases]);
+                let weight = QuantizedWeight {
+                    weight: packed,
+                    scales: Some(scales),
+                    biases: Some(biases),
+                    group_size,
+                    bits,
+                    mode: "affine".to_owned(),
+                    linear_bias: None,
+                    decode_weight_t: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
+                    weight_t_view: Default::default(),
+                };
+                let stock = |x: &MlxArray| {
+                    quantized_matmul_with_mode(
+                        x,
+                        &weight.weight,
+                        weight.scales.as_ref().unwrap(),
+                        weight.biases.as_ref(),
+                        true,
+                        Some(group_size),
+                        Some(bits),
+                        MlxQuantizationMode::Affine,
+                        None,
+                    )
+                };
+                let inputs_for = |m: i32| -> Vec<MlxArray> {
+                    let inputs: Vec<MlxArray> = (0..CALLS)
+                        .map(|call| {
+                            let start = call as f64;
+                            astype(
+                                &reshape(
+                                    &arange(
+                                        start,
+                                        start + f64::from(m * k),
+                                        1.0,
+                                        MlxDtype::Float32,
+                                        None,
+                                    ),
+                                    &[1, m, k],
+                                    None,
+                                ),
+                                MlxDtype::Bfloat16,
+                                None,
+                            )
+                        })
+                        .collect();
+                    eval(&inputs.iter().collect::<Vec<_>>());
+                    inputs
+                };
+                let single = inputs_for(1);
+                let _ = time_us(&stock, &single);
+                let stock_1 = time_us(&stock, &single);
+                for m in [3, 4, 8] {
+                    let inputs = inputs_for(m);
+                    let _guard = QwenMtpVerifyQmmGuard::arm(true);
+                    if try_qwen_mtp_verify_qmm_for_min_n(&inputs[0], &weight, 0).is_none() {
+                        println!(
+                            "{bits:>4} {n:>6} {k:>6} {m:>2}   (stock QMM; below the routed window)"
+                        );
+                        continue;
+                    }
+                    let route = |x: &MlxArray| {
+                        try_qwen_mtp_verify_qmm_for_min_n(x, &weight, 0)
+                            .expect("benchmark shape must be eligible")
+                    };
+                    let _ = time_us(&stock, &inputs);
+                    let _ = time_us(&route, &inputs);
+                    let stock_m = time_us(&stock, &inputs);
+                    let route_m = time_us(&route, &inputs);
+                    println!(
+                        "{bits:>4} {n:>6} {k:>6} {m:>2} {stock_m:>10.1} {route_m:>9.1} {:>12.3} {:>16.2}",
+                        route_m / stock_m,
+                        stock_m / stock_1
+                    );
+                }
+            }
         }
     }
 
