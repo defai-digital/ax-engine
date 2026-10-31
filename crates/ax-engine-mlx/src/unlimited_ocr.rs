@@ -1571,7 +1571,7 @@ mod tests {
             }
         }
         let position = array_from_f32(&input, &[257, 1], MlxDtype::Float32);
-        let resized = array_f32_values(&resize_clip_position_embedding(&position));
+        let resized = array_f32_values(&resize_clip_position_embedding(&position).expect("resize"));
         assert_eq!(resized[0], 7.0);
         assert_close(&resized[1..], &TORCH_CLIP_POS_16_TO_10, 1e-5, "clip_pos");
     }
