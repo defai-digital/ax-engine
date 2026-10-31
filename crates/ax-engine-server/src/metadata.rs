@@ -626,15 +626,17 @@ fn family_from_manifest(manifest: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Read `model_family` from the live session's model-manifest.json when present.
+/// Resolve the loaded runtime family, falling back to the persisted manifest.
 ///
-/// Cached per manifest path with a `(len, mtime)` fingerprint (same pattern
-/// as `validate_gemma4_instruct_eos_cached`), because per-request chat
-/// resolution (ADR-025 D2) consults this on every chat request and the
-/// manifest embeds the full tensor list.
+/// Auto-converted packs need not persist a manifest. The fallback is cached
+/// per path with a `(len, mtime)` fingerprint because per-request chat
+/// resolution consults it and manifests embed the full tensor list.
 pub(crate) fn model_family_from_artifacts(live: &LiveState) -> Option<String> {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return None;
+    }
+    if let Some(model) = &live.runtime_report.mlx_model {
+        return Some(model.model_family.clone());
     }
     let artifacts_dir = live.session_config.mlx_model_artifacts_dir()?;
     let manifest_path = artifacts_dir.join("model-manifest.json");
