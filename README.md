@@ -174,7 +174,7 @@ and macOS 26 or newer.
    python3.13 -m venv "$HOME/.venvs/ax-engine"
    source "$HOME/.venvs/ax-engine/bin/activate"
    python -m pip install --upgrade pip
-   python -m pip install --upgrade "ax-engine[download]>=8.0.2,<9"
+   python -m pip install --upgrade "ax-engine[download]>=8.0.3,<9"
    ax-engine doctor
    ```
 
