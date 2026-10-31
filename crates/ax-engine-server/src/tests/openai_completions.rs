@@ -670,3 +670,40 @@ async fn openai_completions_endpoint_rejects_text_batch_prompt() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_invalid_request_response(&json, "batch completion prompts are not supported");
 }
+
+#[tokio::test]
+async fn openai_completion_ignore_eos_reaches_sampling_and_fails_closed_on_mlx_lm() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-ignore-eos");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "ignore_eos": true
+    }))
+    .expect("sample completion request should deserialize");
+    let built =
+        build_openai_completion_request(&live, request).expect("completion request should build");
+    assert!(built.generate_request.sampling.ignore_eos);
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "ignore_eos": true
+    }))
+    .expect("sample completion request should deserialize");
+    let error = match build_openai_completion_request(&live, request) {
+        Ok(_) => panic!("mlx-lm has no ignore_eos; the request must fail closed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+}

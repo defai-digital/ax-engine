@@ -226,6 +226,7 @@ impl AnthropicMessagesRequest {
                 .filter(|values| !values.is_empty())
                 .map(OpenAiStopInput::Multiple),
             seed: None,
+            ignore_eos: false,
             stream: false,
             stream_options: Default::default(),
             n: None,

@@ -1117,6 +1117,7 @@ fn ollama_chat_to_openai_request(
             .options
             .seed
             .and_then(|seed| u64::try_from(seed).ok()),
+        ignore_eos: false,
         stream: false,
         stream_options: Default::default(),
         n: None,
@@ -1182,6 +1183,7 @@ fn ollama_generate_to_openai_request(
             .options
             .seed
             .and_then(|seed| u64::try_from(seed).ok()),
+        ignore_eos: false,
         stream: false,
         stream_options: Default::default(),
         n: None,

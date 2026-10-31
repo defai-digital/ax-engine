@@ -116,6 +116,11 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) stop: Option<OpenAiStopInput>,
     #[serde(default)]
     pub(crate) seed: Option<u64>,
+    /// vLLM / llama.cpp server extension: decode to the output budget instead
+    /// of stopping at the model's end-of-sequence tokens. Client stop strings
+    /// still apply.
+    #[serde(default)]
+    pub(crate) ignore_eos: bool,
     #[serde(default)]
     pub(crate) stream: bool,
     #[serde(default)]
@@ -206,6 +211,10 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) stop: Option<OpenAiStopInput>,
     #[serde(default)]
     pub(crate) seed: Option<u64>,
+    /// vLLM / llama.cpp server extension; see
+    /// [`OpenAiCompletionHttpRequest::ignore_eos`].
+    #[serde(default)]
+    pub(crate) ignore_eos: bool,
     #[serde(default)]
     pub(crate) stream: bool,
     #[serde(default)]
