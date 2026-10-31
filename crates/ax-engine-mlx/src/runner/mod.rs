@@ -1662,6 +1662,10 @@ pub struct MlxRunner {
     ngram_policy_variant: NgramPolicyVariant,
     /// Serialized, thread-agnostic KV snapshots for block-aligned exact prompt prefixes.
     prefix_cache: Arc<Mutex<MlxPrefixCache>>,
+    /// The capacity the constructor derived for this model, so
+    /// `align_fa_block_pool_to_kv` can re-size it for the serving context
+    /// without touching an explicit or caller-supplied capacity.
+    prefix_cache_model_aware_bytes: Option<u64>,
     /// Runner-local native FA snapshots. Never shared through
     /// `MlxPrefixCacheStore`; live MLX arrays remain bound to this runner.
     native_prefix_cache: Mutex<MlxNativePrefixCache>,
@@ -2454,6 +2458,9 @@ impl MlxRunner {
     /// block accounting. Env `AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS` still wins
     /// when set (explicit operator override).
     pub fn align_fa_block_pool_to_kv(&mut self, block_size_tokens: u32, total_blocks: u32) {
+        self.resize_prefix_cache_for_context(
+            u64::from(total_blocks).saturating_mul(u64::from(block_size_tokens)),
+        );
         if self.shared_fa_block_pool.is_some() {
             let request_state_exists = !self.states.lock().is_empty();
             let native_state_exists = !self.native_prefix_cache.lock().is_empty();
@@ -2501,6 +2508,37 @@ impl MlxRunner {
                 SharedFaBlockPool::new_with_slab_storage(*config)
                     .expect("aligned FA slab pool config must remain valid")
             });
+        }
+    }
+
+    /// Grow the constructor's model-aware prefix-cache capacity to hold two
+    /// snapshots of the serving context (see
+    /// `MlxPrefixCachePolicy::model_aware_max_bytes_for_context`). Both the
+    /// portable and the native cache follow the same policy; an explicit or
+    /// caller-supplied capacity is never changed.
+    fn resize_prefix_cache_for_context(&mut self, context_tokens: u64) {
+        let Some(previous) = self.prefix_cache_model_aware_bytes else {
+            return;
+        };
+        let shape = PrefixSnapshotShape::from_config(&self.cfg);
+        let unified = crate::expert_stream::unified_memory_bytes();
+        let mut cache = self.prefix_cache.lock();
+        let before = cache.policy.max_bytes;
+        cache.policy =
+            cache
+                .policy
+                .with_context_aware_default(shape, unified, context_tokens, previous);
+        let after = cache.policy.max_bytes;
+        if after != before {
+            self.native_prefix_cache.lock().set_policy(cache.policy);
+            self.prefix_cache_model_aware_bytes = Some(after);
+            tracing::info!(
+                target: "ax_engine_mlx::runner",
+                context_tokens,
+                prefix_cache_max_mib = after / (1024 * 1024),
+                previous_max_mib = before / (1024 * 1024),
+                "sized the prefix cache for the serving context (AX_MLX_PREFIX_CACHE_MAX_BYTES overrides)"
+            );
         }
     }
 
@@ -3220,6 +3258,12 @@ impl MlxRunner {
                 );
             }
         }
+        let prefix_cache_model_aware_bytes = {
+            let policy = prefix_cache.lock().policy;
+            (policy.max_bytes != MlxPrefixCachePolicy::from_env().max_bytes
+                || std::env::var_os("AX_MLX_PREFIX_CACHE_MAX_BYTES").is_none())
+            .then_some(policy.max_bytes)
+        };
         let native_prefix_cache_policy = prefix_cache.lock().policy;
         // One line per model load: the two opt-in prefix features are read
         // once, so this is the only place a mis-set environment is visible.
@@ -3400,6 +3444,7 @@ impl MlxRunner {
             gemma4_assistant_mtp,
             ngram_policy_variant,
             prefix_cache,
+            prefix_cache_model_aware_bytes,
             native_prefix_cache: Mutex::new(MlxNativePrefixCache::new(native_prefix_cache_policy)),
             last_host_pressure: Mutex::default(),
             disk_prefix_cache,
@@ -8340,6 +8385,16 @@ impl MlxRunner {
                             media_key,
                         ));
                     }
+                    tracing::debug!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        stores = prefix_cache.stores,
+                        evictions = prefix_cache.evictions,
+                        blocked_too_large = prefix_cache.blocked_entry_too_large,
+                        entries = prefix_cache.entries,
+                        bytes_mib = prefix_cache.bytes / (1024 * 1024),
+                        max_mib = self.prefix_cache.lock().policy.max_bytes / (1024 * 1024),
+                        "prefix store outcome"
+                    );
                     // Publish the semantic cut snapshots captured in place
                     // during this item's prefill. Each cache was cloned at
                     // exactly its cut position, so no trim is involved.

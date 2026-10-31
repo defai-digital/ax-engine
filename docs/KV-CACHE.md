@@ -398,7 +398,7 @@ The disk layer is additive:
 
 | Environment variable | Default | Meaning |
 |---|---:|---|
-| `AX_MLX_PREFIX_CACHE_MAX_BYTES` | model-aware | In-memory (L1) snapshot byte budget. Unset: room for six snapshots of an 8,192-token prompt for the loaded model (about 3.9 GiB for Qwen 3.8 27B: 64 KiB/token of KV plus ~147 MiB of linear state), capped at one eighth of unified memory, never below 512 MiB. Any explicit value, including `0`, is used as is. |
+| `AX_MLX_PREFIX_CACHE_MAX_BYTES` | model-aware | In-memory (L1) snapshot byte budget. Unset: room for six snapshots of an 8,192-token prompt for the loaded model (about 3.9 GiB for Qwen 3.8 27B: 64 KiB/token of KV plus ~147 MiB of linear state) or, once the session aligns the KV pool, two snapshots of the pool's full context if that is larger (65,536 tokens with `--total-blocks 4096`: about 8.3 GiB for the 27B), capped at one eighth of unified memory, never below 512 MiB. Without the context term a single 40k-token snapshot left no room for the previous turn's rung and every later agent turn re-prefilled (2026-10-31). Any explicit value, including `0`, is used as is. |
 | `AX_MLX_PREFIX_CACHE_MAX_ENTRIES` | 64 | In-memory (L1) snapshot entry budget. |
 | `AX_MLX_LINEAR_PREFIX_GRID_RUNG` | on | Linear-attention models also store a snapshot at the last prefill-chunk grid rung of every prefill item that starts on the grid, and a warm restore floored onto a rung with no snapshot steps down the grid to the nearest stored rung and replays the claimed tokens above it, so sibling prompts and follow-up turns hit. `0` disables both. |
 | `AX_MLX_PREFIX_CACHE_DIR` | unset | Enables the disk tier and selects the local cache directory. Empty or unset disables the disk tier. |

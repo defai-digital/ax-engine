@@ -113,6 +113,12 @@ const MODEL_AWARE_PREFIX_CACHE_SNAPSHOTS: u64 = 6;
 const MODEL_AWARE_PREFIX_CACHE_CONTEXT_TOKENS: u64 = 8192;
 /// Default capacity never exceeds this fraction of unified memory.
 const MODEL_AWARE_PREFIX_CACHE_MEMORY_DIVISOR: u64 = 8;
+/// Snapshots of the full serving context the default-sized cache should hold
+/// once the KV pool size is known: the previous turn's rung and boundary
+/// snapshots of a context-length agent prompt. The 2026-10-31 27B probe lost
+/// every follow-up past ~26k tokens because one 40k snapshot (2.6 GiB) left
+/// no room for a second under the six-8k-snapshot budget.
+const MODEL_AWARE_PREFIX_CACHE_CONTEXT_SNAPSHOTS: u64 = 2;
 
 /// Dimensions that decide the size of one portable prefix snapshot.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -183,13 +189,67 @@ impl MlxPrefixCachePolicy {
         shape: PrefixSnapshotShape,
         unified_memory_bytes: Option<u64>,
     ) -> u64 {
-        let wanted = shape
+        Self::model_aware_max_bytes_for_context(shape, unified_memory_bytes, 0)
+    }
+
+    /// [`Self::model_aware_max_bytes`] that also holds
+    /// [`MODEL_AWARE_PREFIX_CACHE_CONTEXT_SNAPSHOTS`] snapshots of a
+    /// `context_tokens`-token prompt (the KV pool capacity once the session
+    /// aligns it), under the same memory ceiling and flat floor.
+    pub(crate) fn model_aware_max_bytes_for_context(
+        shape: PrefixSnapshotShape,
+        unified_memory_bytes: Option<u64>,
+        context_tokens: u64,
+    ) -> u64 {
+        let preamble = shape
             .snapshot_bytes(MODEL_AWARE_PREFIX_CACHE_CONTEXT_TOKENS)
             .saturating_mul(MODEL_AWARE_PREFIX_CACHE_SNAPSHOTS);
+        let context = shape
+            .snapshot_bytes(context_tokens)
+            .saturating_mul(MODEL_AWARE_PREFIX_CACHE_CONTEXT_SNAPSHOTS);
+        let wanted = preamble.max(context);
         let ceiling = unified_memory_bytes.map_or(DEFAULT_PREFIX_CACHE_MAX_BYTES, |memory| {
             memory / MODEL_AWARE_PREFIX_CACHE_MEMORY_DIVISOR
         });
         wanted.min(ceiling).max(DEFAULT_PREFIX_CACHE_MAX_BYTES)
+    }
+
+    /// Re-size a capacity the constructor derived (`previous_model_aware`)
+    /// for the serving context, once the KV pool is aligned. An explicit
+    /// `AX_MLX_PREFIX_CACHE_MAX_BYTES` or any capacity that is no longer the
+    /// constructor's value is left alone.
+    pub(crate) fn with_context_aware_default(
+        self,
+        shape: PrefixSnapshotShape,
+        unified_memory_bytes: Option<u64>,
+        context_tokens: u64,
+        previous_model_aware: u64,
+    ) -> Self {
+        self.with_context_aware_default_unless(
+            shape,
+            unified_memory_bytes,
+            context_tokens,
+            previous_model_aware,
+            std::env::var_os("AX_MLX_PREFIX_CACHE_MAX_BYTES").is_some(),
+        )
+    }
+
+    fn with_context_aware_default_unless(
+        mut self,
+        shape: PrefixSnapshotShape,
+        unified_memory_bytes: Option<u64>,
+        context_tokens: u64,
+        previous_model_aware: u64,
+        capacity_explicit: bool,
+    ) -> Self {
+        if !capacity_explicit && self.max_bytes == previous_model_aware {
+            self.max_bytes = Self::model_aware_max_bytes_for_context(
+                shape,
+                unified_memory_bytes,
+                context_tokens,
+            );
+        }
+        self
     }
 
     /// Replace the flat default capacity with the model-aware one. An explicit
@@ -721,6 +781,13 @@ impl MlxNativePrefixCache {
     /// [`Self::insert`] (`payload + 4 * token_len`) so a snapshot `insert`
     /// refuses is also reported as blocked. Callers record
     /// `blocked_entry_too_large` telemetry when this returns true.
+    /// Adopt a new capacity policy. Only growth is expected (the serving
+    /// context re-size); shrinking leaves resident entries until the next
+    /// insert evicts them.
+    pub(crate) fn set_policy(&mut self, policy: MlxPrefixCachePolicy) {
+        self.policy = policy;
+    }
+
     pub(crate) fn rejects_oversized(&self, payload_bytes: u64, token_len: usize) -> bool {
         snapshot_charge_bytes(payload_bytes, token_len) > self.policy.max_bytes
     }
@@ -2598,6 +2665,81 @@ mod tests {
         assert_eq!(
             MlxPrefixCachePolicy::model_aware_max_bytes(shape, None),
             DEFAULT_PREFIX_CACHE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn context_aware_capacity_holds_two_snapshots_of_the_serving_context() {
+        let shape = qwen38_27b_shape();
+        let gib = 1024u64 * 1024 * 1024;
+        let two = |tokens: u64| shape.snapshot_bytes(tokens) * 2;
+        // A 16k pool changes nothing: six 8k snapshots already exceed two 16k ones.
+        assert_eq!(
+            MlxPrefixCachePolicy::model_aware_max_bytes_for_context(shape, Some(128 * gib), 16_384),
+            shape.snapshot_bytes(8192) * 6
+        );
+        // The 2026-10-31 probe pool (`--total-blocks 4096`, 65,536 tokens):
+        // two full-context snapshots, ~8.3 GiB, under the 16 GiB M5 Max cap.
+        let m5 =
+            MlxPrefixCachePolicy::model_aware_max_bytes_for_context(shape, Some(128 * gib), 65_536);
+        assert_eq!(m5, two(65_536));
+        assert!(m5 > 8 * gib && m5 < 9 * gib);
+        // The 64 GB Mac mini stops at its one-eighth ceiling.
+        assert_eq!(
+            MlxPrefixCachePolicy::model_aware_max_bytes_for_context(shape, Some(64 * gib), 65_536),
+            8 * gib
+        );
+        // Unknown memory keeps the flat default.
+        assert_eq!(
+            MlxPrefixCachePolicy::model_aware_max_bytes_for_context(shape, None, 65_536),
+            DEFAULT_PREFIX_CACHE_MAX_BYTES
+        );
+        // The refresh replaces only the constructor's own value, never an
+        // explicit or already-changed capacity.
+        let constructed = MlxPrefixCachePolicy::model_aware_max_bytes(shape, Some(128 * gib));
+        let policy = MlxPrefixCachePolicy {
+            max_bytes: constructed,
+            max_entries: DEFAULT_PREFIX_CACHE_MAX_ENTRIES,
+        };
+        assert_eq!(
+            policy
+                .with_context_aware_default_unless(
+                    shape,
+                    Some(128 * gib),
+                    65_536,
+                    constructed,
+                    false
+                )
+                .max_bytes,
+            m5
+        );
+        assert_eq!(
+            policy
+                .with_context_aware_default_unless(
+                    shape,
+                    Some(128 * gib),
+                    65_536,
+                    constructed,
+                    true
+                )
+                .max_bytes,
+            constructed
+        );
+        let changed = MlxPrefixCachePolicy {
+            max_bytes: constructed + 1,
+            ..policy
+        };
+        assert_eq!(
+            changed
+                .with_context_aware_default_unless(
+                    shape,
+                    Some(128 * gib),
+                    65_536,
+                    constructed,
+                    false
+                )
+                .max_bytes,
+            constructed + 1
         );
     }
 
