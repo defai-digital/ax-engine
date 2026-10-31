@@ -400,7 +400,7 @@ The disk layer is additive:
 |---|---:|---|
 | `AX_MLX_PREFIX_CACHE_MAX_BYTES` | model-aware | In-memory (L1) snapshot byte budget. Unset: room for six snapshots of an 8,192-token prompt for the loaded model (about 3.9 GiB for Qwen 3.8 27B: 64 KiB/token of KV plus ~147 MiB of linear state), capped at one eighth of unified memory, never below 512 MiB. Any explicit value, including `0`, is used as is. |
 | `AX_MLX_PREFIX_CACHE_MAX_ENTRIES` | 64 | In-memory (L1) snapshot entry budget. |
-| `AX_MLX_LINEAR_PREFIX_GRID_RUNG` | on | Linear-attention models also store a snapshot at the last prefill-chunk grid rung of each completed prompt, so sibling prompts and follow-up turns hit. `0` disables it. |
+| `AX_MLX_LINEAR_PREFIX_GRID_RUNG` | on | Linear-attention models also store a snapshot at the last prefill-chunk grid rung of every prefill item that starts on the grid, and a warm restore floored onto a rung with no snapshot steps down the grid to the nearest stored rung and replays the claimed tokens above it, so sibling prompts and follow-up turns hit. `0` disables both. |
 | `AX_MLX_PREFIX_CACHE_DIR` | unset | Enables the disk tier and selects the local cache directory. Empty or unset disables the disk tier. |
 | `AX_MLX_PREFIX_CACHE_DISK_DISABLED` | unset | Kill switch. When truthy, disables the disk tier even if `AX_MLX_PREFIX_CACHE_DIR` is set. |
 | `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` | 8 GiB | Aggregate byte budget. Invalid/blank → default; explicit `0` disables the tier. |
@@ -533,16 +533,23 @@ Two store-side constraints apply to all non-FA architectures:
 
 Linear-attention models work around both constraints by capturing the cache
 mid-prefill instead of trimming it. An unaligned prompt is split at its
-largest block-aligned boundary. A completed prompt is also split at its last
-prefill-chunk grid rung strictly before the final token
-(`AX_MLX_LINEAR_PREFIX_GRID_RUNG`, default on). The rung is the length a later
-multi-token warm extension restores: restore floors every such extension to
-the cold chunk grid. Without the rung, a sibling prompt that shares a long
-prefix, or a follow-up chat turn, finds only the boundary snapshot and
-misses. Both splits fall on boundaries the cold prefill already crosses, so
-the chunk shapes and the cold result do not change. The rung is skipped when
-the request chunk differs from the restore grid (a clamped long-prompt
-chunk) or when it equals the block-aligned boundary.
+largest block-aligned boundary. Every prefill item that starts on the
+prefill-chunk grid is also split at the last grid rung strictly before its
+end (`AX_MLX_LINEAR_PREFIX_GRID_RUNG`, default on). The rung is the length a
+later multi-token warm extension restores: restore floors every such
+extension to the cold chunk grid, and when the floored rung has no snapshot
+(the longest probed prefix is usually the previous turn's end-of-prompt
+boundary) it steps down the grid to the nearest stored rung and replays the
+claimed tokens above it at their real positions. Without the rung, a sibling
+prompt that shares a long prefix, or a follow-up chat turn, finds only the
+boundary snapshot and misses; capturing it only in the item that completed
+the prompt left multi-turn agent sessions re-prefilling every follow-up
+after the first (27B, 2026-10-31). Both splits fall on boundaries the cold
+prefill already crosses, so the chunk shapes and the cold result do not
+change. The rung is skipped when the request chunk differs from the restore
+grid (a clamped long-prompt chunk), when the item does not start on the grid,
+when it equals the block-aligned boundary, or when it is the length the
+request itself just restored.
 
 **MLA warm_extend is default-on.** Historical fp drift on MLA + Prefill came
 from shape-dependent SDPA kernel selection: a large cold chunk and smaller
