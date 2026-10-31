@@ -452,3 +452,22 @@ async fn embedding_records_endpoint_requires_tokenizer_artifacts() {
         "embedding record ingestion requires mlx_model_artifacts_dir",
     );
 }
+
+#[tokio::test]
+async fn reasoning_capability_requires_a_reasoning_split_for_the_template() {
+    for (model_id, expected) in [
+        // No response path splits `</mm:think>` / `to=self` reasoning yet.
+        ("AX-MiniMax-M3", false),
+        ("muse-glimmer-30b", false),
+        ("llama-3", false),
+    ] {
+        let dir = minimal_tokenizer_artifact(model_id);
+        let state = native_mlx_openai_builder_state(model_id, &dir);
+        assert_eq!(
+            crate::metadata::model_supports_reasoning(&state.snapshot()),
+            expected,
+            "{model_id}"
+        );
+        std::fs::remove_dir_all(dir).expect("remove fixture");
+    }
+}

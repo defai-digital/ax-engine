@@ -2,6 +2,7 @@
 
 pub mod architecture;
 pub mod architecture_registry;
+pub mod artifact_path;
 pub mod chat_contract;
 pub mod convert;
 pub mod distributed;

@@ -1043,7 +1043,12 @@ pub(crate) fn load_vision_tower(
     };
     let mut files: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     for (name, file) in &index {
-        if name.starts_with("vision_tower.") {
+        // Published HF checkpoints name the tower `model.visual.*`;
+        // `qwen3_vl::take_visual` resolves all three spellings.
+        if ["vision_tower.", "visual.", "model.visual."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
             files.entry(file.clone()).or_default().insert(name.clone());
         }
     }
