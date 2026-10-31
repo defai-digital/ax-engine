@@ -82,6 +82,7 @@ unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_v
 /// Install the recording error handler. Idempotent.
 pub fn install_recoverable_error_handler() {
     INSTALL.call_once(|| unsafe {
+        relax_metal_preemption_timeout();
         ffi::mlx_set_error_handler(Some(recording_error_handler), std::ptr::null_mut(), None);
         // The shim binds to the mlx::core C++ ABI directly; running against a
         // different libmlx than the headers it was compiled with can fail as
@@ -94,6 +95,35 @@ pub fn install_recoverable_error_handler() {
             panic!("{msg}");
         }
     });
+}
+
+/// Apple's Metal driver flag that relaxes the compute-preemption
+/// context-store timeout. Pre-M5 GPUs otherwise end long prefill command
+/// buffers with `kIOGPUCommandBufferCallbackErrorImpactingInteractivity` when
+/// the driver cannot save the compute context in time. llama.cpp and oMLX set
+/// it the same way. The driver reads it once, when the process creates its
+/// Metal device.
+pub(crate) const METAL_PREEMPTION_TIMEOUT_ENV: &str = "AGX_RELAX_CDM_CTXSTORE_TIMEOUT";
+
+/// The value to set for [`METAL_PREEMPTION_TIMEOUT_ENV`], or `None` to leave
+/// the environment alone: an explicit value, including `0`, is authoritative.
+pub(crate) fn metal_preemption_timeout_default(
+    existing: Option<&std::ffi::OsStr>,
+) -> Option<&'static str> {
+    (cfg!(target_os = "macos") && existing.is_none()).then_some("1")
+}
+
+/// Runs inside the one-time handler install, which precedes every MLX call
+/// this crate makes and therefore the Metal device creation.
+fn relax_metal_preemption_timeout() {
+    let existing = std::env::var_os(METAL_PREEMPTION_TIMEOUT_ENV);
+    if let Some(value) = metal_preemption_timeout_default(existing.as_deref()) {
+        // SAFETY: runs once, before this process's first MLX call. Environment
+        // writes race only with concurrent environment reads; MLX reads none
+        // before its device exists, and the same rule covers
+        // `set_metal_buffer_caps_env`.
+        unsafe { std::env::set_var(METAL_PREEMPTION_TIMEOUT_ENV, value) };
+    }
 }
 
 /// Return the version reported by the loaded MLX runtime.
@@ -250,6 +280,27 @@ pub(crate) fn panic_on_status(operation: &str, rc: libc::c_int) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metal_preemption_timeout_defaults_on_and_keeps_explicit_values() {
+        use std::ffi::OsStr;
+        let expected = cfg!(target_os = "macos").then_some("1");
+        assert_eq!(metal_preemption_timeout_default(None), expected);
+        for explicit in ["0", "1", ""] {
+            assert_eq!(
+                metal_preemption_timeout_default(Some(OsStr::new(explicit))),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn handler_install_leaves_the_metal_preemption_timeout_set() {
+        install_recoverable_error_handler();
+        if cfg!(target_os = "macos") {
+            assert!(std::env::var_os(METAL_PREEMPTION_TIMEOUT_ENV).is_some());
+        }
+    }
 
     #[test]
     fn take_last_error_clears_slot() {
