@@ -1,0 +1,14 @@
+{
+ "host": "MacBook Pro M5 Max 128 GB",
+ "os": "27.0.1",
+ "mlx": "0.32.4",
+ "source_sha256": "ff2364898faf0b4df32abfda0e44f5f236d7ba49fec684389c18ed748b7e6f41",
+ "base_commit": "b4a283e9eface0aea509df5a5a946aa57d822ba9",
+ "source_files_verified": 527,
+ "cargo_path": "/opt/homebrew/bin/cargo",
+ "cargo": "cargo 1.99.1 (5f94df478 2026-08-27) (Homebrew)",
+ "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+ "extension_sha256": "d9cdb5650bdde685152414c1e7a20c6263936122440c299ac9b4e6126ec8259e",
+ "profile": "release-pyext",
+ "source_rechecked_after_build": true
+}
