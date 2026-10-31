@@ -617,6 +617,12 @@ pub(crate) fn load_qwen3_vl_vision_weights(
                     | "qwen3_5_moe_text"
                     // Qwen 3.8 Flash Next ships the same tower.
                     | "qwen4_exp"
+                    // HF spellings convert normalizes to `qwen4_exp`.
+                    | "qwen4-exp"
+                    | "qwen3.8-flash-next"
+                    | "qwen3_8_flash_next"
+                    | "qwen38_flash_next"
+                    | "qwen38-flash-next"
             )
         });
     if !is_qwen_visual_config {

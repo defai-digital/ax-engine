@@ -1673,39 +1673,26 @@ pub struct ThinkSoftCloseProbe {
     pub rank: usize,
 }
 
-/// Whether `think_end_token_id` sits within the top `rank` logits. Single
-/// pass keeping the running top-rank set descending; membership is
-/// unaffected by tie-breaking.
+/// Whether `think_end_token_id` sits within the top `rank` logits: fewer
+/// than `rank` logits are strictly greater, so a tie never depends on token
+/// order (including `0.0` vs `-0.0`). A NaN target logit has no rank; a
+/// positive NaN outranks it and a negative NaN does not, as under `total_cmp`.
 pub(crate) fn think_soft_close_in_top_k(
     logits: &[f32],
     think_end_token_id: u32,
     rank: usize,
 ) -> bool {
-    if rank == 0 || logits.is_empty() {
+    let Some(&target) = logits.get(think_end_token_id as usize) else {
+        return false;
+    };
+    if rank == 0 || target.is_nan() {
         return false;
     }
-    let target = think_end_token_id as usize;
-    if target >= logits.len() {
-        return false;
-    }
-    let mut top: Vec<(usize, f32)> = Vec::with_capacity(rank);
-    for (idx, &value) in logits.iter().enumerate() {
-        if top.len() < rank {
-            top.push((idx, value));
-            if top.len() == rank {
-                top.sort_by(|a, b| b.1.total_cmp(&a.1));
-            }
-            continue;
-        }
-        if value > top[rank - 1].1 {
-            top[rank - 1] = (idx, value);
-            top.sort_by(|a, b| b.1.total_cmp(&a.1));
-        }
-    }
-    if top.len() < rank {
-        top.sort_by(|a, b| b.1.total_cmp(&a.1));
-    }
-    top.iter().any(|(idx, _)| *idx == target)
+    logits
+        .iter()
+        .filter(|&&value| value > target || (value.is_nan() && value.is_sign_positive()))
+        .count()
+        < rank
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1882,6 +1869,14 @@ mod tests {
         assert!(!think_soft_close_in_top_k(&[1.0, 2.0], 9, 3));
         // Fewer logits than rank: full set is the top set.
         assert!(think_soft_close_in_top_k(&[1.0, 2.0], 0, 3));
+        // A tie with the top logit is in rank regardless of token order.
+        assert!(think_soft_close_in_top_k(&[5.0, 5.0], 1, 1));
+        assert!(think_soft_close_in_top_k(&[5.0, 5.0], 0, 1));
+        // A NaN target is unrankable.
+        assert!(!think_soft_close_in_top_k(&[f32::NAN, 5.0], 0, 1));
+        assert!(!think_soft_close_in_top_k(&[f32::NAN, 1.0, 0.0], 1, 1));
+        assert!(think_soft_close_in_top_k(&[-f32::NAN, 1.0, 0.0], 1, 1));
+        assert!(think_soft_close_in_top_k(&[0.0, -0.0], 1, 1));
     }
 
     fn table_from_sequence(tokens: &[u32]) -> NgramTable {

@@ -1043,7 +1043,12 @@ pub(crate) fn load_vision_tower(
     };
     let mut files: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     for (name, file) in &index {
-        if name.starts_with("vision_tower.") {
+        // Published HF checkpoints name the tower `model.visual.*`;
+        // `qwen3_vl::take_visual` resolves all three spellings.
+        if ["vision_tower.", "visual.", "model.visual."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
             files.entry(file.clone()).or_default().insert(name.clone());
         }
     }
@@ -1484,6 +1489,7 @@ fn resolve_norm_gain_contract(
         return Ok(match manifest.weight_sanitize {
             WeightSanitize::HfToMlx => NormGainContract::Delta { swap_conv: true },
             WeightSanitize::HfNormOnly => NormGainContract::Delta { swap_conv: false },
+            WeightSanitize::HfConvOnly => NormGainContract::Folded { swap_conv: true },
             WeightSanitize::None | WeightSanitize::HfLayerNormsOnly | WeightSanitize::Folded => {
                 NormGainContract::Folded { swap_conv: false }
             }
@@ -1495,10 +1501,10 @@ fn resolve_norm_gain_contract(
         (None, None) => {
             return Err(norm_contract_error(
                 "Flash Next norm-weight contract is missing. Set the model-manifest.json field \
-weight_sanitize to \"hf_norm_only\", \"hf_to_mlx\", or \"folded\", or set the \
+weight_sanitize to \"hf_norm_only\", \"hf_to_mlx\", \"hf_conv_only\", or \"folded\", or set the \
 axquant_manifest.json field runtime.ax_engine.weight_layout.norm_weights to \"raw_delta\" or \
 \"folded\". The axquant_manifest.json field runtime.ax_engine.weight_sanitize (or the field \
-weight_sanitize) may be \"hf_norm_only\", \"hf_to_mlx\", or \"folded\". An omitted \
+weight_sanitize) may be \"hf_norm_only\", \"hf_to_mlx\", \"hf_conv_only\", or \"folded\". An omitted \
 weight_sanitize does not mean folded. The loader does not infer this from tensor values or \
 file names."
                     .to_string(),
@@ -1524,6 +1530,10 @@ fn manifest_norm_claim(mode: WeightSanitize) -> Option<NormClaim> {
         }),
         WeightSanitize::HfToMlx => Some(NormClaim {
             gains: GainForm::Delta,
+            swap_conv: Some(true),
+        }),
+        WeightSanitize::HfConvOnly => Some(NormClaim {
+            gains: GainForm::Folded,
             swap_conv: Some(true),
         }),
         WeightSanitize::Folded => Some(NormClaim {
@@ -1709,6 +1719,10 @@ fn claim_from_sanitize_token(field: &str, token: &str) -> Result<NormClaim, Weig
             gains: GainForm::Delta,
             swap_conv: Some(true),
         }),
+        "hf_conv_only" => Ok(NormClaim {
+            gains: GainForm::Folded,
+            swap_conv: Some(true),
+        }),
         "folded" => Ok(NormClaim {
             gains: GainForm::Folded,
             swap_conv: None,
@@ -1755,6 +1769,7 @@ fn sanitize_norms_and_convs(
     let contract = match mode {
         WeightSanitize::HfToMlx => NormGainContract::Delta { swap_conv: true },
         WeightSanitize::HfNormOnly => NormGainContract::Delta { swap_conv: false },
+        WeightSanitize::HfConvOnly => NormGainContract::Folded { swap_conv: true },
         WeightSanitize::None | WeightSanitize::HfLayerNormsOnly | WeightSanitize::Folded => {
             NormGainContract::Folded { swap_conv: false }
         }
@@ -3640,7 +3655,7 @@ mod tests {
         );
         assert!(
             missing.contains(
-                "model-manifest.json field weight_sanitize to \"hf_norm_only\", \"hf_to_mlx\", or \"folded\""
+                "model-manifest.json field weight_sanitize to \"hf_norm_only\", \"hf_to_mlx\", \"hf_conv_only\", or \"folded\""
             ),
             "{missing}"
         );
@@ -3798,6 +3813,16 @@ mod tests {
         assert_eq!(tensors["q"].data_f32(), &[1.25, 2.5]);
         assert_eq!(tensors["conv"].shape(), [2, 1, 3]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hf_conv_only_token_selects_folded_gains_and_conv_swap() {
+        let claim = claim_from_sanitize_token("weight_sanitize", "hf_conv_only")
+            .expect("hf_conv_only is a declared norm contract");
+        assert_eq!(
+            contract_from_claim(claim),
+            NormGainContract::Folded { swap_conv: true }
+        );
     }
 
     #[test]

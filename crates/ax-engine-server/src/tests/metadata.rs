@@ -125,6 +125,50 @@ async fn models_advertises_reasoning_for_openclaw_qwen_thinking_variants() {
 }
 
 #[tokio::test]
+async fn models_use_loaded_family_without_a_persisted_manifest() {
+    let dir = minimal_tokenizer_artifact("runtime-family-metadata");
+    for (family, reasoning, text) in [
+        ("qwen4_exp", true, true),
+        ("qwen3_5", true, true),
+        ("embeddinggemma", false, false),
+    ] {
+        let state = native_mlx_openai_builder_state("local-model", &dir);
+        let mut live = state.snapshot();
+        live.runtime_report.mlx_model = Some(
+            serde_json::from_value(json!({
+                "artifacts_source": "explicit_config", "model_family": family,
+                "tensor_format": "safetensors", "layer_count": 1, "tensor_count": 1,
+                "tie_word_embeddings": false,
+            }))
+            .expect("runtime report"),
+        );
+        state.swap_live(live);
+        let app = build_router(state);
+        let (status, response) = json_response(
+            &app,
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .expect("models request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let model = &response["data"][0];
+        assert_eq!(
+            model["capabilities"]["reasoning"],
+            json!(reasoning),
+            "{family}"
+        );
+        assert_eq!(
+            model["ax_engine"]["openai_chat_completions_supported"],
+            json!(text),
+            "{family}"
+        );
+    }
+    fs::remove_dir_all(dir).expect("remove fixture");
+}
+
+#[tokio::test]
 async fn models_lists_every_loaded_model() {
     let state = llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();

@@ -6,7 +6,7 @@ for Qwen 3.8 27B AXQ**. The Qwen 3.8 27B and Flash Next product scope is
 selectors load MXFP4 MTP packs; MXFP8 pack admission and qualification are
 pending. Standalone affine 4/6/8-bit and non-MTP variants for these two
 models are retired. MTP execution remains explicit opt-in until its gates pass.
-Install with pip, a standalone download, or Homebrew and serve
+Install the macOS app with one curl command to download models, chat and serve
 OpenAI-compatible endpoints locally.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
@@ -99,24 +99,59 @@ owns the paged KV ledger. `ax-engine-mlx` runs the graph. Optional
 `mlx_lm.server` and llama.cpp adapters stay on the compatibility route.
 Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
-## Quick Start
+## Install AX Engine for macOS
 
-AX Engine runs on **Apple Silicon (M2 or newer) with macOS 26 or newer**. The
-default model below is a 17.4 GB download, so keep about 20 GB of disk free; a
-Mac with 32 GB+ of memory is recommended for it. Check your Mac first:
+Use the curl installer on **Apple Silicon (M2 or newer), macOS 26.2 or newer**.
+It installs **AX Engine.app with its native inference runtime bundled**. You do
+not need Homebrew, Python, Xcode or a Hugging Face account for public models.
+Quit AX Engine before installing or upgrading, then run in Terminal:
 
 ```bash
-uname -m                 # must print: arm64
-sw_vers -productVersion  # must print 26.0 or higher
+curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
 ```
 
-**Homebrew is optional.** Pick one install path:
+The installer verifies signed release metadata, the download and Apple's app
+identity before installing `/Applications/AX Engine.app`. macOS may request your
+password if that directory needs administrator access. It preserves models,
+settings and conversations, and restores the previous app if replacement fails.
+It does not install a global `ax-engine` command on your shell's PATH.
 
-| You have | Use |
+Open **AX Engine** from Applications. In **Models → Catalog**, choose a model
+that fits your Mac and download it; use the app's server controls and streaming
+chat after the model is ready. Model downloads are separate from installation.
+The default Qwen 3.8 27B pack is about 17.4 GB; allow about 20 GB of free disk
+space and prefer 32 GB or more of memory for it. Catalog inclusion does not
+establish model qualification or memory fit.
+
+### Update or verify the app
+
+Quit AX Engine and run the same curl command again to update to the latest
+stable GUI release. Automatic app updates are not available yet.
+
+To download and verify the release without installing it:
+
+```bash
+curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash -s -- --verify-only
+```
+
+For an existing user-writable Applications directory, pass
+`--applications-dir "$HOME/Applications"` after `bash -s --`. Run with `--help`
+for installer options. If the download fails, stop and retry later; do not
+remove quarantine or disable Gatekeeper. See the [macOS app guide](docs/MACOS-APP.md)
+for usage and [distribution guide](docs/MACOS-DISTRIBUTION.md) for release verification.
+
+## Advanced: CLI and Python installation
+
+The curl command above is the end-user app installation path. The channels below
+are for shell automation, direct API serving or Python development; they do not
+install the GUI app. Native CLI packages require Apple Silicon (M2 or newer)
+and macOS 26 or newer.
+
+| Goal | Channel |
 | --- | --- |
-| Nothing installed (no Homebrew, no Python) | [pip](#install-with-pip-no-homebrew-needed) — one Python install, then three commands |
-| Want only the CLI and server, no Python SDK | [Standalone download](#standalone-download-no-homebrew-no-python-sdk) |
-| Homebrew | [Homebrew](#homebrew) |
+| Python SDK and CLI in one environment | [pip](#install-with-pip-no-homebrew-needed) |
+| CLI/server without Homebrew or the Python SDK | [Standalone archive](#standalone-download-no-homebrew-no-python-sdk) |
+| CLI/server managed by Homebrew | [Homebrew](#homebrew) |
 
 ### Install with pip (no Homebrew needed)
 
@@ -139,7 +174,7 @@ sw_vers -productVersion  # must print 26.0 or higher
    python3.13 -m venv "$HOME/.venvs/ax-engine"
    source "$HOME/.venvs/ax-engine/bin/activate"
    python -m pip install --upgrade pip
-   python -m pip install --upgrade "ax-engine[download]>=8.0.1,<9"
+   python -m pip install --upgrade "ax-engine[download]>=8.0.3,<9"
    ax-engine doctor
    ```
 
@@ -202,7 +237,7 @@ If more than one install channel is present, `which -a ax-engine` lists every
 copy; keep one channel per shell. See [Getting Started](docs/GETTING-STARTED.md)
 for the full channel comparison and troubleshooting.
 
-### Run AX Engine
+### Run the CLI server
 
 Use [AX Engine for macOS](docs/MACOS-APP.md) for graphical model downloads,
 resource charts, server controls and streaming chat. The terminal UI has been

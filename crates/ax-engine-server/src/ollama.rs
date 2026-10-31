@@ -886,7 +886,13 @@ fn drive_ollama_native_events<N>(
                 if delta_text.is_empty() {
                     continue;
                 }
-                if let Some(filter) = channel_filter.as_mut() {
+                // Whitespace-only text is not an answer. The non-stream path
+                // trims kept text before serving a channel body, and marking
+                // it here would suppress that fallback. The decoder tail below
+                // uses the same trim.
+                if !delta_text.trim().is_empty()
+                    && let Some(filter) = channel_filter.as_mut()
+                {
                     filter.mark_kept_output();
                 }
                 // Client stops are enforced server-side on the native backend
@@ -2337,6 +2343,164 @@ mod tests {
             responses,
             vec!["ok".to_string(), "\u{FFFD}".to_string()],
             "the held trailing codepoint must flush before the done chunk"
+        );
+    }
+
+    /// Word-level fixture: token 1 is `answer`, token 2 is a single space,
+    /// tokens 10/11 are the Gemma 4 channel markers.
+    fn channel_whitespace_tokenizer(label: &str) -> EngineTokenizer {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ax-engine-channel-ws-{label}-{unique}"));
+        std::fs::create_dir_all(&dir).expect("tokenizer dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":11}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 10, "content": "<|channel>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 11, "content": "<channel|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null,
+  "pre_tokenizer": null,
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "answer": 1, " ": 2, "<|channel>": 10, "<channel|>": 11},
+    "unk_token": "[UNK]"
+  }
+}"#,
+        )
+        .expect("tokenizer json");
+        EngineTokenizer::from_model_dir(&dir).expect("channel fixture tokenizer loads")
+    }
+
+    #[test]
+    fn whitespace_only_channel_delta_does_not_suppress_the_fallback() {
+        // Chat streams install the channel filter. The answer is only in the
+        // channel body; a whitespace-only kept delta must not disable the
+        // end-of-stream fallback (OpenAI SSE parity).
+        use ax_engine_sdk::{
+            CapabilityReport, GenerateFinishReason, GenerateStatus, GenerateStreamResponseEvent,
+            GenerateStreamStepEvent, ResolutionPolicy, RuntimeReport, SessionRequestReport,
+            SessionRequestState, SupportTier,
+        };
+
+        fn step(tokens: Vec<u32>) -> GenerateStreamEvent {
+            GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                request: SessionRequestReport {
+                    request_id: 42,
+                    model_id: "test-model".to_string(),
+                    state: SessionRequestState::Running,
+                    prompt_tokens: vec![1],
+                    processed_prompt_tokens: 1,
+                    output_tokens: Vec::new(),
+                    output_token_logprobs: Vec::new(),
+                    prompt_len: 1,
+                    output_len: 0,
+                    max_output_tokens: 16,
+                    cancel_requested: false,
+                    execution_plan_ref: None,
+                    route: Default::default(),
+                    finish_reason: None,
+                    terminal_stop_reason: None,
+                    last_error: None,
+                },
+                step: Default::default(),
+                delta_tokens: tokens,
+                delta_token_logprobs: Vec::new(),
+                delta_text: None,
+            })
+        }
+
+        let tokenizer = channel_whitespace_tokenizer("ollama");
+        assert_eq!(
+            tokenizer.decode(&[1], true).expect("decode answer"),
+            "answer"
+        );
+        assert_eq!(tokenizer.decode(&[2], true).expect("decode space"), " ");
+        assert!(
+            ChatChannelStreamFilter::from_tokenizer(&tokenizer).is_some(),
+            "fixture tokenizer must install a channel filter"
+        );
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = AtomicBool::new(false);
+        let events = [
+            Ok(Some(step(vec![10, 1]))),
+            Ok(Some(step(vec![11, 2]))),
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: GenerateResponse {
+                        request_id: 42,
+                        model_id: "test-model".to_string(),
+                        prompt_tokens: vec![1],
+                        prompt_text: None,
+                        output_tokens: vec![7, 8],
+                        output_token_logprobs: Vec::new(),
+                        output_text: None,
+                        prompt_token_count: None,
+                        output_token_count: None,
+                        status: GenerateStatus::Finished,
+                        finish_reason: Some(GenerateFinishReason::Stop),
+                        step_count: 1,
+                        ttft_step: Some(1),
+                        route: Default::default(),
+                        runtime: RuntimeReport {
+                            selected_backend: SelectedBackend::Mlx,
+                            support_tier: SupportTier::MlxPreview,
+                            resolution_policy: ResolutionPolicy::MlxOnly,
+                            capabilities: CapabilityReport::mlx_preview(),
+                            fallback_reason: None,
+                            host: Default::default(),
+                            metal_toolchain: Default::default(),
+                            mlx_runtime: None,
+                            mlx_model: None,
+                            delegated_runtime: None,
+                        },
+                        performance: Default::default(),
+                    },
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_ollama_native_events(
+            OllamaNativeStreamKind::Chat,
+            &tx,
+            &cancel,
+            tokenizer,
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        );
+
+        let mut pieces = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            let line = line.expect("line ok");
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            if let Some(text) = value
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                pieces.push(text.to_string());
+            }
+        }
+        assert!(
+            pieces.iter().any(|piece| piece.contains("answer")),
+            "whitespace must not suppress the channel-body fallback: {pieces:?}"
+        );
+        assert!(
+            pieces.iter().any(|piece| piece.trim().is_empty()),
+            "the whitespace delta is still emitted: {pieces:?}"
         );
     }
 

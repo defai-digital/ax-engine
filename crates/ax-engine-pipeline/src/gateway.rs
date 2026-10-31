@@ -20,7 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::TokenStepRequest;
 use crate::client::{PipelineChainClient, PipelineClientError};
 use crate::constant_time_eq;
-use crate::text_stream::{complete_decode_prefix, stream_delta};
+use crate::text_stream::{complete_decode_prefix, final_stream_delta, stream_delta};
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -164,6 +164,7 @@ async fn completions(
                 request_id,
                 &prompt_tokens,
                 maximum_tokens,
+                false,
                 |delta| {
                     let sender = sender.clone();
                     let chunk = CompletionChunk {
@@ -223,6 +224,7 @@ async fn completions(
         request_id,
         &prompt_tokens,
         maximum_tokens,
+        false,
         |_| async { true },
     )
     .await;
@@ -340,6 +342,7 @@ async fn chat_completions(
                 request_id,
                 &prompt_tokens,
                 maximum_tokens,
+                true,
                 |delta| {
                     let sender = sender.clone();
                     let chunk = ChatCompletionChunk {
@@ -405,6 +408,7 @@ async fn chat_completions(
         request_id,
         &prompt_tokens,
         maximum_tokens,
+        true,
         |_| async { true },
     )
     .await
@@ -464,11 +468,24 @@ struct GenerateOutcome {
     finish_reason: &'static str,
 }
 
+async fn deliver_delta<Fut>(
+    deadline: tokio::time::Instant,
+    delivery: Fut,
+) -> Result<bool, PipelineClientError>
+where
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout_at(deadline, delivery)
+        .await
+        .map_err(|_| PipelineClientError::DeadlineExceeded)
+}
+
 async fn generate<F, Fut>(
     state: &GatewayState,
     request_id: u64,
     prompt_tokens: &[u32],
     maximum_tokens: usize,
+    stop_on_llama3_eot: bool,
     mut on_delta: F,
 ) -> Result<GenerateOutcome, PipelineClientError>
 where
@@ -487,6 +504,16 @@ where
     let mut finish_reason = "length";
     let deadline = tokio::time::Instant::now() + state.request_timeout;
     let generation_result = async {
+        // Stop on every configured EOS; the hardcoded Llama 3 chat path also
+        // stops on <|eot_id|> even when configs list only <|end_of_text|>.
+        let mut stop_token_ids = state.tokenizer.eos_token_ids().to_vec();
+        if stop_on_llama3_eot
+            && let Some(eot_id) = state.tokenizer.token_to_id("<|eot_id|>")
+            && !stop_token_ids.contains(&eot_id)
+        {
+            stop_token_ids.push(eot_id);
+        }
+        let mut client_disconnected = false;
         while generated.len() < maximum_tokens {
             let token = tokio::time::timeout_at(
                 deadline,
@@ -507,17 +534,15 @@ where
                 // Advance the emitted cursor only over complete text so a
                 // later completed codepoint still prefixes cleanly.
                 emitted = complete_decode_prefix(&next_rendered).to_string();
-                if !on_delta(delta.to_string()).await {
-                    // Consumer gone: treat as a clean client stop.
+                if !deliver_delta(deadline, on_delta(delta.to_string())).await? {
+                    // Consumer gone: treat as a clean client stop. The final
+                    // flush below is skipped for a disconnected client.
                     finish_reason = "stop";
+                    client_disconnected = true;
                     break;
                 }
             }
-            if state
-                .tokenizer
-                .eos_token_id()
-                .is_some_and(|eos| eos == token)
-            {
+            if stop_token_ids.contains(&token) {
                 finish_reason = "stop";
                 break;
             }
@@ -533,6 +558,19 @@ where
                 .ok_or(PipelineClientError::TokenOffsetOverflow)?;
             input.clear();
             input.push(token);
+        }
+        // Normal termination: flush the held-back trailing suffix (a genuine
+        // trailing U+FFFD or an incomplete tail that will never complete)
+        // exactly once so streamed text equals the final decode. A client
+        // that already disconnected gets no second send attempt.
+        if !client_disconnected
+            && let Ok(final_rendered) = state.tokenizer.decode(&generated, true)
+            && let Some(delta) = final_stream_delta(&emitted, &final_rendered)
+        {
+            let delta = delta.to_string();
+            if !deliver_delta(deadline, on_delta(delta)).await? {
+                finish_reason = "stop";
+            }
         }
         Ok(GenerateOutcome {
             tokens: generated,
@@ -809,6 +847,13 @@ mod tests {
             }])
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn delta_delivery_enforces_the_request_deadline() {
+        let result =
+            deliver_delta(tokio::time::Instant::now(), std::future::pending::<bool>()).await;
+        assert!(matches!(result, Err(PipelineClientError::DeadlineExceeded)));
     }
 
     #[test]

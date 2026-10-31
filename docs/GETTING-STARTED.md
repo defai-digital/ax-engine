@@ -63,7 +63,32 @@ outside AX Engine; see [AX Serving](AX-SERVING.md).
 
 ## Installation
 
-### Match this guide
+### Install the macOS app
+
+The recommended end-user path installs **AX Engine.app and its bundled native
+runtime** on Apple Silicon (M2 or newer), macOS 26.2 or later. Quit AX Engine,
+then run:
+
+```bash
+curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
+```
+
+Open AX Engine from Applications, download a suitable model from Models → Catalog,
+and use the server controls or streaming chat. Homebrew, Python and Xcode are
+not required; public model downloads do not require a Hugging Face account.
+Models are downloaded separately and must fit the Mac's memory and disk.
+
+Run the same command again to upgrade after quitting the app. Models, settings
+and conversations are preserved. The installer verifies release signatures,
+Apple identity and Gatekeeper, stages replacement and restores the previous app
+on failure. Automatic app updates remain future work.
+
+Use `bash -s -- --verify-only` in place of `bash` to verify without installing,
+or `bash -s -- --applications-dir "$HOME/Applications"` to use an existing
+user-writable Applications directory. The app installer does not add global CLI
+commands to PATH. See the [app guide](MACOS-APP.md) for usage.
+
+### Advanced CLI and Python channels
 
 These instructions track the latest tagged `7.x` release. Homebrew, the
 standalone download, and the Python wheel are all supported on macOS Apple
@@ -76,7 +101,7 @@ Homebrew or Python package path.
 | --- | --- |
 | Run the CLI, server, or benchmark tools, and you use Homebrew | Homebrew |
 | Run the CLI and server without Homebrew or the Python SDK | Standalone download |
-| Use `import ax_engine`, LangChain helpers, or Python extras — or you have neither Homebrew nor Python | pip in a virtual environment (Python from python.org) |
+| Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment (Python from python.org) |
 | Develop AX Engine or test unreleased changes | Source build |
 
 All paths need **Apple Silicon (M2 or newer)** and **macOS 26 or newer**:
@@ -86,8 +111,8 @@ uname -m                 # must print: arm64
 sw_vers -productVersion  # must print 26.0 or higher
 ```
 
-Homebrew is optional. Start from the [README Quick Start](../README.md#quick-start)
-if you have neither Homebrew nor Python.
+Homebrew is optional. Start from the [macOS app installation](../README.md#install-ax-engine-for-macos)
+for the GUI with a bundled runtime. The CLI channels below do not install the GUI.
 
 The repository can move ahead of its released packages. Refresh the selected
 channel and compare it with the
@@ -285,7 +310,7 @@ Without `uv` or Homebrew, use the official Python macOS installer:
 python3.13 -m venv "$HOME/.venvs/ax-engine"
 source "$HOME/.venvs/ax-engine/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=8.0.1,<9"
+python -m pip install --upgrade "ax-engine[download]>=8.0.3,<9"
 ax-engine doctor
 ```
 
@@ -302,7 +327,7 @@ Python version instead:
 ```bash
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=8.0.1,<9"
+uv pip install --upgrade "ax-engine[download]>=8.0.3,<9"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -345,7 +370,7 @@ Common failures and their fixes:
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `No matching distribution found for ax-engine` | Python older than 3.12 (macOS ships 3.9), or macOS older than 26 — the wheel is tagged `macosx_26_0_arm64` | Check `python --version` and `sw_vers -productVersion`; recreate the environment with Python 3.13 below |
-| `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=8.0.1,<9"` and `huggingface-hub` without the extra |
+| `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=8.0.3,<9"` and `huggingface-hub` without the extra |
 | `ax-engine: command not found` in a new Terminal | The virtual environment is not active and not on `PATH` | `source "$HOME/.venvs/ax-engine/bin/activate"`, or add `$HOME/.venvs/ax-engine/bin` to `PATH` |
 | `python3.13: command not found` after the installer | Terminal opened before the install | Quit and reopen Terminal, or call `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` |
 | `xcode-select: note: No developer tools were found` prompt | Bare `python3`/`git` ran without Xcode Command Line Tools | Cancel it and use `python3.13` from python.org; AX Engine itself does not need Xcode |
@@ -361,7 +386,7 @@ python3.13 -m venv "$HOME/.venvs/ax-engine-py313"
 source "$HOME/.venvs/ax-engine-py313/bin/activate"
 python --version
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=8.0.1,<9"
+python -m pip install --upgrade "ax-engine[download]>=8.0.3,<9"
 ax-engine doctor
 ```
 
@@ -536,7 +561,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=8.0.1,<9"`.
+`python3 -m pip install --upgrade "ax-engine[download]>=8.0.3,<9"`.
 
 Or via the script:
 

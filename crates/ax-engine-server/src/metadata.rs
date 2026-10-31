@@ -156,11 +156,14 @@ pub(crate) async fn discovery_info(
     let snapshots = state.snapshots();
     let mut operations = Vec::new();
     if snapshots.iter().any(openai_text_supported_live) {
-        operations.extend([
-            "chat_completions".to_string(),
-            "completions".to_string(),
-            "embeddings".to_string(),
-        ]);
+        operations.extend(["chat_completions".to_string(), "completions".to_string()]);
+    }
+    // Only the native MLX backend embeds; delegated text backends cannot.
+    if snapshots.iter().any(|live| {
+        live.runtime_report.selected_backend == SelectedBackend::Mlx
+            && (openai_text_supported_live(live) || encoder_embed_live(live))
+    }) {
+        operations.push("embeddings".to_string());
     }
     if snapshots.iter().any(whisper_supported_live) {
         operations.extend([
@@ -228,6 +231,7 @@ fn model_card(live: &LiveState) -> ModelCard {
             native_multimodal,
             openai_tool_calling,
             whisper,
+            encoder_embed_live(live),
         ),
         runtime: live.runtime_report.clone(),
     }
@@ -280,6 +284,7 @@ fn ax_engine_model_metadata(
     native_multimodal: NativeProcessedMultimodalSupport,
     openai_tool_calling: bool,
     whisper: bool,
+    encoder_embed: bool,
 ) -> AxEngineModelMetadata {
     let native_multimodal_input = native_multimodal.any();
     let coding_only = chat::is_qwen_coder_model(model_id);
@@ -289,7 +294,7 @@ fn ax_engine_model_metadata(
             ChatPromptTemplate::QwenChatMl
         );
     AxEngineModelMetadata {
-        native_generate_supported: !whisper,
+        native_generate_supported: !whisper && !encoder_embed,
         openai_completions_supported: openai_text,
         openai_chat_completions_supported: openai_text,
         openai_audio_transcriptions_supported: whisper,
@@ -316,18 +321,21 @@ fn ax_engine_model_metadata(
 }
 
 fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool {
+    let family = model_family_from_artifacts(live);
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         // DiffusionGemma renders with the Gemma 4 template but never prefills
         // a thought channel, so it must not advertise reasoning.
         && !chat::is_diffusion_gemma(live.model_id.as_ref())
+        && family.as_deref() != Some("diffusion_gemma")
         && (chat::is_qwen_thinking_model(live.model_id.as_ref())
             || chat::is_deepseek_model(live.model_id.as_ref())
+            // Hybrid-thinking Qwen families keep the contract under any id.
+            || matches!(family.as_deref(), Some("qwen3_5" | "qwen4_exp"))
+            // MiniMax M3 and Muse ATEM render a thinking switch too, but no
+            // response path splits `</mm:think>` or `to=self` reasoning yet.
             || matches!(
-                chat::resolve_chat_template(
-                    live.model_id.as_ref(),
-                    model_family_from_artifacts(live).as_deref()
-                ),
+                chat::resolve_chat_template(live.model_id.as_ref(), family.as_deref()),
                 ChatPromptTemplate::Gemma4
             ))
 }
@@ -371,6 +379,20 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
     let Some(artifacts_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return NativeProcessedMultimodalSupport::default();
     };
+    // The loaded runtime identity wins, as in the Flash Next request gates:
+    // an auto-converted snapshot need not persist a manifest, and the tower
+    // is read from the safetensors index, not the manifest.
+    let runtime_family = live
+        .runtime_report
+        .mlx_model
+        .as_ref()
+        .map(|model| model.model_family.as_str());
+    if runtime_family == Some("qwen4_exp") {
+        return NativeProcessedMultimodalSupport {
+            image: qwen4_exp_vision_enabled() && qwen4_exp_vision_tower_loadable(artifacts_dir),
+            ..NativeProcessedMultimodalSupport::default()
+        };
+    }
     let manifest_path = artifacts_dir.join("model-manifest.json");
     let Ok(manifest_bytes) = std::fs::read(manifest_path) else {
         return NativeProcessedMultimodalSupport::default();
@@ -412,11 +434,17 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         && has_tensor_name_prefix(tensors, "mlp1.");
     let nemotron_omni_audio = has_tensor_name_prefix(tensors, "sound_encoder.")
         && has_tensor_name_prefix(tensors, "sound_projection.");
+    // Flash Next ships its tower outside the manifest; the runtime loads it
+    // only behind the preview flag and refuses DeepStack towers.
+    let qwen4_exp_image = family == "qwen4_exp"
+        && qwen4_exp_vision_enabled()
+        && qwen4_exp_vision_tower_loadable(artifacts_dir);
     let image = gemma4_unified_image
         || gemma4_standard_image
         || qwen3_vl_image
         || minicpm_v46_image
-        || nemotron_omni_image;
+        || nemotron_omni_image
+        || qwen4_exp_image;
     let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE) || nemotron_omni_audio;
     // Advertise video only when the loaded tower has the corresponding native
     // frame path: Gemma4 unified or Qwen3-VL/Qwen3.5. Media is data-URI only
@@ -452,6 +480,145 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
     }
 }
 
+/// Mirrors the runtime's `qwen4_exp::load_vision_tower` and
+/// `qwen3_vl::load_qwen3_vl_vision_weights` at the name level: the tower is
+/// listed in `model.safetensors.index.json` (not the manifest) under any of
+/// the `vision_tower.` / `visual.` / `model.visual.` spellings, every index
+/// entry must be a string, the tower shards must resolve inside the pack (or
+/// its own HF blob store), `config.json` must carry a Qwen-visual
+/// `model_type` and a complete numeric `vision_config`, every tensor implied
+/// by `depth` plus the merger must be listed, and DeepStack fails closed. The
+/// runtime degrades to text-only on any of these, so the probe must too.
+/// Tensor shapes and shard contents are only checked at load time.
+fn qwen4_exp_vision_tower_loadable(artifacts_dir: &std::path::Path) -> bool {
+    const VISUAL_PREFIXES: [&str; 3] = ["vision_tower.", "visual.", "model.visual."];
+    const VISION_CONFIG_KEYS: [&str; 10] = [
+        "depth",
+        "hidden_size",
+        "intermediate_size",
+        "out_hidden_size",
+        "num_heads",
+        "in_channels",
+        "patch_size",
+        "temporal_patch_size",
+        "spatial_merge_size",
+        "num_position_embeddings",
+    ];
+    const LAYER_TENSORS: [&str; 6] = [
+        "attn.qkv.weight",
+        "attn.proj.weight",
+        "norm1.weight",
+        "mlp.linear_fc1.weight",
+        "mlp.linear_fc2.weight",
+        "norm2.weight",
+    ];
+    const FIXED_TENSORS: [&str; 5] = [
+        "patch_embed.proj.weight",
+        "pos_embed.weight",
+        "merger.norm.weight",
+        "merger.linear_fc1.weight",
+        "merger.linear_fc2.weight",
+    ];
+    let read_json = |name: &str| {
+        std::fs::read(artifacts_dir.join(name))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    };
+    let Some(config) = read_json("config.json") else {
+        return false;
+    };
+    let qwen_visual_model_type = config
+        .get("model_type")
+        .and_then(Value::as_str)
+        .is_some_and(|model_type| {
+            matches!(
+                model_type,
+                "qwen3_vl"
+                    | "qwen3-vl"
+                    | "qwen3_vl_moe"
+                    | "qwen3-vl-moe"
+                    | "qwen3_5"
+                    | "qwen3.5"
+                    | "qwen3_5_moe"
+                    | "qwen3_next"
+                    | "qwen3.6"
+                    | "qwen3_6"
+                    | "qwen3_5_moe_text"
+                    | "qwen4_exp"
+                    // HF spellings convert normalizes to `qwen4_exp`.
+                    | "qwen4-exp"
+                    | "qwen3.8-flash-next"
+                    | "qwen3_8_flash_next"
+                    | "qwen38_flash_next"
+                    | "qwen38-flash-next"
+            )
+        });
+    if !qwen_visual_model_type {
+        return false;
+    }
+    let Some(vision_config) = config.get("vision_config").and_then(Value::as_object) else {
+        return false;
+    };
+    let config_number = |key: &str| {
+        vision_config
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    };
+    if !VISION_CONFIG_KEYS
+        .iter()
+        .all(|key| config_number(key).is_some())
+    {
+        return false;
+    }
+    let deepstack = vision_config
+        .get("deepstack_visual_indexes")
+        .and_then(Value::as_array)
+        .is_some_and(|indexes| !indexes.is_empty());
+    if deepstack {
+        return false;
+    }
+    let Some(depth) = config_number("depth") else {
+        return false;
+    };
+    let Some(index) = read_json("model.safetensors.index.json") else {
+        return false;
+    };
+    let Some(weight_map) = index.get("weight_map").and_then(Value::as_object) else {
+        return false;
+    };
+    let Ok(canonical_root) = artifacts_dir.canonicalize() else {
+        return false;
+    };
+    // The runtime's index reader resolves every entry, trunk included, and
+    // drops the tower on any non-string or unresolvable one.
+    for file in weight_map.values() {
+        let Some(file) = file.as_str() else {
+            return false;
+        };
+        if ax_engine_core::artifact_path::resolve_file(
+            artifacts_dir,
+            &canonical_root,
+            Path::new(file),
+        )
+        .is_err()
+        {
+            return false;
+        }
+    }
+    let shard_resolves = |suffix: &str| {
+        VISUAL_PREFIXES
+            .iter()
+            .any(|prefix| weight_map.contains_key(&format!("{prefix}{suffix}")))
+    };
+    FIXED_TENSORS.iter().all(|suffix| shard_resolves(suffix))
+        && (0..depth).all(|layer| {
+            LAYER_TENSORS
+                .iter()
+                .all(|suffix| shard_resolves(&format!("blocks.{layer}.{suffix}")))
+        })
+}
+
 fn family_from_manifest(manifest: &Value) -> Option<String> {
     manifest
         .get("model_family")
@@ -459,15 +626,17 @@ fn family_from_manifest(manifest: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Read `model_family` from the live session's model-manifest.json when present.
+/// Resolve the loaded runtime family, falling back to the persisted manifest.
 ///
-/// Cached per manifest path with a `(len, mtime)` fingerprint (same pattern
-/// as `validate_gemma4_instruct_eos_cached`), because per-request chat
-/// resolution (ADR-025 D2) consults this on every chat request and the
-/// manifest embeds the full tensor list.
+/// Auto-converted packs need not persist a manifest. The fallback is cached
+/// per path with a `(len, mtime)` fingerprint because per-request chat
+/// resolution consults it and manifests embed the full tensor list.
 pub(crate) fn model_family_from_artifacts(live: &LiveState) -> Option<String> {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return None;
+    }
+    if let Some(model) = &live.runtime_report.mlx_model {
+        return Some(model.model_family.clone());
     }
     let artifacts_dir = live.session_config.mlx_model_artifacts_dir()?;
     let manifest_path = artifacts_dir.join("model-manifest.json");
@@ -538,10 +707,27 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:
     // every backend that serves the OpenAI text endpoints must advertise them here.
     !whisper_supported_live(live)
+        && !encoder_embed_live(live)
         && matches!(
             live.runtime_report.selected_backend,
             SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
         )
+}
+
+#[cfg(test)]
+pub(crate) fn openai_text_supported_for_tests(live: &LiveState) -> bool {
+    openai_text_supported_live(live)
+}
+
+/// Embedding encoders serve `/v1/embeddings` only; the OpenAI text validator
+/// rejects them, so they must not advertise chat or completions.
+fn encoder_embed_live(live: &LiveState) -> bool {
+    model_family_from_artifacts(live)
+        .as_deref()
+        .and_then(ax_engine_core::lookup_architecture)
+        .is_some_and(|entry| {
+            entry.default_generation == ax_engine_core::GenerationKind::EncoderEmbed
+        })
 }
 
 fn whisper_supported_live(live: &LiveState) -> bool {
@@ -603,4 +789,174 @@ pub(crate) fn json_constrained_decoding_enabled() -> bool {
             )
         })
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod qwen4_exp_vision_tower_tests {
+    use super::qwen4_exp_vision_tower_loadable;
+    use serde_json::{Value, json};
+
+    const SHARD: &str = "model-00001.safetensors";
+
+    fn tower_map(prefix: &str, depth: usize) -> Value {
+        let mut names = vec![
+            "patch_embed.proj.weight".to_string(),
+            "pos_embed.weight".to_string(),
+            "merger.norm.weight".to_string(),
+            "merger.linear_fc1.weight".to_string(),
+            "merger.linear_fc2.weight".to_string(),
+        ];
+        for layer in 0..depth {
+            for suffix in [
+                "attn.qkv.weight",
+                "attn.proj.weight",
+                "norm1.weight",
+                "mlp.linear_fc1.weight",
+                "mlp.linear_fc2.weight",
+                "norm2.weight",
+            ] {
+                names.push(format!("blocks.{layer}.{suffix}"));
+            }
+        }
+        Value::Object(
+            names
+                .into_iter()
+                .map(|name| (format!("{prefix}{name}"), json!(SHARD)))
+                .collect(),
+        )
+    }
+
+    fn config(depth: usize, deepstack: Value) -> Value {
+        json!({
+            "model_type": "qwen4_exp",
+            "vision_config": {
+                "depth": depth,
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "out_hidden_size": 64,
+                "num_heads": 4,
+                "in_channels": 3,
+                "patch_size": 16,
+                "temporal_patch_size": 2,
+                "spatial_merge_size": 2,
+                "num_position_embeddings": 64,
+                "deepstack_visual_indexes": deepstack,
+            },
+        })
+    }
+
+    fn loadable(label: &str, weight_map: Value, config: Value, write_shard: bool) -> bool {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        // Nest the pack so a real `../outside.safetensors` exists next to it
+        // and the escape case exercises containment, not a missing file.
+        let parent =
+            std::env::temp_dir().join(format!("ax-engine-server-qwen4-vision-{label}-{unique}"));
+        let dir = parent.join("pack");
+        std::fs::create_dir_all(&dir).expect("create pack dir");
+        std::fs::write(parent.join("outside.safetensors"), b"").expect("write outside shard");
+        std::fs::write(
+            dir.join("model.safetensors.index.json"),
+            serde_json::to_vec(&json!({ "weight_map": weight_map })).expect("index json"),
+        )
+        .expect("write index");
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec(&config).expect("config json"),
+        )
+        .expect("write config");
+        if write_shard {
+            std::fs::write(dir.join(SHARD), b"").expect("write shard");
+        }
+        let result = qwen4_exp_vision_tower_loadable(&dir);
+        let _ = std::fs::remove_dir_all(parent);
+        result
+    }
+
+    #[test]
+    fn complete_tower_without_deepstack_is_loadable() {
+        for prefix in ["vision_tower.", "visual.", "model.visual."] {
+            assert!(
+                loadable("ok", tower_map(prefix, 2), config(2, json!([])), true),
+                "{prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_or_unloadable_towers_are_not_loadable() {
+        let complete = || tower_map("vision_tower.", 2);
+        assert!(!loadable(
+            "none",
+            json!({ "model.layers.0.mlp.weight": SHARD }),
+            config(2, json!([])),
+            true,
+        ));
+        // depth 3 needs blocks.2.* which the map does not list.
+        assert!(!loadable("short", complete(), config(3, json!([])), true));
+        let mut no_merger = complete();
+        no_merger
+            .as_object_mut()
+            .expect("map")
+            .remove("vision_tower.merger.linear_fc2.weight");
+        assert!(!loadable(
+            "no-merger",
+            no_merger,
+            config(2, json!([])),
+            true
+        ));
+        let mut non_string = complete();
+        non_string
+            .as_object_mut()
+            .expect("map")
+            .insert("model.norm.weight".into(), json!(1));
+        assert!(!loadable(
+            "non-string",
+            non_string,
+            config(2, json!([])),
+            true
+        ));
+        let escaping = Value::Object(
+            complete()
+                .as_object()
+                .expect("map")
+                .keys()
+                .map(|name| (name.clone(), json!("../outside.safetensors")))
+                .collect(),
+        );
+        assert!(!loadable("escape", escaping, config(2, json!([])), true));
+        let mut stray = complete();
+        stray
+            .as_object_mut()
+            .expect("map")
+            .insert("model.norm.weight".into(), json!("missing.safetensors"));
+        assert!(!loadable("stray", stray, config(2, json!([])), true));
+        assert!(!loadable(
+            "no-shard",
+            complete(),
+            config(2, json!([])),
+            false
+        ));
+        assert!(!loadable(
+            "deepstack",
+            complete(),
+            config(2, json!([5, 11])),
+            true
+        ));
+        let mut alias = config(2, json!([]));
+        alias["model_type"] = json!("qwen3.8-flash-next");
+        assert!(loadable("alias", complete(), alias, true));
+        let mut llama = config(2, json!([]));
+        llama["model_type"] = json!("llama");
+        assert!(!loadable("model-type", complete(), llama, true));
+        let mut missing_field = config(2, json!([]));
+        missing_field["vision_config"]
+            .as_object_mut()
+            .expect("vision config")
+            .remove("num_position_embeddings");
+        assert!(!loadable("no-field", complete(), missing_field, true));
+    }
 }

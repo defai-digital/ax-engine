@@ -3356,3 +3356,37 @@ fn deepseek_v4_comp_states_and_trim_rewind() {
     assert_eq!(cache.deepseek_v4_comp_committed(0, false), 0);
     assert!(cache.deepseek_v4_comp_states(0, false).is_none());
 }
+
+#[test]
+fn usage_snapshot_tracks_deepseek_v4_latent_cache_bytes() {
+    let mut cache = MlxKVCache::new(1);
+    cache.append_deepseek_v4(0, zeros(&[1, 1, 2, 512], MlxDtype::Bfloat16, None));
+    cache.seq_len = 2;
+
+    let usage = cache.usage_snapshot();
+    assert_eq!(usage.full_attention_layers, 1);
+    assert_eq!(usage.logical_bytes, 2 * 512 * 2);
+    assert!(usage.capacity_tokens >= 2);
+    assert_eq!(usage.capacity_bytes, usage.capacity_tokens as u64 * 512 * 2);
+}
+
+#[test]
+fn deserialize_rejects_unknown_linear_state_presence_tag() {
+    let mut cache = MlxKVCache::new(1);
+    cache.seq_len = 1;
+    cache.set_linear_state(
+        0,
+        zeros(&[1, 3, 14], MlxDtype::Float32, None),
+        zeros(&[1, 4, 8, 6], MlxDtype::Float32, None),
+    );
+    let mut bytes = cache.serialize_to_bytes();
+    assert!(MlxKVCache::try_deserialize_from_bytes(&bytes).is_ok());
+    // Header (40 bytes) + layer kind and reserved bytes (8) precede the
+    // conv-state presence tag.
+    assert_eq!(bytes[48], 1);
+    bytes[48] = 2;
+    assert!(matches!(
+        MlxKVCache::try_deserialize_from_bytes(&bytes),
+        Err(MlxKVCacheSerializeError::BadPresenceTag(2))
+    ));
+}

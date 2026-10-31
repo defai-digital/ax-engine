@@ -41,6 +41,7 @@ pub type EncodedTokenByteOffsets = (Vec<u32>, Vec<(usize, usize)>);
 pub struct EngineTokenizer {
     inner: Tokenizer,
     eos_token_id: Option<u32>,
+    eos_token_ids: Vec<u32>,
     embedding_special_tokens: bool,
 }
 
@@ -48,13 +49,44 @@ impl std::fmt::Debug for EngineTokenizer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineTokenizer")
             .field("eos_token_id", &self.eos_token_id)
+            .field("eos_token_ids", &self.eos_token_ids)
             .finish()
     }
 }
 
 /// `eos_token_id` in HF configs is a number or a list of numbers (the first
 /// entry is the canonical EOS); some multimodal packs nest it under
-/// `text_config`. A present-but-unusable field yields `None`.
+/// `text_config`. Collect every usable id, in config order, deduplicated.
+fn parse_eos_token_ids(config: &serde_json::Value) -> Vec<u32> {
+    fn collect(value: Option<&serde_json::Value>, ids: &mut Vec<u32>) {
+        match value {
+            Some(serde_json::Value::Number(number)) => {
+                if let Some(id) = number.as_u64().and_then(|id| u32::try_from(id).ok())
+                    && !ids.contains(&id)
+                {
+                    ids.push(id);
+                }
+            }
+            Some(serde_json::Value::Array(items)) => {
+                for item in items {
+                    collect(Some(item), ids);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut ids = Vec::new();
+    collect(config.get("eos_token_id"), &mut ids);
+    if let Some(text_config) = config.get("text_config") {
+        collect(text_config.get("eos_token_id"), &mut ids);
+    }
+    ids
+}
+
+/// The canonical EOS id from `config.json` only: the first usable
+/// top-level id, falling back to `text_config` when the top-level field
+/// is missing or unusable. A present-but-unusable field yields `None`
+/// when the fallback is also missing or unusable.
 fn parse_eos_token_id(config: &serde_json::Value) -> Option<u32> {
     fn from_value(value: &serde_json::Value) -> Option<u32> {
         match value {
@@ -139,9 +171,9 @@ fn load_tokenizer(
 impl EngineTokenizer {
     /// Load from a `tokenizer.json` file. `model_dir` is the model
     /// artifacts directory; this looks for `tokenizer.json` inside it.
-    /// The model's `config.json` is read opportunistically to extract
-    /// `eos_token_id` so callers that want Qwen3-Embedding's EOS-append
-    /// convention get it without a separate config lookup.
+    /// EOS ids are read opportunistically from `config.json` and
+    /// `generation_config.json`; the canonical config EOS supports conventions
+    /// such as Qwen3-Embedding's EOS-append without a separate config lookup.
     pub fn from_model_dir(model_dir: &Path) -> Result<Self, EngineTokenizerError> {
         let tok_path = model_dir.join("tokenizer.json");
         if !tok_path.exists() {
@@ -149,11 +181,25 @@ impl EngineTokenizer {
                 tok_path.display().to_string(),
             ));
         }
-        let config = std::fs::read_to_string(model_dir.join("config.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let read_config = |name: &str| {
+            std::fs::read_to_string(model_dir.join(name))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        };
+        let config = read_config("config.json");
+        let generation_config = read_config("generation_config.json");
         let inner = load_tokenizer(&tok_path, config.as_ref())?;
+        // Canonical EOS stays config.json-only for encode/embedding;
+        // generation stopping additionally merges generation_config ids.
         let eos_token_id = config.as_ref().and_then(parse_eos_token_id);
+        let mut eos_token_ids = config.as_ref().map(parse_eos_token_ids).unwrap_or_default();
+        if let Some(generation_config) = generation_config.as_ref() {
+            for id in parse_eos_token_ids(generation_config) {
+                if !eos_token_ids.contains(&id) {
+                    eos_token_ids.push(id);
+                }
+            }
+        }
         let embedding_special_tokens = config
             .as_ref()
             .and_then(|config| config.get("model_type"))
@@ -168,6 +214,7 @@ impl EngineTokenizer {
         Ok(Self {
             inner,
             eos_token_id,
+            eos_token_ids,
             embedding_special_tokens,
         })
     }
@@ -181,16 +228,22 @@ impl EngineTokenizer {
     }
 
     /// Like [`Self::from_model_dir`], but backed by a process-level cache
-    /// keyed by the model directory and the `tokenizer.json` modification
-    /// time. Parsing a large `tokenizer.json` costs tens to hundreds of
+    /// keyed by the model directory and modification times of the tokenizer
+    /// and config files. Parsing a large `tokenizer.json` costs tens to hundreds of
     /// milliseconds; request-scoped callers (the HTTP server loads a
     /// tokenizer per request at several sites) should use this so only the
     /// first request per model pays the parse. The returned value is a cheap
     /// clone (the inner tokenizer is `Arc`-shared).
     pub fn from_model_dir_cached(model_dir: &Path) -> Result<Self, EngineTokenizerError> {
-        // The EOS id comes from config.json, so both files' mtimes identify
-        // the cached value; a config-only rewrite must not serve a stale EOS.
-        type CacheKey = (PathBuf, Option<SystemTime>, Option<SystemTime>);
+        // The EOS ids come from config.json and generation_config.json, so
+        // all three files' mtimes identify the cached value; a config-only
+        // rewrite must not serve a stale EOS.
+        type CacheKey = (
+            PathBuf,
+            Option<SystemTime>,
+            Option<SystemTime>,
+            Option<SystemTime>,
+        );
         static CACHE: Mutex<Option<HashMap<CacheKey, EngineTokenizer>>> = Mutex::new(None);
 
         let canonical = model_dir
@@ -202,7 +255,10 @@ impl EngineTokenizer {
         let config_mtime = std::fs::metadata(canonical.join("config.json"))
             .and_then(|m| m.modified())
             .ok();
-        let cache_key = (canonical, mtime, config_mtime);
+        let generation_config_mtime = std::fs::metadata(canonical.join("generation_config.json"))
+            .and_then(|m| m.modified())
+            .ok();
+        let cache_key = (canonical, mtime, config_mtime, generation_config_mtime);
 
         // A panic elsewhere while holding this lock must not permanently
         // poison the shared tokenizer cache for every later request; recover
@@ -234,22 +290,33 @@ impl EngineTokenizer {
         // a hot-swapped model directory does not grow the map unboundedly.
         // A slower load that snapshotted an older mtime must not clobber an
         // entry a faster racer inserted for a newer file: keep the newest.
-        let newer_exists = cache.iter().any(|((path, tok_mtime, cfg_mtime), _)| {
-            path == &cache_key.0 && (tok_mtime, cfg_mtime) > (&cache_key.1, &cache_key.2)
-        });
+        let newer_exists = cache
+            .iter()
+            .any(|((path, tok_mtime, cfg_mtime, gen_mtime), _)| {
+                path == &cache_key.0
+                    && (tok_mtime, cfg_mtime, gen_mtime)
+                        > (&cache_key.1, &cache_key.2, &cache_key.3)
+            });
         if newer_exists {
             return Ok(loaded);
         }
-        cache.retain(|(path, _, _), _| path != &cache_key.0);
+        cache.retain(|(path, _, _, _), _| path != &cache_key.0);
         cache.insert(cache_key, loaded.clone());
         Ok(loaded)
     }
 
-    /// The model's EOS token id if known, taken from `config.json`.
-    /// Qwen3-Embedding inputs are conventionally terminated with this
-    /// token before pooling on the last position.
+    /// The model's canonical EOS token id if known, taken from
+    /// `config.json` only. Qwen3-Embedding inputs are conventionally
+    /// terminated with this token before pooling on the last position.
     pub fn eos_token_id(&self) -> Option<u32> {
         self.eos_token_id
+    }
+
+    /// Every configured EOS token id, in config order and deduplicated,
+    /// merging `config.json` and `generation_config.json`. Generation
+    /// should stop on any of these, not only the canonical one.
+    pub fn eos_token_ids(&self) -> &[u32] {
+        &self.eos_token_ids
     }
 
     /// Encode for the model's embedding contract: Gemma uses its tokenizer
@@ -302,7 +369,7 @@ impl EngineTokenizer {
                 .get_ids()
                 .to_vec();
         }
-        if let Some(eos) = self.eos_token_id {
+        if let Some(eos) = self.eos_token_id() {
             match add_eos {
                 Some(false) if self.embedding_special_tokens && ids.last() == Some(&eos) => {
                     ids.pop();
@@ -324,7 +391,7 @@ impl EngineTokenizer {
             .map_err(|e| EngineTokenizerError::Encode(e.to_string()))?;
         let mut ids = encoding.get_ids().to_vec();
         if add_eos {
-            if let Some(eos) = self.eos_token_id {
+            if let Some(eos) = self.eos_token_id() {
                 ids.push(eos);
             }
         }
@@ -406,7 +473,7 @@ impl EngineTokenizer {
         for enc in encodings {
             let mut ids = enc.get_ids().to_vec();
             if add_eos {
-                if let Some(eos) = self.eos_token_id {
+                if let Some(eos) = self.eos_token_id() {
                     ids.push(eos);
                 }
             }
@@ -449,6 +516,7 @@ mod tests {
         let mut tokenizer = EngineTokenizer {
             inner,
             eos_token_id: Some(2),
+            eos_token_ids: vec![2],
             embedding_special_tokens: true,
         };
         assert_eq!(
@@ -553,6 +621,133 @@ mod tests {
         assert_eq!(parse_eos_token_id(&serde_json::json!({})), None);
     }
 
+    #[test]
+    fn eos_token_ids_collects_all_scalar_array_and_text_config_forms() {
+        use super::parse_eos_token_ids;
+        assert_eq!(
+            parse_eos_token_ids(&serde_json::json!({"eos_token_id": 128001})),
+            vec![128001]
+        );
+        // Llama 3 style: <|end_of_text|> plus <|eot_id|> must all stop.
+        assert_eq!(
+            parse_eos_token_ids(&serde_json::json!({"eos_token_id": [128001, 128008, 128009]})),
+            vec![128001, 128008, 128009]
+        );
+        assert_eq!(
+            parse_eos_token_ids(&serde_json::json!({"text_config": {"eos_token_id": [1, 106]}})),
+            vec![1, 106]
+        );
+        // Duplicates across top level and text_config collapse, order kept.
+        assert_eq!(
+            parse_eos_token_ids(&serde_json::json!({
+                "eos_token_id": [1, 106, 1],
+                "text_config": {"eos_token_id": [106, 50]}
+            })),
+            vec![1, 106, 50]
+        );
+        assert!(parse_eos_token_ids(&serde_json::json!({"eos_token_id": "eos"})).is_empty());
+        assert!(parse_eos_token_ids(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn from_model_dir_merges_generation_config_eos_and_cache_tracks_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-tokenizer-eos-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT),
+        )
+        .expect("write tokenizer");
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"eos_token_id":[128001,128008]}"#,
+        )
+        .expect("write config");
+
+        let loaded = EngineTokenizer::from_model_dir(&dir).expect("load tokenizer");
+        assert_eq!(loaded.eos_token_id(), Some(128001));
+        assert_eq!(loaded.eos_token_ids(), &[128001, 128008]);
+
+        // Adding generation_config.json must be visible through the cache.
+        std::fs::write(
+            dir.join("generation_config.json"),
+            r#"{"eos_token_id":[128009,128008]}"#,
+        )
+        .expect("write generation config");
+        let merged = EngineTokenizer::from_model_dir_cached(&dir).expect("cached load");
+        assert_eq!(merged.eos_token_id(), Some(128001));
+        assert_eq!(merged.eos_token_ids(), &[128001, 128008, 128009]);
+
+        // Rewriting generation_config.json must not serve the stale entry.
+        let gen_path = dir.join("generation_config.json");
+        let previous_mtime = std::fs::metadata(&gen_path)
+            .and_then(|meta| meta.modified())
+            .expect("generation config mtime");
+        for _ in 0..500 {
+            std::fs::write(&gen_path, r#"{"eos_token_id":128010}"#)
+                .expect("rewrite generation config");
+            let mtime = std::fs::metadata(&gen_path)
+                .and_then(|meta| meta.modified())
+                .expect("generation config mtime");
+            if mtime != previous_mtime {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let refreshed = EngineTokenizer::from_model_dir_cached(&dir).expect("cached reload");
+        assert_eq!(refreshed.eos_token_ids(), &[128001, 128008, 128010]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn generation_config_only_eos_does_not_change_canonical_eos_or_encode() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-tokenizer-gen-only-eos-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT),
+        )
+        .expect("write tokenizer");
+        // config.json carries no EOS at all; the only EOS lives in
+        // generation_config.json.
+        std::fs::write(dir.join("config.json"), r#"{}"#).expect("write config");
+        std::fs::write(
+            dir.join("generation_config.json"),
+            r#"{"eos_token_id":128009}"#,
+        )
+        .expect("write generation config");
+
+        let loaded = EngineTokenizer::from_model_dir(&dir).expect("load tokenizer");
+        // Canonical EOS stays config.json-only: absent there, so None, and
+        // encode(..., true) must not append the generation-only id.
+        assert_eq!(loaded.eos_token_id(), None);
+        assert_eq!(
+            loaded.encode("hello", true).expect("encode with eos"),
+            vec![0]
+        );
+        assert_eq!(
+            loaded.encode("hello", false).expect("encode without eos"),
+            vec![0]
+        );
+        // Generation stopping still sees the generation_config EOS.
+        assert_eq!(loaded.eos_token_ids(), &[128009]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use std::path::Path;
 
@@ -646,6 +841,7 @@ mod tests {
         let tokenizer = EngineTokenizer {
             inner: raw.clone(),
             eos_token_id: None,
+            eos_token_ids: Vec::new(),
             embedding_special_tokens: false,
         };
         let text = "用户：请用三句话解释哈希表。🙂\n<|im_start|>assistant\n好的。<|im_end|>\n<|im_start|>user\n再来一个例子。<|im_start|>assistant\n";

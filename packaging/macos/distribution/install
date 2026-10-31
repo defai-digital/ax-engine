@@ -1,24 +1,46 @@
 #!/usr/bin/env bash
 # AX Engine macOS bootstrap. Model files and user settings are never modified.
-# Based on the AX Code Desktop signature/hash/Apple identity verification flow.
+# Usage: curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
+# Define the complete installer before executing it so a truncated curl stream
+# cannot start a download or modify an existing application.
+main() {
 set -euo pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 BASE='https://download.automatosx.com/ax-engine-desktop'
 KEY='RWSlDu++afxCz01OqhYWhfo8+L8pVbSYXJBEb2zoWBuK0WACIzbGVZRO'
 fail() { echo "AX Engine: $*" >&2; exit 1; }
+usage() {
+  cat <<'HELP'
+Usage: install [--verify-only] [--applications-dir /absolute/directory]
+
+Install or upgrade AX Engine.app with its bundled native runtime.
+Requires Apple Silicon and macOS 26.2 or newer. Quit AX Engine first.
+
+  --verify-only       Verify the public release without installing it.
+  --applications-dir Use an existing applications directory (default: /Applications).
+  --help, -h          Show this help without downloading anything.
+
+Models, settings and conversations are preserved. Run the installer again to update.
+HELP
+}
 verify_only=false
 applications=/Applications
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --help|-h) usage; return 0 ;;
     --verify-only) verify_only=true; shift ;;
     --applications-dir) [[ $# -ge 2 ]] || fail 'Missing applications directory'; applications="$2"; shift 2 ;;
-    *) fail 'Usage: install [--verify-only] [--applications-dir /absolute/directory]' ;;
+    *) usage >&2; fail "Unknown argument: $1" ;;
   esac
 done
 [[ "$(uname -s):$(uname -m)" == Darwin:arm64 ]] || fail 'macOS Apple Silicon is required'
 sw_vers -productVersion | awk -F. '{exit !($1 > 26 || ($1 == 26 && $2 >= 2))}' || fail 'macOS 26.2 or newer is required'
 [[ "$applications" == /* && -d "$applications" && ! -L "$applications" ]] || fail 'Choose an existing, non-linked applications directory'
 applications="$(cd "$applications" && pwd -P)"
+if [[ "$verify_only" != true ]] && pgrep -x AXEngineApp >/dev/null; then
+  fail 'Quit AX Engine before installing'
+fi
+echo 'AX Engine: checking the signed release.'
 target="$applications/AX Engine.app"
 backup="$applications/.AX-Engine.previous.app"
 lock="$applications/.AX-Engine.install.lock"
@@ -101,6 +123,7 @@ awk -F '\t' -v version="$version" '
   END { if (NR != 2) exit 1 }
 ' "$temporary/release.tsv" || fail 'Invalid installer manifest'
 IFS=$'\t' read -r platform filename size digest < <(sed -n '2p' "$temporary/release.tsv")
+echo "AX Engine: downloading and verifying version $version."
 signed_download "$release/$filename" "$temporary/$filename"
 [[ "$(wc -c < "$temporary/$filename" | tr -d '[:space:]')" == "$size" && "$(hash "$temporary/$filename")" == "$digest" ]] || fail 'Installer size or SHA-256 mismatch'
 codesign --verify --strict "$temporary/$filename"
@@ -117,6 +140,7 @@ if [[ -n "$(xcode-select -p 2>/dev/null || true)" ]]; then
   if [[ -n "$stapler" ]]; then "$stapler" validate "$temporary/$filename"; "$stapler" validate "$app"; fi
 fi
 if [[ "$verify_only" == true ]]; then echo "Verified AX Engine $version; no application was installed."; exit 0; fi
+echo "AX Engine: installing to $target."
 pgrep -x AXEngineApp >/dev/null && fail 'Quit AX Engine before installing' || true
 if [[ ! -w "$applications" ]]; then [[ -r /dev/tty ]] || fail 'An interactive terminal is required for /Applications installation'; use_sudo=true; fi
 [[ ! -L "$lock" && ! -L "$recovery" && ! -L "$backup" && ! -L "$target" && ! -e "$stage" ]] || fail 'Unsafe installation or staging path'
@@ -163,3 +187,7 @@ fi
 previous_moved=false
 if [[ -e "$backup" ]]; then priv rm -rf -- "$backup"; fi
 echo "Installed AX Engine $version. Models, settings and conversations were preserved."
+echo "Open AX Engine from Applications, or run: open \"$target\""
+}
+
+main "$@"

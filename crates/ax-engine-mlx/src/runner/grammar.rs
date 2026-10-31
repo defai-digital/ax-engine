@@ -17,7 +17,10 @@ use parking_lot::Mutex;
 /// so most masks are looked up rather than walked.
 const MASK_CACHE_ENTRIES: usize = 64;
 
-type MaskCache = Mutex<HashMap<JsonMatcher, Arc<[u64]>>>;
+/// Keyed by the terminal set too: `ignore_eos` decode steps pass no terminal
+/// ids while MTP verify rows pass the full EOS list, so the same position has
+/// two different masks.
+type MaskCache = Mutex<HashMap<(JsonMatcher, Vec<u32>), Arc<[u64]>>>;
 
 #[derive(Clone, Debug)]
 pub(super) struct RequestGrammar {
@@ -224,7 +227,7 @@ impl GrammarCursor<'_> {
         if self.in_think || self.dead {
             return Ok(None);
         }
-        let key = self.matcher.mask_key();
+        let key = (self.matcher.mask_key(), self.terminal.to_vec());
         if let Some(mask) = self.masks.lock().get(&key) {
             return Ok(Some(mask.to_vec()));
         }
@@ -254,7 +257,15 @@ impl GrammarCursor<'_> {
     /// `drafts[..i]`, so there are `drafts.len() + 1` rows.
     pub(super) fn row_masks(mut self, drafts: &[u32]) -> Vec<Option<Vec<u64>>> {
         let mut masks = Vec::with_capacity(drafts.len() + 1);
-        masks.push(self.mask());
+        // Row 0 follows only committed tokens: zero support there is not a
+        // rejected draft but a request that cannot finish, so report it.
+        masks.push(match self.mask_checked() {
+            Ok(mask) => mask,
+            Err(error) => {
+                *self.budget_error.lock() = Some(error);
+                Some(vec![0; self.vocab.vocab_size().div_ceil(64)])
+            }
+        });
         for &token in drafts {
             self.advance(token);
             masks.push(self.mask());
@@ -435,6 +446,31 @@ mod tests {
                 .mask_checked()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn mask_cache_separates_terminal_sets() {
+        let vocab = vocab();
+        let mut grammar = RequestGrammar::new(Arc::new(JsonGrammar::any_object()));
+        for token in [0, 1] {
+            grammar.commit(&vocab, THINK, false, EOS, token);
+        }
+        let with_eos = grammar.cursor(&vocab, THINK, false, EOS).mask().unwrap();
+        assert!(mask_allows(&with_eos, EOS[0]));
+        let without_eos = grammar.cursor(&vocab, THINK, false, &[]).mask();
+        assert!(without_eos.is_none_or(|mask| !mask_allows(&mask, EOS[0])));
+    }
+
+    #[test]
+    fn completion_budget_infeasible_committed_row_reports_an_error() {
+        let vocab = vocab();
+        let mut grammar = RequestGrammar::new(Arc::new(
+            JsonGrammar::any_object().with_completion_budget(true),
+        ));
+        grammar.set_remaining(1);
+        let masks = grammar.cursor(&vocab, THINK, false, EOS).row_masks(&[0]);
+        assert!(masks[0].as_ref().unwrap().iter().all(|&word| word == 0));
+        assert_eq!(grammar.take_budget_error(), Some(BudgetError::Infeasible));
     }
 
     #[test]

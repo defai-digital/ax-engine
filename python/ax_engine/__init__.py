@@ -504,17 +504,24 @@ class Session:
                 or os.environ.get("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR")
             )
         self._artifact_model_type = _artifact_model_type(artifacts_dir)
+        # The default label cannot tell Qwen3-Coder-Next from an ordinary
+        # Qwen3-Next pack (both declare model_type "qwen3_next"), so only that
+        # default defers to the artifacts' own identity for the think/no-think
+        # prefill; an explicit label always keeps precedence.
+        self._chat_identity = _chat_identity_for_label(self.model_id, artifacts_dir)
 
     @property
     def model_id(self) -> str:
         return self._inner.model_id
 
     def _chat_prompt(self, messages: list[ChatMessage | dict[str, str]]) -> str:
-        return _render_chat_prompt(
-            messages,
-            self.model_id,
-            template=_chat_template_for_artifacts(self._artifact_model_type),
-        )
+        # The template follows the artifacts; the think/no-think prefill follows
+        # `_chat_identity`. Deriving the fallback template from the true label
+        # keeps artifact-less sessions byte-identical to the previous behavior.
+        template = _chat_template_for_artifacts(self._artifact_model_type)
+        if template is None:
+            template = _chat_prompt_template(self.model_id)
+        return _render_chat_prompt(messages, self._chat_identity, template=template)
 
     @property
     def closed(self) -> bool:
@@ -1447,6 +1454,52 @@ def _artifact_model_type(artifacts_dir: str | None) -> str | None:
         if isinstance(text_config, dict):
             model_type = text_config.get("model_type")
     return model_type.lower() if isinstance(model_type, str) and model_type else None
+
+
+_DEFAULT_MODEL_ID_LABEL = "qwen3_dense"
+
+
+def _artifact_pack_identity(artifacts_dir: str | None) -> str | None:
+    """Authoritative pack identity: download ``repo_id``, else ``_name_or_path``.
+
+    Both are written by the pack itself, so they describe the weights that were
+    actually downloaded rather than whatever opaque label a caller passed.
+    """
+    if not artifacts_dir:
+        return None
+    root = Path(artifacts_dir)
+    provenance = _read_download_provenance(root)
+    if isinstance(provenance, dict):
+        repo_id = provenance.get("repo_id")
+        if isinstance(repo_id, str) and repo_id.strip():
+            return repo_id
+    try:
+        with open(root / "config.json", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    name_or_path = config.get("_name_or_path")
+    if not isinstance(name_or_path, str) or not name_or_path.strip():
+        text_config = config.get("text_config")
+        if isinstance(text_config, dict):
+            name_or_path = text_config.get("_name_or_path")
+    if not isinstance(name_or_path, str) or not name_or_path.strip():
+        return None
+    return name_or_path
+
+
+def _chat_identity_for_label(model_id: str, artifacts_dir: str | None) -> str:
+    """Chat identity for the Qwen think/no-think prefill decision.
+
+    An explicit ``model_id`` label wins. Only the default ``qwen3_dense`` label
+    -- which carries no identity information -- defers to the artifacts, so an
+    unidentifiable pack keeps the original label and its thinking behavior.
+    """
+    if model_id.strip().lower() != _DEFAULT_MODEL_ID_LABEL:
+        return model_id
+    return _artifact_pack_identity(artifacts_dir) or model_id
 
 
 def _chat_template_for_artifacts(model_type: str | None) -> str | None:

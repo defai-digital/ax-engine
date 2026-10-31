@@ -333,16 +333,33 @@ fn array_from_f32(values: &[f32], shape: &[i32], dtype: MlxDtype) -> MlxArray {
     value
 }
 
-fn resize_sam_position_embedding(position: &MlxArray) -> MlxArray {
+fn resize_sam_position_embedding(position: &MlxArray) -> Result<MlxArray, UnlimitedOcrError> {
     let shape = position.shape();
+    // The resize reads a fixed 64x64 source grid; any other shape would index
+    // past the tensor or be reinterpreted as the wrong image.
+    if shape.len() != 4 || shape[..3] != [1, 64, 64] || shape[3] <= 0 {
+        return Err(UnlimitedOcrError::Assembly(format!(
+            "sam_model.pos_embed must be [1, 64, 64, C], got {shape:?}"
+        )));
+    }
     let channels = shape[3] as usize;
     let values = array_f32_values(position);
     let resized = resize_hwc_cubic(&values, 64, 64, channels, 40, 40, true);
-    array_from_f32(&resized, &[1, 40, 40, shape[3]], position.dtype())
+    Ok(array_from_f32(
+        &resized,
+        &[1, 40, 40, shape[3]],
+        position.dtype(),
+    ))
 }
 
-fn resize_clip_position_embedding(position: &MlxArray) -> MlxArray {
+fn resize_clip_position_embedding(position: &MlxArray) -> Result<MlxArray, UnlimitedOcrError> {
     let shape = position.shape();
+    // One class row followed by a fixed 16x16 patch grid.
+    if shape.len() != 2 || shape[0] != 257 || shape[1] <= 0 {
+        return Err(UnlimitedOcrError::Assembly(format!(
+            "vision position_embedding must be [257, C], got {shape:?}"
+        )));
+    }
     let channels = shape[1] as usize;
     let values = array_f32_values(position);
     // `get_abs_pos`: bicubic, `antialias=True`, `align_corners=False`.
@@ -350,7 +367,11 @@ fn resize_clip_position_embedding(position: &MlxArray) -> MlxArray {
     let mut combined = Vec::with_capacity((1 + 100) * channels);
     combined.extend_from_slice(&values[..channels]);
     combined.extend_from_slice(&resized);
-    array_from_f32(&combined, &[101, shape[1]], position.dtype())
+    Ok(array_from_f32(
+        &combined,
+        &[101, shape[1]],
+        position.dtype(),
+    ))
 }
 
 fn resize_relative_position(position: &MlxArray, output_length: usize) -> MlxArray {
@@ -434,7 +455,7 @@ fn take_conv(
 fn load_sam(map: &mut HashMap<String, MlxArray>) -> Result<SamEncoder, UnlimitedOcrError> {
     let patch_embed = take_conv(map, "sam_model.patch_embed.proj", SAM_PATCH, 0, true)?;
     let pos_embed = take_arr(map, "sam_model.pos_embed")?;
-    let pos_embed_local = resize_sam_position_embedding(&pos_embed);
+    let pos_embed_local = resize_sam_position_embedding(&pos_embed)?;
     let mut blocks = Vec::with_capacity(SAM_DEPTH);
     for i in 0..SAM_DEPTH {
         let p = format!("sam_model.blocks.{i}");
@@ -499,7 +520,7 @@ fn load_clip(map: &mut HashMap<String, MlxArray>) -> Result<ClipVision, Unlimite
     let class_embedding = take_arr(map, "vision_model.embeddings.class_embedding")?;
     let patch_embedding = take_conv(map, "vision_model.embeddings.patch_embedding", 14, 0, false)?;
     let position_embedding = take_arr(map, "vision_model.embeddings.position_embedding.weight")?;
-    let position_embedding_local = resize_clip_position_embedding(&position_embedding);
+    let position_embedding_local = resize_clip_position_embedding(&position_embedding)?;
     // typo preserved from HF checkpoint: pre_layrnorm
     let pre_layernorm = take_ln(map, "vision_model.pre_layrnorm", CLIP_PRE_LN_EPS)?;
     let mut layers = Vec::with_capacity(CLIP_LAYERS);
@@ -1292,6 +1313,24 @@ pub fn build_free_ocr_token_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_embedding_resizers_reject_unexpected_grids() {
+        let sam = mlx_sys::zeros(&[1, 32, 32, 4], MlxDtype::Float32, None);
+        assert!(resize_sam_position_embedding(&sam).is_err());
+        let clip = mlx_sys::zeros(&[101, 4], MlxDtype::Float32, None);
+        assert!(resize_clip_position_embedding(&clip).is_err());
+        let sam = mlx_sys::zeros(&[1, 64, 64, 4], MlxDtype::Float32, None);
+        assert_eq!(
+            resize_sam_position_embedding(&sam).unwrap().shape(),
+            vec![1, 40, 40, 4]
+        );
+        let clip = mlx_sys::zeros(&[257, 4], MlxDtype::Float32, None);
+        assert_eq!(
+            resize_clip_position_embedding(&clip).unwrap().shape(),
+            vec![101, 4]
+        );
+    }
 
     #[test]
     fn base_soft_token_count_1024() {
