@@ -33,6 +33,11 @@ const MSG_ROUTE_N: i32 = 100_000;
 /// `4 * rows` floats per simdgroup, which fits the 32-lane reduction up to 8
 /// rows; 7 and 8 rows serve DFlash2's 8-row windows.
 const AFFINE_MAX_ROWS: i32 = 8;
+/// Narrowest 6-bit window routed. MLX's stock QMM reads a 6-bit matrix about
+/// once for 3 rows on M4 Pro and M5 Max (stock 3-row cost ~1.0x one row), so
+/// the route only wins from 4 rows: 6-bit gate/up route/stock was 1.000/0.929
+/// at 3/4 rows on M4 Pro and 1.054/0.977 on M5 Max (0.56/0.44 on M2 Ultra).
+const SIX_BIT_MIN_ROWS: i32 = 4;
 const DEFAULT_MSG_SIMDGROUPS: i32 = 8;
 
 /// Minimum output width routed through the verify QMM.
@@ -751,7 +756,12 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
         return None;
     }
     let shape = x.shape();
-    if shape.len() != 3 || shape[0] != 1 || !(3..=AFFINE_MAX_ROWS).contains(&shape[1]) {
+    let min_rows = if weight.bits == 6 {
+        SIX_BIT_MIN_ROWS
+    } else {
+        3
+    };
+    if shape.len() != 3 || shape[0] != 1 || !(min_rows..=AFFINE_MAX_ROWS).contains(&shape[1]) {
         return None;
     }
     let m = shape[1];
@@ -1111,8 +1121,9 @@ mod tests {
         // single-group rows, so a misplaced 6-bit field or half-word cannot
         // cancel out.
         for bits in [6, 8] {
+            let rows: &[i32] = if bits == 6 { &[4, 5, 8] } else { &[3, 4, 8] };
             for (k, group_size) in [(64, 32), (256, 64), (512, 128)] {
-                for m in [3, 4, 8] {
+                for &m in rows {
                     assert_route_matches_affine_qmm_with(
                         SPLIT_K_TEST_N,
                         SPLIT_K_TEST_N,
@@ -1124,7 +1135,7 @@ mod tests {
                     );
                 }
             }
-            for m in [3, 8] {
+            for &m in [rows[0], 8].iter() {
                 assert_route_matches_affine_qmm_with(
                     MSG_ROUTE_N,
                     MIN_ROUTE_N,
@@ -1135,8 +1146,54 @@ mod tests {
                     "multi-simdgroup",
                 );
             }
-            assert_route_matches_affine_qmm_with(2048, 0, 3, bits, 256, 64, "small split-K");
+            assert_route_matches_affine_qmm_with(2048, 0, rows[0], bits, 256, 64, "small split-K");
         }
+    }
+
+    #[test]
+    fn three_row_six_bit_windows_stay_on_stock_qmm() {
+        let (n, k, group_size) = (SPLIT_K_TEST_N, 256, 64);
+        let dense = reshape(
+            &MlxArray::from_f32_slice(&vec![0.25_f32; (n * k) as usize]),
+            &[n, k],
+            None,
+        );
+        let quantized = quantize(
+            &dense,
+            Some(group_size),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(astype(&quantized[1], MlxDtype::Bfloat16, None)),
+            biases: Some(astype(&quantized[2], MlxDtype::Bfloat16, None)),
+            group_size,
+            bits: 6,
+            mode: "affine".to_owned(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: Default::default(),
+        };
+        let input = |m: i32| {
+            astype(
+                &reshape(
+                    &MlxArray::from_f32_slice(&vec![0.5_f32; (m * k) as usize]),
+                    &[1, m, k],
+                    None,
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let _guard = QwenMtpVerifyQmmGuard::arm(true);
+        assert!(try_qwen_mtp_verify_qmm_for_min_n(&input(3), &weight, 0).is_none());
+        assert!(try_qwen_mtp_verify_qmm_for_min_n(&input(SIX_BIT_MIN_ROWS), &weight, 0).is_some());
     }
 
     #[test]
@@ -1311,6 +1368,12 @@ mod tests {
                 for m in [3, 4, 8] {
                     let inputs = inputs_for(m);
                     let _guard = QwenMtpVerifyQmmGuard::arm(true);
+                    if try_qwen_mtp_verify_qmm_for_min_n(&inputs[0], &weight, 0).is_none() {
+                        println!(
+                            "{bits:>4} {n:>6} {k:>6} {m:>2}   (stock QMM; below the routed window)"
+                        );
+                        continue;
+                    }
                     let route = |x: &MlxArray| {
                         try_qwen_mtp_verify_qmm_for_min_n(x, &weight, 0)
                             .expect("benchmark shape must be eligible")
