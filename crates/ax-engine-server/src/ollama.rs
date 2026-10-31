@@ -1128,6 +1128,7 @@ fn ollama_chat_to_openai_request(
         top_logprobs: None,
         reasoning: thinking.map(Value::Bool),
         reasoning_effort: None,
+        thinking: None,
         ax_max_think_tokens: None,
         ax_answer_reserve_tokens: None,
         // Replay prior `thinking` history only when thinking is on for this

@@ -2683,6 +2683,92 @@ fn deepseek_request_defaults_thinking_from_model_id() {
     assert!(openai_chat_prompt_render_options(&opt_in).enable_thinking);
 }
 
+#[test]
+fn deepseek_top_level_thinking_switch_overrides_the_model_default() {
+    let options = |body: Value| {
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("request should deserialize");
+        openai_chat_prompt_render_options(&request).enable_thinking
+    };
+    let messages = json!([{"role": "user", "content": "Hi"}]);
+    assert!(
+        !options(json!({
+            "model": "deepseek-ai/DeepSeek-R1", "messages": messages,
+            "thinking": {"type": "disabled"}
+        })),
+        "disabled turns off a thinking-by-default model"
+    );
+    assert!(options(json!({
+        "model": "deepseek-ai/DeepSeek-V3", "messages": messages,
+        "thinking": {"type": "enabled"}
+    })));
+    assert!(
+        options(json!({
+            "model": "deepseek-ai/DeepSeek-R1", "messages": messages,
+            "thinking": {"type": "disabled"},
+            "chat_template_kwargs": {"enable_thinking": true}
+        })),
+        "chat_template_kwargs wins over the top-level switch"
+    );
+    assert!(
+        !options(json!({
+            "model": "deepseek-ai/DeepSeek-V3", "messages": messages,
+            "thinking": {"type": "disabled"},
+            "reasoning": true
+        })),
+        "the explicit switch decides before the reasoning fallback"
+    );
+    assert!(options(json!({
+        "model": "deepseek-ai/DeepSeek-R1", "messages": messages,
+        "thinking": null
+    })));
+}
+
+#[tokio::test]
+async fn deepseek_top_level_thinking_switch_is_validated_at_build() {
+    let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-switch");
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-R1", &artifact_dir);
+    let live = state.snapshot();
+    let build = |thinking: Value| {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "model": "deepseek-ai/DeepSeek-R1",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 8,
+            "thinking": thinking
+        }))
+        .expect("request should deserialize");
+        build_openai_chat_request(&live, request)
+    };
+
+    let built = build(json!({"type": "disabled"})).expect("disabled thinking builds");
+    assert!(!built.response_options.include_reasoning);
+    let built = build(json!({"type": "enabled"})).expect("enabled thinking builds");
+    assert!(built.response_options.include_reasoning);
+
+    for (thinking, why) in [
+        (json!({"type": "auto"}), "unknown type"),
+        (json!({}), "missing type"),
+        (json!("disabled"), "string form"),
+        (json!(false), "boolean form"),
+        (
+            json!({"type": "enabled", "budget_tokens": 256}),
+            "budget_tokens (use ax_max_think_tokens)",
+        ),
+    ] {
+        let error = match build(thinking) {
+            Ok(_) => panic!("{why} must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{why}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("invalid_request_error"),
+            "{why}"
+        );
+    }
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
 #[tokio::test]
 async fn deepseek_thinking_budget_flows_into_workload_hints() {
     let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-budget");

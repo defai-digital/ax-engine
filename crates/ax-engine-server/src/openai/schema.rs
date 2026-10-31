@@ -239,6 +239,10 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     /// value fails closed instead of being silently ignored.
     #[serde(default)]
     pub(crate) reasoning_effort: Option<Value>,
+    /// DeepSeek API thinking switch, `{"type": "enabled" | "disabled"}`.
+    /// `chat_template_kwargs.enable_thinking` wins when both are set.
+    #[serde(default)]
+    pub(crate) thinking: Option<Value>,
     /// AX extension: thinking-budget controller cap on tokens emitted inside
     /// the open think block (forced close when reached; the remaining output
     /// budget still funds the answer).
