@@ -5296,3 +5296,130 @@ fn tool_results_cannot_forge_turns_in_deepseek_or_qwen_prompts() {
     .expect("qwen prompt");
     assert_eq!(prompt.matches("</tool_response>").count(), 1, "{prompt}");
 }
+
+#[tokio::test]
+async fn openai_chat_ignore_eos_reaches_native_sampling() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-ignore-eos");
+    let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let live = state.snapshot();
+    for (ignore_eos, expected) in [(Some(true), true), (Some(false), false), (None, false)] {
+        let mut body = json!({
+            "model": "Qwen3.6-27B-4bit",
+            "messages": [{"role": "user", "content": "hello openai chat"}],
+            "max_tokens": 8
+        });
+        if let Some(ignore_eos) = ignore_eos {
+            body["ignore_eos"] = json!(ignore_eos);
+        }
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample chat request should deserialize");
+        let built = build_openai_chat_request(&live, request).expect("chat request should build");
+        assert_eq!(
+            built.generate_request.sampling.ignore_eos, expected,
+            "ignore_eos {ignore_eos:?}"
+        );
+    }
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_ignore_eos_rejects_structured_output() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-ignore-eos-structured");
+    let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let live = state.snapshot();
+    for (extra, why) in [
+        (
+            json!({"response_format": {"type": "json_object"}}),
+            "json_object",
+        ),
+        (
+            json!({"response_format": {"type": "json_schema", "json_schema": {
+                "name": "answer", "schema": {"type": "object"}
+            }}}),
+            "json_schema",
+        ),
+        (json!({"grammar_budget": true}), "grammar_budget"),
+    ] {
+        let mut body = json!({
+            "model": "Qwen3.6-27B-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "ignore_eos": true
+        });
+        for (key, value) in extra.as_object().expect("extra fields") {
+            body[key] = value.clone();
+        }
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("ignore_eos with {why} must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{why}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_parameter"),
+            "{why}"
+        );
+    }
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn delegated_mlx_lm_chat_rejects_ignore_eos() {
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 8,
+        "ignore_eos": true
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_mlx_lm_chat_request(&live, request) {
+        Ok(_) => panic!("mlx-lm has no ignore_eos; the request must fail closed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+}
+
+#[tokio::test]
+async fn delegated_llama_cpp_chat_ignore_eos_keeps_only_client_stops() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let build = |ignore_eos: bool| {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "model": "qwen3",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "stop": ["END"],
+            "ignore_eos": ignore_eos
+        }))
+        .expect("sample chat request should deserialize");
+        build_openai_llama_cpp_chat_request(&live, request)
+            .expect("llama.cpp chat request should build")
+    };
+
+    let ignoring = build(true);
+    assert!(ignoring.chat_request.sampling.ignore_eos);
+    assert_eq!(
+        ignoring.chat_request.stop_sequences,
+        vec!["END".to_string()]
+    );
+
+    let stopping = build(false);
+    assert!(!stopping.chat_request.sampling.ignore_eos);
+    assert!(
+        stopping
+            .chat_request
+            .stop_sequences
+            .contains(&"<|im_end|>".to_string()),
+        "{:?}",
+        stopping.chat_request.stop_sequences
+    );
+}

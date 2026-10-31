@@ -254,6 +254,11 @@ impl OpenAiResponseOptions {
         )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
         reject_unsupported_completion_logprobs(request.logprobs)?;
+        reject_unsupported_ignore_eos(
+            request.ignore_eos,
+            request.grammar_budget,
+            request.response_format.as_ref(),
+        )?;
         Ok(Self {
             grammar_budget: request.grammar_budget,
             prepared_json_constraint: None,
@@ -284,6 +289,11 @@ impl OpenAiResponseOptions {
             request.logit_bias.as_ref(),
         )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
+        reject_unsupported_ignore_eos(
+            request.ignore_eos,
+            request.grammar_budget,
+            request.response_format.as_ref(),
+        )?;
         // `parallel_tool_calls: false` is only meaningful when tools are
         // actually enabled; without `tools` / `tool_choice` the constraint is
         // vacuously satisfied and echoing `false` misrepresents nothing.
@@ -383,6 +393,7 @@ struct OpenAiSamplingParams {
     frequency_penalty: Option<f32>,
     logit_bias: std::collections::BTreeMap<u32, f32>,
     seed: Option<u64>,
+    ignore_eos: bool,
 }
 
 impl OpenAiSamplingParams {
@@ -399,6 +410,7 @@ impl OpenAiSamplingParams {
             // Validated by `reject_unsupported_sampling_params` first.
             logit_bias: parse_openai_logit_bias(request.logit_bias.as_ref()).unwrap_or_default(),
             seed: request.seed,
+            ignore_eos: request.ignore_eos,
         }
     }
 
@@ -415,6 +427,7 @@ impl OpenAiSamplingParams {
             // Validated by `reject_unsupported_sampling_params` first.
             logit_bias: parse_openai_logit_bias(request.logit_bias.as_ref()).unwrap_or_default(),
             seed: request.seed,
+            ignore_eos: request.ignore_eos,
         }
     }
 }
@@ -431,6 +444,7 @@ pub(crate) fn build_openai_completion_request(
                 .to_string(),
         ));
     }
+    reject_mlx_lm_ignore_eos(live, request.ignore_eos)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
     let mut response_options = OpenAiResponseOptions::from_completion_request(&request)?;
@@ -868,6 +882,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_grammar_budget(request.grammar_budget)?;
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
+    reject_mlx_lm_ignore_eos(live, request.ignore_eos)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
@@ -962,11 +977,17 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         .map(OpenAiStopInput::into_vec)
         .unwrap_or_default();
     validate_client_stop_sequences(&user_stop)?;
-    let stop_sequences = chat::stop_sequences(
-        live.model_id.as_ref(),
-        crate::metadata::model_family_from_artifacts(live).as_deref(),
-        user_stop,
-    );
+    // The template's turn-end stops stand in for EOS upstream, so
+    // `ignore_eos` keeps only the client's own stop strings.
+    let stop_sequences = if request.ignore_eos {
+        user_stop
+    } else {
+        chat::stop_sequences(
+            live.model_id.as_ref(),
+            crate::metadata::model_family_from_artifacts(live).as_deref(),
+            user_stop,
+        )
+    };
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
@@ -1283,6 +1304,41 @@ fn reject_openai_multimodal_inputs_without_tokens(
     ))
 }
 
+/// `ignore_eos` decodes past the point a constrained answer is complete, so
+/// it cannot be combined with structured output or the EOS-terminated
+/// `grammar_budget` contract.
+fn reject_unsupported_ignore_eos(
+    ignore_eos: bool,
+    grammar_budget: bool,
+    response_format: Option<&Value>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if ignore_eos && (grammar_budget || openai_response_format_is_structured(response_format)) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "ignore_eos cannot be combined with structured response_format or grammar_budget"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The mlx-lm server has no `ignore_eos`; fail closed instead of stopping at
+/// EOS while the client expects a fixed-length decode.
+fn reject_mlx_lm_ignore_eos(
+    live: &LiveState,
+    ignore_eos: bool,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if ignore_eos && live.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "ignore_eos is not supported by the mlx-lm delegated backend".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn reject_delegated_grammar_budget(enabled: bool) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if enabled {
         return Err(error_response(
@@ -1410,7 +1466,7 @@ fn build_openai_sampling_with_default_repetition_penalty(
         seed,
         seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,
-        ignore_eos: false,
+        ignore_eos: params.ignore_eos,
     }
 }
 
@@ -2021,6 +2077,7 @@ mod tests {
                 frequency_penalty: None,
                 logit_bias: Default::default(),
                 seed: Some(0),
+                ignore_eos: false,
             },
             1.0,
         );
@@ -2043,6 +2100,7 @@ mod tests {
                 frequency_penalty: None,
                 logit_bias: Default::default(),
                 seed: None,
+                ignore_eos: false,
             },
             1.0,
         );
