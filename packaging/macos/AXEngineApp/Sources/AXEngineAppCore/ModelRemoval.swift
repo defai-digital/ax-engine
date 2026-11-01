@@ -15,6 +15,15 @@ public enum ModelRemovalTarget: Equatable, Sendable {
         switch self { case .managedFolder(let url), .cacheRepository(let url): url }
     }
     public var isCacheRepository: Bool { if case .cacheRepository = self { true } else { false } }
+
+    /// Whether removing this folder also removes the model, including another
+    /// cached revision of the same repository.
+    public func containsModel(path: String) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        let model = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        let folder = url.resolvingSymlinksInPath().standardizedFileURL
+        return model.pathComponents.starts(with: folder.pathComponents)
+    }
 }
 
 /// An interrupted native download left on disk. These stage folders are hidden
@@ -101,7 +110,8 @@ public enum ModelFiles {
         let fm = FileManager.default
         var found: [PartialDownload] = []
         func collect(in directory: URL, label: (String) -> String) {
-            guard let names = try? fm.contentsOfDirectory(atPath: directory.path) else { return }
+            guard !isLink(directory), isDirectory(directory),
+                  let names = try? fm.contentsOfDirectory(atPath: directory.path) else { return }
             for name in names.sorted() where isStageName(name) {
                 let stage = directory.appendingPathComponent(name)
                 guard !isLink(stage), isDirectory(stage),
@@ -127,7 +137,7 @@ public enum ModelFiles {
     public static func isPartialDownload(path: String, modelsRoot: String, cacheRoot: URL) -> Bool {
         let stage = URL(fileURLWithPath: path).standardizedFileURL
         let parent = stage.deletingLastPathComponent()
-        guard isStageName(stage.lastPathComponent), !isLink(stage), isDirectory(stage),
+        guard isStageName(stage.lastPathComponent), !isLink(parent), !isLink(stage), isDirectory(stage),
               FileManager.default.fileExists(atPath: stage.appendingPathComponent(stateFile).path) else { return false }
         if parent == URL(fileURLWithPath: modelsRoot).resolvingSymlinksInPath().standardizedFileURL { return true }
         let repository = parent.deletingLastPathComponent()
@@ -139,16 +149,25 @@ public enum ModelFiles {
     /// Run `body` only while holding the downloader's exclusive lock for `stage`,
     /// so a stage owned by a running CLI or app download is never deleted.
     static func withStageLock<T>(_ stage: URL, _ body: () throws -> T) throws -> T {
+        let descriptor = try lockStage(stage)
+        defer { flock(descriptor, LOCK_UN); close(descriptor) }
+        return try body()
+    }
+
+    private static func lockStage(_ stage: URL) throws -> Int32 {
+        let parent = stage.deletingLastPathComponent()
+        guard !isLink(parent), isDirectory(parent), !isLink(stage) else {
+            throw AppFailure.message("The partial download folder is linked or no longer available. Rescan the library.")
+        }
         let lock = stage.deletingLastPathComponent().appendingPathComponent(stage.lastPathComponent + ".lock")
         guard !isLink(lock) else { throw AppFailure.message("The download lock is not a regular file.") }
         let descriptor = open(lock.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
         guard descriptor >= 0 else { throw AppFailure.message("Could not check whether this download is still running.") }
-        defer { close(descriptor) }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
             throw AppFailure.message("This download is still running in AX Engine. Cancel it first.")
         }
-        defer { flock(descriptor, LOCK_UN) }
-        return try body()
+        return descriptor
     }
 
     /// Delete a fenced folder. It is first renamed to a hidden sibling so that
@@ -162,6 +181,22 @@ public enum ModelFiles {
     }
 
     public static func removeCacheRepository(_ repository: URL) throws {
+        let downloads = repository.appendingPathComponent(".ax-downloads")
+        guard !isLink(downloads) else {
+            throw AppFailure.message("The model's download folder is linked. Remove this cache using Hub tools.")
+        }
+        var descriptors: [Int32] = []
+        defer { for descriptor in descriptors { flock(descriptor, LOCK_UN); close(descriptor) } }
+        if FileManager.default.fileExists(atPath: downloads.path) {
+            let entries = try FileManager.default.contentsOfDirectory(atPath: downloads.path)
+            // Locks exist before their stage directories. Hold every existing
+            // native download lock until the repository has been removed.
+            for name in entries.sorted() where name.hasSuffix(".lock") {
+                let stageName = String(name.dropLast(".lock".count))
+                guard isStageName(stageName) else { continue }
+                descriptors.append(try lockStage(downloads.appendingPathComponent(stageName)))
+            }
+        }
         try delete(repository)
     }
 

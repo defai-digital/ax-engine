@@ -61,6 +61,23 @@ private func emptyScanner(in root: URL) throws -> URL {
     #expect(ModelFiles.removalTarget(path: real.path, modelsRoot: root.path, cacheRoot: cache) == nil)
 }
 
+@Test func cacheRemovalIncludesOtherRevisionsButNotSimilarlyNamedRepositories() throws {
+    let root = try temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let cache = root.appendingPathComponent("hub")
+    let older = try cacheSnapshot(cache, repo: "AutomatosX/Pack", revision: "older")
+    let newer = try cacheSnapshot(cache, repo: "AutomatosX/Pack", revision: "newer")
+    let sibling = try cacheSnapshot(cache, repo: "AutomatosX/Pack-other")
+    let target = try #require(ModelFiles.removalTarget(path: newer.path, modelsRoot: root.appendingPathComponent("models").path, cacheRoot: cache))
+    #expect(older.path != newer.path)
+    #expect(target.containsModel(path: older.path))
+    #expect(target.containsModel(path: newer.path))
+    #expect(!target.containsModel(path: sibling.path))
+    #expect(!target.containsModel(path: "AutomatosX/Pack"))
+    let managed = ModelRemovalTarget.managedFolder(older)
+    #expect(managed.containsModel(path: older.path))
+    #expect(!managed.containsModel(path: newer.path))
+}
+
 @Test func managedFoldersStillResolveAsManaged() throws {
     let root = try temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
     let folder = root.appendingPathComponent("models/AutomatosX--Pack--rev")
@@ -148,6 +165,74 @@ private func emptyScanner(in root: URL) throws -> URL {
     flock(lock, LOCK_UN); close(lock)
     try ModelFiles.discardPartialDownload(stage)
     #expect(!FileManager.default.fileExists(atPath: stage.path))
+}
+
+@Test @MainActor func linkedPartialDownloadContainersDoNotExposeExternalStages() async throws {
+    let root = try temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("models"), cache = root.appendingPathComponent("hub")
+    let snapshot = try cacheSnapshot(cache, repo: "AutomatosX/Pack")
+    let repository = snapshot.deletingLastPathComponent().deletingLastPathComponent()
+    let outside = root.appendingPathComponent("outside")
+    let stageName = ".0123456789abcdef.ax-download"
+    let externalStage = outside.appendingPathComponent(stageName)
+    let state = externalStage.appendingPathComponent(".ax-native-state.json")
+    try write("{}", to: state)
+    let linkedContainer = repository.appendingPathComponent(".ax-downloads")
+    try FileManager.default.createSymbolicLink(at: linkedContainer, withDestinationURL: outside)
+    let linkedStage = linkedContainer.appendingPathComponent(stageName)
+
+    #expect(ModelFiles.partialDownloads(modelsRoot: models.path, cacheRoot: cache).isEmpty)
+    #expect(!ModelFiles.isPartialDownload(path: linkedStage.path, modelsRoot: models.path, cacheRoot: cache))
+
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"),
+                           scannerURL: try emptyScanner(in: root), scanEnvironment: ["HF_HUB_CACHE": cache.path])
+    var settings = AppSettings(); settings.modelsDirectory = models.path
+    await store.discardPartial(PartialDownload(path: linkedStage.path, label: "stale row", sizeBytes: nil), settings: settings)
+    #expect(store.error != nil)
+    #expect(FileManager.default.fileExists(atPath: state.path))
+}
+
+@Test func partialDiscardRechecksItsContainerBeforeTakingTheLock() throws {
+    let root = try temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("models"), outside = root.appendingPathComponent("outside")
+    let name = ".AutomatosX--Pack--rev.ax-download"
+    let stage = models.appendingPathComponent(name)
+    try write("{}", to: stage.appendingPathComponent(".ax-native-state.json"))
+    let externalState = outside.appendingPathComponent(name + "/.ax-native-state.json")
+    try write("{}", to: externalState)
+    #expect(ModelFiles.isPartialDownload(path: stage.path, modelsRoot: models.path,
+                                         cacheRoot: root.appendingPathComponent("hub")))
+    try FileManager.default.moveItem(at: models, to: root.appendingPathComponent("original-models"))
+    try FileManager.default.createSymbolicLink(at: models, withDestinationURL: outside)
+
+    #expect(throws: AppFailure.self) { try ModelFiles.discardPartialDownload(stage) }
+    #expect(FileManager.default.fileExists(atPath: externalState.path))
+    #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent(name + ".lock").path))
+}
+
+@Test @MainActor func repositoryRemovalRespectsDownloadsBeforeTheirStageExists() async throws {
+    let root = try temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let cache = root.appendingPathComponent("hub")
+    let snapshot = try cacheSnapshot(cache, repo: "AutomatosX/Pack")
+    let repository = snapshot.deletingLastPathComponent().deletingLastPathComponent()
+    let downloads = repository.appendingPathComponent(".ax-downloads")
+    try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+    let lockURL = downloads.appendingPathComponent(".new-revision.ax-download.lock")
+    let descriptor = open(lockURL.path, O_RDWR | O_CREAT, 0o644)
+    #expect(descriptor >= 0)
+    defer { flock(descriptor, LOCK_UN); close(descriptor) }
+    #expect(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"),
+                           scannerURL: try emptyScanner(in: root), scanEnvironment: ["HF_HUB_CACHE": cache.path])
+    var settings = AppSettings(); settings.modelsDirectory = root.appendingPathComponent("models").path
+    let row = LocalModel(path: snapshot.path, ready: true, managed: false, source: "Hugging Face cache")
+    #expect(!(await store.remove(row, settings: settings)))
+    #expect(store.error?.contains("still running") == true)
+    #expect(FileManager.default.fileExists(atPath: snapshot.path))
+    #expect(flock(descriptor, LOCK_UN) == 0)
+    #expect(await store.remove(row, settings: settings))
+    #expect(!FileManager.default.fileExists(atPath: repository.path))
 }
 
 @Test func portProbeSeesAnActiveListener() throws {

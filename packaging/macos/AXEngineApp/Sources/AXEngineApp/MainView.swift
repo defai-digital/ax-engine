@@ -99,7 +99,9 @@ struct MainView: View {
             Button("Remove", role: .destructive) {
                 if let target = removeTarget, removalBlockReason(target) == nil {
                     Task {
-                        if await models.remove(target, settings: model.settings), model.selectedPath == target.path {
+                        let removal = models.removalTarget(for: target, settings: model.settings)
+                        if await models.remove(target, settings: model.settings),
+                           removal?.containsModel(path: model.selectedPath) == true {
                             model.selectedPath = ""
                         }
                     }
@@ -130,9 +132,14 @@ struct MainView: View {
         if models.downloading { return "Wait for downloads to finish before removing models." }
         if models.removing { return "Another model operation is in progress." }
         if runtime.busy { return "Wait for the server to finish starting or stopping." }
-        if runtime.owned && runtime.selectedModel == item.path { return "Stop the server to remove the model it is serving." }
+        if removalAffectsOwnedRuntime(item) { return "Stop the server to remove the model it is serving." }
         if runtime.connection != nil && !runtime.owned { return "Disconnect from the attached service first; it may be serving this model." }
         return nil
+    }
+
+    private func removalAffectsOwnedRuntime(_ item: LocalModel) -> Bool {
+        runtime.owned && (runtime.selectedModel == item.path
+            || models.removalTarget(for: item, settings: model.settings)?.containsModel(path: runtime.selectedModel) == true)
     }
 
     private func removalMessage(_ item: LocalModel) -> String {
@@ -295,7 +302,7 @@ struct MainView: View {
                                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
                             }
                         }
-                        if runtime.owned && runtime.selectedModel == item.path {
+                        if removalAffectsOwnedRuntime(item) {
                             Text("Stop the server to remove this model.").font(.caption).foregroundStyle(.secondary)
                         }
                         Text("File completeness does not establish compatibility. AX Engine validates the model when you start it.")
