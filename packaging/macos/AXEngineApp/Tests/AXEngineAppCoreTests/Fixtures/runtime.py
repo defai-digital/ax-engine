@@ -14,13 +14,19 @@ def emit(value):
 
 if sys.argv[1:3] == ['download', '--list']:
     emit({'schema_version': 'ax.download_options.v1', 'download_backend': 'native-rust-public-v1', 'targets': [
-        {'alias': 'Fixture model', 'repo_id': 'AutomatosX/Fixture', 'revision': 'abc123', 'mtp_included': False}]})
+        {'alias': 'Fixture model', 'repo_id': 'AutomatosX/Fixture', 'revision': 'abc123', 'mtp_included': False,
+         'approx_size_bytes': 4096, 'certification': 'candidate'}]})
     sys.exit(0)
 if sys.argv[1:2] == ['download']:
     dest = Path(sys.argv[sys.argv.index('--dest') + 1])
-    for i in range(4):
-        emit({'event': 'progress', 'done': i, 'total': 4, 'file': 'Fixture transfer'})
+    # First event is the legacy shape; later ones carry phase and byte counts.
+    emit({'event': 'progress', 'done': 0, 'total': 4, 'file': 'Fixture transfer'})
+    time.sleep(0.1)
+    for i in range(1, 4):
+        emit({'event': 'progress', 'done': i * 90, 'total': 400, 'file': 'model.safetensors',
+              'phase': 'transfer', 'bytes_done': i * 1024, 'bytes_total': 4096})
         time.sleep(0.1)
+    emit({'event': 'progress', 'done': 95, 'total': 100, 'file': 'Validating model manifest', 'phase': 'validate'})
     if 'Failure' in sys.argv[2]:
         emit({'schema_version': 'ax.download_model.v1', 'status': 'download_failed', 'errors': ['Fixture transfer failed']})
         sys.exit(2)

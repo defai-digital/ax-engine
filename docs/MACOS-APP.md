@@ -74,26 +74,53 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    Download third-party models independently and use CLI local model paths.
    Arbitrary local folder imports and editable server paths are not GUI features.
    Revisions are retained in download requests. Catalog inclusion is not a
-   memory-fit or qualification claim.
-2. **Models → Transfers:** choosing Download in Catalog switches to Transfers,
-   where you can view progress, cancel and retry. This is the current session's
-   queue; an empty queue does not mean no models are downloaded. Transfers run
-   sequentially through `ax-engine download --progress-json`. Ready requires
-   complete weight files, a successful terminal record and a successful process
-   exit, not just a 100% progress bar. There is no separate Downloads sidebar page.
+   memory-fit or qualification claim. Each catalog row shows the runtime's
+   approximate pack size, whether MTP artifacts are included and its
+   certification word when recorded, plus the free space on the model volume.
+   A row that is already in Local Library shows **Downloaded** with **Use
+   Model** and a menu for Show in Library, Show in Finder, Download Again and
+   Remove; a row that is transferring shows its phase and percentage inline.
+   A pack whose estimate exceeds the free space on the model volume is flagged
+   and asks for confirmation before it is queued; a pack larger than this
+   Mac's unified memory is labeled as such. These are size comparisons, not
+   fit or qualification claims.
+2. **Models → Transfers:** choosing Download in Catalog queues the pack and
+   keeps you in Catalog; the Transfers segment shows how many are active.
+   Transfers shows each download's phase (checking files, downloading,
+   verifying, ready), bytes done of total, smoothed throughput and an estimated
+   time left, the file being transferred, when it started and how long it
+   took, and a warning when no data has arrived for 30 seconds. Byte counts
+   come from runtimes that report them; with an older runtime the sizes are
+   catalog estimates and are labeled "about". You can cancel, retry, dismiss
+   finished rows or clear them all; a Ready row also offers Show in Finder and
+   Remove. This is the current session's queue; an empty queue does not mean
+   no models are downloaded. Transfers run sequentially through
+   `ax-engine download --progress-json`. Ready requires complete weight files,
+   a successful terminal record and a successful process exit, not just a
+   100% progress bar. There is no separate Downloads sidebar page.
    Interrupted native downloads leave a hidden stage folder so a retry can
-   resume; Local Library lists these under **Interrupted downloads** with their
-   size and offers Discard, which refuses while the runtime still holds the
-   download lock.
-3. **Server:** choose an installed AutomatosX model. Start uses offline
-   resolution and loopback only, and refuses up front when the configured port is
-   already in use instead of failing after the model has loaded. Runtime MTP and
+   resume; Local Library and Transfers list these under **Interrupted
+   downloads** with their size, offer **Resume** when the stage matches a
+   catalog entry, and **Discard**, which refuses while the runtime still holds
+   the download lock.
+3. **Server:** choose an installed AutomatosX model from the model menu, which
+   lists each model with its size and marks the selected one. When Start is
+   unavailable the page says why (no model installed, none selected, the
+   selection incomplete, the server busy, or an attached service). Start uses
+   offline resolution and loopback only, and refuses up front when the
+   configured port is already in use instead of failing after the model has
+   loaded. While starting, the status shows the elapsed time and the runtime's
+   latest output line; Stop Server cancels the launch. Runtime MTP and
    expert-streaming defaults remain unchanged. An app-owned server uses a
    per-launch in-memory API key. **Restart Server** stops and relaunches the
    app-owned server; choosing a different installed model while it runs turns the
-   button into **Restart with Selected Model**. Stop gives the runtime eight
-   seconds to drain before it is force-killed. When the runtime exits on its own,
-   the error shows its last diagnostic line.
+   button into **Restart with Selected Model** and the page notes that the
+   current server keeps serving until then. Stop and Restart ask for
+   confirmation only while a reply is being generated. Stop gives the runtime
+   eight seconds to drain before it is force-killed. When the runtime exits on
+   its own, the error shows its last diagnostic line with **Start Again** and
+   **Copy Diagnostics** (the bounded runtime output, with the API key
+   redacted).
    Once connected, **Copy API URL** copies the actual connected endpoint,
    and **Copy API key** copies its current key for an external local client.
    The key is copied only on your click, stays on this device, and is cleared
@@ -175,7 +202,14 @@ its `Models/` subdirectory. The library also discovers Hugging Face snapshots an
 explicitly imported folders. Complete weight files are not proof that a model will load; the runtime performs admission and compatibility validation.
 
 Models that AX Engine downloaded can be deleted from the GUI after a
-confirmation that names the folder and the space it frees. App-managed folders
+confirmation that names the folder and the space it frees. **Remove** sits on
+every removable Local Library row and in the row's context menu; the same
+action is in the Downloaded menu of a Catalog row and on a Ready transfer.
+When removal is temporarily blocked the row says why inline (the server is
+serving it, a download or model operation is running, or an attached service
+may be using it). Rows that AX Engine will never delete (imported folders,
+`AX_ENGINE_MODELS_DIR` folders, non-AutomatosX cache entries) say so instead of
+hiding the control. App-managed folders
 go through `ax-engine models rm`. For an `AutomatosX/*` repository in the
 Hugging Face cache the app deletes that whole `models--AutomatosX--…` entry,
 including every cached revision, because the library shows one snapshot per

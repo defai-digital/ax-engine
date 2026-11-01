@@ -6,6 +6,10 @@ public struct CatalogModel: Decodable, Identifiable, Sendable, Equatable {
     public let repoId: String
     public let revision: String?
     public let mtpIncluded: Bool?
+    /// Point-in-time catalog estimate of the whole pack; not a memory-fit claim.
+    public var approxSizeBytes: Int64?
+    /// Runtime certification word such as "candidate"; nil when unrecorded.
+    public var certification: String?
     public var id: String { alias + "|" + target }
     public var target: String { repoId + (revision.map { "@" + $0 } ?? "") }
     public var folderName: String { repoId.replacingOccurrences(of: "/", with: "--") + (revision.map { "--" + $0 } ?? "") }
@@ -54,11 +58,42 @@ public struct DownloadItem: Identifiable, Sendable {
     public var state = "Queued"
     public var fraction: Double?
     public var detail = "Waiting"
+    public var phase: DownloadPhase?
+    /// Byte counts from the runtime's transfer phase, or catalog estimates.
+    public var bytesDone: Int64?
+    public var bytesTotal: Int64?
+    public var bytesEstimated = false
+    public var bytesPerSecond: Double?
+    public var stalledSeconds: TimeInterval?
+    public var queuedAt = Date()
+    public var startedAt: Date?
+    public var finishedAt: Date?
+    public var isActive: Bool { ["Queued", "Downloading"].contains(state) }
+    public var isFinished: Bool { ["Ready", "Failed", "Cancelled"].contains(state) }
+    public var phaseTitle: String {
+        if state != "Downloading" { return state }
+        return (phase ?? DownloadPhase.inferred(fromFraction: fraction))?.title ?? "Downloading"
+    }
+    /// Sizes, throughput and time remaining on one line, or nil before any data.
+    public var progressSummary: String? {
+        guard state == "Downloading" else {
+            if state == "Ready", let total = bytesTotal, total > 0 { return (bytesEstimated ? "about " : "") + TransferFormat.bytes(total) }
+            return nil
+        }
+        let remaining = (bytesDone, bytesTotal)
+        let eta = remaining.0.flatMap { done in remaining.1.map { $0 - done } }
+            .flatMap { TransferRateEstimator.remainingSeconds(remainingBytes: $0, rate: bytesPerSecond) }
+        return TransferFormat.summary(done: bytesDone, total: bytesTotal, rate: bytesPerSecond,
+                                      remaining: phase == .transfer || phase == nil ? eta : nil, estimated: bytesEstimated)
+    }
 }
 
 public struct DownloadProgress: Equatable, Sendable {
     public var fraction: Double?
     public var detail: String?
+    public var phase: DownloadPhase?
+    public var bytesDone: Int64?
+    public var bytesTotal: Int64?
     public var terminalReady = false
     public var destination: String?
     public static func parse(_ output: String) -> Self {
@@ -71,6 +106,13 @@ public struct DownloadProgress: Equatable, Sendable {
                     result.fraction = min(1, max(0, done / total))
                 }
                 result.detail = object["file"] as? String
+                result.phase = (object["phase"] as? String).flatMap(DownloadPhase.init(rawValue:))
+                if let done = object["bytes_done"] as? Double, let total = object["bytes_total"] as? Double,
+                   done.isFinite, total.isFinite, done >= 0, total > 0, total < Double(Int64.max) {
+                    result.bytesDone = Int64(min(done, total)); result.bytesTotal = Int64(total)
+                } else {
+                    result.bytesDone = nil; result.bytesTotal = nil
+                }
             }
             if object["schema_version"] as? String == "ax.download_model.v1" {
                 result.terminalReady = object["status"] as? String == "ready"
@@ -89,6 +131,38 @@ public final class ModelStore: ObservableObject {
     public var productLibrary: [LocalModel] { library.filter(\.isAutomatosX) }
     public func canSelectInGUI(_ path: String) -> Bool {
         productLibrary.contains { $0.path == path && $0.ready && checkedPaths.contains(path) }
+    }
+    /// A checked, complete library row for this catalog entry, if downloaded.
+    public func installedModel(for item: CatalogModel) -> LocalModel? {
+        productLibrary.first { $0.ready && checkedPaths.contains($0.path) && $0.isCatalogAssociated([item]) }
+    }
+    public func activeDownload(for item: CatalogModel) -> DownloadItem? {
+        downloads.first { $0.model.target == item.target && $0.isActive }
+    }
+    public var activeDownloadCount: Int { downloads.filter(\.isActive).count }
+    public var finishedDownloadCount: Int { downloads.filter(\.isFinished).count }
+    /// Why no catalog download can start right now, or nil when downloads can run.
+    public var downloadsBlockReason: String? {
+        if refreshing { return "Reading the runtime catalog…" }
+        if !supportsNativeDownloads { return "Update your AX Engine runtime for downloads without Python, then refresh the catalog." }
+        if removing { return "Wait for model removal to finish." }
+        return nil
+    }
+    /// Why Download is unavailable for one catalog row, or nil when it can start.
+    public func downloadBlockReason(for item: CatalogModel) -> String? {
+        if let reason = downloadsBlockReason { return reason }
+        if !item.repoId.hasPrefix("AutomatosX/") { return "GUI downloads support public AutomatosX models only." }
+        return nil
+    }
+    public func clearFinishedDownloads(id: UUID? = nil) {
+        downloads.removeAll { $0.isFinished && (id == nil || $0.id == id) }
+    }
+    public func dismissError() { error = nil }
+    /// The catalog entry whose native download stage this interrupted folder is,
+    /// so a retry can be queued from the same row.
+    public func catalogEntry(forPartial partial: PartialDownload) -> CatalogModel? {
+        let name = URL(fileURLWithPath: partial.path).lastPathComponent
+        return catalog.first { name == "." + $0.folderName + ".ax-download" }
     }
 
     @Published public private(set) var library: [LocalModel] = []
@@ -112,6 +186,7 @@ public final class ModelStore: ObservableObject {
     private let catalogJob = ProcessJob()
     private let removalJob = ProcessJob()
     private var queueTask: Task<Void, Never>?
+    private var estimators: [UUID: TransferRateEstimator] = [:]
     private var imported: [String] = []
     private let importsURL: URL
     public init(importsURL: URL = AppPaths.support.appendingPathComponent("imported-models.json"),
@@ -428,19 +503,44 @@ public final class ModelStore: ObservableObject {
             await Task.detached { try? await Task.sleep(for: .milliseconds(50)) }.value
         }
     }
+    /// Merge one progress snapshot into a transfer row, keeping catalog
+    /// estimates until the runtime reports real byte counts.
+    private func apply(_ progress: DownloadProgress, to index: Int, id: UUID, now: Date = Date()) {
+        downloads[index].fraction = progress.fraction
+        if let detail = progress.detail { downloads[index].detail = detail }
+        downloads[index].phase = progress.phase ?? DownloadPhase.inferred(fromFraction: progress.fraction)
+        var done = progress.bytesDone, total = progress.bytesTotal, estimated = false
+        if done == nil, let approx = downloads[index].model.approxSizeBytes, let fraction = progress.fraction,
+           (downloads[index].phase ?? .transfer) == .transfer {
+            // Legacy runtimes report only the overall ratio; transfers span 0–90 %.
+            done = Int64((min(fraction / 0.9, 1) * Double(approx)).rounded()); total = approx; estimated = true
+        }
+        if let total, total > 0 {
+            downloads[index].bytesTotal = total; downloads[index].bytesEstimated = estimated
+            downloads[index].bytesDone = done
+            if let done, downloads[index].phase == .transfer {
+                downloads[index].bytesPerSecond = estimators[id]?.observe(bytes: done, at: now)
+                downloads[index].stalledSeconds = estimators[id]?.stalledFor(at: now)
+            }
+        }
+        if downloads[index].phase != .transfer { downloads[index].bytesPerSecond = nil; downloads[index].stalledSeconds = nil }
+    }
+
     private func runQueue(settings: AppSettings) async {
         defer { queueTask = nil; downloading = false }
         while let index = downloads.firstIndex(where: { $0.state == "Queued" }) {
             let id = downloads[index].id, item = downloads[index]
-            downloads[index].state = "Downloading"
+            downloads[index].state = "Downloading"; downloads[index].startedAt = Date()
+            downloads[index].bytesTotal = item.model.approxSizeBytes; downloads[index].bytesEstimated = item.model.approxSizeBytes != nil
+            estimators[id] = TransferRateEstimator()
+            defer { estimators[id] = nil }
             do {
                 try FileManager.default.createDirectory(atPath: settings.modelsDirectory, withIntermediateDirectories: true)
                 let result = try await downloadJob.run(executable: settings.runtime(),
                     arguments: ["download", item.model.target, "--dest", item.destination, "--progress-json"]) { [weak self] value in
                         guard let self, let i = self.downloads.firstIndex(where: { $0.id == id }) else { return }
                         let progress = DownloadProgress.parse(String(value.stdout.suffix(65_536)))
-                        self.downloads[i].fraction = progress.fraction
-                        if let detail = progress.detail { self.downloads[i].detail = detail }
+                        self.apply(progress, to: i, id: id)
                     }
                 let progress = DownloadProgress.parse(result.stdout)
                 guard result.status == 0, progress.terminalReady, let destination = progress.destination,
@@ -449,11 +549,17 @@ public final class ModelStore: ObservableObject {
                       Self.modelReady(URL(fileURLWithPath: destination)) else {
                     throw AppFailure.message(progress.detail ?? String(result.stderr.suffix(2048)))
                 }
-                if let i = downloads.firstIndex(where: { $0.id == id }) { downloads[i].state = "Ready"; downloads[i].fraction = 1 }
+                if let i = downloads.firstIndex(where: { $0.id == id }) {
+                    downloads[i].state = "Ready"; downloads[i].fraction = 1; downloads[i].phase = .ready
+                    downloads[i].finishedAt = Date(); downloads[i].bytesPerSecond = nil; downloads[i].stalledSeconds = nil
+                    if let total = downloads[i].bytesTotal { downloads[i].bytesDone = total }
+                    downloads[i].detail = "Complete weight files verified. The runtime validates compatibility when you start the model."
+                }
                 await scan(settings: settings)
             } catch {
                 if let i = downloads.firstIndex(where: { $0.id == id }) {
                     downloads[i].state = error is CancellationError ? "Cancelled" : "Failed"
+                    downloads[i].finishedAt = Date(); downloads[i].bytesPerSecond = nil; downloads[i].stalledSeconds = nil
                     downloads[i].detail = error is CancellationError ? "Download cancelled. Retry resumes through AX Engine." : error.localizedDescription
                 }
             }
