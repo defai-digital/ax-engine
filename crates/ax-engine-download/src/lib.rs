@@ -60,6 +60,68 @@ pub struct Completed {
     pub destination: PathBuf,
     pub commit: Option<String>,
 }
+
+/// Which part of a download a progress report describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Resolving the public file inventory.
+    Inventory,
+    /// Waiting before a retry of a busy Hub or CDN.
+    Waiting,
+    /// Transferring model files; byte counts are known.
+    Transfer,
+    /// Generating and validating the native manifest.
+    Validate,
+    /// The model is installed.
+    Ready,
+}
+impl Phase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Inventory => "inventory",
+            Phase::Waiting => "waiting",
+            Phase::Transfer => "transfer",
+            Phase::Validate => "validate",
+            Phase::Ready => "ready",
+        }
+    }
+}
+
+/// One progress report. `done`/`total` keep the overall ratio contract that
+/// the CLI NDJSON and GUI already consume (the transfer phase spans 0–90%);
+/// `bytes_done`/`bytes_total` are set only while model files transfer so a
+/// client can show sizes, throughput and remaining time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+    pub label: String,
+    pub phase: Phase,
+    pub bytes_done: Option<u64>,
+    pub bytes_total: Option<u64>,
+}
+impl Progress {
+    fn stage(phase: Phase, done: u64, total: u64, label: impl Into<String>) -> Self {
+        Self {
+            done,
+            total,
+            label: label.into(),
+            phase,
+            bytes_done: None,
+            bytes_total: None,
+        }
+    }
+    fn transfer(bytes_done: u64, bytes_total: u64, file: &str) -> Self {
+        Self {
+            done: bytes_done.saturating_mul(90),
+            total: bytes_total.saturating_mul(100),
+            label: file.to_string(),
+            phase: Phase::Transfer,
+            bytes_done: Some(bytes_done),
+            bytes_total: Some(bytes_total),
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Member {
     path: String,
@@ -255,7 +317,7 @@ impl Hub {
         &self,
         url: Url,
         offset: u64,
-        progress: &mut impl FnMut(u64, u64, &str),
+        progress: &mut impl FnMut(&Progress),
     ) -> Result<ureq::Response> {
         let mut url = url;
         for _ in 0..8 {
@@ -286,11 +348,12 @@ impl Hub {
                     {
                         let wait = retry_delay(&value, attempt);
                         for remaining in (1..=wait).rev() {
-                            progress(
+                            progress(&Progress::stage(
+                                Phase::Waiting,
                                 0,
                                 0,
-                                &format!("Download service is busy. Retrying in {remaining}s"),
-                            );
+                                format!("Download service is busy. Retrying in {remaining}s"),
+                            ));
                             std::thread::sleep(Duration::from_secs(1));
                         }
                     }
@@ -340,7 +403,7 @@ impl Hub {
     fn inventory(
         &self,
         options: &Options,
-        progress: &mut impl FnMut(u64, u64, &str),
+        progress: &mut impl FnMut(&Progress),
     ) -> Result<Inventory> {
         let (owner, name) = options.repository.split_once('/').ok_or_else(|| {
             Failure::new(
@@ -482,7 +545,7 @@ fn http_failure(status: u16, code: Option<&str>) -> Failure {
 pub fn download(
     options: &Options,
     prepare: impl FnMut(&Path) -> std::result::Result<(), String>,
-    progress: impl FnMut(u64, u64, &str),
+    progress: impl FnMut(&Progress),
 ) -> Result<Completed> {
     download_with(&Hub::public()?, options, prepare, progress)
 }
@@ -490,7 +553,7 @@ fn download_with(
     hub: &Hub,
     options: &Options,
     mut prepare: impl FnMut(&Path) -> std::result::Result<(), String>,
-    mut progress: impl FnMut(u64, u64, &str),
+    mut progress: impl FnMut(&Progress),
 ) -> Result<Completed> {
     if options.force && options.local_only {
         return Err(Failure::new(
@@ -574,7 +637,12 @@ fn download_with(
             files: Vec::new(),
         })
     } else {
-        progress(0, 100, "Checking public model files");
+        progress(&Progress::stage(
+            Phase::Inventory,
+            0,
+            100,
+            "Checking public model files",
+        ));
         Some(hub.inventory(options, &mut progress)?)
     };
     let destination = absolute(&options.destination.clone().unwrap_or_else(|| {
@@ -705,7 +773,12 @@ fn download_with(
         } else if let Some(inventory) = &inventory {
             fetch_files(hub, options, inventory, &stage, &destination, &mut progress)?;
         }
-        progress(95, 100, "Validating model manifest");
+        progress(&Progress::stage(
+            Phase::Validate,
+            95,
+            100,
+            "Validating model manifest",
+        ));
         prepare(&stage).map_err(|e| Failure::new("INVALID_MODEL", e))?;
         write_json(
             &stage.join(RECEIPT),
@@ -756,7 +829,7 @@ fn download_with(
             fs::rename(temp, path)?;
         }
     }
-    progress(100, 100, "Ready");
+    progress(&Progress::stage(Phase::Ready, 100, 100, "Ready"));
     Ok(Completed {
         destination,
         commit: inventory.map(|i| i.commit),
@@ -805,7 +878,7 @@ fn fetch_files(
     inventory: &Inventory,
     stage: &Path,
     existing: &Path,
-    progress: &mut impl FnMut(u64, u64, &str),
+    progress: &mut impl FnMut(&Progress),
 ) -> Result<()> {
     let total = inventory
         .files
@@ -890,11 +963,7 @@ fn fetch_files(
             }
         }
         done += member.size;
-        progress(
-            done.saturating_mul(90),
-            total.saturating_mul(100),
-            &member.path,
-        );
+        progress(&Progress::transfer(done, total, &member.path));
     }
     fs::remove_dir_all(parts)?;
     Ok(())
@@ -906,7 +975,7 @@ fn fetch_file(
     part: &Path,
     done: u64,
     total: u64,
-    progress: &mut impl FnMut(u64, u64, &str),
+    progress: &mut impl FnMut(&Progress),
 ) -> Result<()> {
     let mut offset = fs::metadata(part).map(|m| m.len()).unwrap_or(0);
     if offset == member.size && digest_file(part, member)? {
@@ -990,11 +1059,11 @@ fn fetch_file(
         }
         file.write_all(&buffer[..count])?;
         if last_progress.elapsed() >= Duration::from_millis(150) {
-            progress(
-                done.saturating_add(offset).saturating_mul(90),
-                total.saturating_mul(100),
+            progress(&Progress::transfer(
+                done.saturating_add(offset),
+                total,
                 &member.path,
-            );
+            ));
             last_progress = Instant::now();
         }
     }

@@ -155,8 +155,8 @@ fn anonymous_download_checks_git_and_lfs_digests_and_pins_all_files() {
     let server = Server::new(replies(inventory()));
     let options = temp.options();
     let mut events = Vec::new();
-    let result = download_with(&server.hub, &options, prepare, |d, t, f| {
-        events.push((d, t, f.to_string()))
+    let result = download_with(&server.hub, &options, prepare, |report| {
+        events.push(report.clone())
     })
     .unwrap();
     assert_eq!(result.commit.as_deref(), Some(COMMIT));
@@ -172,7 +172,33 @@ fn anonymous_download_checks_git_and_lfs_digests_and_pins_all_files() {
         requests[2].contains(&format!("/resolve/{COMMIT}/model.safetensors")),
         "{requests:?}"
     );
-    assert_eq!(events.last().unwrap(), &(100, 100, "Ready".into()));
+    let last = events.last().unwrap();
+    assert_eq!(
+        (last.done, last.total, last.phase),
+        (100, 100, Phase::Ready)
+    );
+    assert_eq!(last.label, "Ready");
+    // Only the transfer phase reports byte counts, with a stable total.
+    let transfers: Vec<_> = events
+        .iter()
+        .filter(|e| e.phase == Phase::Transfer)
+        .collect();
+    assert!(!transfers.is_empty());
+    let total_bytes = (b"{}".len() + b"weights".len()) as u64;
+    assert!(transfers.iter().all(|e| e.bytes_total == Some(total_bytes)));
+    assert!(
+        transfers
+            .iter()
+            .all(|e| e.bytes_done.unwrap() <= total_bytes)
+    );
+    assert_eq!(transfers.last().unwrap().bytes_done, Some(total_bytes));
+    assert!(
+        events
+            .iter()
+            .filter(|e| e.phase != Phase::Transfer)
+            .all(|e| e.bytes_total.is_none())
+    );
+    assert_eq!(events[0].phase, Phase::Inventory);
 }
 #[test]
 fn third_party_and_force_offline_fail_before_network() {
@@ -180,14 +206,14 @@ fn third_party_and_force_offline_fail_before_network() {
     let mut options = temp.options();
     options.repository = "other/model".into();
     assert_eq!(
-        download(&options, prepare, |_, _, _| {}).unwrap_err().code,
+        download(&options, prepare, |_| {}).unwrap_err().code,
         "UNSUPPORTED_REPOSITORY"
     );
     options.repository = "AutomatosX/model".into();
     options.force = true;
     options.local_only = true;
     assert_eq!(
-        download(&options, prepare, |_, _, _| {}).unwrap_err().code,
+        download(&options, prepare, |_| {}).unwrap_err().code,
         "INVALID_ARGUMENTS"
     );
 }
@@ -206,7 +232,7 @@ fn private_gated_and_wrong_revision_fail_before_any_file_download() {
             "",
             metadata.to_string().as_bytes(),
         )]);
-        assert!(download_with(&server.hub, &temp.options(), prepare, |_, _, _| {}).is_err());
+        assert!(download_with(&server.hub, &temp.options(), prepare, |_| {}).is_err());
         assert_eq!(server.finish().len(), 1);
         assert!(!temp.0.join("model").exists());
     }
@@ -231,7 +257,7 @@ fn unsafe_and_duplicate_repository_paths_fail_before_file_download() {
             metadata.to_string().as_bytes(),
         )]);
         assert_eq!(
-            download_with(&server.hub, &temp.options(), prepare, |_, _, _| {})
+            download_with(&server.hub, &temp.options(), prepare, |_| {})
                 .unwrap_err()
                 .code,
             "INVALID_METADATA"
@@ -252,7 +278,7 @@ fn access_errors_are_actionable_and_do_not_suggest_login() {
             "",
             b"secret upstream diagnostic",
         )]);
-        let error = download_with(&server.hub, &temp.options(), prepare, |_, _, _| {}).unwrap_err();
+        let error = download_with(&server.hub, &temp.options(), prepare, |_| {}).unwrap_err();
         assert_eq!(error.code, expected);
         assert!(!error.message.contains("secret"));
         assert!(!error.message.contains("login"));
@@ -287,7 +313,7 @@ fn partial_transfer_resumes_and_full_response_restarts() {
             &part,
             0,
             7,
-            &mut |_, _, _| {},
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(fs::read(&part).unwrap(), b"weights");
@@ -321,7 +347,7 @@ fn bad_range_preserves_partial_and_checksum_mismatch_discards_it() {
             &part,
             0,
             7,
-            &mut |_, _, _| {}
+            &mut |_| {}
         )
         .unwrap_err()
         .code,
@@ -338,7 +364,7 @@ fn bad_range_preserves_partial_and_checksum_mismatch_discards_it() {
             &part,
             0,
             7,
-            &mut |_, _, _| {}
+            &mut |_| {}
         )
         .unwrap_err()
         .code,
@@ -366,7 +392,7 @@ fn interrupted_transfer_keeps_resumable_bytes() {
         &part,
         0,
         7,
-        &mut |_, _, _| {},
+        &mut |_| {},
     )
     .unwrap_err();
     assert!(error.retryable);
@@ -391,7 +417,7 @@ fn manifest_failure_preserves_installed_model_and_retry_uses_staged_bytes() {
         &server.hub,
         &options,
         |_| Err("unsupported model".into()),
-        |_, _, _| {},
+        |_| {},
     )
     .unwrap_err();
     assert_eq!(error.code, "INVALID_MODEL");
@@ -402,7 +428,7 @@ fn manifest_failure_preserves_installed_model_and_retry_uses_staged_bytes() {
         "",
         inventory().to_string().as_bytes(),
     )]);
-    download_with(&server.hub, &options, prepare, |_, _, _| {}).unwrap();
+    download_with(&server.hub, &options, prepare, |_| {}).unwrap();
     assert!(!destination.join("old").exists());
     assert_eq!(server.finish().len(), 1);
 }
@@ -420,7 +446,7 @@ fn unrelated_destination_and_busy_lock_are_preserved() {
         inventory().to_string().as_bytes(),
     )]);
     assert_eq!(
-        download_with(&server.hub, &options, prepare, |_, _, _| {})
+        download_with(&server.hub, &options, prepare, |_| {})
             .unwrap_err()
             .code,
         "DESTINATION_CONFLICT"
@@ -435,7 +461,7 @@ fn unrelated_destination_and_busy_lock_are_preserved() {
         inventory().to_string().as_bytes(),
     )]);
     assert_eq!(
-        download_with(&server.hub, &options, prepare, |_, _, _| {})
+        download_with(&server.hub, &options, prepare, |_| {})
             .unwrap_err()
             .code,
         "DOWNLOAD_BUSY"
@@ -465,7 +491,7 @@ fn legacy_hf_cache_offline_import_accepts_internal_blobs_only() {
             blobs.join("weights")
         };
         symlink(weights, snapshot.join("model.safetensors")).unwrap();
-        let result = download(&options, prepare, |_, _, _| {});
+        let result = download(&options, prepare, |_| {});
         if external {
             assert_eq!(result.unwrap_err().code, "INVALID_MODEL");
         } else {
@@ -503,7 +529,7 @@ fn failed_default_download_is_never_visible_as_a_snapshot() {
             &server.hub,
             &options,
             |_| Err("invalid manifest".into()),
-            |_, _, _| {}
+            |_| {}
         )
         .is_err()
     );
@@ -521,11 +547,11 @@ fn explicit_completed_download_can_be_used_offline_without_hub_cache() {
     let temp = Temp::new();
     let mut options = temp.options();
     let server = Server::new(replies(inventory()));
-    download_with(&server.hub, &options, prepare, |_, _, _| {}).unwrap();
+    download_with(&server.hub, &options, prepare, |_| {}).unwrap();
     server.finish();
     assert!(!options.cache.exists());
     options.local_only = true;
-    let result = download(&options, prepare, |_, _, _| {}).unwrap();
+    let result = download(&options, prepare, |_| {}).unwrap();
     assert_eq!(result.destination, options.destination.unwrap());
     assert_eq!(result.commit.as_deref(), Some(COMMIT));
 }
@@ -549,7 +575,7 @@ fn foreign_backup_and_linked_stage_cannot_be_removed_or_written() {
             "",
             inventory().to_string().as_bytes(),
         )]);
-        assert!(download_with(&server.hub, &options, prepare, |_, _, _| {}).is_err());
+        assert!(download_with(&server.hub, &options, prepare, |_| {}).is_err());
         let preserved = if linked {
             outside
         } else {
@@ -573,7 +599,7 @@ fn public_hub_pinned_metadata_and_config_download() {
         local_only: false,
     };
     let hub = Hub::public().unwrap();
-    let inventory = hub.inventory(&options, &mut |_, _, _| {}).unwrap();
+    let inventory = hub.inventory(&options, &mut |_| {}).unwrap();
     let member = inventory
         .files
         .iter()
@@ -596,7 +622,7 @@ fn public_hub_pinned_metadata_and_config_download() {
         &temp.0.join("config.json"),
         0,
         member.size,
-        &mut |_, _, _| {},
+        &mut |_| {},
     )
     .unwrap();
     assert!(read_json(&temp.0.join("config.json")).unwrap().is_object());
@@ -615,7 +641,7 @@ fn journal_recovers_an_interrupted_swap_of_an_empty_destination() {
     )
     .unwrap();
     let server = Server::new(replies(inventory()));
-    download_with(&server.hub, &options, prepare, |_, _, _| {}).unwrap();
+    download_with(&server.hub, &options, prepare, |_| {}).unwrap();
     assert!(destination.join(MANIFEST).is_file());
     assert!(!backup.exists());
     assert!(!temp.0.join(".model.ax-download.transaction.json").exists());

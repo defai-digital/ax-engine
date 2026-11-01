@@ -3402,17 +3402,14 @@ fn run_download_summary(
                 .map_err(|e| e.to_string())?;
             Ok(())
         },
-        |done, total, file| {
+        |report| {
             use std::io::Write;
             match progress {
                 DownloadProgress::Json => {
-                    println!(
-                        "{}",
-                        json!({"event":"progress","done":done,"total":total,"file":file})
-                    );
+                    println!("{}", download_progress_event(report));
                     let _ = std::io::stdout().flush();
                 }
-                DownloadProgress::Bar => eprintln!("{file}"),
+                DownloadProgress::Bar => eprintln!("{}", report.label),
                 DownloadProgress::Quiet => {}
             }
         },
@@ -3916,6 +3913,20 @@ fn format_download_mtp_targets() -> String {
         ));
     }
     lines.join("\n")
+}
+
+/// One `--progress-json` line. `done`/`total`/`file` are the original
+/// contract; `phase` and the byte counts (transfer phase only) are additive.
+fn download_progress_event(report: &ax_engine_download::Progress) -> Value {
+    json!({
+        "event": "progress",
+        "done": report.done,
+        "total": report.total,
+        "file": report.label,
+        "phase": report.phase.as_str(),
+        "bytes_done": report.bytes_done,
+        "bytes_total": report.bytes_total,
+    })
 }
 
 fn download_options_payload() -> Value {

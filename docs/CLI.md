@@ -133,7 +133,11 @@ outside the built-in download scope; tokens and custom `HF_ENDPOINT` settings ar
 not read by the native downloader.
 
 The JSON output remains `ax.download_model.v1`; `--progress-json` emits progress
-records followed by one terminal summary. `download --list --json` advertises
+records followed by one terminal summary. Each progress record carries the
+original `event`, `done`, `total` and `file` fields plus `phase` (`inventory`,
+`waiting`, `transfer`, `validate` or `ready`) and, during the transfer phase
+only, `bytes_done` and `bytes_total` (null otherwise). Clients that predate
+these fields keep working; `done/total` remains the overall ratio. `download --list --json` advertises
 `download_backend: native-rust-public-v1`. The GUI requires this capability before
 enabling downloads. Older published runtimes and the Python SDK's separate
 preparation tools may still need their documented Python dependencies.
