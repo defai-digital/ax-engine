@@ -32,21 +32,30 @@ Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper
 MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
-**Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** Product SKUs:
+**Requires macOS 26 (Tahoe)+ on Apple Silicon.** Hardware tiers:
 
-- **Mac mini M4 Pro 64 GB** — best experience and qualification SKU for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); MXFP4 SKU qualification pending
+| Tier | Chips | What to expect |
+| --- | --- | --- |
+| Primary | **M5 and later** | Defaults, tuning and published performance are measured here. Best experience. |
+| Supported | M3, M4 | Tested for correctness every release; may be slower than M5. |
+| Best-effort | M2 | Runs, but is not tuned or qualified. |
+| Not supported | M1 | Startup fails closed. |
+
+Product SKUs:
+
+- **Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)** — optimized on M5-class Macs (32 GB+ recommended). The existing qualification record was measured on a Mac mini M4 Pro 64 GB, a supported M4-tier configuration; MXFP4 SKU qualification pending
 - **MacBook Pro M5 Max 128 GB** — qualification and certification standard for Qwen 3.8 Flash Next MXFP4 MTP
   (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned MXFP4 MTP pack.
   Start the server with `--max-concurrent-requests 1`. Measured decode on one machine: 32 / 32 / 28 tok/s at 2k / 8k / 32k context.
   Historical 6-bit numbers do not qualify MXFP4. This host is also the benchmark host for other packs.
-- **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer) with 192 GB+ RAM** — larger-memory host for the same Flash Next pack.
+- **Mac Studio, Ultra-class Apple Silicon with 192 GB+ RAM** (M3 Ultra or newer; M2 Ultra is best-effort) — larger-memory host for the same Flash Next pack.
   The 2026-10-05 direct-default release gates were measured here and stay bound to this host.
 
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
 4-bit for headroom on that class.
 
-Wired-memory controls are available across supported M2-or-newer Macs; they
-are not M5-only. The automatic **no-wire optimization** currently targets only
+Wired-memory controls are available on every Mac AX Engine runs on (M2 and
+newer); they are not M5-only. The automatic **no-wire optimization** currently targets only
 the two audited Tiel MXFP4 MTP exports on **M5 Max with at least 128 GiB**.
 Other supported hosts retain existing wiring. Model fit and measured speed
 still depend on memory capacity and workload; see the
@@ -101,7 +110,7 @@ Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 ## Install AX Engine for macOS
 
-Use the curl installer on **Apple Silicon (M2 or newer), macOS 26.2 or newer**.
+Use the curl installer on **Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort), macOS 26.2 or newer**.
 It installs **AX Engine.app with its native inference runtime bundled**. You do
 not need Homebrew, Python, Xcode or a Hugging Face account for public models.
 Quit AX Engine before installing or upgrading, then run in Terminal:
@@ -144,7 +153,7 @@ for usage and [distribution guide](docs/MACOS-DISTRIBUTION.md) for release verif
 
 The curl command above is the end-user app installation path. The channels below
 are for shell automation, direct API serving or Python development; they do not
-install the GUI app. Native CLI packages require Apple Silicon (M2 or newer)
+install the GUI app. Native CLI packages require Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort)
 and macOS 26 or newer.
 
 | Goal | Channel |

@@ -66,7 +66,7 @@ outside AX Engine; see [AX Serving](AX-SERVING.md).
 ### Install the macOS app
 
 The recommended end-user path installs **AX Engine.app and its bundled native
-runtime** on Apple Silicon (M2 or newer), macOS 26.2 or later. Quit AX Engine,
+runtime** on Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort), macOS 26.2 or later. Quit AX Engine,
 then run:
 
 ```bash
@@ -104,7 +104,7 @@ Homebrew or Python package path.
 | Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment (Python from python.org) |
 | Develop AX Engine or test unreleased changes | Source build |
 
-All paths need **Apple Silicon (M2 or newer)** and **macOS 26 or newer**:
+All paths need **Apple Silicon** (M5 or later recommended; M3–M4 supported; M2 best-effort) and **macOS 26 or newer**:
 
 ```bash
 uname -m                 # must print: arm64
@@ -350,7 +350,7 @@ channel in each shell to avoid running mismatched versions.
 
 #### Python installation troubleshooting
 
-The wheel requires **Python 3.12+**, macOS 26+, and Apple Silicon (M2 or newer).
+The wheel requires **Python 3.12+**, macOS 26+, and Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort).
 A generic `python3` command may select an older interpreter, including Python
 3.9.6. Check the interpreter in the active environment:
 
@@ -483,7 +483,8 @@ For the current crate layering and dependency-boundary guidance, see
 ## Requirements
 
 - macOS 26 (Tahoe) or later
-- Apple Silicon **M2 or newer**
+- Apple Silicon: **M5 or later** recommended (primary target); M3–M4
+  supported; M2 best-effort (runs, not tuned or qualified)
   - **Light host (16 GB):** base Mac mini M4 and similar — one compact Qwen
     3.5 9B pack (4-bit preferred; 6-bit works with less free RAM), short
     context only

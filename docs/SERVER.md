@@ -18,7 +18,7 @@ The current preview server is intentionally narrow:
 - single-process local server
 - built entirely on the Rust SDK contract
 - native MLX builds fail closed outside supported Apple Silicon (M2 or newer
-  on macOS 26+); 16 GB is fine for compact single models, 32 GB+ for
+  on macOS 26+; M5 or later recommended, M3–M4 supported, M2 best-effort); 16 GB is fine for compact single models, 32 GB+ for
   multi-model / larger packs. AX Engine is Mac-only; NVIDIA/CUDA fleet
   serving uses [AX Serving](AX-SERVING.md)
 - explicit backend and support-tier reporting
@@ -717,7 +717,7 @@ generate the manifest first with:
 cargo run -p ax-engine-core --bin generate-manifest -- /absolute/path/to/model
 ```
 
-The preview server requires a local Apple Silicon host (M2 or newer) running
+The preview server requires a local Apple Silicon host (M5 or later recommended; M3–M4 supported; M2 best-effort) running
 macOS 26 (Tahoe) or later. Compact single models work on 16 GB (for example
 Mac mini M4); plan on 32 GB+ for multi-model serving and larger packs.
 On M1 Macs or unsupported configurations, startup fails closed instead of

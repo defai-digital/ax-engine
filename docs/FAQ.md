@@ -15,8 +15,17 @@ boundaries.
 
 ## What hardware does AX Engine support?
 
-AX Engine runs on Apple Silicon Macs with macOS 26 (Tahoe) or later. There are
-two practical tiers: a **light host** for one compact model, and a **full local
+AX Engine runs on Apple Silicon Macs with macOS 26 (Tahoe) or later.
+
+| Chip tier | Chips | What to expect |
+| --- | --- | --- |
+| Primary | M5 and later | Defaults, tuning and published performance are measured here. |
+| Supported | M3, M4 | Tested for correctness every release; may be slower. |
+| Best-effort | M2 | Runs, but is not tuned or qualified. |
+| Not supported | M1 | Startup fails closed. |
+
+Memory decides what you can run. There are
+two practical memory tiers: a **light host** for one compact model, and a **full local
 server** envelope for multi-model / larger packs.
 
 ### Light host (smaller models, including Mac mini M4 16 GB)
@@ -163,7 +172,9 @@ roadmap and evidence gates live in
 
 The repo-owned MLX runtime is a supported performance contract, not only a
 best-effort code path. AX fails closed on **M1** Apple Silicon. Runtime host
-checks accept **Apple M2 or newer** on macOS 26 (Tahoe)+; published throughput
+checks accept **Apple M2 or newer** on macOS 26 (Tahoe)+. **M5 and later** are
+the primary target, M3–M4 are supported and M2 is best-effort (it runs but is
+not tuned or qualified); published throughput
 and multi-model claims are still scoped to **higher-memory** hosts (**32 GB+**,
 often M2 Max / M4 Pro class). **16 GB** machines (for example base Mac mini M4)
 are intentional for **compact single-model** use — see [What hardware does AX
