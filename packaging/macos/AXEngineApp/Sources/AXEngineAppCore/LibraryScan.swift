@@ -9,8 +9,9 @@ public struct LibraryScanRequest: Codable, Sendable {
 public struct LibraryScanEvent: Codable, Sendable {
     public let model: LocalModel?
     public let warning: String?
+    public let partial: PartialDownload?
     public let complete: Bool
-    public init(model: LocalModel? = nil, warning: String? = nil, complete: Bool = false) {
-        self.model = model; self.warning = warning; self.complete = complete
+    public init(model: LocalModel? = nil, warning: String? = nil, partial: PartialDownload? = nil, complete: Bool = false) {
+        self.model = model; self.warning = warning; self.partial = partial; self.complete = complete
     }
 }

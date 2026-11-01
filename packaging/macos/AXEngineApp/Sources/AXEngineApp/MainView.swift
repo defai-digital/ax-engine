@@ -23,6 +23,7 @@ struct MainView: View {
     @ObservedObject var chat: ChatStore
     @FocusState private var searchFocused: Bool
     @State private var removeTarget: LocalModel?
+    @State private var discardTarget: PartialDownload?
     @State private var stopConfirmation = false
     @State private var apiKey = ""
     @State private var clientClipboard = SensitiveClipboard()
@@ -93,19 +94,57 @@ struct MainView: View {
         .onChange(of: model.searchFocusRequest) { _, _ in
             Task { @MainActor in await Task.yield(); searchFocused = true }
         }
-        .alert("Remove downloaded model?", isPresented: Binding(get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } })) {
+        .alert(removeTarget.map { "Remove \($0.displayName)?" } ?? "Remove model?",
+               isPresented: Binding(get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } })) {
             Button("Remove", role: .destructive) {
-                if let target = removeTarget, !runtime.owned, runtime.connection == nil, !runtime.busy {
-                    Task { await models.remove(target, settings: model.settings) }
+                if let target = removeTarget, removalBlockReason(target) == nil {
+                    Task {
+                        if await models.remove(target, settings: model.settings), model.selectedPath == target.path {
+                            model.selectedPath = ""
+                        }
+                    }
                 }
                 removeTarget = nil
             }
             Button("Cancel", role: .cancel) { removeTarget = nil }
-        } message: { Text("This deletes the app-managed model folder. Hugging Face cache and imported folders are not deleted.") }
+        } message: { Text(removeTarget.map(removalMessage) ?? "") }
+        .alert("Discard partial download?", isPresented: Binding(get: { discardTarget != nil }, set: { if !$0 { discardTarget = nil } })) {
+            Button("Discard", role: .destructive) {
+                if let target = discardTarget { Task { await models.discardPartial(target, settings: model.settings) } }
+                discardTarget = nil
+            }
+            Button("Cancel", role: .cancel) { discardTarget = nil }
+        } message: {
+            Text(discardTarget.map { "Deletes the incomplete files at \($0.path)\($0.sizeBytes.map { ", freeing about " + bytes($0) } ?? ""). A later download starts over." } ?? "")
+        }
         .alert("Stop the local server?", isPresented: $stopConfirmation) {
             Button("Stop", role: .destructive) { Task { await chat.stop(); await runtime.stop() } }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Active inference on this app-owned server will stop.") }
+    }
+
+    private func bytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
+
+    /// Why a library row cannot be removed right now, or nil when it can.
+    private func removalBlockReason(_ item: LocalModel) -> String? {
+        if models.downloading { return "Wait for downloads to finish before removing models." }
+        if models.removing { return "Another model operation is in progress." }
+        if runtime.busy { return "Wait for the server to finish starting or stopping." }
+        if runtime.owned && runtime.selectedModel == item.path { return "Stop the server to remove the model it is serving." }
+        if runtime.connection != nil && !runtime.owned { return "Disconnect from the attached service first; it may be serving this model." }
+        return nil
+    }
+
+    private func removalMessage(_ item: LocalModel) -> String {
+        let size = item.sizeBytes.map { " This frees about " + bytes($0) + "." } ?? ""
+        switch models.removalTarget(for: item, settings: model.settings) {
+        case .cacheRepository(let url):
+            return "Deletes every cached revision of \(item.displayName) from the Hugging Face cache at \(url.path).\(size) Other apps that use this cache must download it again. This can't be undone."
+        case .managedFolder(let url):
+            return "Deletes the downloaded files at \(url.path).\(size) This can't be undone."
+        case nil:
+            return "This model cannot be removed by AX Engine."
+        }
     }
 
     private func syncHostMonitoring() {
@@ -227,7 +266,7 @@ struct MainView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.displayName).font(.headline).lineLimit(2)
-                            Text(item.source).font(.caption).foregroundStyle(.secondary)
+                            Text(item.source + (item.sizeBytes.map { " · " + bytes($0) } ?? "")).font(.caption).foregroundStyle(.secondary)
                             Text(runtime.ready && runtime.owned && runtime.selectedModel == item.path
                                  ? "Running in this app"
                                  : models.checkedPaths.contains(item.path)
@@ -239,21 +278,50 @@ struct MainView: View {
                         Button("Select Model") { model.selectedPath = item.path; model.page = .server }
                             .disabled(!item.ready || !models.checkedPaths.contains(item.path))
                             .accessibilityLabel("Select " + item.displayName)
-                        if item.managed {
-                            Button(role: .destructive) { removeTarget = item } label: { Image(systemName: "trash") }
-                                .disabled(runtime.owned || runtime.connection != nil || runtime.busy || models.downloading || models.removing)
-                                .help("Remove app-managed model").accessibilityLabel("Remove " + item.displayName)
+                        if models.removalTarget(for: item, settings: model.settings) != nil {
+                            let blocked = removalBlockReason(item)
+                            Button("Remove", systemImage: "trash", role: .destructive) { removeTarget = item }
+                                .disabled(blocked != nil)
+                                .help(blocked ?? "Delete this downloaded model from disk")
+                                .accessibilityLabel("Remove " + item.displayName)
                         }
                     }
                     DisclosureGroup("Location and details") {
                         Text(item.name).font(.callout).textSelection(.enabled)
                         Text(item.path).font(.caption).textSelection(.enabled)
-                        Button("Copy path", systemImage: "doc.on.doc") { copyText(item.path) }
+                        HStack {
+                            Button("Copy path", systemImage: "doc.on.doc") { copyText(item.path) }
+                            Button("Show in Finder", systemImage: "folder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+                            }
+                        }
+                        if runtime.owned && runtime.selectedModel == item.path {
+                            Text("Stop the server to remove this model.").font(.caption).foregroundStyle(.secondary)
+                        }
                         Text("File completeness does not establish compatibility. AX Engine validates the model when you start it.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 8)
                 Divider()
+            }
+            if !models.partialDownloads.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Interrupted downloads").font(.headline)
+                    Text("Incomplete files kept so a retry can resume. Discard them to free space or to download a different revision.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(models.partialDownloads) { partial in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(partial.label).font(.callout)
+                                Text(partial.sizeBytes.map(bytes) ?? "Size unknown").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Discard", systemImage: "trash", role: .destructive) { discardTarget = partial }
+                                .disabled(models.downloading || models.removing)
+                                .help(models.downloading ? "Wait for downloads to finish." : "Delete these incomplete files")
+                        }
+                    }
+                }.padding(.top, 6)
             }
         }
     }
@@ -321,9 +389,17 @@ struct MainView: View {
                     HStack {
                         Menu("Choose Installed Model") {
                             ForEach(models.productLibrary.filter { $0.ready && models.checkedPaths.contains($0.path) }) { item in Button(item.name) { model.selectedPath = item.path } }
-                        }.disabled(runtime.owned || runtime.connection != nil)
+                        }.disabled(runtime.connection != nil && !runtime.owned)
                         Spacer()
                         if runtime.owned {
+                            let switching = !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel
+                            Button(switching ? "Restart with Selected Model" : "Restart Server", systemImage: "arrow.clockwise") {
+                                let target = switching && models.canSelectInGUI(model.selectedPath) ? model.selectedPath : runtime.selectedModel
+                                Task { await chat.stop(); await runtime.restart(model: target, settings: model.settings) }
+                            }
+                            .disabled(runtime.busy || runtime.state == "Stopping" || models.removing
+                                      || (switching && !models.canSelectInGUI(model.selectedPath)))
+                            .help("Stop this server and start it again. Active inference stops.")
                             Button("Stop Server", role: .destructive) { stopConfirmation = true }.disabled(runtime.state == "Stopping")
                         } else if runtime.connection != nil {
                             Button("Disconnect") { Task { await chat.stop(); runtime.detach() } }

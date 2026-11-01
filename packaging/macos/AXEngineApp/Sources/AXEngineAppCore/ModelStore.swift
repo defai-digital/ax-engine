@@ -16,6 +16,8 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public let ready: Bool
     public let managed: Bool
     public var source = "Local folder"
+    /// Bytes that removing this row frees (whole repository for a cache snapshot).
+    public var sizeBytes: Int64?
     public var displayName: String { name.components(separatedBy: " · ").first?.components(separatedBy: "/").last ?? name }
     public var id: String { path }
     public var isAutomatosX: Bool {
@@ -98,6 +100,7 @@ public final class ModelStore: ObservableObject {
     @Published public private(set) var checkedPaths = Set<String>()
     @Published public private(set) var lastScanAt: Date?
     @Published public private(set) var discoveryAttempted = false
+    @Published public private(set) var partialDownloads: [PartialDownload] = []
     private var scanGeneration = 0
     private var activeScan: ProcessJob?
     private let scannerURL: URL
@@ -155,6 +158,7 @@ public final class ModelStore: ObservableObject {
         let job = ProcessJob(); activeScan = job
         var parsedLines = 0
         var found: [String: LocalModel] = [:]
+        var partials: [PartialDownload] = []
         var completed = false
         var invalid = false
         var warnings: [String] = []
@@ -179,6 +183,7 @@ public final class ModelStore: ObservableObject {
                     guard let event = try? JSONDecoder().decode(LibraryScanEvent.self, from: Data(line.utf8)) else { invalid = true; continue }
                     if let item = event.model { found[item.path] = item; self.checkedPaths.insert(item.path) }
                     if let warning = event.warning, warnings.count < 8 { warnings.append(warning) }
+                    if let partial = event.partial, partials.count < 64 { partials.append(partial) }
                     if event.complete { completed = true }
                 }
                 parsedLines = lines.count
@@ -193,6 +198,7 @@ public final class ModelStore: ObservableObject {
             guard result.status == 0, !result.truncated, completed, !invalid else {
                 throw AppFailure.message("The library scan did not finish. Retry to check remaining folders.")
             }
+            partialDownloads = partials
             if warnings.isEmpty {
                 library = found.values.sorted { $0.path < $1.path }; lastScanAt = Date()
             }
@@ -227,14 +233,15 @@ public final class ModelStore: ObservableObject {
                 return []
             }
         }
-        func add(_ path: URL, source: String, ready: Bool? = nil) {
+        func add(_ path: URL, source: String, ready: Bool? = nil, sizeOf: URL? = nil) {
             guard !path.lastPathComponent.hasPrefix(".") else { return }
             let canonical = path.resolvingSymlinksInPath().standardizedFileURL.path
             guard !seen.contains(canonical), fm.fileExists(atPath: path.appendingPathComponent("config.json").path)
                 || fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path) else { return }
             seen.insert(canonical)
             let item = LocalModel(path: canonical, ready: ready ?? modelReady(path),
-                                  managed: canRemove(path: canonical, root: root), source: source)
+                                  managed: canRemove(path: canonical, root: root), source: source,
+                                  sizeBytes: ModelFiles.allocatedSize(of: sizeOf ?? path))
             found.append(item); emit?(item)
         }
         func linked(_ url: URL) -> Bool { (try? fm.destinationOfSymbolicLink(atPath: url.path)) != nil || url.path.hasPrefix("/Volumes/") }
@@ -254,11 +261,7 @@ public final class ModelStore: ObservableObject {
                 add(path, source: "Imported")
             }
         }
-        let cache: URL
-        if let path = environment["HF_HUB_CACHE"] { cache = URL(fileURLWithPath: path) }
-        else if let path = environment["HF_HOME"] { cache = URL(fileURLWithPath: path).appendingPathComponent("hub") }
-        else if let path = environment["XDG_CACHE_HOME"] { cache = URL(fileURLWithPath: path).appendingPathComponent("huggingface/hub") }
-        else { cache = fm.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub") }
+        let cache = ModelFiles.hubCacheRoot(environment: environment)
         func repository(_ repo: URL) {
             let snapshots = entries(repo.appendingPathComponent("snapshots"), optional: true)
                 .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
@@ -269,7 +272,7 @@ public final class ModelStore: ObservableObject {
                 if left.ready != right.ready { return !left.ready && right.ready }
                 return left.modified == right.modified ? left.url.path < right.url.path : left.modified < right.modified
             }
-            if let selected = ranked.last { add(selected.url, source: "Hugging Face cache", ready: selected.ready) }
+            if let selected = ranked.last { add(selected.url, source: "Hugging Face cache", ready: selected.ready, sizeOf: repo) }
         }
         visit(cache) {
             for repo in entries(cache, optional: !cache.path.hasPrefix("/Volumes/")) where repo.lastPathComponent.hasPrefix("models--") {
@@ -326,18 +329,64 @@ public final class ModelStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    public func remove(_ model: LocalModel, settings: AppSettings) async {
-        guard !downloading, !removing, Self.canRemove(path: model.path, root: settings.modelsDirectory) else {
-            error = "Only an idle, app-managed model folder can be removed here."; return
+    /// The Hugging Face cache the scanner reads, with the same environment.
+    public var hubCacheRoot: URL {
+        ModelFiles.hubCacheRoot(environment: ProcessInfo.processInfo.environment.merging(scanEnvironment) { _, new in new })
+    }
+
+    public func removalTarget(for model: LocalModel, settings: AppSettings) -> ModelRemovalTarget? {
+        guard model.isAutomatosX else { return nil }
+        return ModelFiles.removalTarget(path: model.path, modelsRoot: settings.modelsDirectory, cacheRoot: hubCacheRoot)
+    }
+
+    /// Delete a downloaded model. The caller owns confirmation and the guard
+    /// that the model is not served by this app.
+    @discardableResult
+    public func remove(_ model: LocalModel, settings: AppSettings) async -> Bool {
+        guard !downloading, !removing, let target = removalTarget(for: model, settings: settings) else {
+            error = downloading || removing
+                ? "Wait for downloads and model removal to finish."
+                : "Only models downloaded by AX Engine can be removed here."
+            return false
         }
-        removing = true
+        removing = true; error = nil
         defer { removing = false }
         do {
-            let result = try await removalJob.run(executable: settings.runtime(),
-                arguments: ["models", "rm", model.path, "--yes", "--json"], timeout: 60)
-            guard result.status == 0 else { throw AppFailure.message(String(result.stderr.suffix(2048))) }
+            switch target {
+            case .managedFolder(let url):
+                let result = try await removalJob.run(executable: settings.runtime(),
+                    arguments: ["models", "rm", url.path, "--yes", "--json"], timeout: 120)
+                guard result.status == 0 else { throw AppFailure.message(String(result.stderr.suffix(2048))) }
+            case .cacheRepository(let url):
+                // The runtime CLI leaves Hugging Face cache entries to Hub
+                // tools; the app removes only AutomatosX repositories it fenced.
+                try await Task.detached(priority: .userInitiated) { try ModelFiles.removeCacheRepository(url) }.value
+            }
+            library.removeAll { $0.path == model.path }
+            checkedPaths.remove(model.path)
             await scan(settings: settings)
-        } catch { self.error = error.localizedDescription }
+            return true
+        } catch {
+            self.error = "Could not remove \(model.displayName): " + error.localizedDescription
+            await scan(settings: settings)
+            return false
+        }
+    }
+
+    /// Delete an interrupted download stage. Refuses while any download runs
+    /// here or the runtime still holds the stage lock.
+    public func discardPartial(_ partial: PartialDownload, settings: AppSettings) async {
+        guard !downloading, !removing else { error = "Wait for downloads and model removal to finish."; return }
+        guard ModelFiles.isPartialDownload(path: partial.path, modelsRoot: settings.modelsDirectory, cacheRoot: hubCacheRoot) else {
+            error = "This folder is not an AX Engine partial download."; return
+        }
+        removing = true; error = nil
+        defer { removing = false }
+        let url = URL(fileURLWithPath: partial.path)
+        do {
+            try await Task.detached(priority: .userInitiated) { try ModelFiles.discardPartialDownload(url) }.value
+            partialDownloads.removeAll { $0.path == partial.path }
+        } catch { self.error = "Could not discard the partial download: " + error.localizedDescription }
     }
 
     public func enqueue(_ model: CatalogModel, settings: AppSettings) {

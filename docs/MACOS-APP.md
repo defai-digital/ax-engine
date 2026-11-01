@@ -81,9 +81,19 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    sequentially through `ax-engine download --progress-json`. Ready requires
    complete weight files, a successful terminal record and a successful process
    exit, not just a 100% progress bar. There is no separate Downloads sidebar page.
+   Interrupted native downloads leave a hidden stage folder so a retry can
+   resume; Local Library lists these under **Interrupted downloads** with their
+   size and offers Discard, which refuses while the runtime still holds the
+   download lock.
 3. **Server:** choose an installed AutomatosX model. Start uses offline
-   resolution and loopback only. Runtime MTP and expert-streaming defaults remain
-   unchanged. An app-owned server uses a per-launch in-memory API key.
+   resolution and loopback only, and refuses up front when the configured port is
+   already in use instead of failing after the model has loaded. Runtime MTP and
+   expert-streaming defaults remain unchanged. An app-owned server uses a
+   per-launch in-memory API key. **Restart Server** stops and relaunches the
+   app-owned server; choosing a different installed model while it runs turns the
+   button into **Restart with Selected Model**. Stop gives the runtime eight
+   seconds to drain before it is force-killed. When the runtime exits on its own,
+   the error shows its last diagnostic line.
    Once connected, **Copy API URL** copies the actual connected endpoint,
    and **Copy API key** copies its current key for an external local client.
    The key is copied only on your click, stays on this device, and is cleared
@@ -164,10 +174,17 @@ Settings and the current conversation live in
 its `Models/` subdirectory. The library also discovers Hugging Face snapshots and
 explicitly imported folders. Complete weight files are not proof that a model will load; the runtime performs admission and compatibility validation.
 
-Only app-managed model directories can be deleted from the GUI, after
-confirmation and while disconnected. Imported directories and the Hugging Face
-cache are not deleted. Chat text stays on disk locally; Clear removes the saved
-conversation. Diagnostic output is bounded in memory. The app sends no telemetry.
+Models that AX Engine downloaded can be deleted from the GUI after a
+confirmation that names the folder and the space it frees. App-managed folders
+go through `ax-engine models rm`. For an `AutomatosX/*` repository in the
+Hugging Face cache the app deletes that whole `models--AutomatosX--…` entry,
+including every cached revision, because the library shows one snapshot per
+repository; other apps sharing that cache must download it again. Removal is
+blocked for the model the app is currently serving, while attached to an
+external service, and during downloads. Non-AutomatosX cache entries and
+imported directories are never deleted. Each row offers Show in Finder. Chat
+text stays on disk locally; Clear removes the saved conversation. Diagnostic
+output is bounded in memory. The app sends no telemetry.
 
 ## Scope and credits
 

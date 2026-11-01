@@ -42,8 +42,11 @@ public final class ProcessJob: ObservableObject {
     public private(set) var processID: Int32?
     private var process: Process?
     private var stopTask: Task<Void, Never>?
+    /// Seconds between SIGTERM and SIGKILL on cancel. A server needs longer
+    /// than a short-lived helper to drain requests and release model memory.
+    public var terminationGrace: TimeInterval
 
-    public init() {}
+    public init(terminationGrace: TimeInterval = 2) { self.terminationGrace = terminationGrace }
 
     public func run(executable: URL, arguments: [String], environment: [String: String] = [:],
                     timeout: TimeInterval? = nil,
@@ -135,8 +138,9 @@ public final class ProcessJob: ObservableObject {
         let pid = child.processIdentifier
         let ownsGroup = getpgid(pid) == pid && pid != getpgrp()
         if ownsGroup { kill(-pid, SIGTERM) } else { child.terminate() }
+        let grace = terminationGrace
         stopTask = Task {
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(grace))
             guard !Task.isCancelled else { return }
             if ownsGroup { kill(-pid, SIGKILL) }
             else if child.isRunning { kill(pid, SIGKILL) }

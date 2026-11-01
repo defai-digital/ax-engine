@@ -23,4 +23,7 @@ func emit(_ event: LibraryScanEvent) {
 _ = ModelStore.scanLibrary(root: request.root, imported: request.imported,
                           emit: { emit(LibraryScanEvent(model: $0)) },
                           warning: { emit(LibraryScanEvent(warning: $0)) })
+for partial in ModelFiles.partialDownloads(modelsRoot: request.root, cacheRoot: ModelFiles.hubCacheRoot()) {
+    emit(LibraryScanEvent(partial: partial))
+}
 emit(LibraryScanEvent(complete: true))

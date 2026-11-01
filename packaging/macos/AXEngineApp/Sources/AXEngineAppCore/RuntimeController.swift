@@ -18,13 +18,23 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var selectedModel = ""
     @Published public private(set) var history = MetricHistory()
     private var mtpWindow = MTPCounterWindow()
-    public let job = ProcessJob()
+    public let job = ProcessJob(terminationGrace: 8)
     private let logStore = BoundedLogStore(capacity: 250)
     private var generation = UUID()
     private var launch: Task<Void, Never>?
     private var polling: Task<Void, Never>?
     public var ready: Bool { connection != nil && !models.isEmpty && ["Running", "Attached"].contains(state) }
-    public init() {}
+    private let portAvailable: @Sendable (Int) -> Bool
+    public init(portAvailable: @escaping @Sendable (Int) -> Bool = PortProbe.isAvailable) {
+        self.portAvailable = portAvailable
+    }
+
+    /// The last meaningful runtime diagnostic line, for an exit message.
+    public nonisolated static func lastDiagnostic(_ stderr: String) -> String? {
+        let lines = stderr.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let line = lines.last(where: { !$0.isEmpty }) else { return nil }
+        return line.count > 400 ? String(line.prefix(400)) + "…" : line
+    }
 
     public func start(model: String, settings: AppSettings) {
         guard !busy, !owned, connection == nil else { return }
@@ -33,6 +43,11 @@ public final class RuntimeController: ObservableObject {
             let executable = try settings.runtime()
             guard !model.isEmpty, !model.hasPrefix("-"), !model.contains("\0") else {
                 throw AppFailure.message("Select an installed model or enter a model alias.")
+            }
+            // A second listener would fail to bind only after model load, and a
+            // different service there could answer readiness probes instead.
+            guard portAvailable(settings.port) else {
+                throw AppFailure.message("Port \(settings.port) is already in use, possibly by another AX Engine service. Connect to it below, stop that service, or choose another port in Settings.")
             }
             let identity = UUID(); generation = identity
             history = MetricHistory(); mtpWindow.reset()
@@ -48,7 +63,8 @@ public final class RuntimeController: ObservableObject {
                             self?.logs = String(value.stderr.suffix(32_768)).replacingOccurrences(of: key, with: "[redacted]")
                         }
                     guard generation == identity else { return }
-                    error = "Runtime exited (\(result.status)). Check the runtime output."
+                    let detail = Self.lastDiagnostic(result.stderr.replacingOccurrences(of: key, with: "[redacted]"))
+                    error = "Runtime exited (\(result.status))" + (detail.map { ": " + $0 } ?? ". Check the runtime output.")
                 } catch is CancellationError {
                     guard generation == identity else { return }
                 } catch {
@@ -137,6 +153,15 @@ public final class RuntimeController: ObservableObject {
         await logStore.append(logs, stream: .stderr)
         connection = nil; models = []; metrics = [:]; owned = false; busy = false; state = "Stopped"
         error = nil; lastSuccessfulCheck = nil; startedAt = nil
+    }
+
+    /// Stop the app-owned server and start it again, optionally on another
+    /// model. Settings such as the port are re-read for the new launch.
+    public func restart(model: String? = nil, settings: AppSettings) async {
+        guard owned, state != "Stopping" else { return }
+        let target = model ?? selectedModel
+        await stop()
+        start(model: target, settings: settings)
     }
 
     public func detach() {
