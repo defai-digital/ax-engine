@@ -64,7 +64,7 @@ cleanup() {
   if [[ "$stage_owned" == true && -d "$stage" && ! -L "$stage" ]]; then priv rm -rf -- "$stage" || true; fi
   if [[ "$locked" == true ]]; then priv rm -f "$lock/pid" || true; priv rmdir "$lock" || true; fi
   if [[ "$recovery_owned" == true ]]; then priv rmdir "$recovery" || true; fi
-  if [[ "$mounted" == true ]]; then hdiutil detach "$mount" >/dev/null 2>&1 || true; fi
+  if [[ "$mounted" == true ]]; then diskutil eject "$mount" >/dev/null 2>&1 || hdiutil detach "$mount" >/dev/null 2>&1 || true; fi
   rm -rf -- "$temporary"
   exit "$status"
 }
@@ -74,6 +74,14 @@ trap 'exit 143' TERM
 download() { curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 --connect-timeout 20 --max-time 600 "$1" -o "$2"; }
 hash() { shasum -a 256 "$1" | awk '{print $1}'; }
 plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist"; }
+# macOS 27 deprecates `hdiutil attach`; keep it only where `diskutil image` is missing.
+attach_image() {
+  if diskutil image attach --help >/dev/null 2>&1; then
+    diskutil image attach --readOnly --nobrowse --mountPoint "$2" "$1" >/dev/null
+  else
+    hdiutil attach "$1" -readonly -nobrowse -mountpoint "$2" >/dev/null
+  fi
+}
 valid_version() { [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
 check_app() {
   [[ -d "$1" && ! -L "$1" ]] || return 1
@@ -130,7 +138,7 @@ codesign --verify --strict "$temporary/$filename"
 codesign -dv --verbose=4 "$temporary/$filename" 2>&1 | grep -Fx 'TeamIdentifier=N5ZUZDUJS6' >/dev/null || fail 'Unexpected DMG signing team'
 spctl --assess --type open --context context:primary-signature "$temporary/$filename"
 mkdir "$mount"
-hdiutil attach "$temporary/$filename" -readonly -nobrowse -mountpoint "$mount" >/dev/null
+attach_image "$temporary/$filename" "$mount"
 mounted=true
 app="$mount/AX Engine.app"
 check_app "$app" || fail 'Downloaded app identity or signature verification failed'
