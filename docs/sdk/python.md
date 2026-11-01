@@ -94,7 +94,7 @@ package in a venv or for library embedding.
 
 ### pip (Python SDK)
 
-Requires Python 3.12+, macOS 26+, and Apple Silicon (M2 or newer). Homebrew
+Requires Python 3.12+, macOS 26+, and Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort). Homebrew
 is optional: install Python 3.13 using the macOS installer from
 [python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
 create the virtual environment with that interpreter. Python 3.12–3.14 work;

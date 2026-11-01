@@ -40,7 +40,7 @@ pip does not upgrade Python. If installation fails under Python 3.9, follow
 to create a separate environment with a supported Python version. Keep one
 installation channel active per shell when Homebrew is installed too.
 
-Requires macOS 26+, Apple Silicon (M2 or newer), Python 3.12+. 16 GB is enough
+Requires macOS 26+, Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort), Python 3.12+. 16 GB is enough
 for compact single models; 32 GB+ for multi-model / larger packs.
 The current macOS arm64 wheel also includes the `ax-engine` orchestration CLI
 plus bundled `ax-engine-server` and `ax-engine-bench` binaries when you need a
@@ -153,7 +153,7 @@ python3 -m pip install --upgrade "ax-engine[multimodal]>=8.0.4,<9"
 ## Requirements
 
 - macOS 26 (Tahoe) or later
-- Apple Silicon — M2 or newer (16 GB light / single compact model; 32 GB+ full stack)
+- Apple Silicon — M5 or later recommended; M3–M4 supported; M2 best-effort (16 GB light / single compact model; 32 GB+ full stack)
 - Python 3.12+
 
 ## Project

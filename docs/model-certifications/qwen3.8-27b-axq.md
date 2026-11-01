@@ -13,7 +13,9 @@ The product scope is MLX AXQ MXFP4 / MXFP8 with MTP sidecars. Standalone
 qualification are pending. The MXFP4 pack's protected affine8 embeddings
 and output head remain intact. See [format policy](../QWEN38-FORMAT-POLICY.md).
 
-The Mac mini M4 Pro 64 GB SKU is retained. New-pack runtime, quality,
+M5 and later are the primary hardware target; the Mac mini M4 Pro 64 GB
+remains a supported configuration and the host of the existing record. New
+qualification campaigns run on M5-class hardware. New-pack runtime, quality,
 memory and release inventory gates are open. Prior 6-bit qualification,
 MTP-S and performance results do not transfer. MTP-S/P/D are not assessed
 for this replacement pack; MTP execution remains explicit opt-in with

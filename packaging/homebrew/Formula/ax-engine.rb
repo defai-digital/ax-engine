@@ -1,5 +1,5 @@
 class AxEngine < Formula
-  desc "Mac-first LLM inference engine targeting Apple M4+ Silicon"
+  desc "Mac-first LLM inference engine optimized for Apple M5 and later"
   homepage "https://github.com/defai-digital/ax-engine"
   url "https://github.com/defai-digital/ax-engine/releases/download/v8.0.4/ax-engine-v8.0.4-macos-arm64.tar.gz"
   version "8.0.4"
