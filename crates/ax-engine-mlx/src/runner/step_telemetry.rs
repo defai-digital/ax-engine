@@ -61,6 +61,10 @@ pub(super) struct MtpTelemetry {
     /// the route it took (1 MTP, 2 direct).
     pub(super) dflash2_handoff_round: u32,
     pub(super) dflash2_handoff_target: u32,
+    /// Times a parked request probed DFlash2 again, and whether a parked
+    /// step's rows could not be kept (the request then stays parked).
+    pub(super) dflash2_probes: u32,
+    pub(super) dflash2_parked_capture_lost: u32,
     /// Cycle-level acceptance: accepted_cycles counts MTP verify cycles where
     /// ALL draft tokens were accepted; rejected_cycles counts cycles with any
     /// rejection.  Matches Lightning-MLX's `mtp_acceptance_ratio` metric
@@ -500,6 +504,14 @@ impl MtpTelemetry {
         self.dflash2_handoff_target = target;
     }
 
+    pub(super) fn record_dflash2_probe(&mut self) {
+        self.dflash2_probes = self.dflash2_probes.saturating_add(1);
+    }
+
+    pub(super) fn record_dflash2_parked_capture_lost(&mut self) {
+        self.dflash2_parked_capture_lost = 1;
+    }
+
     pub(super) fn record_timings(&mut self, timings: MtpStepTimings) {
         self.cache_clone_wall_us = self
             .cache_clone_wall_us
@@ -652,6 +664,10 @@ impl MtpTelemetry {
         self.dflash2_handoff_target = self
             .dflash2_handoff_target
             .max(other.dflash2_handoff_target);
+        self.dflash2_probes = self.dflash2_probes.saturating_add(other.dflash2_probes);
+        self.dflash2_parked_capture_lost = self
+            .dflash2_parked_capture_lost
+            .max(other.dflash2_parked_capture_lost);
         self.accepted_cycles = self.accepted_cycles.saturating_add(other.accepted_cycles);
         self.rejected_cycles = self.rejected_cycles.saturating_add(other.rejected_cycles);
         self.cache_clone_wall_us = self
@@ -988,6 +1004,11 @@ impl MtpTelemetry {
             ("ax_mtp_complete_miss_steps", self.complete_miss_steps),
             ("ax_mtp_dflash2_handoff_round", self.dflash2_handoff_round),
             ("ax_mtp_dflash2_handoff_target", self.dflash2_handoff_target),
+            ("ax_mtp_dflash2_probes", self.dflash2_probes),
+            (
+                "ax_mtp_dflash2_parked_capture_lost",
+                self.dflash2_parked_capture_lost,
+            ),
             ("ax_mtp_accepted_cycles", self.accepted_cycles),
             ("ax_mtp_rejected_cycles", self.rejected_cycles),
             ("ax_mtp_cache_clone_wall_us", self.cache_clone_wall_us),

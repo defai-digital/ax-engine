@@ -11282,7 +11282,57 @@ impl MlxRunner {
         if state.dflash2_verify_fence_error.is_some() {
             return Vec::new();
         }
+        // A parked DFlash2 request keeps the drafter's context current: the
+        // step's forwards are captured and the committed rows kept.
+        if let Some(layers) = self.dflash2_parked_capture_layers(state) {
+            let start = state.cache.seq_len();
+            let capture = crate::model::layer_capture::capture_layers_accumulating(
+                &layers,
+                dflash2_decode::PARKED_STEP_MAX_ROWS,
+            );
+            let tokens = self.decode_one_routes(
+                state,
+                input_tokens,
+                sampling,
+                is_greedy,
+                options,
+                think_hard_close_due,
+            );
+            let captured = crate::model::layer_capture::take_accumulated();
+            drop(capture);
+            self.record_dflash2_parked_rows(state, start, captured);
+            return tokens;
+        }
+        self.decode_one_routes(
+            state,
+            input_tokens,
+            sampling,
+            is_greedy,
+            options,
+            think_hard_close_due,
+        )
+    }
 
+    /// The routes after the drafter routes (Flash Next, DFlash2) declined.
+    fn decode_one_routes(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        is_greedy: bool,
+        options: DecodeOneOptions<'_>,
+        think_hard_close_due: bool,
+    ) -> Vec<u32> {
+        // A parked DFlash2 request about to probe again finishes the direct
+        // double buffer's pending token instead of starting another.
+        let options = DecodeOneOptions {
+            final_by_max_output: options.final_by_max_output
+                || state
+                    .dflash2
+                    .as_ref()
+                    .is_some_and(|dflash| dflash.resume_due(state.cache.seq_len())),
+            ..options
+        };
         let pure_direct_pipeline = !think_hard_close_due
             && v4_uncertified_uses_pure_direct_pipeline(
                 self.mtp_model_policy.is_deepseek_v4_direct_fallback(),

@@ -169,9 +169,9 @@ the same path with the Apache-2.0 `incoai/Qwen3.6-35B-A3B-DFlash2` checkpoint
 (about 1.05 GB in bf16; six layers conditioned on target layers 1, 6, 11, 16, 22,
 27, 32 and 37), found the same way. On this MoE target every extra verify row
 activates more experts, so DFlash2 wins on code but can lose on prose. Each
-request therefore starts on DFlash2 and, after six rounds, hands off for the rest
-of the request to MTP (when the session runs MTP) or to direct decode once that
-route is predicted to be more than 5% faster on three consecutive rounds. The
+request therefore starts on DFlash2 and, after six rounds, hands off to MTP (when
+the session runs MTP) or to direct decode once that route is predicted to be more
+than 5% faster on three consecutive rounds. The
 prediction uses only the acceptance counts and fixed per-target cost ratios,
 never wall time, so a greedy request takes the same route and produces the same
 tokens on every run. The MTP head cache is kept warm through the DFlash2 rounds,
@@ -181,6 +181,18 @@ the 6-bit pack (17 real prompts, 256 tokens, greedy) it decodes 1.13x faster tha
 MTP over the suite (code +22% to +34%, worst prompt 0.92x) and 1.98x faster than
 direct decode; on a Mac mini M4 Pro 64 GB it matches MTP (0.99x, worst 0.90x) and
 is 1.59x faster than direct decode.
+
+A handoff to MTP is final for the request. A request handed to direct decode
+keeps capturing the drafter's target layers for the tokens it commits and probes
+DFlash2 again 128 tokens later, with a fresh acceptance estimate and a three-round
+warm-up; each probe that hands off again within 16 rounds doubles the wait, up to
+4,096 tokens. Content that turns from prose to code, such as an explanation
+followed by a program, gets DFlash2 back. On six prompts that mix prose and code
+(512 tokens, sessions without MTP) the probe sped up one prompt by 1.51x on the M5
+Max and two by 1.19x and 1.20x on the M4 Pro, and left the others within 0.2%; on
+the 17-prompt suite it measured 1.003x on the M5 Max (up to 1.09x) and 0.998x on
+the M4 Pro, where two prose prompts with a failed probe lost 3%. Sessions with MTP
+are unchanged. `AX_MLX_DFLASH2_PROBE=0` makes every handoff final.
 
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context
