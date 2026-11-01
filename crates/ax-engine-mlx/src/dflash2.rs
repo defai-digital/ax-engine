@@ -103,6 +103,37 @@ impl Dflash2Config {
         {
             return Err("DFlash2 final_logit_softcapping is not supported".into());
         }
+        // The drafter applies plain full-width RoPE at `rope_theta`; a scaled
+        // or partial rope would draft with the wrong positions, so decline it.
+        let rope_kind = |block: &serde_json::Value| {
+            block
+                .get("rope_type")
+                .or_else(|| block.get("type"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        if let Some(kind) = root
+            .get("rope_parameters")
+            .and_then(rope_kind)
+            .filter(|kind| kind != "default")
+        {
+            return Err(format!("DFlash2 rope_type {kind:?} is not supported"));
+        }
+        if let Some(scaling) = root.get("rope_scaling").filter(|value| !value.is_null())
+            && rope_kind(scaling).as_deref() != Some("default")
+        {
+            return Err("DFlash2 rope_scaling is not supported".into());
+        }
+        let partial_rotary = root
+            .get("partial_rotary_factor")
+            .or_else(|| {
+                root.get("rope_parameters")
+                    .and_then(|v| v.get("partial_rotary_factor"))
+            })
+            .and_then(serde_json::Value::as_f64);
+        if partial_rotary.is_some_and(|factor| factor != 1.0) {
+            return Err("DFlash2 partial_rotary_factor other than 1 is not supported".into());
+        }
         let config = Self {
             hidden_size: int(top, "hidden_size")? as i32,
             num_layers: int(top, "num_hidden_layers")? as usize,
@@ -1686,6 +1717,31 @@ mod tests {
         assert_eq!(cfg.target_hidden_width(), 25_600);
         assert_eq!(cfg.rope_theta, 10_000_000.0);
         assert_eq!(cfg.input_embedding_scale, 1.0);
+    }
+
+    #[test]
+    fn config_rejects_a_scaled_or_partial_rope() {
+        let yarn = CONFIG.replace(
+            "\"rope_type\": \"default\"",
+            "\"rope_type\": \"yarn\", \"factor\": 4.0",
+        );
+        assert!(Dflash2Config::from_json(&yarn).is_err());
+        let legacy = CONFIG.replace(
+            "\"is_causal\": false,",
+            "\"is_causal\": false, \"rope_scaling\": {\"type\": \"linear\", \"factor\": 2.0},",
+        );
+        assert!(Dflash2Config::from_json(&legacy).is_err());
+        let partial = CONFIG.replace(
+            "\"is_causal\": false,",
+            "\"is_causal\": false, \"partial_rotary_factor\": 0.25,",
+        );
+        assert!(Dflash2Config::from_json(&partial).is_err());
+        // A null rope_scaling and the default type keep the released drafter.
+        let explicit_none = CONFIG.replace(
+            "\"is_causal\": false,",
+            "\"is_causal\": false, \"rope_scaling\": null, \"partial_rotary_factor\": 1.0,",
+        );
+        assert!(Dflash2Config::from_json(&explicit_none).is_ok());
     }
 
     #[test]

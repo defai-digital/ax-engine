@@ -44,6 +44,13 @@ These are not in the current compatibility contract:
   are constrained on native MLX only — see `docs/SERVER.md`)
 - remote `http(s)` media URLs, media on manifests without the required
   towers, and standard Gemma 4 E-series Conformer audio
+- constrained tool calls: tool-call arguments are parsed from the model's
+  output, not decoded under a grammar. `strict: true` on a function tool is
+  accepted (clients such as the OpenAI Agents SDK send it by default) but does
+  not guarantee schema-valid arguments, and `tool_choice: "required"` or a
+  named function enables tool-call parsing but does not force a call (the
+  model may still answer in text). Validate arguments on the client when the
+  schema must hold.
 - token-incremental tool-call streaming on GLM / GPT-OSS and delegated-backend
   prompt-side tool rendering (native Qwen ChatML and Gemma 4 chat streams
   emit incremental tool-call deltas; see `docs/SERVER.md`)
