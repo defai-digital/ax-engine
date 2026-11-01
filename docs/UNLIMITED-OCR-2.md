@@ -47,6 +47,15 @@ if result.status == "failed":
 print(tokenizer.decode(result.output_tokens, skip_special_tokens=False))
 ```
 
+`no_repeat_ngram_size=35` with `ngram_window=1024` matches the released
+multi-page evaluation setup. The window covers the last 1,024 generated tokens
+regardless of page boundaries, as in the reference processors. A run of 35
+tokens that repeats across pages within that window is therefore banned, and
+the model is pushed to change one token. Repeated headers, footers, table rows
+or duplicate pages can come back slightly altered. If a document repeats long
+passages across pages, use a smaller `ngram_window` (single pages use 128) or
+turn the ban off with `no_repeat_ngram_size=0`.
+
 Outputs retain `<PAGE>`, `<BLOCK>` and `<FORK>` layout markers. As in the
 released generation, a page-count guard keeps the output to one page per input
 image: EOS is blocked until every page has started, only EOS may follow an extra
