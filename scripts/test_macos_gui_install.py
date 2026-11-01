@@ -48,7 +48,17 @@ if name=='minisign':
 if name=='plutil':done(json.loads(p(a[-1]).read_text())[a[1]])
 if name=='base64':
  sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read().strip(),validate=True));done()
+def log(tool):
+ with open(root/'tools.log','a') as f:f.write(tool+' '+' '.join(a[:2])+'\n')
+if name=='diskutil':
+ log(name)
+ if a[:2]==['image','attach']:
+  if mode=='no-diskutil-image':done(status=64)
+  if '--help' in a:done()
+  mount=p(a[a.index('--mountPoint')+1]);shutil.copytree(root/'app',mount/'AX Engine.app');done()
+ done()
 if name=='hdiutil':
+ log(name)
  if a[0]=='attach':
   mount=p(a[a.index('-mountpoint')+1]);shutil.copytree(root/'app',mount/'AX Engine.app');done()
  done()
@@ -77,7 +87,7 @@ class InstallerTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve();self.apps=self.root/'Applications';self.apps.mkdir()
         self.remote=self.root/'remote';self.remote.mkdir();(self.root/'bin').mkdir()
-        for name in ['uname','sw_vers','curl','shasum','ditto','minisign','plutil','base64','hdiutil','codesign','spctl','xcode-select','pgrep','ps','PlistBuddy','mv']:
+        for name in ['uname','sw_vers','curl','shasum','ditto','minisign','plutil','base64','diskutil','hdiutil','codesign','spctl','xcode-select','pgrep','ps','PlistBuddy','mv']:
             file=self.root/'bin'/name;file.write_text(STUB.replace('#!/usr/bin/env python3','#!'+shutil.which('python3')));file.chmod(0o755)
         self.app=self.root/'app';self.create_app(self.app,'1.2.3',COMMIT)
         self.filename='AX-Engine-1.2.3-mac-arm64.dmg';image=b'dmg fixture'
@@ -213,6 +223,15 @@ class InstallerTests(unittest.TestCase):
                 result=self.invoke('offline');self.assertNotEqual(result.returncode,0)
                 self.assertIn('macOS 26.2',result.stderr)
                 self.assertFalse((self.apps/'AX Engine.app').exists())
+
+    def test_image_mounts_with_diskutil_and_falls_back_to_hdiutil(self):
+        result=self.invoke('','--verify-only');self.assertEqual(result.returncode,0,result.stderr)
+        tools=(self.root/'tools.log').read_text().splitlines()
+        self.assertIn('diskutil image attach',tools);self.assertIn('diskutil eject',[' '.join(x.split()[:2]) for x in tools])
+        self.assertFalse(any(x.startswith('hdiutil') for x in tools),tools)
+        (self.root/'tools.log').unlink()
+        result=self.invoke('no-diskutil-image','--verify-only');self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('hdiutil attach',(self.root/'tools.log').read_text())
 
     def test_verify_only_does_not_install(self):
         result=self.invoke('','--verify-only');self.assertEqual(result.returncode,0,result.stderr)
