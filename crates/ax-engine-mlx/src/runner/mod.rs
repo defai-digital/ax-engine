@@ -1816,7 +1816,7 @@ fn load_dflash2_drafter(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     dir: &std::path::Path,
-    require_pin: bool,
+    required: Option<&'static crate::dflash2::AdmittedDrafter>,
 ) -> Option<Arc<crate::dflash2::Dflash2Weights>> {
     let precision = if crate::fastpath::dflash2_bf16_enabled() {
         crate::dflash2::DrafterPrecision::Bf16
@@ -1834,9 +1834,11 @@ fn load_dflash2_drafter(
             return None;
         }
     };
-    if require_pin && !drafter.is_pinned() {
+    if let Some(required) = required
+        && drafter.admitted() != Some(required)
+    {
         tracing::warn!(
-            "discovered DFlash2 checkpoint does not match the admitted revision and digests; use AX_MLX_DFLASH2_DIR for an explicit override"
+            "discovered DFlash2 checkpoint is not the admitted drafter for this target (revision and digests); use AX_MLX_DFLASH2_DIR for an explicit override"
         );
         return None;
     }
@@ -2353,10 +2355,11 @@ impl MlxRunner {
         token
     }
 
-    /// Attaches the DFlash2 block drafter (ADR-045) to a Qwen 3.8 27B session
-    /// (identified by the pack's recorded source model) when one can be found: `AX_MLX_DFLASH2_DIR`, else `dflash2/` in the
-    /// model directory, else the Hugging Face cache snapshot of
-    /// `z-lab/Qwen3.8-27B-DFlash2`. On by default; `AX_MLX_DFLASH2=0`, the
+    /// Attaches the DFlash2 block drafter (ADR-045) to a hybrid Qwen session
+    /// whose recorded source model has an admitted drafter (Qwen 3.8 27B,
+    /// Qwen 3.6 35B-A3B) when one can be found: `AX_MLX_DFLASH2_DIR`, else
+    /// `dflash2/` in the model directory, else the Hugging Face cache snapshot
+    /// of that drafter. On by default; `AX_MLX_DFLASH2=0`, the
     /// process-wide speculation kill switch, a direct-baseline session and a
     /// missing or mismatched drafter leave the session on its normal routes.
     /// Returns whether a drafter is now attached.
@@ -2365,23 +2368,24 @@ impl MlxRunner {
             || self.disable_ngram_acceleration
             || self.cfg.model_family != "qwen3_5"
             || self.cfg.linear_attention.is_none()
-            || self.cfg.moe_expert_count > 0
         {
             return false;
         }
         let explicit = crate::fastpath::dflash2_dir();
         // An explicit directory is the user's choice; discovery only serves the
-        // target the drafter was trained for.
-        if explicit.is_none() && !crate::dflash2::target_is_qwen38_27b(model_dir) {
+        // target an admitted drafter was trained for.
+        let admitted = crate::dflash2::admitted_drafter_for(model_dir);
+        if explicit.is_none() && admitted.is_none() {
             tracing::debug!(
                 target: "ax_engine_mlx::runner",
-                "the DFlash2 drafter serves Qwen 3.8 27B only; this model is something else"
+                "no admitted DFlash2 drafter for this model's source checkpoint"
             );
             return false;
         }
         let Some(dir) = crate::dflash2::locate_drafter(
             explicit,
             model_dir,
+            admitted,
             crate::fastpath::hf_hub_cache_roots(),
         ) else {
             if let Some(dir) = explicit {
@@ -2398,7 +2402,8 @@ impl MlxRunner {
             }
             return false;
         };
-        self.dflash2 = load_dflash2_drafter(&self.cfg, &self.weights, &dir, explicit.is_none());
+        let required = if explicit.is_none() { admitted } else { None };
+        self.dflash2 = load_dflash2_drafter(&self.cfg, &self.weights, &dir, required);
         self.dflash2.is_some()
     }
 
@@ -11266,6 +11271,11 @@ impl MlxRunner {
         {
             return tokens;
         }
+        // Every other route may run the MTP head: give it the rows DFlash2
+        // committed first.
+        if self.dflash2.is_some() {
+            self.sync_mtp_after_dflash2(state);
+        }
         // The cache is untrustworthy after a failed verify fence. run_item
         // consumes this flag and fails the request; any other caller of
         // decode_one must check it too, or it sees silent empty output.
@@ -11294,8 +11304,19 @@ impl MlxRunner {
             && !sampling.uses_logits_processors()
             && state.flash_next_mtp.blocked_direct
             && self.flash_next_mtp_session();
+        // A greedy request DFlash2 handed to plain decode takes the same double
+        // buffer: the n-gram route finds no drafts on these targets.
+        let dflash2_handed_to_direct = !state.think_soft_close_armed
+            && !think_hard_close_due
+            && (is_greedy || sampling.temperature <= 0.0)
+            && !sampling.uses_logits_processors()
+            && state
+                .dflash2
+                .as_ref()
+                .is_some_and(|dflash| dflash.handed_off_to_direct());
         let direct_pipeline = pure_direct_pipeline
             || flash_next_blocked_greedy
+            || dflash2_handed_to_direct
             || (!state.think_soft_close_armed
                 && !think_hard_close_due
                 // The double buffer is argmax-only: repetition, presence /

@@ -534,8 +534,9 @@ impl Dflash2Weights {
         )
     }
 
-    pub(crate) fn is_pinned(&self) -> bool {
-        self.artifact.is_pinned()
+    /// The admitted drafter this checkpoint is, by content.
+    pub(crate) fn admitted(&self) -> Option<&'static AdmittedDrafter> {
+        self.artifact.admitted()
     }
 
     pub(crate) fn config(&self) -> &Dflash2Config {
@@ -1342,13 +1343,71 @@ fn selector_runner_up(
     Ok(out)
 }
 
-/// Directory name of the drafter's Hugging Face cache entry.
-const DRAFTER_HF_ENTRY: &str = "models--z-lab--Qwen3.8-27B-DFlash2";
-const DRAFTER_REVISION: &str = "50307d4c4cde6860d4eee73e2547cd786fe8e8a4";
-const DRAFTER_CONFIG_SHA256: &str =
-    "873e3556509b0da06e29654ba00d4944888d4b5e8a33afde25f7eb27d321e980";
-const DRAFTER_WEIGHTS_SHA256: &str =
-    "67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c";
+/// A drafter AX finds by discovery: the Hugging Face snapshot it is pinned to
+/// and the source model of the target it was trained for.
+#[derive(Debug, PartialEq)]
+pub(crate) struct AdmittedDrafter {
+    /// Hugging Face repository of the target's source model, lowercase.
+    target: &'static str,
+    repo: &'static str,
+    revision: &'static str,
+    config_sha256: &'static str,
+    weights_sha256: &'static str,
+    /// Step costs that let a low-acceptance request leave DFlash2, measured
+    /// for this target on the primary hardware tier. `None` keeps every
+    /// request on DFlash2.
+    pub(crate) handoff: Option<HandoffCosts>,
+}
+
+/// Wall time of the routes a request can leave DFlash2 for, relative to a
+/// four-row DFlash2 round on the same target. The ratio depends on the target:
+/// a dense model verifies four rows for little more than one, an MoE model
+/// activates more experts per row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HandoffCosts {
+    /// One MTP step at depth three (four rows): the round less the drafter.
+    pub(crate) mtp_step: f64,
+    /// One direct decode step.
+    pub(crate) direct_step: f64,
+}
+
+impl AdmittedDrafter {
+    /// Directory name of the drafter's Hugging Face cache entry.
+    fn hf_entry(&self) -> String {
+        format!("models--{}", self.repo.replace('/', "--"))
+    }
+}
+
+/// Every drafter discovery may load, each bound to its target's source model.
+/// The drafters' shapes also fit other checkpoints (Qwen 3.6 27B and 3.8
+/// fine-tunes match the 27B drafter), whose weights they never saw.
+pub(crate) const ADMITTED_DRAFTERS: &[AdmittedDrafter] = &[
+    AdmittedDrafter {
+        target: "qwen/qwen3.8-27b",
+        repo: "z-lab/Qwen3.8-27B-DFlash2",
+        revision: "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+        config_sha256: "873e3556509b0da06e29654ba00d4944888d4b5e8a33afde25f7eb27d321e980",
+        weights_sha256: "67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c",
+        // DFlash2 beats direct decode on every measured prompt (dense: a direct
+        // step costs 0.71 of a four-row round on the M5 Max) and ties MTP on
+        // prose, so requests stay on DFlash2.
+        handoff: None,
+    },
+    AdmittedDrafter {
+        target: "qwen/qwen3.6-35b-a3b",
+        repo: "incoai/Qwen3.6-35B-A3B-DFlash2",
+        revision: "51ef7b6923ad6c14cb1bb41c37a9041446496ab6",
+        config_sha256: "86d2e8e57e7c70bb867240708d00c0535ae9ed3c828dbdcb21584471c7bbce59",
+        weights_sha256: "d1f16c0ff85afbe6166fabfae998af3ec16fa11da87da4391b5e0e0a7c796a4d",
+        // M5 Max: an MTP step is 0.82 of a four-row round and a direct step
+        // 0.47 (M4 Pro: 0.73 and 0.41; the M5 values keep requests on DFlash2
+        // longer there). Prose loses up to 25% to MTP without a handoff.
+        handoff: Some(HandoffCosts {
+            mtp_step: 0.82,
+            direct_step: 0.47,
+        }),
+    },
+];
 
 struct DrafterArtifact {
     config_sha256: String,
@@ -1378,18 +1437,22 @@ impl DrafterArtifact {
         })
     }
 
-    fn is_pinned(&self) -> bool {
-        self.config_sha256 == DRAFTER_CONFIG_SHA256 && self.weights_sha256 == DRAFTER_WEIGHTS_SHA256
+    /// The admitted drafter whose both digests this checkpoint matches.
+    fn admitted(&self) -> Option<&'static AdmittedDrafter> {
+        ADMITTED_DRAFTERS.iter().find(|drafter| {
+            self.config_sha256 == drafter.config_sha256
+                && self.weights_sha256 == drafter.weights_sha256
+        })
     }
 
     fn identity(&self) -> String {
-        let revision = if self.is_pinned() {
-            DRAFTER_REVISION
-        } else {
-            "explicit-local"
-        };
+        let (repo, revision) = self
+            .admitted()
+            .map_or(("dflash2", "explicit-local"), |drafter| {
+                (drafter.repo, drafter.revision)
+            });
         format!(
-            "z-lab/Qwen3.8-27B-DFlash2@{revision};config_sha256={};weights_sha256={}",
+            "{repo}@{revision};config_sha256={};weights_sha256={}",
             self.config_sha256, self.weights_sha256
         )
     }
@@ -1400,49 +1463,46 @@ fn is_drafter_dir(dir: &Path) -> bool {
     dir.join("config.json").is_file() && dir.join("model.safetensors").is_file()
 }
 
-/// Whether `model_dir` holds the Qwen 3.8 27B target the drafter was trained
-/// for. The drafter's shapes (hidden 5120, 64 layers, 248,320 vocabulary) also
-/// fit Qwen 3.6 27B and fine-tunes of 3.8, whose weights it never saw, so the
-/// source model recorded in the pack decides: `axquant_manifest.json`
-/// `source_model.model_id`, else `config.json` `_name_or_path`.
-pub(crate) fn target_is_qwen38_27b(model_dir: &Path) -> bool {
-    const TARGET: &str = "qwen/qwen3.8-27b";
+/// The admitted drafter for the target in `model_dir`, decided by the source
+/// model the pack records: `axquant_manifest.json` `source_model.model_id`,
+/// else the repository or directory name in `config.json` `_name_or_path`.
+pub(crate) fn admitted_drafter_for(model_dir: &Path) -> Option<&'static AdmittedDrafter> {
     let read = |name: &str| {
         std::fs::read_to_string(model_dir.join(name))
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
     };
     if let Some(manifest) = read("axquant_manifest.json") {
-        return manifest
+        let id = manifest
             .get("source_model")
             .and_then(|source| source.get("model_id"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|id| id.trim().eq_ignore_ascii_case(TARGET));
+            .and_then(serde_json::Value::as_str)?
+            .trim()
+            .to_ascii_lowercase();
+        return ADMITTED_DRAFTERS
+            .iter()
+            .find(|drafter| drafter.target == id);
     }
-    read("config.json")
-        .and_then(|config| {
-            config
-                .get("_name_or_path")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_ascii_lowercase)
-        })
-        // Compare the whole repository or directory name: a fine-tune such as
-        // `Swift-1.5-Qwen3.8-27b` merely ends with the base name.
-        .is_some_and(|name| {
-            name.trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .is_some_and(|repo| repo == "qwen3.8-27b")
-        })
+    let name = read("config.json")?
+        .get("_name_or_path")
+        .and_then(serde_json::Value::as_str)?
+        .to_ascii_lowercase();
+    // Compare the whole repository or directory name: a fine-tune such as
+    // `Swift-1.5-Qwen3.8-27b` merely ends with the base name.
+    let repo = name.trim_end_matches('/').rsplit('/').next()?.to_owned();
+    ADMITTED_DRAFTERS
+        .iter()
+        .find(|drafter| drafter.target.rsplit('/').next() == Some(repo.as_str()))
 }
 
 /// Finds the drafter checkpoint to load: the explicit directory (which is never
 /// substituted when it is wrong), else `dflash2/` inside the model directory,
-/// else the pinned snapshot of `z-lab/Qwen3.8-27B-DFlash2` in the first
+/// else the pinned snapshot of the target's admitted drafter in the first
 /// Hugging Face cache root that has one.
 pub(crate) fn locate_drafter(
     explicit: Option<&Path>,
     model_dir: &Path,
+    admitted: Option<&AdmittedDrafter>,
     hf_cache_roots: &[std::path::PathBuf],
 ) -> Option<std::path::PathBuf> {
     if let Some(dir) = explicit {
@@ -1452,11 +1512,12 @@ pub(crate) fn locate_drafter(
     if is_drafter_dir(&bundled) {
         return Some(bundled);
     }
+    let admitted = admitted?;
     for root in hf_cache_roots {
         let snapshot = root
-            .join(DRAFTER_HF_ENTRY)
+            .join(admitted.hf_entry())
             .join("snapshots")
-            .join(DRAFTER_REVISION);
+            .join(admitted.revision);
         if is_drafter_dir(&snapshot) {
             return Some(snapshot);
         }
@@ -2205,21 +2266,33 @@ mod tests {
         let root = scratch_dir("identity");
         make_drafter(&root);
         let original = DrafterArtifact::read(&root).unwrap();
-        assert!(!original.is_pinned());
+        assert!(original.admitted().is_none());
         assert!(original.identity().contains("@explicit-local;"));
         std::fs::write(root.join("model.safetensors"), b"changed").unwrap();
         let changed = DrafterArtifact::read(&root).unwrap();
         assert_eq!(original.config_sha256, changed.config_sha256);
         assert_ne!(original.weights_sha256, changed.weights_sha256);
         assert_ne!(original.identity(), changed.identity());
-        let mut pinned = DrafterArtifact {
-            config_sha256: DRAFTER_CONFIG_SHA256.into(),
-            weights_sha256: DRAFTER_WEIGHTS_SHA256.into(),
+        for drafter in ADMITTED_DRAFTERS {
+            let mut pinned = DrafterArtifact {
+                config_sha256: drafter.config_sha256.into(),
+                weights_sha256: drafter.weights_sha256.into(),
+            };
+            assert_eq!(pinned.admitted(), Some(drafter));
+            assert!(
+                pinned
+                    .identity()
+                    .starts_with(&format!("{}@{};", drafter.repo, drafter.revision))
+            );
+            pinned.config_sha256 = original.config_sha256.clone();
+            assert!(pinned.admitted().is_none());
+        }
+        // One drafter's config with another's weights is not admitted.
+        let crossed = DrafterArtifact {
+            config_sha256: ADMITTED_DRAFTERS[0].config_sha256.into(),
+            weights_sha256: ADMITTED_DRAFTERS[1].weights_sha256.into(),
         };
-        assert!(pinned.is_pinned());
-        assert!(pinned.identity().contains(DRAFTER_REVISION));
-        pinned.config_sha256 = original.config_sha256;
-        assert!(!pinned.is_pinned());
+        assert!(crossed.admitted().is_none());
         std::fs::remove_file(root.join("model.safetensors")).unwrap();
         assert!(DrafterArtifact::read(&root).is_err());
         std::fs::remove_dir_all(root).unwrap();
@@ -2234,9 +2307,9 @@ mod tests {
         make_drafter(&good);
         let bad = root.join("bad");
         std::fs::create_dir_all(&bad).unwrap();
-        assert_eq!(locate_drafter(Some(&good), &model, &[]), Some(good));
+        assert_eq!(locate_drafter(Some(&good), &model, None, &[]), Some(good));
         // A wrong explicit directory is not replaced by the bundled one.
-        assert_eq!(locate_drafter(Some(&bad), &model, &[]), None);
+        assert_eq!(locate_drafter(Some(&bad), &model, None, &[]), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2246,9 +2319,14 @@ mod tests {
         let model = root.join("model");
         make_drafter(&model.join("dflash2"));
         let hub = root.join("hub");
-        make_drafter(&hub.join(DRAFTER_HF_ENTRY).join("snapshots").join("abc"));
+        let admitted = &ADMITTED_DRAFTERS[0];
+        make_drafter(
+            &hub.join(admitted.hf_entry())
+                .join("snapshots")
+                .join(admitted.revision),
+        );
         assert_eq!(
-            locate_drafter(None, &model, std::slice::from_ref(&hub)),
+            locate_drafter(None, &model, Some(admitted), std::slice::from_ref(&hub)),
             Some(model.join("dflash2"))
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -2260,67 +2338,92 @@ mod tests {
         let model = root.join("model");
         std::fs::create_dir_all(&model).unwrap();
         let hub = root.join("hub");
-        let snapshots = hub.join(DRAFTER_HF_ENTRY).join("snapshots");
-        // A snapshot without weights is not a drafter.
-        std::fs::create_dir_all(snapshots.join("partial")).unwrap();
-        std::fs::write(snapshots.join("partial").join("config.json"), "{}").unwrap();
+        for admitted in ADMITTED_DRAFTERS {
+            let snapshots = hub.join(admitted.hf_entry()).join("snapshots");
+            // A snapshot without weights is not a drafter.
+            std::fs::create_dir_all(snapshots.join("partial")).unwrap();
+            std::fs::write(snapshots.join("partial").join("config.json"), "{}").unwrap();
+            let find =
+                |roots: &[std::path::PathBuf]| locate_drafter(None, &model, Some(admitted), roots);
+            assert_eq!(find(std::slice::from_ref(&hub)), None);
+            make_drafter(&snapshots.join("unrelated-newer"));
+            assert_eq!(find(std::slice::from_ref(&hub)), None);
+            make_drafter(&snapshots.join(admitted.revision));
+            assert_eq!(
+                find(&[root.join("missing"), hub.clone()]),
+                Some(snapshots.join(admitted.revision))
+            );
+        }
+        // Without an admitted drafter for the target, the cache is not searched.
         assert_eq!(
-            locate_drafter(None, &model, std::slice::from_ref(&hub)),
+            locate_drafter(None, &model, None, std::slice::from_ref(&hub)),
             None
         );
-        make_drafter(&snapshots.join("unrelated-newer"));
+        // The 27B drafter is never offered to the 35B-A3B target, or the reverse.
         assert_eq!(
-            locate_drafter(None, &model, std::slice::from_ref(&hub)),
-            None
-        );
-        make_drafter(&snapshots.join(DRAFTER_REVISION));
-        assert_eq!(
-            locate_drafter(None, &model, &[root.join("missing"), hub]),
-            Some(snapshots.join(DRAFTER_REVISION))
+            locate_drafter(
+                None,
+                &model,
+                Some(&ADMITTED_DRAFTERS[1]),
+                std::slice::from_ref(&hub)
+            ),
+            Some(
+                hub.join(ADMITTED_DRAFTERS[1].hf_entry())
+                    .join("snapshots")
+                    .join(ADMITTED_DRAFTERS[1].revision)
+            )
         );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn only_the_qwen38_27b_source_model_matches_the_drafter() {
+    fn only_the_trained_source_model_selects_a_drafter() {
         let root = scratch_dir("target");
         let write = |dir: &std::path::Path, name: &str, text: &str| {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join(name), text).unwrap();
         };
         let manifest = |id: &str| format!(r#"{{"source_model": {{"model_id": "{id}"}}}}"#);
+        let repo = |dir: &std::path::Path| admitted_drafter_for(dir).map(|drafter| drafter.repo);
         let a = root.join("a");
         write(&a, "axquant_manifest.json", &manifest("Qwen/Qwen3.8-27B"));
-        assert!(target_is_qwen38_27b(&a));
+        assert_eq!(repo(&a), Some("z-lab/Qwen3.8-27B-DFlash2"));
+        let moe = root.join("moe");
+        write(
+            &moe,
+            "axquant_manifest.json",
+            &manifest("Qwen/Qwen3.6-35B-A3B"),
+        );
+        assert_eq!(repo(&moe), Some("incoai/Qwen3.6-35B-A3B-DFlash2"));
         // Same shapes, different weights: Qwen 3.6 27B and a 3.8 fine-tune.
         let b = root.join("b");
         write(&b, "axquant_manifest.json", &manifest("Qwen/Qwen3.6-27B"));
-        assert!(!target_is_qwen38_27b(&b));
+        assert_eq!(repo(&b), None);
         let c = root.join("c");
         write(
             &c,
             "axquant_manifest.json",
             &manifest("ukisai/Swift-1.5-Qwen3.8-27b"),
         );
-        assert!(!target_is_qwen38_27b(&c));
+        assert_eq!(repo(&c), None);
         // A manifest that names another source wins over a matching config.
         write(
             &b,
             "config.json",
             r#"{"_name_or_path": "Qwen/Qwen3.8-27B"}"#,
         );
-        assert!(!target_is_qwen38_27b(&b));
-        // Without a manifest the config's name decides; without either, no.
+        assert_eq!(repo(&b), None);
+        // Without a manifest the config's name decides; without either, none.
         let d = root.join("d");
         write(
             &d,
             "config.json",
             r#"{"_name_or_path": "mlx-community/Qwen3.8-27B"}"#,
         );
-        assert!(target_is_qwen38_27b(&d));
+        assert_eq!(repo(&d), Some("z-lab/Qwen3.8-27B-DFlash2"));
         let e = root.join("e");
         std::fs::create_dir_all(&e).unwrap();
-        assert!(!target_is_qwen38_27b(&e));
+        assert_eq!(repo(&e), None);
         // A fine-tune whose name only ends with the base name does not match.
         let f = root.join("f");
         write(
@@ -2328,14 +2431,14 @@ mod tests {
             "config.json",
             r#"{"_name_or_path": "ukisai/Swift-1.5-Qwen3.8-27b"}"#,
         );
-        assert!(!target_is_qwen38_27b(&f));
+        assert_eq!(repo(&f), None);
         let g = root.join("g");
         write(
             &g,
             "config.json",
-            r#"{"_name_or_path": "/models/Qwen3.8-27B/"}"#,
+            r#"{"_name_or_path": "/models/Qwen3.6-35B-A3B/"}"#,
         );
-        assert!(target_is_qwen38_27b(&g));
+        assert_eq!(repo(&g), Some("incoai/Qwen3.6-35B-A3B-DFlash2"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

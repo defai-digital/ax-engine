@@ -26,7 +26,7 @@ use std::time::Instant;
 use mlx_sys::{MlxArray, MlxDtype, argmax, astype, concatenate, contiguous, reshape, slice};
 
 use super::*;
-use crate::dflash2::{Dflash2Drafter, Dflash2Weights};
+use crate::dflash2::{Dflash2Drafter, Dflash2Weights, HandoffCosts};
 use crate::model::layer_capture;
 
 /// RAM-only, detached BF16 prompt tail. Never retains a live model or MLX graph.
@@ -137,6 +137,11 @@ pub(super) struct Dflash2RequestState {
     /// The captured rows stopped matching the cache; this request decodes normally.
     disabled: bool,
     window_stats: WindowStats,
+    /// Consecutive rounds after which the handoff target looked faster.
+    handoff_votes: u32,
+    /// Where the request went when it left DFlash2.
+    handed_off: Option<HandoffTarget>,
+    mtp_gap: MtpGap,
     pub(super) rounds: u32,
     pub(super) drafted: u32,
     pub(super) accepted: u32,
@@ -158,6 +163,9 @@ impl Dflash2RequestState {
             started: false,
             disabled: false,
             window_stats: WindowStats::new(),
+            handoff_votes: 0,
+            handed_off: None,
+            mtp_gap: MtpGap::default(),
             rounds: 0,
             drafted: 0,
             accepted: 0,
@@ -165,6 +173,13 @@ impl Dflash2RequestState {
             tree_accepted_length: 0,
             tree_branch_chosen: 0,
         }
+    }
+
+    /// The request left DFlash2 for plain decode: it should take the direct
+    /// double buffer, not the n-gram route, which finds no drafts here and
+    /// costs more per token than direct decode.
+    pub(super) fn handed_off_to_direct(&self) -> bool {
+        self.handed_off == Some(HandoffTarget::Direct)
     }
 
     /// Test setup: hidden rows the next linear verify round will draft from.
@@ -183,6 +198,9 @@ impl Dflash2RequestState {
         self.started = false;
         self.disabled = false;
         self.window_stats = WindowStats::new();
+        self.handoff_votes = 0;
+        self.handed_off = None;
+        self.mtp_gap = MtpGap::default();
         self.tree_nodes_verified = 0;
         self.tree_accepted_length = 0;
         self.tree_branch_chosen = 0;
@@ -298,12 +316,13 @@ impl WindowStats {
     }
 
     /// The window in `MIN_WINDOW..=max_window` with the best expected tokens
-    /// per millisecond; the smaller window wins a tie.
-    fn best_window(&self, max_window: usize) -> usize {
+    /// per millisecond under `cost` (ms per round by window); the smaller
+    /// window wins a tie.
+    fn best_window(&self, max_window: usize, cost: impl Fn(usize) -> f64) -> usize {
         let mut best = MIN_WINDOW.min(max_window);
         let mut best_rate = 0.0;
         for window in MIN_WINDOW.min(max_window)..=max_window {
-            let rate = self.expected_tokens(window) / round_cost_ms(window);
+            let rate = self.expected_tokens(window) / cost(window);
             if rate > best_rate * 1.005 {
                 best = window;
                 best_rate = rate;
@@ -311,6 +330,138 @@ impl WindowStats {
         }
         best
     }
+}
+
+/// Rounds a request runs before it may leave DFlash2: the acceptance estimate
+/// starts at `PRIOR_RATE`.
+const HANDOFF_WARMUP_ROUNDS: u32 = 6;
+/// How much faster the alternative route must look, on consecutive rounds,
+/// before the request leaves DFlash2. Leaving is final for the request.
+const HANDOFF_MARGIN: f64 = 1.05;
+const HANDOFF_VOTES: u32 = 3;
+/// Rows of one MTP step at depth three: the anchor and three drafts.
+const MTP_VERIFY_ROWS: usize = 4;
+/// Share of a wide round that each row it drops at most saves. Measured: 6.2%
+/// (35B-A3B, M5 Max), 8.2% (35B-A3B, M4 Pro), 8.4% (27B, M5 Max).
+const MAX_ROW_SAVING: f64 = 0.05;
+
+/// The route a request takes after it leaves DFlash2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HandoffTarget {
+    /// The session's model MTP head runs the next steps.
+    Mtp,
+    /// No MTP for this request: the session's other routes (direct decode, or
+    /// n-gram drafts when they find any).
+    Direct,
+}
+
+impl HandoffTarget {
+    /// Telemetry code: 1 for MTP, 2 for direct.
+    pub(super) fn code(self) -> u32 {
+        match self {
+            Self::Mtp => 1,
+            Self::Direct => 2,
+        }
+    }
+}
+
+/// Cost of a round that verifies `window` rows relative to a four-row round,
+/// for the handoff. Up to four rows cost the same; past four, each row a round
+/// drops saves at most [`MAX_ROW_SAVING`] of the wider round, so wide rounds
+/// are priced no higher than on any measured chip or model and code that keeps
+/// its wide windows stays on DFlash2.
+fn relative_round_cost(window: usize) -> f64 {
+    let extra = window.saturating_sub(MTP_VERIFY_ROWS) as f64;
+    1.0 / (1.0 - MAX_ROW_SAVING * extra).max(0.2)
+}
+
+/// Counts one round's vote and reports whether a request that has run
+/// `rounds` rounds, the last verifying `window` rows, should leave DFlash2 for
+/// `target`, whose step costs `costs` gives. The decision reads only the
+/// request's acceptance and the target's fixed cost ratios, never wall time: a
+/// greedy request takes the same routes, and so produces the same tokens, on
+/// every run. MTP is credited with DFlash2's own per-position acceptance,
+/// which it matched or beat in every measured workload, so the estimate errs
+/// towards staying.
+fn handoff_due(
+    stats: &WindowStats,
+    votes: &mut u32,
+    rounds: u32,
+    window: usize,
+    target: HandoffTarget,
+    costs: HandoffCosts,
+) -> bool {
+    if rounds < HANDOFF_WARMUP_ROUNDS {
+        return false;
+    }
+    let dflash2 = stats.expected_tokens(window) / relative_round_cost(window);
+    let alternative = match target {
+        HandoffTarget::Mtp => stats.expected_tokens(MTP_VERIFY_ROWS) / costs.mtp_step,
+        HandoffTarget::Direct => 1.0 / costs.direct_step,
+    };
+    if alternative > dflash2 * HANDOFF_MARGIN {
+        *votes += 1;
+    } else {
+        *votes = 0;
+    }
+    *votes >= HANDOFF_VOTES
+}
+
+/// Most committed rows kept for the MTP head, as for the prefill warmup
+/// (`mtp_warmup_cap`): the head's one attention layer gains little beyond.
+const MTP_GAP_CAP_ROWS: usize = 256;
+
+/// Committed rows the MTP head has not seen: the post-norm target hidden of
+/// each committed position and the token that followed it. When MTP takes
+/// over, [`MlxRunner::sync_mtp_after_dflash2`] appends them to the head cache
+/// the prefill warmed, so the head resumes with its history instead of cold.
+#[derive(Default)]
+pub(super) struct MtpGap {
+    /// Absolute position of the first kept row.
+    start: usize,
+    rows: usize,
+    /// Per round: `[1, n, hidden]` evaluated rows and their `n` next tokens.
+    rounds: std::collections::VecDeque<(MlxArray, Vec<u32>)>,
+    /// Rows were lost (the cap, or a round without post-norm rows): rebuild
+    /// the head cache from the kept rows instead of appending to it.
+    broken: bool,
+}
+
+impl MtpGap {
+    fn push(&mut self, position: usize, hidden: MlxArray, tokens: Vec<u32>) {
+        if self.rows == 0 {
+            self.start = position;
+        } else if self.start + self.rows != position {
+            self.mark_broken();
+            self.start = position;
+        }
+        self.rows += tokens.len();
+        self.rounds.push_back((hidden, tokens));
+        while self.rows > MTP_GAP_CAP_ROWS && self.rounds.len() > 1 {
+            if let Some((_, dropped)) = self.rounds.pop_front() {
+                self.rows -= dropped.len();
+                self.start += dropped.len();
+                self.broken = true;
+            }
+        }
+    }
+
+    /// Rows committed without post-norm hidden (the tree verify path).
+    fn mark_broken(&mut self) {
+        self.rounds.clear();
+        self.rows = 0;
+        self.broken = true;
+    }
+
+    fn is_clean(&self) -> bool {
+        self.rows == 0 && !self.broken
+    }
+}
+
+/// A committed round moves past the MTP head's pending draft and skip state.
+/// The head's KV cache is kept: the round's rows wait in [`MtpGap`].
+fn clear_mtp_proposal_after_dflash2_round(state: &mut RequestState) {
+    clear_pending_mtp_proposal(state);
 }
 
 /// Logs why a step left the DFlash2 route and hands the step to the generic
@@ -733,10 +884,9 @@ impl MlxRunner {
         // How many rows to verify: pinned, or the policy's pick for this request.
         let window = match crate::fastpath::dflash2_window_override() {
             Some(rows) => pinned_window(rows, block),
-            None => state
-                .dflash2
-                .as_ref()
-                .map_or(block, |dflash| dflash.window_stats.best_window(block)),
+            None => state.dflash2.as_ref().map_or(block, |dflash| {
+                dflash.window_stats.best_window(block, round_cost_ms)
+            }),
         };
         let verify_len = window;
 
@@ -790,7 +940,10 @@ impl MlxRunner {
                 options,
                 draft_wall_us,
             ) {
-                Ok(Some(tokens)) => return Some(tokens),
+                Ok(Some(tokens)) => {
+                    self.finish_dflash2_round(state, window);
+                    return Some(tokens);
+                }
                 Ok(None) => {}
                 // Logged once at the eval site. Request KV was not written.
                 // The drafter cursor and pending hidden go back to the pre-round
@@ -812,8 +965,10 @@ impl MlxRunner {
         let clone_wall_us = elapsed_us(clone_started);
 
         let verify_started = Instant::now();
+        // The MTP head can only take over warm if it gets these rows.
+        let keep_post_norm = self.dflash2_handoff_target() == HandoffTarget::Mtp;
         let capture = layer_capture::capture_layers(&cfg.target_layer_ids);
-        let (logits_all, _post_norm) = crate::model::forward_all_positions_with_post_norm_ids(
+        let (logits_all, post_norm) = crate::model::forward_all_positions_with_post_norm_ids(
             &self.cfg,
             &self.weights,
             &ids_1d,
@@ -851,7 +1006,14 @@ impl MlxRunner {
         if let Some(error) = crate::dflash2::take_dflash2_capture_verify_eval_error() {
             return fail_linear_verify_fence(state, error);
         }
-        if let Err(error) = mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr]) {
+        // The logits come from `post_norm`, so evaluating it costs nothing and
+        // keeps no part of the verify graph alive.
+        let eval_result = if keep_post_norm {
+            mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr, &post_norm])
+        } else {
+            mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr])
+        };
+        if let Err(error) = eval_result {
             return fail_linear_verify_fence(state, error);
         }
         let verify_wall_us = elapsed_us(verify_started);
@@ -948,6 +1110,20 @@ impl MlxRunner {
         );
         let committed_drafts = committed_draft_count(accepted, keep);
         if let Some(dflash) = state.dflash2.as_mut() {
+            // Row `j` processed `ids[j]`; the token after it is `emitted[j]`.
+            let rows = keep.min(emitted.len());
+            if keep_post_norm && rows > 0 {
+                let hidden = slice(
+                    &post_norm,
+                    &[0, 0, 0],
+                    &[1, rows as i32, self.cfg.hidden_size as i32],
+                    &[1, 1, 1],
+                    None,
+                );
+                dflash
+                    .mtp_gap
+                    .push(token_offset, hidden, emitted[..rows].to_vec());
+            }
             dflash.pending_hidden = Some(committed_hidden);
             dflash.captured_rows = token_offset + keep;
             dflash.rounds += 1;
@@ -973,11 +1149,129 @@ impl MlxRunner {
         });
         // The budget and terminal cuts already happened. This latches the
         // last emitted token for the next step.
-        Some(apply_decode_result(
-            state,
-            &emitted,
-            options.terminal_token_ids,
-        ))
+        let tokens = apply_decode_result(state, &emitted, options.terminal_token_ids);
+        self.finish_dflash2_round(state, window);
+        Some(tokens)
+    }
+
+    /// Brings the MTP head up to date before a non-DFlash2 step: appends the
+    /// rows DFlash2 committed to the head cache (positions continue from the
+    /// prefill warmup), or rebuilds the cache from the kept rows when rows were
+    /// lost or the positions do not line up. Cheap when nothing is pending.
+    pub(super) fn sync_mtp_after_dflash2(&self, state: &mut RequestState) {
+        let Some(dflash) = state.dflash2.as_mut() else {
+            return;
+        };
+        if dflash.mtp_gap.is_clean() {
+            return;
+        }
+        let gap = std::mem::take(&mut dflash.mtp_gap);
+        clear_pending_mtp_proposal(state);
+        let Some(head) = self.weights.mtp.as_ref().filter(|_| gap.rows > 0) else {
+            state.mtp_cache = None;
+            state.mtp_decode_count = 0;
+            return;
+        };
+        let parts: Vec<&MlxArray> = gap.rounds.iter().map(|(hidden, _)| hidden).collect();
+        let hidden = concatenate(&parts, 1, None);
+        let tokens: Vec<u32> = gap
+            .rounds
+            .iter()
+            .flat_map(|(_, tokens)| tokens.iter().copied())
+            .collect();
+        // An entry's index plus the cache's RoPE base is its absolute position,
+        // so the committed prefix ends where the gap starts. That also drops
+        // draft entries the head chained before DFlash2 took over.
+        let appended = !gap.broken
+            && state.mtp_cache.as_mut().is_some_and(|cache| {
+                gap.start
+                    .checked_sub(cache.rope_offset)
+                    .is_some_and(|retain| {
+                        crate::mtp::mtp_refold_accepted_cache_kv_batched(
+                            head,
+                            &hidden,
+                            &tokens,
+                            &self.weights,
+                            cache,
+                            &self.cfg,
+                            retain,
+                        )
+                    })
+            });
+        if !appended {
+            let mut cache = MlxKVCache::new(1);
+            crate::mtp::mtp_warmup_cache_kv_batched(
+                head,
+                &hidden,
+                &tokens,
+                &self.weights,
+                &mut cache,
+                &self.cfg,
+                gap.start,
+            );
+            cache.rope_offset = gap.start;
+            state.mtp_cache = Some(cache);
+        }
+        if let Some(cache) = state.mtp_cache.as_ref() {
+            let refs = cache.collect_eval_refs();
+            if mlx_sys::try_eval(&refs).is_err() {
+                state.mtp_cache = None;
+                state.mtp_decode_count = 0;
+                return;
+            }
+            state.mtp_decode_count = cache.seq_len();
+        }
+    }
+
+    /// The route a request would take if it left DFlash2.
+    fn dflash2_handoff_target(&self) -> HandoffTarget {
+        if self.mtp_requested && self.has_generic_mtp() {
+            HandoffTarget::Mtp
+        } else {
+            HandoffTarget::Direct
+        }
+    }
+
+    /// Books a committed round: clears the MTP head's stale proposal and hands
+    /// the request to MTP or direct decode once DFlash2 stops paying for
+    /// itself. Only admitted drafters whose target has measured handoff costs
+    /// hand off (`AX_MLX_DFLASH2_HANDOFF=0` keeps every request on DFlash2).
+    fn finish_dflash2_round(&self, state: &mut RequestState, window: usize) {
+        clear_mtp_proposal_after_dflash2_round(state);
+        let target = self.dflash2_handoff_target();
+        let costs = self
+            .dflash2
+            .as_ref()
+            .and_then(|weights| weights.admitted())
+            .and_then(|drafter| drafter.handoff);
+        let Some(dflash) = state.dflash2.as_mut() else {
+            return;
+        };
+        let Some(costs) = costs.filter(|_| crate::fastpath::dflash2_handoff_enabled()) else {
+            return;
+        };
+        if !handoff_due(
+            &dflash.window_stats,
+            &mut dflash.handoff_votes,
+            dflash.rounds,
+            window,
+            target,
+            costs,
+        ) {
+            return;
+        }
+        dflash.disabled = true;
+        dflash.handed_off = Some(target);
+        let round = dflash.rounds;
+        tracing::debug!(
+            target: "ax_engine_mlx::dflash2",
+            round,
+            ?target,
+            "DFlash2 hands the request off"
+        );
+        state
+            .mtp_telemetry
+            .record_dflash2_handoff(round, target.code());
     }
 
     /// Rebuilds every linear-attention layer's state for the first `keep` rows of
@@ -1105,6 +1399,8 @@ impl MlxRunner {
         let verify_wall_us = elapsed_us(verify_started);
         state.cache = decision.state;
         if let Some(dflash) = state.dflash2.as_mut() {
+            // Tree verify keeps no post-norm rows for the MTP head.
+            dflash.mtp_gap.mark_broken();
             dflash.pending_hidden = Some(hidden);
             dflash.captured_rows = token_offset + 1 + decision.cache_draft_rows;
             dflash.rounds = dflash.rounds.saturating_add(1);
@@ -1482,26 +1778,169 @@ mod tests {
         for _ in 0..12 {
             code.record(7, 7);
         }
-        assert_eq!(code.best_window(8), 8);
+        assert_eq!(code.best_window(8, round_cost_ms), 8);
         // Drafts that are always wrong shrink it to the four rows a round costs
         // the same as three.
         let mut noise = WindowStats::new();
         for _ in 0..12 {
             noise.record(3, 0);
         }
-        assert!(noise.best_window(8) <= 4, "{}", noise.best_window(8));
+        assert!(
+            noise.best_window(8, round_cost_ms) <= 4,
+            "{}",
+            noise.best_window(8, round_cost_ms)
+        );
         // Prose-like acceptance (one or two drafts per round) stays narrow.
         let mut prose = WindowStats::new();
         for round in 0..40 {
-            prose.record(prose.best_window(8) - 1, 1 + round % 2);
+            prose.record(prose.best_window(8, round_cost_ms) - 1, 1 + round % 2);
         }
-        assert!(prose.best_window(8) <= 5, "{}", prose.best_window(8));
+        assert!(
+            prose.best_window(8, round_cost_ms) <= 5,
+            "{}",
+            prose.best_window(8, round_cost_ms)
+        );
         // A request that turns into code widens again.
         for _ in 0..40 {
-            let window = prose.best_window(8);
+            let window = prose.best_window(8, round_cost_ms);
             prose.record(window - 1, window - 1);
         }
-        assert_eq!(prose.best_window(8), 8);
+        assert_eq!(prose.best_window(8, round_cost_ms), 8);
+    }
+
+    fn gap_rows(n: usize) -> MlxArray {
+        let data = vec![0.0f32; n * 2];
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            data.len() * 4,
+            &[1, n as i32, 2],
+            MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn mtp_gap_keeps_contiguous_rows_and_marks_losses() {
+        let mut gap = MtpGap::default();
+        assert!(gap.is_clean());
+        gap.push(100, gap_rows(3), vec![1, 2, 3]);
+        gap.push(103, gap_rows(2), vec![4, 5]);
+        assert_eq!((gap.start, gap.rows, gap.broken), (100, 5, false));
+        // A round that does not continue the last one restarts the gap.
+        gap.push(200, gap_rows(1), vec![6]);
+        assert_eq!((gap.start, gap.rows, gap.broken), (200, 1, true));
+        // Past the cap the oldest rounds go, and the head must be rebuilt.
+        let mut long = MtpGap::default();
+        let mut position = 0;
+        while position < MTP_GAP_CAP_ROWS + 16 {
+            long.push(position, gap_rows(8), vec![0; 8]);
+            position += 8;
+        }
+        assert!(long.rows <= MTP_GAP_CAP_ROWS);
+        assert_eq!(long.start + long.rows, position);
+        assert!(long.broken);
+        // The tree path commits rows the gap cannot hold.
+        let mut tree = MtpGap::default();
+        tree.push(0, gap_rows(2), vec![1, 2]);
+        tree.mark_broken();
+        assert!(!tree.is_clean());
+        assert_eq!(tree.rows, 0);
+    }
+
+    #[test]
+    fn wide_rounds_are_priced_no_higher_than_measured() {
+        assert_eq!(relative_round_cost(3), 1.0);
+        assert_eq!(relative_round_cost(4), 1.0);
+        // Eight rows: 1.25 against 1.33 (35B-A3B, M5 Max) and 1.49 (M4 Pro).
+        assert!((relative_round_cost(8) - 1.25).abs() < 1e-12);
+        assert!(relative_round_cost(16).is_finite());
+    }
+
+    /// The admitted Qwen 3.6 35B-A3B handoff costs.
+    const MOE_COSTS: HandoffCosts = HandoffCosts {
+        mtp_step: 0.82,
+        direct_step: 0.47,
+    };
+
+    #[test]
+    fn only_targets_with_measured_costs_hand_off() {
+        let costs: Vec<_> = crate::dflash2::ADMITTED_DRAFTERS
+            .iter()
+            .map(|drafter| drafter.handoff)
+            .collect();
+        // Qwen 3.8 27B (dense) stays on DFlash2; Qwen 3.6 35B-A3B hands off.
+        assert_eq!(costs, vec![None, Some(MOE_COSTS)]);
+    }
+
+    /// Rounds that each verify `window` rows and accept `accepted(round)` drafts.
+    fn run_pattern(
+        rounds: u32,
+        window: usize,
+        target: HandoffTarget,
+        accepted: impl Fn(u32) -> usize,
+    ) -> Option<u32> {
+        let mut stats = WindowStats::new();
+        let mut votes = 0;
+        for round in 1..=rounds {
+            stats.record(window - 1, accepted(round));
+            if handoff_due(&stats, &mut votes, round, window, target, MOE_COSTS) {
+                return Some(round);
+            }
+        }
+        None
+    }
+
+    fn run_rounds(
+        rounds: u32,
+        window: usize,
+        accepted: usize,
+        target: HandoffTarget,
+    ) -> Option<u32> {
+        run_pattern(rounds, window, target, |_| accepted)
+    }
+
+    #[test]
+    fn code_with_scattered_rejections_stays_on_dflash2() {
+        // The M5 Max regression: an eight-row code request (220 of 250 drafts
+        // accepted) whose clustered partial rounds handed it to MTP and cost
+        // 26%. Rejections every few rounds, two in a row, must not.
+        let pattern = |round: u32| match round % 6 {
+            2 => 2,
+            3 => 3,
+            _ => 7,
+        };
+        assert_eq!(run_pattern(60, 8, HandoffTarget::Mtp, pattern), None);
+        assert_eq!(run_pattern(60, 8, HandoffTarget::Direct, pattern), None);
+    }
+
+    #[test]
+    fn code_with_full_acceptance_stays_on_dflash2() {
+        // Eight rows, all accepted, at 1.25 four-row rounds: 6.4 tokens per
+        // unit against MTP's 4.9 and direct's 2.1.
+        assert_eq!(run_rounds(40, 8, 7, HandoffTarget::Mtp), None);
+        assert_eq!(run_rounds(40, 8, 7, HandoffTarget::Direct), None);
+    }
+
+    #[test]
+    fn low_acceptance_hands_off_to_mtp_after_warm_up() {
+        // Four rows, one draft accepted per round: MTP verifies the same rows
+        // for less, so it wins, but only after the warm-up and three votes.
+        let round = run_rounds(40, 4, 1, HandoffTarget::Mtp).expect("hands off");
+        assert!(round > HANDOFF_WARMUP_ROUNDS, "{round}");
+        assert!(
+            round <= HANDOFF_WARMUP_ROUNDS + HANDOFF_VOTES + 2,
+            "{round}"
+        );
+    }
+
+    #[test]
+    fn direct_decode_wins_only_when_dflash2_falls_below_it() {
+        // Direct decode yields 1 / 0.47 = 2.1 tokens per four-row round. Two
+        // drafts per round (about 3) stay on DFlash2, and so does one (about
+        // 2.1, inside the margin)...
+        assert_eq!(run_rounds(40, 4, 2, HandoffTarget::Direct), None);
+        assert_eq!(run_rounds(40, 4, 1, HandoffTarget::Direct), None);
+        // ...a round that commits only the anchor does not.
+        assert!(run_rounds(40, 4, 0, HandoffTarget::Direct).is_some());
     }
 
     #[test]
@@ -1515,13 +1954,13 @@ mod tests {
         let rates = stats.rates();
         assert!(rates[2] > 0.9);
         assert!((rates[5] - rates[2]).abs() < 1e-9);
-        assert_eq!(stats.best_window(8), 8);
+        assert_eq!(stats.best_window(8, round_cost_ms), 8);
         // Mostly rejected drafts do not extrapolate into a wide window.
         let mut weak = WindowStats::new();
         for _ in 0..6 {
             weak.record(3, 1);
         }
-        assert!(weak.best_window(8) <= 4);
+        assert!(weak.best_window(8, round_cost_ms) <= 4);
     }
 
     #[test]

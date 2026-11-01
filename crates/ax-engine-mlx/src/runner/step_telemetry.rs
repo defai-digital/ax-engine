@@ -57,6 +57,10 @@ pub(super) struct MtpTelemetry {
     pub(super) full_accept_steps: u32,
     pub(super) partial_reject_steps: u32,
     pub(super) complete_miss_steps: u32,
+    /// DFlash2 round after which the request handed off (0: it never did) and
+    /// the route it took (1 MTP, 2 direct).
+    pub(super) dflash2_handoff_round: u32,
+    pub(super) dflash2_handoff_target: u32,
     /// Cycle-level acceptance: accepted_cycles counts MTP verify cycles where
     /// ALL draft tokens were accepted; rejected_cycles counts cycles with any
     /// rejection.  Matches Lightning-MLX's `mtp_acceptance_ratio` metric
@@ -491,6 +495,11 @@ impl MtpTelemetry {
             .saturating_add(saturating_u32(accepted));
     }
 
+    pub(super) fn record_dflash2_handoff(&mut self, round: u32, target: u32) {
+        self.dflash2_handoff_round = round;
+        self.dflash2_handoff_target = target;
+    }
+
     pub(super) fn record_timings(&mut self, timings: MtpStepTimings) {
         self.cache_clone_wall_us = self
             .cache_clone_wall_us
@@ -639,6 +648,10 @@ impl MtpTelemetry {
         self.complete_miss_steps = self
             .complete_miss_steps
             .saturating_add(other.complete_miss_steps);
+        self.dflash2_handoff_round = self.dflash2_handoff_round.max(other.dflash2_handoff_round);
+        self.dflash2_handoff_target = self
+            .dflash2_handoff_target
+            .max(other.dflash2_handoff_target);
         self.accepted_cycles = self.accepted_cycles.saturating_add(other.accepted_cycles);
         self.rejected_cycles = self.rejected_cycles.saturating_add(other.rejected_cycles);
         self.cache_clone_wall_us = self
@@ -973,6 +986,8 @@ impl MtpTelemetry {
             ("ax_mtp_full_accept_steps", self.full_accept_steps),
             ("ax_mtp_partial_reject_steps", self.partial_reject_steps),
             ("ax_mtp_complete_miss_steps", self.complete_miss_steps),
+            ("ax_mtp_dflash2_handoff_round", self.dflash2_handoff_round),
+            ("ax_mtp_dflash2_handoff_target", self.dflash2_handoff_target),
             ("ax_mtp_accepted_cycles", self.accepted_cycles),
             ("ax_mtp_rejected_cycles", self.rejected_cycles),
             ("ax_mtp_cache_clone_wall_us", self.cache_clone_wall_us),

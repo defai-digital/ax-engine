@@ -575,9 +575,12 @@ docs/MLX-BACKEND.md  (this file)
 
 ### DFlash2 artifact selection
 
-Automatic discovery of `z-lab/Qwen3.8-27B-DFlash2` uses revision
-`50307d4c4cde6860d4eee73e2547cd786fe8e8a4` and verifies the pinned configuration
-and weights SHA-256 digests. Cache directory modification times do not select
+Automatic discovery admits one drafter per target, chosen by the pack's
+recorded source model: `z-lab/Qwen3.8-27B-DFlash2` at revision
+`50307d4c4cde6860d4eee73e2547cd786fe8e8a4` for `Qwen/Qwen3.8-27B`, and
+`incoai/Qwen3.6-35B-A3B-DFlash2` at revision
+`51ef7b6923ad6c14cb1bb41c37a9041446496ab6` for `Qwen/Qwen3.6-35B-A3B`. Each
+is verified against its pinned configuration and weights SHA-256 digests. Cache directory modification times do not select
 a drafter. Bundled automatic discovery requires the same content pin. An explicit
 drafter directory remains an operator override; its actual digests and precision
 are reported in `drafter_identity`. A missing or mismatched automatic artifact

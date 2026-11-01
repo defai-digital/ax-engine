@@ -164,6 +164,24 @@ prefix is restored from the prefix cache decodes on the normal routes; only a
 request that prefills its prompt itself uses it. Sampled requests, requests with
 logits processors or a grammar, image input and other models use the normal routes.
 
+The Qwen 3.6 35B-A3B target (recorded source model `Qwen/Qwen3.6-35B-A3B`) uses
+the same path with the Apache-2.0 `incoai/Qwen3.6-35B-A3B-DFlash2` checkpoint
+(about 1.05 GB in bf16; six layers conditioned on target layers 1, 6, 11, 16, 22,
+27, 32 and 37), found the same way. On this MoE target every extra verify row
+activates more experts, so DFlash2 wins on code but can lose on prose. Each
+request therefore starts on DFlash2 and, after six rounds, hands off for the rest
+of the request to MTP (when the session runs MTP) or to direct decode once that
+route is predicted to be more than 5% faster on three consecutive rounds. The
+prediction uses only the acceptance counts and fixed per-target cost ratios,
+never wall time, so a greedy request takes the same route and produces the same
+tokens on every run. The MTP head cache is kept warm through the DFlash2 rounds,
+so a handoff does not restart MTP cold. `AX_MLX_DFLASH2_HANDOFF=0` keeps every
+request on DFlash2. The 27B target does not hand off. On an M5 Max 128 GB with
+the 6-bit pack (17 real prompts, 256 tokens, greedy) it decodes 1.13x faster than
+MTP over the suite (code +22% to +34%, worst prompt 0.92x) and 1.98x faster than
+direct decode; on a Mac mini M4 Pro 64 GB it matches MTP (0.99x, worst 0.90x) and
+is 1.59x faster than direct decode.
+
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context
 length, draft log-probs when the draft path computed them, timestamp). It adds
