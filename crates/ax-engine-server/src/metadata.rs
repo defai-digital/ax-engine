@@ -322,22 +322,24 @@ fn ax_engine_model_metadata(
 
 fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool {
     let family = model_family_from_artifacts(live);
+    let template = chat::resolve_chat_template(live.model_id.as_ref(), family.as_deref());
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         // DiffusionGemma renders with the Gemma 4 template but never prefills
         // a thought channel, so it must not advertise reasoning.
         && !chat::is_diffusion_gemma(live.model_id.as_ref())
         && family.as_deref() != Some("diffusion_gemma")
-        && (chat::is_qwen_thinking_model(live.model_id.as_ref())
-            || chat::is_deepseek_model(live.model_id.as_ref())
-            // Hybrid-thinking Qwen families keep the contract under any id.
-            || matches!(family.as_deref(), Some("qwen3_5" | "qwen4_exp"))
+        && match template {
+            ChatPromptTemplate::QwenChatMl => {
+                chat::is_qwen_thinking_model(live.model_id.as_ref())
+                    // Hybrid-thinking Qwen families keep the contract under any id.
+                    || matches!(family.as_deref(), Some("qwen3_5" | "qwen4_exp"))
+            }
+            ChatPromptTemplate::Gemma4 | ChatPromptTemplate::DeepSeekChat => true,
             // MiniMax M3 and Muse ATEM render a thinking switch too, but no
             // response path splits `</mm:think>` or `to=self` reasoning yet.
-            || matches!(
-                chat::resolve_chat_template(live.model_id.as_ref(), family.as_deref()),
-                ChatPromptTemplate::Gemma4
-            ))
+            _ => false,
+        }
 }
 
 pub(crate) fn model_supports_reasoning(live: &LiveState) -> bool {

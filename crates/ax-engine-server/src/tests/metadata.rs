@@ -127,12 +127,17 @@ async fn models_advertises_reasoning_for_openclaw_qwen_thinking_variants() {
 #[tokio::test]
 async fn models_use_loaded_family_without_a_persisted_manifest() {
     let dir = minimal_tokenizer_artifact("runtime-family-metadata");
-    for (family, reasoning, text) in [
-        ("qwen4_exp", true, true),
-        ("qwen3_5", true, true),
-        ("embeddinggemma", false, false),
+    for (family, model_id, reasoning, text) in [
+        ("qwen4_exp", "local-model", true, true),
+        ("qwen3_5", "local-model", true, true),
+        ("deepseek_v3", "local-model", true, true),
+        ("deepseek_v32", "local-model", true, true),
+        ("deepseek_v4", "local-model", true, true),
+        ("llama3", "deepseek-v4", false, true),
+        ("llama3", "qwen3.5", false, true),
+        ("embeddinggemma", "local-model", false, false),
     ] {
-        let state = native_mlx_openai_builder_state("local-model", &dir);
+        let state = native_mlx_openai_builder_state(model_id, &dir);
         let mut live = state.snapshot();
         live.runtime_report.mlx_model = Some(
             serde_json::from_value(json!({
@@ -143,6 +148,29 @@ async fn models_use_loaded_family_without_a_persisted_manifest() {
             .expect("runtime report"),
         );
         state.swap_live(live);
+        if family.starts_with("deepseek") || family == "llama3" {
+            let request = serde_json::from_value(json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 8,
+                "thinking": {"type": "enabled"},
+            }))
+            .expect("thinking request");
+            let built =
+                crate::openai::requests::build_openai_chat_request(&state.snapshot(), request);
+            if reasoning {
+                assert!(
+                    built
+                        .expect("DeepSeek alias accepts thinking")
+                        .response_options
+                        .include_reasoning
+                );
+            } else {
+                let (status, error) = built.err().expect("Llama cannot enable native reasoning");
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                assert_eq!(error.0.error.code.as_deref(), Some("unsupported_parameter"));
+            }
+        }
         let app = build_router(state);
         let (status, response) = json_response(
             &app,
