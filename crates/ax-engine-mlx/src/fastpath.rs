@@ -1707,13 +1707,25 @@ env_flag_default_on!(
 
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2` - DFlash2 block speculation for greedy text requests on
-    /// the Qwen 3.8 27B target whenever a drafter checkpoint can be found
+    /// a target with an admitted drafter (Qwen 3.8 27B, Qwen 3.6 35B-A3B)
+    /// whenever a drafter checkpoint can be found
     /// (ADR-045). `--mlx-mtp-policy disabled`, the direct baseline switches and
     /// a missing drafter keep it off too.
     ///
     /// **Default: ON** (kill-switch via `AX_MLX_DFLASH2=0`).
     dflash2_enabled,
     "AX_MLX_DFLASH2"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_HANDOFF` - lets a DFlash2 request hand off to the
+    /// session's MTP head, or to direct decode when MTP is off, once its
+    /// measured throughput falls below the estimate for that route (low
+    /// acceptance, e.g. prose). The handoff is final for the request.
+    ///
+    /// **Default: ON** (`AX_MLX_DFLASH2_HANDOFF=0` keeps requests on DFlash2).
+    dflash2_handoff_enabled,
+    "AX_MLX_DFLASH2_HANDOFF"
 );
 
 /// Hugging Face hub cache roots to search for the DFlash2 drafter, in priority
