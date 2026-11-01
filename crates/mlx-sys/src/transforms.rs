@@ -107,6 +107,22 @@ pub fn async_eval(arrays: &[&MlxArray]) {
     }
 }
 
+/// Enqueue computation without blocking, surfacing MLX errors raised while
+/// the graph is scheduled as `Err` instead of panicking.
+pub fn try_async_eval(arrays: &[&MlxArray]) -> Result<(), String> {
+    if arrays.is_empty() {
+        return Ok(());
+    }
+    prepare_error_capture();
+    unsafe {
+        let vec = make_vector_array(arrays);
+        let rc = ffi::mlx_async_eval(vec);
+        ffi::mlx_vector_array_free(vec);
+        status_to_result("mlx_async_eval", rc)?;
+    }
+    Ok(())
+}
+
 /// Pin up to `limit` bytes of GPU memory as wired (never paged out between requests).
 ///
 /// Returns the previous wired limit. Mirrors `mx.set_wired_limit()` in mlx_lm.

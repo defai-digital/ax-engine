@@ -139,8 +139,20 @@ pub(super) struct Dflash2RequestState {
     window_stats: WindowStats,
     /// Consecutive rounds after which the handoff target looked faster.
     handoff_votes: u32,
-    /// Where the request went when it left DFlash2.
+    /// The route the request decodes on while it is parked off DFlash2.
     handed_off: Option<HandoffTarget>,
+    /// Cache length at which a parked request probes DFlash2 again; `None`
+    /// keeps it parked for the rest of the request.
+    resume_at: Option<usize>,
+    /// Tokens the next handoff parks the request for.
+    cooldown: usize,
+    /// Rounds since the request last (re)entered DFlash2, and the warm-up that
+    /// stint needs before it may hand off.
+    stint_rounds: u32,
+    stint_warmup: u32,
+    /// The request has probed DFlash2 again at least once.
+    probed: bool,
+    parked_rows: ParkedRows,
     mtp_gap: MtpGap,
     pub(super) rounds: u32,
     pub(super) drafted: u32,
@@ -165,6 +177,12 @@ impl Dflash2RequestState {
             window_stats: WindowStats::new(),
             handoff_votes: 0,
             handed_off: None,
+            resume_at: None,
+            cooldown: PROBE_COOLDOWN_MIN,
+            stint_rounds: 0,
+            stint_warmup: HANDOFF_WARMUP_ROUNDS,
+            probed: false,
+            parked_rows: ParkedRows::default(),
             mtp_gap: MtpGap::default(),
             rounds: 0,
             drafted: 0,
@@ -180,6 +198,15 @@ impl Dflash2RequestState {
     /// costs more per token than direct decode.
     pub(super) fn handed_off_to_direct(&self) -> bool {
         self.handed_off == Some(HandoffTarget::Direct)
+    }
+
+    /// A parked request whose next step should probe DFlash2 again. The
+    /// direct double buffer finishes its pending token instead of starting
+    /// another, so the probe finds the cache one row behind the anchor.
+    pub(super) fn resume_due(&self, cache_rows: usize) -> bool {
+        !self.disabled
+            && self.handed_off.is_some()
+            && self.resume_at.is_some_and(|at| cache_rows >= at)
     }
 
     /// Test setup: hidden rows the next linear verify round will draft from.
@@ -200,6 +227,12 @@ impl Dflash2RequestState {
         self.window_stats = WindowStats::new();
         self.handoff_votes = 0;
         self.handed_off = None;
+        self.resume_at = None;
+        self.cooldown = PROBE_COOLDOWN_MIN;
+        self.stint_rounds = 0;
+        self.stint_warmup = HANDOFF_WARMUP_ROUNDS;
+        self.probed = false;
+        self.parked_rows = ParkedRows::default();
         self.mtp_gap = MtpGap::default();
         self.tree_nodes_verified = 0;
         self.tree_accepted_length = 0;
@@ -336,8 +369,23 @@ impl WindowStats {
 /// starts at `PRIOR_RATE`.
 const HANDOFF_WARMUP_ROUNDS: u32 = 6;
 /// How much faster the alternative route must look, on consecutive rounds,
-/// before the request leaves DFlash2. Leaving is final for the request.
+/// before the request leaves DFlash2.
 const HANDOFF_MARGIN: f64 = 1.05;
+/// Tokens a request decodes on its handoff route before it probes DFlash2
+/// again (`AX_MLX_DFLASH2_PROBE`). A probe that hands off again within
+/// [`PROBE_FAILED_STINT_ROUNDS`] doubles the wait, up to the maximum; a longer
+/// stint resets it.
+const PROBE_COOLDOWN_MIN: usize = 128;
+const PROBE_COOLDOWN_MAX: usize = 4096;
+/// Warm-up of a probe. Its acceptance estimate starts fresh, so the content
+/// now being written decides, not the content that caused the handoff.
+const PROBE_WARMUP_ROUNDS: u32 = 3;
+const PROBE_FAILED_STINT_ROUNDS: u32 = 16;
+/// Rows one parked step may run through the target. A step past it cannot
+/// show which rows were committed, so the parked capture is given up.
+pub(super) const PARKED_STEP_MAX_ROWS: i32 = 64;
+/// Per-step parked rows joined into one block.
+const PARKED_BLOCK_STEPS: usize = 64;
 const HANDOFF_VOTES: u32 = 3;
 /// Rows of one MTP step at depth three: the anchor and three drafts.
 const MTP_VERIFY_ROWS: usize = 4;
@@ -356,6 +404,14 @@ pub(super) enum HandoffTarget {
 }
 
 impl HandoffTarget {
+    /// Whether a request parked here probes DFlash2 again. Only direct decode:
+    /// on code DFlash2 is 2.5x direct but only about 1.25x MTP, which does not
+    /// repay the probes that fail on prose (M5 Max, 35B-A3B: probing from MTP
+    /// measured 0.99x, from direct up to 1.5x with no prompt below 0.998x).
+    pub(super) fn probes_back(self) -> bool {
+        matches!(self, Self::Direct)
+    }
+
     /// Telemetry code: 1 for MTP, 2 for direct.
     pub(super) fn code(self) -> u32 {
         match self {
@@ -376,7 +432,8 @@ fn relative_round_cost(window: usize) -> f64 {
 }
 
 /// Counts one round's vote and reports whether a request that has run
-/// `rounds` rounds, the last verifying `window` rows, should leave DFlash2 for
+/// `rounds` rounds of its stint (`warmup` of them before any vote), the last
+/// verifying `window` rows, should leave DFlash2 for
 /// `target`, whose step costs `costs` gives. The decision reads only the
 /// request's acceptance and the target's fixed cost ratios, never wall time: a
 /// greedy request takes the same routes, and so produces the same tokens, on
@@ -387,11 +444,12 @@ fn handoff_due(
     stats: &WindowStats,
     votes: &mut u32,
     rounds: u32,
+    warmup: u32,
     window: usize,
     target: HandoffTarget,
     costs: HandoffCosts,
 ) -> bool {
-    if rounds < HANDOFF_WARMUP_ROUNDS {
+    if rounds < warmup {
         return false;
     }
     let dflash2 = stats.expected_tokens(window) / relative_round_cost(window);
@@ -455,6 +513,69 @@ impl MtpGap {
 
     fn is_clean(&self) -> bool {
         self.rows == 0 && !self.broken
+    }
+}
+
+/// The cooldown after a handoff: a probe that handed off again soon doubles
+/// the previous one, anything else starts over.
+fn next_cooldown(previous: usize, probed: bool, stint_rounds: u32) -> usize {
+    if probed && stint_rounds <= PROBE_FAILED_STINT_ROUNDS {
+        previous.saturating_mul(2).min(PROBE_COOLDOWN_MAX)
+    } else {
+        PROBE_COOLDOWN_MIN
+    }
+}
+
+/// Target hidden rows of the tokens a parked request commits on its handoff
+/// route, so a probe resumes the drafter with current context. Only the last
+/// drafter window (plus one block) is kept; rows dropped from the front are
+/// counted so the drafter's positions stay right.
+#[derive(Default)]
+pub(super) struct ParkedRows {
+    /// Joined steps, oldest first.
+    blocks: std::collections::VecDeque<MlxArray>,
+    /// `[1, n, width]` bf16 rows of the steps since the last join.
+    steps: Vec<MlxArray>,
+    rows: usize,
+    dropped: usize,
+    /// A step's rows could not be told apart: the request stays parked.
+    lost: bool,
+}
+
+impl ParkedRows {
+    fn push(&mut self, rows: MlxArray, count: usize, keep: usize) {
+        self.steps.push(rows);
+        self.rows += count;
+        if self.steps.len() >= PARKED_BLOCK_STEPS {
+            let refs: Vec<&MlxArray> = self.steps.iter().collect();
+            let block = contiguous(&concatenate(&refs, 1, None), None);
+            // Materialize the block so the steps' layer outputs are released.
+            if mlx_sys::try_async_eval(&[&block]).is_err() {
+                self.lost = true;
+                return;
+            }
+            self.blocks.push_back(block);
+            self.steps.clear();
+        }
+        while let Some(front) = self.blocks.front() {
+            let len = front.shape()[1] as usize;
+            if self.rows - len < keep {
+                break;
+            }
+            self.blocks.pop_front();
+            self.rows -= len;
+            self.dropped += len;
+        }
+    }
+
+    /// All kept rows, oldest first.
+    fn joined(&self) -> Option<MlxArray> {
+        let refs: Vec<&MlxArray> = self.blocks.iter().chain(self.steps.iter()).collect();
+        match refs.len() {
+            0 => None,
+            1 => Some(refs[0].clone()),
+            _ => Some(concatenate(&refs, 1, None)),
+        }
     }
 }
 
@@ -863,6 +984,14 @@ impl MlxRunner {
             return decline("no anchor token");
         };
         let token_offset = state.cache.seq_len();
+        if state
+            .dflash2
+            .as_ref()
+            .is_some_and(|dflash| dflash.handed_off.is_some())
+            && !self.resume_dflash2(state)
+        {
+            return decline("parked on the handoff route");
+        }
         match state.dflash2.as_ref() {
             None => return decline("no captured prompt state"),
             Some(dflash) if dflash.disabled => return decline("disabled for this request"),
@@ -1127,6 +1256,7 @@ impl MlxRunner {
             dflash.pending_hidden = Some(committed_hidden);
             dflash.captured_rows = token_offset + keep;
             dflash.rounds += 1;
+            dflash.stint_rounds += 1;
             dflash.drafted += drafts.len() as u32;
             dflash.accepted += committed_drafts as u32;
             dflash.window_stats.record(drafts.len(), committed_drafts);
@@ -1232,10 +1362,12 @@ impl MlxRunner {
         }
     }
 
-    /// Books a committed round: clears the MTP head's stale proposal and hands
-    /// the request to MTP or direct decode once DFlash2 stops paying for
+    /// Books a committed round: clears the MTP head's stale proposal and parks
+    /// the request on MTP or direct decode once DFlash2 stops paying for
     /// itself. Only admitted drafters whose target has measured handoff costs
     /// hand off (`AX_MLX_DFLASH2_HANDOFF=0` keeps every request on DFlash2).
+    /// A parked request probes DFlash2 again after a cooldown
+    /// (`AX_MLX_DFLASH2_PROBE=0` makes the first handoff final).
     fn finish_dflash2_round(&self, state: &mut RequestState, window: usize) {
         clear_mtp_proposal_after_dflash2_round(state);
         let target = self.dflash2_handoff_target();
@@ -1253,15 +1385,20 @@ impl MlxRunner {
         if !handoff_due(
             &dflash.window_stats,
             &mut dflash.handoff_votes,
-            dflash.rounds,
+            dflash.stint_rounds,
+            dflash.stint_warmup,
             window,
             target,
             costs,
         ) {
             return;
         }
-        dflash.disabled = true;
         dflash.handed_off = Some(target);
+        dflash.handoff_votes = 0;
+        dflash.cooldown = next_cooldown(dflash.cooldown, dflash.probed, dflash.stint_rounds);
+        dflash.resume_at = (crate::fastpath::dflash2_probe_enabled() && target.probes_back())
+            .then(|| dflash.captured_rows + dflash.cooldown);
+        dflash.parked_rows = ParkedRows::default();
         let round = dflash.rounds;
         tracing::debug!(
             target: "ax_engine_mlx::dflash2",
@@ -1272,6 +1409,140 @@ impl MlxRunner {
         state
             .mtp_telemetry
             .record_dflash2_handoff(round, target.code());
+    }
+
+    /// Layers to capture on a step a parked request decodes off DFlash2, when
+    /// it may still probe DFlash2 again.
+    pub(super) fn dflash2_parked_capture_layers(&self, state: &RequestState) -> Option<Vec<usize>> {
+        let dflash = state.dflash2.as_ref()?;
+        if dflash.disabled
+            || dflash.handed_off.is_none()
+            || dflash.resume_at.is_none()
+            || dflash.parked_rows.lost
+        {
+            return None;
+        }
+        self.dflash2_capture_layers()
+    }
+
+    /// Keeps the rows of the tokens a parked step committed: the first
+    /// `committed` rows its forwards ran, in order. Every route runs the
+    /// committed tokens first (a verify window's prefix, or one direct row),
+    /// so later rows of a rejected draft or a replay are never kept. Anything
+    /// that does not add up gives the capture up and the request stays parked.
+    pub(super) fn record_dflash2_parked_rows(
+        &self,
+        state: &mut RequestState,
+        start: usize,
+        captured: Option<(Vec<MlxArray>, i64)>,
+    ) {
+        let window = self.dflash2_window_rows().max(1) as usize;
+        let block = self
+            .dflash2
+            .as_ref()
+            .map_or(1, |weights| weights.config().block_size.max(1) as usize);
+        let end = state.cache.seq_len();
+        let Some(dflash) = state.dflash2.as_mut() else {
+            return;
+        };
+        let committed = end.checked_sub(start);
+        let contiguous_start =
+            dflash.captured_rows + dflash.parked_rows.dropped + dflash.parked_rows.rows == start;
+        let parked = &mut dflash.parked_rows;
+        let rows = match (committed, captured) {
+            (Some(0), _) if contiguous_start => return,
+            (Some(committed), Some((tails, total)))
+                if contiguous_start
+                    && total >= committed as i64
+                    && total <= i64::from(PARKED_STEP_MAX_ROWS) =>
+            {
+                let refs: Vec<MlxArray> = tails
+                    .iter()
+                    .map(|tail| {
+                        let shape = tail.shape();
+                        slice(
+                            tail,
+                            &[0, 0, 0],
+                            &[1, committed as i32, shape[2]],
+                            &[1, 1, 1],
+                            None,
+                        )
+                    })
+                    .collect();
+                let refs: Vec<&MlxArray> = refs.iter().collect();
+                Some((
+                    astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None),
+                    committed,
+                ))
+            }
+            _ => None,
+        };
+        match rows {
+            Some((rows, committed)) => parked.push(rows, committed, window + block),
+            None => parked.lost = true,
+        }
+        if parked.lost {
+            tracing::debug!(
+                target: "ax_engine_mlx::dflash2",
+                start,
+                end,
+                "DFlash2 parked capture lost; the request stays parked"
+            );
+            *parked = ParkedRows {
+                lost: true,
+                ..ParkedRows::default()
+            };
+            dflash.resume_at = None;
+            state.mtp_telemetry.record_dflash2_parked_capture_lost();
+        }
+    }
+
+    /// Moves a parked request back onto DFlash2 when its cooldown is over:
+    /// the rows its handoff route committed become the drafter's next context,
+    /// and the acceptance estimate starts fresh. `false` keeps it parked.
+    fn resume_dflash2(&self, state: &mut RequestState) -> bool {
+        let cache_rows = state.cache.seq_len();
+        let Some(dflash) = state.dflash2.as_mut() else {
+            return false;
+        };
+        if !dflash.resume_due(cache_rows) || dflash.parked_rows.lost {
+            return false;
+        }
+        let parked = std::mem::take(&mut dflash.parked_rows);
+        if dflash.captured_rows + parked.dropped + parked.rows != cache_rows {
+            dflash.resume_at = None;
+            return false;
+        }
+        let Some(rows) = parked.joined() else {
+            dflash.resume_at = None;
+            return false;
+        };
+        let pending_rows = dflash
+            .pending_hidden
+            .as_ref()
+            .map_or(0, |hidden| hidden.shape()[1] as usize);
+        // Rows the drafter will never see move its positions on.
+        let hidden = match dflash.pending_hidden.take() {
+            Some(pending) if parked.dropped == 0 => concatenate(&[&pending, &rows], 1, None),
+            _ => {
+                dflash
+                    .drafter
+                    .skip_rows((pending_rows + parked.dropped) as i32);
+                rows
+            }
+        };
+        dflash.pending_hidden = Some(hidden);
+        dflash.captured_rows = cache_rows;
+        dflash.handed_off = None;
+        dflash.resume_at = None;
+        dflash.window_stats = WindowStats::new();
+        dflash.handoff_votes = 0;
+        dflash.stint_rounds = 0;
+        dflash.stint_warmup = PROBE_WARMUP_ROUNDS;
+        dflash.probed = true;
+        dflash.mtp_gap = MtpGap::default();
+        state.mtp_telemetry.record_dflash2_probe();
+        true
     }
 
     /// Rebuilds every linear-attention layer's state for the first `keep` rows of
@@ -1882,7 +2153,15 @@ mod tests {
         let mut votes = 0;
         for round in 1..=rounds {
             stats.record(window - 1, accepted(round));
-            if handoff_due(&stats, &mut votes, round, window, target, MOE_COSTS) {
+            if handoff_due(
+                &stats,
+                &mut votes,
+                round,
+                HANDOFF_WARMUP_ROUNDS,
+                window,
+                target,
+                MOE_COSTS,
+            ) {
                 return Some(round);
             }
         }
@@ -1896,6 +2175,71 @@ mod tests {
         target: HandoffTarget,
     ) -> Option<u32> {
         run_pattern(rounds, window, target, |_| accepted)
+    }
+
+    #[test]
+    fn only_requests_parked_on_direct_decode_probe_back() {
+        assert!(HandoffTarget::Direct.probes_back());
+        assert!(!HandoffTarget::Mtp.probes_back());
+    }
+
+    #[test]
+    fn failed_probes_double_the_cooldown_and_a_long_stint_resets_it() {
+        // The first handoff is not a probe.
+        assert_eq!(
+            next_cooldown(PROBE_COOLDOWN_MIN, false, 6),
+            PROBE_COOLDOWN_MIN
+        );
+        assert_eq!(next_cooldown(128, true, 6), 256);
+        assert_eq!(next_cooldown(2048, true, PROBE_FAILED_STINT_ROUNDS), 4096);
+        assert_eq!(next_cooldown(4096, true, 4), PROBE_COOLDOWN_MAX);
+        assert_eq!(
+            next_cooldown(1024, true, PROBE_FAILED_STINT_ROUNDS + 1),
+            PROBE_COOLDOWN_MIN
+        );
+    }
+
+    #[test]
+    fn a_probe_hands_off_again_after_its_shorter_warm_up() {
+        let mut stats = WindowStats::new();
+        let mut votes = 0;
+        let round = (1..=20)
+            .find(|&round| {
+                stats.record(3, 0);
+                handoff_due(
+                    &stats,
+                    &mut votes,
+                    round,
+                    PROBE_WARMUP_ROUNDS,
+                    4,
+                    HandoffTarget::Mtp,
+                    MOE_COSTS,
+                )
+            })
+            .expect("hands off");
+        assert!(round >= PROBE_WARMUP_ROUNDS + HANDOFF_VOTES - 1, "{round}");
+        assert!(round < HANDOFF_WARMUP_ROUNDS + HANDOFF_VOTES - 1, "{round}");
+    }
+
+    fn parked_step(rows: i32) -> MlxArray {
+        mlx_sys::zeros(&[1, rows, 2], MlxDtype::Bfloat16, None)
+    }
+
+    #[test]
+    fn parked_rows_keep_the_window_and_count_what_they_drop() {
+        let mut parked = ParkedRows::default();
+        assert!(parked.joined().is_none());
+        // 200 one-row steps, keeping at least 100 rows: whole joined blocks of
+        // 64 steps leave from the front.
+        for _ in 0..200 {
+            parked.push(parked_step(1), 1, 100);
+        }
+        assert!(!parked.lost);
+        assert_eq!(parked.rows + parked.dropped, 200);
+        assert!(parked.rows >= 100, "{}", parked.rows);
+        assert!(parked.rows < 100 + PARKED_BLOCK_STEPS, "{}", parked.rows);
+        let joined = parked.joined().expect("rows");
+        assert_eq!(joined.shape(), vec![1, parked.rows as i32, 2]);
     }
 
     #[test]

@@ -1728,6 +1728,18 @@ env_flag_default_on!(
     "AX_MLX_DFLASH2_HANDOFF"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_PROBE` - a request DFlash2 handed to direct decode
+    /// keeps capturing the drafter's target layers and probes DFlash2 again
+    /// after a cooldown (128 tokens, doubling up to 4,096 while probes keep
+    /// handing off), so content that turns back to code gets DFlash2 again.
+    /// A handoff to MTP stays final.
+    ///
+    /// **Default: ON** (`AX_MLX_DFLASH2_PROBE=0` makes every handoff final).
+    dflash2_probe_enabled,
+    "AX_MLX_DFLASH2_PROBE"
+);
+
 /// Hugging Face hub cache roots to search for the DFlash2 drafter, in priority
 /// order: `HF_HUB_CACHE`, `HF_HOME/hub`, `~/.cache/huggingface/hub`. Read once.
 pub(crate) fn hf_hub_cache_roots() -> &'static [std::path::PathBuf] {

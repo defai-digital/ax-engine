@@ -774,6 +774,13 @@ impl Dflash2Drafter {
         self.offset = skipped_rows;
     }
 
+    /// Moves the next context row's position past `rows` committed rows the
+    /// drafter will never see (rows dropped while the request decoded on
+    /// another route). The context cache needs no positions beyond RoPE.
+    pub(crate) fn skip_rows(&mut self, rows: i32) {
+        self.offset += rows;
+    }
+
     pub(crate) fn reset(&mut self) {
         for cache in &mut self.caches {
             *cache = LayerCache::default();
@@ -1692,6 +1699,15 @@ mod tests {
         assert_eq!(drafts.shape()[1], block - 1);
         assert!(drafter.cache_offset() > 0);
         assert!(drafter.cache_rows() > 0);
+    }
+
+    #[test]
+    fn skipped_rows_move_the_next_context_position() {
+        let (weights, _) = dflash2_tiny_fixture();
+        let mut drafter = Dflash2Drafter::new(weights);
+        drafter.skip_rows(5);
+        assert_eq!(drafter.cache_offset(), 5);
+        assert_eq!(drafter.cache_rows(), 0);
     }
 
     const CONFIG: &str = r#"{
