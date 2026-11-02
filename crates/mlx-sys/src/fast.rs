@@ -490,12 +490,20 @@ mod gated_delta_tests {
         (q, k, v, gamma, beta, state)
     }
 
+    /// Largest absolute difference; NaN maps to infinity so it fails tolerances.
     fn max_abs(a: &MlxArray, b: &MlxArray) -> f32 {
+        assert_eq!(a.data_f32().len(), b.data_f32().len());
         a.data_f32()
             .iter()
             .zip(b.data_f32())
             .map(|(left, right)| (left - right).abs())
-            .fold(0.0, f32::max)
+            .fold(0.0, |max, diff| {
+                if diff.is_nan() {
+                    f32::INFINITY
+                } else {
+                    max.max(diff)
+                }
+            })
     }
 
     #[test]
