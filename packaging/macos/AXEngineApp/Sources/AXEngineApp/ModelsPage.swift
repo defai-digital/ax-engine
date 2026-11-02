@@ -203,7 +203,7 @@ struct ModelsPage: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(item.displayName).font(.headline).lineLimit(2)
+                        ModelTitle(label: item.label, font: .headline).help(item.name)
                         if running { PillBadge(text: "Running in this app", systemImage: "circle.fill", tint: Brand.accentChrome, emphasized: true) }
                         else if model.selectedPath == item.path { PillBadge(text: "Selected for Server", systemImage: "checkmark") }
                     }
@@ -351,7 +351,7 @@ struct ModelsPage: View {
                         Button("Use Model") { model.selectedPath = installed.path; model.page = .server }
                             .disabled(!models.canSelectInGUI(installed.path))
                         Menu {
-                            Button("Show in Library") { model.modelSearch = installed.displayName; model.modelsSection = "library" }
+                            Button("Show in Library") { model.modelSearch = installed.repositoryName; model.modelsSection = "library" }
                             Button("Show in Finder") { showInFinder(installed.path) }
                             Button("Download Again…") { redownloadTarget = item }.disabled(blocked != nil)
                             Divider()
