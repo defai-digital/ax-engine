@@ -656,7 +656,16 @@ fn rope_indexer_query_pe(
     token_offset: i32,
 ) -> MlxArray {
     let by_head = transpose(q_pe, &[1, 0, 2], None);
-    let roped = rope(&by_head, rot, true, rope_base, 1.0, token_offset, rope_freqs, None);
+    let roped = rope(
+        &by_head,
+        rot,
+        true,
+        rope_base,
+        1.0,
+        token_offset,
+        rope_freqs,
+        None,
+    );
     transpose(&roped, &[1, 0, 2], None)
 }
 
