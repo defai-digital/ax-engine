@@ -26,6 +26,28 @@ The admitted runtime is the exact PyPI MLX 0.32.4 wheel pinned by `mlx.version`.
 The build rejects a different header or dylib version. Admission evidence is in
 [the MLX 0.32.4 record](performance/mlx-0.32.4-admission-2026-10-16.md).
 
+### Running an unreleased MLX locally
+
+The M5+ NAX verify kernels need MLX 0.32.5 (commit `914732419`), which is not
+on PyPI yet. Published installs stay on the pinned wheel, where those paths
+are off. To use them on your own M5 or later Mac (macOS 26.2+, Xcode
+installed), build MLX from source and link AX against it:
+
+```sh
+scripts/build-mlx-source.sh            # default commit 914732419; --commit <sha> for another
+# then, with the paths the script prints:
+export MLX_LIB_DIR=... MLX_INCLUDE_DIR=... AX_MLX_VERSION_OVERRIDE=1
+cargo build --release
+target/release/ax-engine-bench doctor --json   # nax_verify_kernels.active, native_sdpa_active
+```
+
+The script builds into `~/.ax-engine/mlx-src-<commit>` with deployment target
+26.2 (a lower target compiles the NAX kernels out). It refuses to finish
+unless the build loads from its own venv and its `mlx.metallib` carries the
+`qmv_nax` and `sdpa_split_reduce` kernels. The binary embeds the source
+build's library path. Benchmarks and bit-exactness gates are certified
+against the `mlx.version` pin, not against a source build.
+
 ### Experimental MLX GDN prefill
 
 `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1` opts shared Qwen hybrid prefill into
