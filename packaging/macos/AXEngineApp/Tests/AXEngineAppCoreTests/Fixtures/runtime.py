@@ -19,6 +19,13 @@ if sys.argv[1:3] == ['download', '--list']:
     sys.exit(0)
 if sys.argv[1:2] == ['download']:
     dest = Path(sys.argv[sys.argv.index('--dest') + 1])
+    # 'Stall' hangs mid-transfer on its first run only, like a stuck server.
+    stall_marker = Path(__file__).with_name('stalled-once')
+    if 'Stall' in sys.argv[2] and not stall_marker.exists():
+        stall_marker.write_text('1')
+        emit({'event': 'progress', 'done': 10, 'total': 100, 'file': 'model.safetensors',
+              'phase': 'transfer', 'bytes_done': 512, 'bytes_total': 4096})
+        time.sleep(60)
     # First event is the legacy shape; later ones carry phase and byte counts.
     emit({'event': 'progress', 'done': 0, 'total': 4, 'file': 'Fixture transfer'})
     time.sleep(0.1)

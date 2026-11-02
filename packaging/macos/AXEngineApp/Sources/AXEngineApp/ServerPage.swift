@@ -16,6 +16,9 @@ struct ServerPage: View {
     @State private var connectExpanded = false
     @State private var outputExpanded = false
     @State private var diagnosticsNotice = ""
+    @State private var logQuery = ""
+    @State private var problemsOnly = false
+    @State private var logLines = 500
 
     private var attached: Bool { runtime.connection != nil && !runtime.owned }
 
@@ -117,14 +120,36 @@ struct ServerPage: View {
     }
 
     private var outputCard: some View {
-        Card("Runtime output", subtitle: "Bounded local diagnostic output", trailing: {
-            Button("Copy", systemImage: "doc.on.doc") { copyText(runtime.logs) }.controlSize(.small)
+        let filtered = LogFilter.apply(runtime.logs, query: logQuery, problemsOnly: problemsOnly, lastLines: logLines == 0 ? nil : logLines)
+        return Card("Runtime output", subtitle: "Bounded local diagnostic output; filters change this view only", trailing: {
+            Button("Copy All", systemImage: "doc.on.doc") { copyText(runtime.logs) }.controlSize(.small)
         }) {
             DisclosureGroup(outputExpanded ? "Hide output" : "Show output", isExpanded: $outputExpanded) {
-                ScrollView([.horizontal, .vertical]) {
-                    Text(runtime.logs).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(height: 190)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        TextField("Filter lines", text: $logQuery).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                        Toggle("Warnings and errors", isOn: $problemsOnly).toggleStyle(.checkbox)
+                        Picker("Show", selection: $logLines) {
+                            Text("Last 100").tag(100); Text("Last 500").tag(500); Text("All").tag(0)
+                        }.pickerStyle(.menu).fixedSize()
+                        Spacer()
+                        Text("\(min(filtered.matched, logLines == 0 ? filtered.matched : logLines)) of \(filtered.total) lines")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    ScrollViewReader { proxy in
+                        ScrollView([.horizontal, .vertical]) {
+                            Text(filtered.text.isEmpty ? "No lines match." : filtered.text)
+                                .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                .foregroundStyle(filtered.text.isEmpty ? .secondary : .primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Color.clear.frame(height: 1).id("logEnd")
+                        }
+                        .frame(height: 220)
+                        // Follow new output only in the unfiltered view, so reading matches is not interrupted.
+                        .onChange(of: runtime.logs) { _, _ in if logQuery.isEmpty && !problemsOnly { proxy.scrollTo("logEnd", anchor: .bottom) } }
+                        .onAppear { proxy.scrollTo("logEnd", anchor: .bottom) }
+                    }
+                }.padding(.top, 6)
             }
         }
     }

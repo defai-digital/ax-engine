@@ -233,6 +233,8 @@ public final class ModelStore: ObservableObject {
     private let catalogJob = ProcessJob()
     private let removalJob = ProcessJob()
     private var queueTask: Task<Void, Never>?
+    /// Downloads cancelled only to start again (a stalled transfer).
+    private var restartRequested: Set<UUID> = []
     private var estimators: [UUID: TransferRateEstimator] = [:]
     private var imported: [String] = []
     private let importsURL: URL
@@ -537,12 +539,21 @@ public final class ModelStore: ObservableObject {
         guard let item = downloads.first(where: { $0.id == id }), ["Failed", "Cancelled"].contains(item.state) else { return }
         downloads.removeAll { $0.id == id }; enqueue(item.model, settings: settings)
     }
+    /// Stop an active download and queue it again at once. Verified files
+    /// stay, so the new run resumes; used when a transfer stalls.
+    public func restartDownload(_ id: UUID) {
+        guard let item = downloads.first(where: { $0.id == id }), item.state == "Downloading" else { return }
+        restartRequested.insert(id)
+        downloadJob.cancel()
+    }
     public func cancel(_ id: UUID) {
+        restartRequested.remove(id)
         guard let index = downloads.firstIndex(where: { $0.id == id }) else { return }
         if downloads[index].state == "Downloading" { downloadJob.cancel() }
         else if downloads[index].state == "Queued" { downloads[index].state = "Cancelled" }
     }
     public func shutdown() async {
+        restartRequested.removeAll()
         for index in downloads.indices where downloads[index].state == "Queued" { downloads[index].state = "Cancelled" }
         cancelScan(); catalogJob.cancel(); removalJob.cancel(); downloadJob.cancel()
         await queueTask?.value
@@ -604,6 +615,13 @@ public final class ModelStore: ObservableObject {
                 }
                 await scan(settings: settings)
             } catch {
+                if restartRequested.remove(id) != nil, let i = downloads.firstIndex(where: { $0.id == id }) {
+                    // Same row, back at the head of the queue.
+                    downloads[i].state = "Queued"; downloads[i].fraction = nil; downloads[i].phase = nil
+                    downloads[i].bytesPerSecond = nil; downloads[i].stalledSeconds = nil; downloads[i].bytesDone = nil
+                    downloads[i].detail = "Restarting; verified files are kept."
+                    continue
+                }
                 if let i = downloads.firstIndex(where: { $0.id == id }) {
                     downloads[i].state = error is CancellationError ? "Cancelled" : "Failed"
                     downloads[i].finishedAt = Date(); downloads[i].bytesPerSecond = nil; downloads[i].stalledSeconds = nil

@@ -484,3 +484,54 @@ func testScannerURL() -> URL {
     #expect(try RuntimeLocator.find(bundled: bundle.path, environment: ["PATH": curl.deletingLastPathComponent().path], home: root, systemDirectories: []) == bundle)
     #expect(try RuntimeLocator.find(explicit: curl.path, bundled: bundle.path, environment: [:], home: root, systemDirectories: []) == curl)
 }
+
+@Test @MainActor func stalledDownloadRestartsInPlaceAndCompletes() async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = root.appendingPathComponent("runtime")
+    try FileManager.default.copyItem(at: #require(Bundle.module.url(forResource: "runtime", withExtension: "py", subdirectory: "Fixtures")), to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path)
+    var settings = AppSettings(); settings.executable = fixture.path
+    settings.modelsDirectory = root.appendingPathComponent("models").path
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: testScannerURL(),
+                           scanEnvironment: ["HF_HUB_CACHE": root.appendingPathComponent("empty-cache").path])
+    await store.refresh(settings: settings)
+    store.enqueue(CatalogModel(alias: "Stall", repoId: "AutomatosX/Stall", revision: "abc123", mtpIncluded: false), settings: settings)
+    let id = try #require(store.downloads.first?.id)
+    // Wait until the first run is hanging mid-transfer.
+    let deadline = Date().addingTimeInterval(10)
+    while !FileManager.default.fileExists(atPath: root.appendingPathComponent("stalled-once").path) && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(store.downloads.first?.state == "Downloading")
+    store.restartDownload(id)
+    let finish = Date().addingTimeInterval(20)
+    while store.downloading && Date() < finish { try await Task.sleep(for: .milliseconds(50)) }
+    // One row, restarted in place, and the second run completes.
+    #expect(store.downloads.count == 1)
+    #expect(store.downloads.first?.id == id && store.downloads.first?.state == "Ready")
+    store.restartDownload(id)
+    #expect(store.downloads.first?.state == "Ready")
+}
+
+@Test @MainActor func cancelAfterRestartRequestStillCancels() async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = root.appendingPathComponent("runtime")
+    try FileManager.default.copyItem(at: #require(Bundle.module.url(forResource: "runtime", withExtension: "py", subdirectory: "Fixtures")), to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path)
+    var settings = AppSettings(); settings.executable = fixture.path
+    settings.modelsDirectory = root.appendingPathComponent("models").path
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: testScannerURL(),
+                           scanEnvironment: ["HF_HUB_CACHE": root.appendingPathComponent("empty-cache").path])
+    await store.refresh(settings: settings)
+    store.enqueue(CatalogModel(alias: "Stall", repoId: "AutomatosX/Stall", revision: "abc123", mtpIncluded: false), settings: settings)
+    let id = try #require(store.downloads.first?.id)
+    let deadline = Date().addingTimeInterval(10)
+    while !FileManager.default.fileExists(atPath: root.appendingPathComponent("stalled-once").path) && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    store.restartDownload(id)
+    store.cancel(id)
+    let finish = Date().addingTimeInterval(20)
+    while store.downloading && Date() < finish { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(store.downloads.first?.state == "Cancelled")
+}

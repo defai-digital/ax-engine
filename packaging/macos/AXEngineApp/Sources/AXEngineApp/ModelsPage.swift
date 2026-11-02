@@ -529,8 +529,12 @@ struct ModelsPage: View {
                     if let summary = item.progressSummary { Text("· " + summary).font(.callout).foregroundStyle(.secondary) }
                 }
                 if let stalled = item.stalledSeconds {
-                    Label("No data for \(Int(stalled)) s. The transfer continues to wait for the server; cancel to stop it.", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
+                    HStack {
+                        Label("No data for \(Int(stalled)) s. It keeps waiting for the server; Restart Download reconnects and keeps verified files.", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                        Spacer()
+                        Button("Restart Download", systemImage: "arrow.clockwise") { models.restartDownload(item.id) }.controlSize(.small)
+                    }
                 }
                 if item.phase == .transfer || item.phase == nil {
                     Text(item.detail).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)

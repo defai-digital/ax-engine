@@ -74,7 +74,16 @@ struct MainView: View {
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
-        .task { if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) } }
+        .task {
+            if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) }
+            model.offerOnboardingIfNeeded()
+        }
+        .onChange(of: models.scanning) { _, scanning in if !scanning { model.offerOnboardingIfNeeded() } }
+        .sheet(isPresented: $model.showsOnboarding, onDismiss: { model.onboardingCompleted = true }) {
+            OnboardingView(model: model, models: models, runtime: runtime) {
+                model.onboardingCompleted = true; model.showsOnboarding = false
+            }
+        }
         .onAppear { syncHostMonitoring() }
         .onChange(of: model.hostMonitoringEnabled) { _, _ in syncHostMonitoring() }
         .onDisappear { model.hostMonitor.setActive(false); clientClipboard.clearIfOwned() }

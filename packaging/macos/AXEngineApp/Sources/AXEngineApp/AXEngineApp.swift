@@ -23,6 +23,26 @@ final class ApplicationModel: ObservableObject {
     @Published var showsMenuBarItem = UserDefaults.standard.object(forKey: "showsMenuBarItem") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showsMenuBarItem, forKey: "showsMenuBarItem") }
     }
+    /// Binding for MenuBarExtra(isInserted:). SwiftUI writes it back on every
+    /// scene update; republishing an unchanged value would rebuild the main
+    /// menu and write again, an unbounded update loop (GBs per minute).
+    var menuBarInsertion: Binding<Bool> {
+        Binding(get: { self.showsMenuBarItem },
+                set: { if $0 != self.showsMenuBarItem { self.showsMenuBarItem = $0 } })
+    }
+    /// First-run guide: finished or skipped once, then only from Help.
+    @Published var onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted") {
+        didSet { UserDefaults.standard.set(onboardingCompleted, forKey: "onboardingCompleted") }
+    }
+    @Published var showsOnboarding = false
+    func offerOnboardingIfNeeded() {
+        if FirstRun.shouldOffer(completed: onboardingCompleted, discoveryAttempted: models.discoveryAttempted,
+                                scanning: models.scanning, libraryCount: models.productLibrary.count,
+                                scanFailed: models.libraryIssue != nil,
+                                serverActive: runtime.owned || runtime.connection != nil) {
+            showsOnboarding = true
+        }
+    }
     /// Serve-model picker state, keyed by model path; per-user convenience.
     @Published var favoriteModels = UserDefaults.standard.stringArray(forKey: "favoriteModels") ?? [] {
         didSet { UserDefaults.standard.set(favoriteModels, forKey: "favoriteModels") }
@@ -247,8 +267,11 @@ struct AXEngineApplication: App {
             SettingsNavigationCommands(model: model)
             NavigationCommands(model: model)
             ServerCommands(model: model, runtime: model.runtime)
+            CommandGroup(replacing: .help) {
+                Button("Getting Started") { model.showsOnboarding = true }
+            }
         }
-        MenuBarExtra(isInserted: $model.showsMenuBarItem) {
+        MenuBarExtra(isInserted: model.menuBarInsertion) {
             MenuBarContent(model: model, runtime: model.runtime)
         } label: {
             MenuBarLabel(runtime: model.runtime)

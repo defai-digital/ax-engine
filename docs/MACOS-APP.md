@@ -66,6 +66,13 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
 
 ## Workflow
 
+**First run.** When a complete library scan finds no models, a short guide
+opens: what AX Engine does, a list of catalog models (download size within
+this Mac's memory first, smallest first; a size comparison, not a fit
+claim), the download with live progress, and **Start Server**. Closing it
+keeps any download running. It is offered once; reopen it from **Help ›
+Getting Started**.
+
 1. **Start serving (Dashboard):** the **Inference service** card at the top of
    Dashboard is the quickest way to serve: pick a downloaded model and press
    **Start Server** (or Shift-Command-R, or the menu-bar item). With nothing
@@ -117,7 +124,10 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    Stop gives the runtime eight seconds to drain before it is force-killed.
    When the runtime exits on its own, the error shows its last diagnostic line
    with **Start Again** and **Copy Diagnostics** (the bounded runtime output,
-   with the API key redacted), and **Runtime output** opens. Runtime metrics
+   with the API key redacted), and **Runtime output** opens. Runtime output
+   can be filtered by text, narrowed to warnings and errors, and limited to
+   the last 100 or 500 lines; filters change the view only, and **Copy All**
+   copies the whole bounded output. Runtime metrics
    and history appear only while something is serving; Mac CPU, GPU and memory
    charts are on Dashboard. **Already running AX Engine on this Mac? Connect to
    it** (collapsed) attaches to a service on the configured port; a key you
@@ -154,7 +164,8 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    each download's phase (checking files, downloading, verifying), bytes done
    of total, smoothed throughput and an estimated time left, the file being
    transferred, queue position, when it started and how long it took, and a
-   warning when no data has arrived for 30 seconds. Byte counts come from
+   warning when no data has arrived for 30 seconds, with **Restart Download**,
+   which reconnects the same row and keeps verified files. Byte counts come from
    runtimes that report them; with an older runtime the sizes are catalog
    estimates and are labeled "about". Cancel asks first and keeps verified
    files for Retry or Resume; a finished row offers **Serve**, Show in Finder

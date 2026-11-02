@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Combine
 import AXEngineAppCore
 @testable import AXEngineApp
 
@@ -49,4 +50,19 @@ private func tempSettings() throws -> (URL, URL) {
     #expect(CodeFence.body("\nplain\n") == "plain\n")
     #expect(CodeFence.body("let x = 1\nprint(x)") == "let x = 1\nprint(x)")
     #expect(CodeFence.body("single line") == "single line")
+}
+
+@Test @MainActor func menuBarInsertionDoesNotRepublishUnchangedValues() throws {
+    let (root, file) = try tempSettings(); defer { try? FileManager.default.removeItem(at: root) }
+    let app = ApplicationModel(settingsURL: file)
+    let original = app.showsMenuBarItem
+    defer { app.showsMenuBarItem = original }
+    var changes = 0
+    let sink = app.objectWillChange.sink { _ in changes += 1 }
+    defer { sink.cancel() }
+    // SwiftUI writes the current value back on every scene update.
+    for _ in 0..<5 { app.menuBarInsertion.wrappedValue = app.showsMenuBarItem }
+    #expect(changes == 0)
+    app.menuBarInsertion.wrappedValue = !original
+    #expect(changes == 1 && app.showsMenuBarItem == !original)
 }
