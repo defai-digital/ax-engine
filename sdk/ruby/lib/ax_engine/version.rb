@@ -1,3 +1,3 @@
 module AxEngine
-  VERSION = "8.0.5"
+  VERSION = "8.0.6"
 end
