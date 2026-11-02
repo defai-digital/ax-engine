@@ -1,11 +1,19 @@
 import SwiftUI
 import AXEngineAppCore
 
-/// One shared model context and saved request profile on Server and Playground.
+/// One shared inference context on Dashboard, Server and Playground: the
+/// running model, the serving mode the server drafts with, and the saved
+/// Playground request profile. Both selectors can be switched here.
 struct ModelProfileHeader: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var chat: ChatStore
+
+    private var attached: Bool { runtime.connection != nil && !runtime.owned }
+    private var inferenceActive: Bool {
+        chat.generating || (runtime.metrics["ax_engine_generation_active_streams"] ?? 0) > 0
+    }
+    private var modeAwaitsRestart: Bool { runtime.owned && runtime.servingMode != model.settings.servingMode }
 
     var body: some View {
         Card {
@@ -23,29 +31,62 @@ struct ModelProfileHeader: View {
                             .font(.callout.weight(.medium)).lineLimit(2)
                             .textSelection(.enabled)
                     }
+                } else if model.page == .overview {
+                    Button("Open Server") { model.page = .server }.buttonStyle(.link).font(.caption)
                 }
                 Spacer(minLength: 0)
-                if runtime.ready && runtime.owned {
+                if runtime.owned {
                     PillBadge(text: runtime.servingMode.badge, systemImage: "bolt")
-                        .help("Speculative-decode posture of the running app-owned server. Change it on the Server page.")
+                        .help("Speculative-decode posture the running app-owned server was started with.")
                 }
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle",
                           tint: runtime.ready ? Brand.accentChrome : .secondary)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    Text("Playground profile").font(.caption).foregroundStyle(.secondary)
-                    profiles
-                    Spacer(minLength: 0)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Playground profile").font(.caption).foregroundStyle(.secondary)
-                    profiles
+            selectorRow("Serving mode", chips: servingModes)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(servingGuidance).font(.caption).foregroundStyle(.secondary)
+                if modeAwaitsRestart {
+                    Button("Restart in \(model.settings.servingMode.title) Mode", systemImage: "arrow.clockwise") {
+                        let settings = model.settings
+                        Task { await chat.stop(); await runtime.restart(settings: settings) }
+                    }
+                    .controlSize(.small)
+                    .disabled(runtime.busy || runtime.state == "Stopping" || inferenceActive)
+                    .help(inferenceActive ? "Finish or stop the current reply first, or restart from the Server page."
+                                          : "Stop this server and start it again in the saved serving mode.")
                 }
             }
+            selectorRow("Playground profile", chips: profiles)
             Text(guidance).font(.caption).foregroundStyle(.secondary)
             if let error = model.settingsError { ErrorBanner(text: error) }
         }
+    }
+
+    private func selectorRow(_ title: String, chips: some View) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(title).font(.caption).foregroundStyle(.secondary).frame(width: 112, alignment: .leading)
+                chips
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                chips
+            }
+        }
+    }
+
+    private var servingModes: some View {
+        HStack(spacing: 6) {
+            ForEach(ServingMode.allCases, id: \.self) { mode in
+                SelectionChip(title: mode.title, selected: model.settings.servingMode == mode,
+                              accessibilityLabel: mode.title + " serving mode", help: mode.summary) {
+                    model.selectServingMode(mode)
+                }.disabled(attached || model.hasSettingsChanges)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Serving mode")
     }
 
     private var profiles: some View {
@@ -60,6 +101,15 @@ struct ModelProfileHeader: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Playground request profile")
+    }
+
+    private var servingGuidance: String {
+        if attached { return "An attached service keeps the serving mode it was started with." }
+        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the serving mode." }
+        if modeAwaitsRestart {
+            return "\(model.settings.servingMode.title) mode is saved for the next launch. The server is still running in \(runtime.servingMode.title) mode."
+        }
+        return model.settings.servingMode.summary + " Applies when the server starts and only tunes speculative drafting."
     }
 
     private var guidance: String {

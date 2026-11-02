@@ -147,7 +147,6 @@ struct ServerPage: View {
             }
             Divider()
             modelSelection
-            servingModeSelection
             actions
             Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults; the serving mode only tunes speculative drafting. No model certification setting is changed.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -179,43 +178,6 @@ struct ServerPage: View {
                 Text(model.selectedPath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
             }
         }
-    }
-
-    private var servingModeSelection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text("Serving mode").font(.caption).foregroundStyle(.secondary)
-                    servingModeChips
-                    Spacer(minLength: 0)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Serving mode").font(.caption).foregroundStyle(.secondary)
-                    servingModeChips
-                }
-            }
-            Text(servingModeGuidance).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var servingModeChips: some View {
-        HStack(spacing: 6) {
-            ForEach(ServingMode.allCases, id: \.self) { mode in
-                SelectionChip(title: mode.title, selected: model.settings.servingMode == mode,
-                              accessibilityLabel: mode.title + " serving mode", help: mode.summary) {
-                    model.selectServingMode(mode)
-                }.disabled(attached || model.hasSettingsChanges)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Serving mode")
-    }
-
-    private var servingModeGuidance: String {
-        if attached { return "An attached service keeps the serving mode it was started with." }
-        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the serving mode." }
-        return model.settings.servingMode.summary
-            + " Applies when the server starts and tunes how tokens are drafted; the Playground profile only sets request parameters."
     }
 
     private var selectedModel: LocalModel? { models.productLibrary.first { $0.path == model.selectedPath } }

@@ -56,7 +56,7 @@ struct MainView: View {
                     Spacer()
                     if runtime.ready && model.page != .chat { Button("Open Playground", systemImage: "bubble.left") { model.page = .chat } }
                 }.padding(26)
-                if model.page == .server || model.page == .chat {
+                if [.overview, .server, .chat].contains(model.page) {
                     ModelProfileHeader(model: model, runtime: runtime, chat: chat)
                         .padding(.horizontal, 26).padding(.bottom, 16)
                 }
