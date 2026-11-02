@@ -1254,6 +1254,9 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
     DECIDED.get_or_init(|| {
         let model_family = artifacts.manifest().model_family.as_str();
         let na_active = crate::hardware::neural_accelerator_active();
+        // Resolve the M5+ skinny-NAX gate (version + metallib probe) at load,
+        // not inside the first verify step.
+        let _ = crate::hardware::skinny_qmv_nax_active();
         if !should_auto_raise_metal_buffer_caps(model_family) {
             tracing::info!(
                 target = "ax_engine_mlx",

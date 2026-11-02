@@ -663,6 +663,42 @@ pub(crate) const FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS: [&str; 7] =
 
 const FLASH_NEXT_MTP_FALLBACK_REASON_COUNT: usize = FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS.len();
 
+/// `draft_source` label values for the speculative draft/accept split, in
+/// array order. `mtp` is the model's own MTP head (and Gemma's assistant
+/// drafter) without the DFlash2 share; the runner counts DFlash2 drafts as MTP
+/// for its gates and reports the DFlash2 share separately.
+pub(crate) const SPECULATIVE_DRAFT_SOURCES: [&str; 4] = ["mtp", "dflash2", "ngram", "hybrid_mtp"];
+const SPECULATIVE_DRAFT_SOURCE_COUNT: usize = SPECULATIVE_DRAFT_SOURCES.len();
+
+/// Per-source (drafted, accepted) running totals from one step's route
+/// decisions, or `None` when the step carried no MTP telemetry.
+fn speculative_source_snapshot(
+    route: &ax_engine_sdk::GenerateRouteReport,
+) -> Option<[(u64, u64); SPECULATIVE_DRAFT_SOURCE_COUNT]> {
+    let read = |key: &str| route.decision(key).map(u64::from);
+    let mtp_drafted = read("ax_mtp_draft_source_mtp_tokens")?;
+    let get = |key: &str| read(key).unwrap_or(0);
+    let dflash2 = (
+        get("ax_mtp_draft_source_dflash2_tokens"),
+        get("ax_mtp_accepted_source_dflash2_tokens"),
+    );
+    Some([
+        (
+            mtp_drafted.saturating_sub(dflash2.0),
+            get("ax_mtp_accepted_source_mtp_tokens").saturating_sub(dflash2.1),
+        ),
+        dflash2,
+        (
+            get("ax_mtp_draft_source_ngram_tokens"),
+            get("ax_mtp_accepted_source_ngram_tokens"),
+        ),
+        (
+            get("ax_mtp_draft_source_hybrid_mtp_tokens"),
+            get("ax_mtp_accepted_source_hybrid_mtp_tokens"),
+        ),
+    ])
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct EngineStepStats {
     steps_total: u64,
@@ -730,6 +766,11 @@ struct EngineStepStats {
     /// direct decode, in `FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS` order.
     flash_next_mtp_fallback_by_reason_total: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
     flash_next_mtp_fallback_by_reason_last: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
+    /// Speculative draft / accepted tokens split by `SPECULATIVE_DRAFT_SOURCES`.
+    speculative_drafted_by_source_total: [u64; SPECULATIVE_DRAFT_SOURCE_COUNT],
+    speculative_drafted_by_source_last: [u64; SPECULATIVE_DRAFT_SOURCE_COUNT],
+    speculative_accepted_by_source_total: [u64; SPECULATIVE_DRAFT_SOURCE_COUNT],
+    speculative_accepted_by_source_last: [u64; SPECULATIVE_DRAFT_SOURCE_COUNT],
     /// Signature of the request set the last step served
     /// (`ax_mlx_step_request_set`). A change is a request boundary.
     step_request_set_last: Option<u32>,
@@ -819,6 +860,8 @@ impl EngineStepStats {
             flash_next_mtp_accepted_steps_total: self.flash_next_mtp_accepted_steps_total,
             flash_next_mtp_step_errors_total: self.flash_next_mtp_step_errors_total,
             flash_next_mtp_fallback_by_reason_total: self.flash_next_mtp_fallback_by_reason_total,
+            speculative_drafted_by_source_total: self.speculative_drafted_by_source_total,
+            speculative_accepted_by_source_total: self.speculative_accepted_by_source_total,
             mtp_accept_rate_ewma_x1000: self.mtp_accept_rate_ewma_x1000,
             mlx_flash_next_selected_expert_gathers_total: self
                 .mlx_flash_next_selected_expert_gathers_total,
@@ -895,6 +938,8 @@ pub(crate) struct EngineStepGauges {
     pub(crate) flash_next_mtp_accepted_steps_total: u64,
     pub(crate) flash_next_mtp_step_errors_total: u64,
     pub(crate) flash_next_mtp_fallback_by_reason_total: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
+    pub(crate) speculative_drafted_by_source_total: [u64; SPECULATIVE_DRAFT_SOURCE_COUNT],
+    pub(crate) speculative_accepted_by_source_total: [u64; SPECULATIVE_DRAFT_SOURCE_COUNT],
     pub(crate) mtp_accept_rate_ewma_x1000: u64,
     pub(crate) mlx_flash_next_selected_expert_gathers_total: u64,
     pub(crate) mlx_flash_next_selected_expert_payload_kib_total: u64,
@@ -1203,6 +1248,20 @@ impl ServerMetrics {
                         .decision("ax_mlx_flash_next_mtp_attach_failed")
                         .unwrap_or(0),
                 ));
+            if let Some(snapshot) = speculative_source_snapshot(route) {
+                for (index, (drafted, accepted)) in snapshot.into_iter().enumerate() {
+                    accumulate_cumulative_route_counter(
+                        &mut entry.speculative_drafted_by_source_total[index],
+                        &mut entry.speculative_drafted_by_source_last[index],
+                        drafted,
+                    );
+                    accumulate_cumulative_route_counter(
+                        &mut entry.speculative_accepted_by_source_total[index],
+                        &mut entry.speculative_accepted_by_source_last[index],
+                        accepted,
+                    );
+                }
+            }
             for (index, key) in FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS.iter().enumerate() {
                 if let Some(observed) = route.decision(key) {
                     accumulate_cumulative_route_counter(
@@ -1466,6 +1525,14 @@ impl ServerMetrics {
             process.flash_next_mtp_fallback_by_reason_total[index] =
                 process.flash_next_mtp_fallback_by_reason_total[index].saturating_add(*value);
         }
+        for index in 0..SPECULATIVE_DRAFT_SOURCE_COUNT {
+            process.speculative_drafted_by_source_total[index] = process
+                .speculative_drafted_by_source_total[index]
+                .saturating_add(entry.speculative_drafted_by_source_total[index]);
+            process.speculative_accepted_by_source_total[index] = process
+                .speculative_accepted_by_source_total[index]
+                .saturating_add(entry.speculative_accepted_by_source_total[index]);
+        }
         process.mlx_flash_next_selected_expert_gathers_total = process
             .mlx_flash_next_selected_expert_gathers_total
             .saturating_add(entry.mlx_flash_next_selected_expert_gathers_total);
@@ -1600,6 +1667,8 @@ impl EngineStepStats {
         self.mlx_prefill_prefix_cache_wall_us_last = 0;
         self.mlx_prefill_generation_state_wall_us_last = 0;
         self.flash_next_mtp_fallback_by_reason_last = [0; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT];
+        self.speculative_drafted_by_source_last = [0; SPECULATIVE_DRAFT_SOURCE_COUNT];
+        self.speculative_accepted_by_source_last = [0; SPECULATIVE_DRAFT_SOURCE_COUNT];
     }
 }
 

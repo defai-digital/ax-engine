@@ -69,8 +69,9 @@ use crate::compare_json::{
 };
 use crate::determinism::deterministic_runtime_digest;
 use crate::doctor::{
-    build_doctor_report, build_doctor_report_for_model_and_runtime, detect_runtime_assets_report,
-    metal_build_doctor_report, parse_doctor_args, render_doctor_report,
+    apply_nax_verify_kernel_status, build_doctor_report, build_doctor_report_for_model_and_runtime,
+    detect_runtime_assets_report, metal_build_doctor_report, parse_doctor_args,
+    render_doctor_report,
 };
 use crate::doctor_workflow::detect_doctor_workflow_report;
 use crate::environment_probe::{

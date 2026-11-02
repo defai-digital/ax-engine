@@ -98,6 +98,142 @@ fn mxfp4_window_min_n() -> i32 {
     })
 }
 
+/// Verify width stock MLX serves best on skinny-NAX hosts
+/// (`hardware::skinny_qmv_nax_active`: M5 or later, macOS 26.2+, MLX >=
+/// 0.32.5). M5 Max probe (`bench_verify_route_vs_stock_all`, 27B shapes):
+/// stock at 6 rows costs 1.0-1.3x one row and beats AX's kernels 1.3-2.0x at
+/// 6..=8 rows (and a 3..=5-row window padded to 6 beats AX's kernels per
+/// call, but not end to end: see [`nax_pad_enabled`]). End to end, stock at
+/// 6..=8 rows with the NAX verify SDPA: Qwen 3.8 27B MXFP4 + DFlash2, 17
+/// prompts, 1.176x mean / 1.222x median over both hand-offs off, code
+/// prompts up to 1.31x, no prompt slower.
+const NAX_STOCK_MIN_ROWS: i32 = 6;
+/// Fp-mode (MXFP4/MXFP8) projections at least this wide stay on AX's kernel:
+/// stock NAX at 6..=16 rows is 2.1-2.8x slower there (mxfp4 248K lm_head:
+/// 4772 us stock vs 1726 us route at 6 rows).
+const NAX_FP_WIDE_N: i32 = MSG_ROUTE_N;
+
+/// `AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS`: the stock cut-over row count on
+/// skinny-NAX hosts; `0` keeps AX's kernels for every routed row count.
+fn nax_stock_min_rows() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|value| *value >= 0 && *value <= AFFINE_MAX_ROWS)
+            .unwrap_or(NAX_STOCK_MIN_ROWS)
+    })
+}
+
+/// `AX_MLX_MTP_VERIFY_QMM_NAX_PAD` (default **off**, `1` opts in): pad
+/// 3..cut-over verify rows with zero rows up to the cut-over and serve them
+/// with stock NAX QMM. The per-call probe favours it, but end to end it
+/// loses: M5 Max, Qwen 3.8 27B MXFP4 + DFlash2, 17-prompt real suite vs both
+/// hand-offs off, padding on 1.124x mean (min 0.852x, prose 0.96-0.97x)
+/// against padding off 1.176x mean (min 1.003x).
+fn nax_pad_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_NAX_PAD"))
+}
+
+/// True when 6..=8-row verify projections go to stock NAX QMM on this host,
+/// which makes a wide verify window almost as cheap as a four-row one.
+pub(crate) fn nax_stock_handoff_active() -> bool {
+    nax_stock_min_rows() > 0 && crate::hardware::skinny_qmv_nax_active()
+}
+
+/// How one armed verify projection runs on this host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NaxVerifyRoute {
+    /// AX's verify kernels (or stock, when they decline): the pre-NAX policy.
+    AxKernels,
+    /// Stock MLX QMM at the window's own rows.
+    Stock,
+    /// Stock MLX QMM on the window padded with zero rows to this many rows.
+    StockPadded(i32),
+}
+
+fn nax_verify_route_for(
+    skinny_nax: bool,
+    cutover: i32,
+    pad: bool,
+    rows: i32,
+    n: i32,
+    k: i32,
+    weight: &QuantizedWeight,
+) -> NaxVerifyRoute {
+    let fp_mode = !matches!(
+        weight.mlx_quantization_mode(),
+        mlx_sys::MlxQuantizationMode::Affine
+    );
+    if !skinny_nax
+        || cutover == 0
+        || !(3..=AFFINE_MAX_ROWS).contains(&rows)
+        // Affine 8-bit: route and stock tie on M5 (0.98-1.04x).
+        || (!fp_mode && weight.bits == 8)
+        || (fp_mode && n >= NAX_FP_WIDE_N)
+        // MLX's qmv_nax needs N, K >= 1024 (affine: N >= 512, K % 128 == 0).
+        || n < 1024
+        || k < 1024
+        || k % 128 != 0
+    {
+        return NaxVerifyRoute::AxKernels;
+    }
+    if rows >= cutover {
+        NaxVerifyRoute::Stock
+    } else if pad {
+        NaxVerifyRoute::StockPadded(cutover)
+    } else {
+        NaxVerifyRoute::AxKernels
+    }
+}
+
+fn nax_verify_route(x: &MlxArray, weight: &QuantizedWeight) -> NaxVerifyRoute {
+    let shape = x.shape();
+    let weight_shape = weight.weight.shape();
+    if !verify_qmm_armed() || shape.len() != 3 || shape[0] != 1 || weight_shape.len() != 2 {
+        return NaxVerifyRoute::AxKernels;
+    }
+    nax_verify_route_for(
+        crate::hardware::skinny_qmv_nax_active(),
+        nax_stock_min_rows(),
+        nax_pad_enabled(),
+        shape[1],
+        weight_shape[0],
+        shape[2],
+        weight,
+    )
+}
+
+/// Stock MLX QMM over `x` padded with zero rows to `rows` (excluding the dense
+/// Linear bias, which the caller adds), sliced back to the window.
+fn stock_qmm_padded(x: &MlxArray, weight: &QuantizedWeight, rows: i32) -> Option<MlxArray> {
+    let shape = x.shape();
+    let (m, k) = (shape[1], shape[2]);
+    let scales = weight.scales.as_ref()?;
+    let mode = weight.mlx_quantization_mode();
+    let quant_biases = match mode {
+        mlx_sys::MlxQuantizationMode::Affine => Some(weight.biases.as_ref()?),
+        _ => None,
+    };
+    let pad = zeros(&[1, rows - m, k], x.dtype(), None);
+    let padded = concatenate(&[x, &pad], 1, None);
+    let out = mlx_sys::quantized_matmul_with_mode(
+        &padded,
+        &weight.weight,
+        scales,
+        quant_biases,
+        true,
+        Some(weight.group_size),
+        Some(weight.bits),
+        mode,
+        None,
+    );
+    let n = out.shape().last().copied()?;
+    Some(slice(&out, &[0, 0, 0], &[1, m, n], &[1, 1, 1], None))
+}
+
 fn split_k_huge_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_SPLIT_K_HUGE"))
@@ -801,6 +937,11 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
 /// relaxed target-verify profile; arming this route under the exact profile
 /// would silently give up the invariant that route is built to preserve.
 pub(crate) fn try_qwen_mtp_verify_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
+    match nax_verify_route(x, weight) {
+        NaxVerifyRoute::AxKernels => {}
+        NaxVerifyRoute::Stock => return None,
+        NaxVerifyRoute::StockPadded(rows) => return stock_qmm_padded(x, weight, rows),
+    }
     if matches!(
         weight.mlx_quantization_mode(),
         mlx_sys::MlxQuantizationMode::Mxfp4
@@ -1395,6 +1536,218 @@ mod tests {
     #[test]
     fn four_partition_split_k_matches_small_projection() {
         assert_route_matches_affine_qmm(2048, 0, 3, "small split-K");
+    }
+
+    /// Route vs stock QMM for every routed format, every Qwen 3.8 27B
+    /// projection shape and every routed row count (3..=8). Use it to decide
+    /// per-row cut-overs when the linked MLX changes its skinny-row kernels
+    /// (e.g. NAX `affine_qmv_nax` on M5+). Data is arbitrary bit patterns.
+    /// Run: `cargo test -p ax-engine-mlx --release --lib
+    /// bench_verify_route_vs_stock_all -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing probe; run on Apple Silicon with --ignored --nocapture"]
+    fn bench_verify_route_vs_stock_all() {
+        const CALLS: usize = 16;
+        const REPEATS: usize = 7;
+        let time_us = |build: &dyn Fn(&MlxArray) -> MlxArray, inputs: &[MlxArray]| {
+            let mut best = f64::INFINITY;
+            for _ in 0..REPEATS {
+                let start = std::time::Instant::now();
+                let outputs: Vec<MlxArray> = inputs.iter().map(build).collect();
+                eval(&outputs.iter().collect::<Vec<_>>());
+                best = best.min(start.elapsed().as_secs_f64() * 1e6 / CALLS as f64);
+            }
+            best
+        };
+        let shapes = [
+            ("gate_up", 17_408, 5_120),
+            ("down", 5_120, 17_408),
+            ("qkv", 12_288, 5_120),
+            ("o_proj", 5_120, 6_144),
+            ("lm_head", 248_320, 5_120),
+        ];
+        println!(
+            "mlx {}",
+            mlx_sys::runtime_version().unwrap_or_else(|err| err)
+        );
+        println!("format   shape        m  stock_us  route_us  route/stock");
+        for (label, bits, group_size) in [
+            ("affine4", 4, 64),
+            ("affine6", 6, 64),
+            ("affine8", 8, 64),
+            ("mxfp4", 4, 32),
+        ] {
+            let mxfp4 = label == "mxfp4";
+            for (name, n, k) in shapes {
+                let words = k * bits / 32;
+                let packed = reshape(
+                    &arange(
+                        0.0,
+                        f64::from(n) * f64::from(words),
+                        1.0,
+                        MlxDtype::Uint32,
+                        None,
+                    ),
+                    &[n, words],
+                    None,
+                );
+                let (scales, biases, mode) = if mxfp4 {
+                    (
+                        zeros(&[n, k / group_size], MlxDtype::Uint8, None),
+                        None,
+                        MlxQuantizationMode::Mxfp4,
+                    )
+                } else {
+                    (
+                        zeros(&[n, k / group_size], MlxDtype::Bfloat16, None),
+                        Some(zeros(&[n, k / group_size], MlxDtype::Bfloat16, None)),
+                        MlxQuantizationMode::Affine,
+                    )
+                };
+                match &biases {
+                    Some(b) => eval(&[&packed, &scales, b]),
+                    None => eval(&[&packed, &scales]),
+                }
+                let weight = QuantizedWeight {
+                    weight: packed,
+                    scales: Some(scales),
+                    biases,
+                    group_size,
+                    bits,
+                    mode: if mxfp4 { "mxfp4" } else { "affine" }.to_owned(),
+                    linear_bias: None,
+                    decode_weight_t: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
+                    weight_t_view: Default::default(),
+                };
+                let stock = |x: &MlxArray| {
+                    quantized_matmul_with_mode(
+                        x,
+                        &weight.weight,
+                        weight.scales.as_ref().unwrap(),
+                        weight.biases.as_ref(),
+                        true,
+                        Some(group_size),
+                        Some(bits),
+                        mode,
+                        None,
+                    )
+                };
+                let route_of = |x: &MlxArray| {
+                    if mxfp4 {
+                        mxfp4_window_qmm(x, &weight, 0)
+                    } else {
+                        try_qwen_mtp_verify_qmm_for_min_n(x, &weight, 0)
+                    }
+                };
+                for m in 3..=8 {
+                    let inputs: Vec<MlxArray> = (0..CALLS)
+                        .map(|call| {
+                            let start = call as f64;
+                            astype(
+                                &reshape(
+                                    &arange(
+                                        start,
+                                        start + f64::from(m * k),
+                                        1.0,
+                                        MlxDtype::Float32,
+                                        None,
+                                    ),
+                                    &[1, m, k],
+                                    None,
+                                ),
+                                MlxDtype::Bfloat16,
+                                None,
+                            )
+                        })
+                        .collect();
+                    eval(&inputs.iter().collect::<Vec<_>>());
+                    let _guard = QwenMtpVerifyQmmGuard::arm(true);
+                    if route_of(&inputs[0]).is_none() {
+                        println!("{label:8} {name:8} {m:>5}  (not routed)");
+                        continue;
+                    }
+                    let route = |x: &MlxArray| route_of(x).expect("eligible");
+                    let _ = time_us(&stock, &inputs);
+                    let _ = time_us(&route, &inputs);
+                    let stock_m = time_us(&stock, &inputs);
+                    let route_m = time_us(&route, &inputs);
+                    println!(
+                        "{label:8} {name:8} {m:>5} {stock_m:>9.1} {route_m:>9.1} {:>12.3}",
+                        route_m / stock_m
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn skinny_nax_route_table_matches_the_m5_probe() {
+        use NaxVerifyRoute::*;
+        let mxfp4 = mxfp4_test_weight(64, 256);
+        let mut affine4 = mxfp4.clone();
+        affine4.mode = "affine".to_owned();
+        affine4.group_size = 64;
+        affine4.biases = affine4.scales.clone();
+        let mut affine8 = affine4.clone();
+        affine8.bits = 8;
+        let route = |nax, rows, n, w: &QuantizedWeight| {
+            nax_verify_route_for(nax, 6, true, rows, n, 5120, w)
+        };
+        // M3/M4 or older MLX: unchanged.
+        assert_eq!(route(false, 8, 17_408, &affine4), AxKernels);
+        // 2 rows: stock 2-row QMM is already cheaper than a padded 6.
+        assert_eq!(route(true, 2, 17_408, &affine4), AxKernels);
+        for rows in 3..=5 {
+            assert_eq!(route(true, rows, 17_408, &affine4), StockPadded(6));
+            assert_eq!(route(true, rows, 5_120, &mxfp4), StockPadded(6));
+        }
+        for rows in 6..=8 {
+            assert_eq!(route(true, rows, 17_408, &affine4), Stock);
+            assert_eq!(route(true, rows, 248_320, &affine4), Stock);
+            // Fp-mode vocabulary heads stay on AX: stock NAX is 2-3x slower.
+            assert_eq!(route(true, rows, 248_320, &mxfp4), AxKernels);
+            assert_eq!(route(true, rows, 17_408, &affine8), AxKernels);
+        }
+        assert_eq!(
+            nax_verify_route_for(true, 0, true, 8, 17_408, 5120, &affine4),
+            AxKernels
+        );
+        assert_eq!(
+            nax_verify_route_for(true, 6, false, 4, 17_408, 5120, &affine4),
+            AxKernels
+        );
+        assert_eq!(
+            nax_verify_route_for(true, 6, true, 4, 512, 5120, &affine4),
+            AxKernels
+        );
+    }
+
+    #[test]
+    fn padded_stock_qmm_matches_unpadded_stock_rows() {
+        let (n, k) = (1024, 1024);
+        let weight = mxfp4_test_weight(n, k);
+        for m in 3..=5 {
+            let x = mxfp4_test_input(m, k);
+            let padded = stock_qmm_padded(&x, &weight, 6).expect("padded stock");
+            let reference = mxfp4_reference(&x, &weight);
+            assert_eq!(padded.shape(), reference.shape());
+            let host = |y: &MlxArray| {
+                let y = contiguous(&astype(y, MlxDtype::Float32, None), None);
+                eval(&[&y]);
+                y.data_f32().to_vec()
+            };
+            let (p, r) = (host(&padded), host(&reference));
+            let diff = p
+                .iter()
+                .zip(&r)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            // Different kernels (qmv_wide vs qmv_nax) may reorder the reduction.
+            assert!(diff < 0.25, "rows {m}: max diff {diff}");
+        }
     }
 
     #[test]

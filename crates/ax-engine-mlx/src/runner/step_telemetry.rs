@@ -64,6 +64,11 @@ pub(super) struct MtpTelemetry {
     /// Times a parked request probed DFlash2 again, and whether a parked
     /// step's rows could not be kept (the request then stays parked).
     pub(super) dflash2_probes: u32,
+    /// DFlash2 drafter tokens proposed / committed. They are also counted as
+    /// `Mtp` source tokens (the MTP gates read those across a hand-off); this
+    /// pair lets metrics split the DFlash2 share out.
+    pub(super) draft_source_dflash2_tokens: u32,
+    pub(super) accepted_source_dflash2_tokens: u32,
     pub(super) dflash2_parked_capture_lost: u32,
     /// Cycle-level acceptance: accepted_cycles counts MTP verify cycles where
     /// ALL draft tokens were accepted; rejected_cycles counts cycles with any
@@ -504,6 +509,16 @@ impl MtpTelemetry {
         self.dflash2_handoff_target = target;
     }
 
+    pub(super) fn record_dflash2_drafts(&mut self, drafted: usize, committed: usize) {
+        let as_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        self.draft_source_dflash2_tokens = self
+            .draft_source_dflash2_tokens
+            .saturating_add(as_u32(drafted));
+        self.accepted_source_dflash2_tokens = self
+            .accepted_source_dflash2_tokens
+            .saturating_add(as_u32(committed));
+    }
+
     pub(super) fn record_dflash2_probe(&mut self) {
         self.dflash2_probes = self.dflash2_probes.saturating_add(1);
     }
@@ -665,6 +680,12 @@ impl MtpTelemetry {
             .dflash2_handoff_target
             .max(other.dflash2_handoff_target);
         self.dflash2_probes = self.dflash2_probes.saturating_add(other.dflash2_probes);
+        self.draft_source_dflash2_tokens = self
+            .draft_source_dflash2_tokens
+            .saturating_add(other.draft_source_dflash2_tokens);
+        self.accepted_source_dflash2_tokens = self
+            .accepted_source_dflash2_tokens
+            .saturating_add(other.accepted_source_dflash2_tokens);
         self.dflash2_parked_capture_lost = self
             .dflash2_parked_capture_lost
             .max(other.dflash2_parked_capture_lost);
@@ -1119,6 +1140,14 @@ impl MtpTelemetry {
             (
                 "ax_mtp_accepted_source_hybrid_mtp_tokens",
                 self.accepted_source_hybrid_mtp_tokens,
+            ),
+            (
+                "ax_mtp_draft_source_dflash2_tokens",
+                self.draft_source_dflash2_tokens,
+            ),
+            (
+                "ax_mtp_accepted_source_dflash2_tokens",
+                self.accepted_source_dflash2_tokens,
             ),
             ("ax_mtp_ngram_attempt_steps", self.ngram_attempt_steps),
             ("ax_mtp_ngram_hit_steps", self.ngram_hit_steps),

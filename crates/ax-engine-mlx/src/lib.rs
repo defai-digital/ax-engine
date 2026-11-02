@@ -70,6 +70,7 @@ pub mod diagnostics {
 }
 
 pub use fastpath::{MlxNumericsPreset, install_mlx_numerics_preset, mlx_numerics_preset_name};
+pub use hardware::{NaxVerifyKernelStatus, nax_verify_kernel_status};
 pub use runner::{MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell, MtpSessionPolicy};
 pub use whisper::{WhisperError, WhisperModel, WhisperTranscription};
 

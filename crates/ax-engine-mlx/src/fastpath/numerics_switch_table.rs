@@ -66,6 +66,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP", shipped: "on", class: SwitchClass::Token("throughput_mtp=0") },
     SwitchRow { env: "AX_MLX_MTP_LINEAR_PROJECTED_REPLAY", shipped: "off", class: SwitchClass::Token("mtp_projected_replay") },
     SwitchRow { env: "AX_MLX_MTP_RELAXED_TARGET_VERIFY", shipped: "on", class: SwitchClass::Token("relaxed_mtp=0") },
+    SwitchRow { env: "AX_MLX_NAX_VERIFY_NATIVE_SDPA", shipped: "on", class: SwitchClass::Token("nax_verify_sdpa=0") },
     SwitchRow { env: "AX_MLX_MTP_SPLIT_VERIFY_HIDDEN_EVAL", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_MTP_LAZY_ADOPT_STATE", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_MTP_DEVICE_GREEDY_ACCEPT", shipped: "off", class: SwitchClass::NonNumeric("sampling") },
@@ -391,6 +392,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_MTP_RELAXED_TARGET_VERIFY" => {
             switches.relaxed_mtp = false;
+            true
+        }
+        "AX_MLX_NAX_VERIFY_NATIVE_SDPA" => {
+            switches.nax_verify_sdpa = false;
             true
         }
         "AX_MLX_MTP_LINEAR_TAPE_CAPTURE" => {
