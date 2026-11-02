@@ -166,6 +166,16 @@ pub(crate) fn skinny_qmv_nax_active() -> bool {
     nax_verify_kernel_status().active
 }
 
+/// True on M5+ / macOS 26.2+ when the linked MLX is 0.32.5+ and its metallib
+/// carries the `sdpa_split` kernels the relaxed verify SDPA hand-off needs.
+pub(crate) fn nax_verify_sdpa_kernels_active() -> bool {
+    #[cfg(test)]
+    if let Some(value) = SKINNY_OVERRIDE.with(|slot| slot.get()) {
+        return value;
+    }
+    nax_verify_kernel_status().native_sdpa_active
+}
+
 /// What `skinny_qmv_nax_active` decided and why; surfaced by `ax-engine doctor`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NaxVerifyKernelStatus {
@@ -178,18 +188,41 @@ pub struct NaxVerifyKernelStatus {
     /// Whether the linked `mlx.metallib` carries `qmv_nax`; `None` when it
     /// could not be located.
     pub metallib_has_qmv_nax: Option<bool>,
-    /// The verify QMM / SDPA hand-offs to stock NAX kernels are enabled.
+    /// Whether the linked `mlx.metallib` carries `sdpa_split`; `None` when it
+    /// could not be located.
+    #[serde(default)]
+    pub metallib_has_sdpa_split: Option<bool>,
+    /// The verify QMM hand-off to stock NAX kernels is enabled. Requires a
+    /// positive `qmv_nax` probe: an unreadable metallib keeps AX's kernels.
     pub active: bool,
+    /// The relaxed verify SDPA hand-off is enabled (positive `sdpa_split`
+    /// probe on the same host and MLX version gate).
+    #[serde(default)]
+    pub native_sdpa_active: bool,
+}
+
+/// What the loaded MLX runtime offers, probed once per process.
+#[derive(Clone)]
+struct LinkedMlxNax {
+    version: Option<String>,
+    version_ok: bool,
+    qmv_nax: Option<bool>,
+    sdpa_split: Option<bool>,
 }
 
 /// Resolved once per process from the host and the loaded MLX runtime.
 pub fn nax_verify_kernel_status() -> NaxVerifyKernelStatus {
-    static LINKED: OnceLock<(Option<String>, bool, Option<bool>)> = OnceLock::new();
+    static LINKED: OnceLock<LinkedMlxNax> = OnceLock::new();
     let neural_accelerator = neural_accelerator_active();
     if !neural_accelerator {
         return NaxVerifyKernelStatus::default();
     }
-    let (mlx_version, version_ok, kernels) = LINKED
+    let LinkedMlxNax {
+        version: mlx_version,
+        version_ok,
+        qmv_nax: kernels,
+        sdpa_split: sdpa_kernels,
+    } = LINKED
         .get_or_init(|| {
             let raw = mlx_sys::runtime_version().ok();
             let version_ok = raw
@@ -198,29 +231,43 @@ pub fn nax_verify_kernel_status() -> NaxVerifyKernelStatus {
                 .is_some_and(|version| version >= MLX_SKINNY_QMV_NAX_VERSION);
             // A runtime built below macOS 26.2 reports the same version with
             // the NAX kernels compiled out; stock QMM would then be the slow
-            // pre-NAX curve. Fail open only when no metallib can be found.
+            // pre-NAX curve. Each hand-off needs a positive probe of its own
+            // kernels: a metallib that cannot be found or read fails closed.
             let kernels = linked_metallib_has(NAX_QMV_KERNEL_MARKER);
+            let sdpa_kernels = linked_metallib_has(SDPA_SPLIT_KERNEL_MARKER);
             tracing::info!(
                 target = "ax_engine_mlx",
                 version_ok,
                 metallib_has_qmv_nax = ?kernels,
-                active = version_ok && kernels != Some(false),
+                metallib_has_sdpa_split = ?sdpa_kernels,
+                active = version_ok && kernels == Some(true),
+                native_sdpa_active = version_ok && sdpa_kernels == Some(true),
                 "MLX skinny NAX verify kernels"
             );
-            (raw, version_ok, kernels)
+            LinkedMlxNax {
+                version: raw,
+                version_ok,
+                qmv_nax: kernels,
+                sdpa_split: sdpa_kernels,
+            }
         })
         .clone();
     NaxVerifyKernelStatus {
         neural_accelerator,
-        active: version_ok && kernels != Some(false),
+        active: version_ok && kernels == Some(true),
+        native_sdpa_active: version_ok && sdpa_kernels == Some(true),
         mlx_version,
         version_ok,
         metallib_has_qmv_nax: kernels,
+        metallib_has_sdpa_split: sdpa_kernels,
     }
 }
 
 /// Kernel-name fragment every MLX `affine_qmv_nax` instantiation carries.
 const NAX_QMV_KERNEL_MARKER: &[u8] = b"qmv_nax";
+/// Kernel-name fragment of the `sdpa_split` reduce pass (MLX 914732419 /
+/// 0.32.5); absent from the 0.32.4 wheel's metallib.
+const SDPA_SPLIT_KERNEL_MARKER: &[u8] = b"sdpa_split_reduce";
 
 /// Whether the `mlx.metallib` next to the loaded `libmlx.dylib` contains
 /// `needle`; `None` when that metallib cannot be located or read.

@@ -2596,7 +2596,9 @@ fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
             mlx_version: Some(version.to_string()),
             version_ok,
             metallib_has_qmv_nax: kernels,
-            active: version_ok && kernels != Some(false),
+            metallib_has_sdpa_split: kernels,
+            active: version_ok && kernels == Some(true),
+            native_sdpa_active: version_ok && kernels == Some(true),
         };
     let advice_ids = |report: &crate::doctor::DoctorReport| -> Vec<String> {
         report
@@ -2627,6 +2629,11 @@ fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
             status("0.32.5", true, Some(false)),
             "nax_verify_kernels_compiled_out",
         ),
+        // An unreadable metallib fails closed instead of trusting the version.
+        (
+            status("0.32.5", true, None),
+            "nax_verify_kernels_metallib_not_found",
+        ),
     ];
     for (status, expected) in cases {
         let mut report = base();
@@ -2634,6 +2641,20 @@ fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
         assert_eq!(advice_ids(&report), vec![expected.to_string()]);
         assert_eq!(report.nax_verify_kernels, Some(status));
     }
+
+    // Each hand-off is reported only when its own kernels were found.
+    let mut qmv_only = status("0.32.5", true, Some(true));
+    qmv_only.metallib_has_sdpa_split = Some(false);
+    qmv_only.native_sdpa_active = false;
+    let mut report = base();
+    apply_nax_verify_kernel_status(&mut report, qmv_only);
+    let detail = &report
+        .performance_advice
+        .iter()
+        .find(|advice| advice.id == "nax_verify_kernels_active")
+        .expect("active advice")
+        .detail;
+    assert!(detail.contains("no sdpa_split"), "{detail}");
 }
 
 #[test]

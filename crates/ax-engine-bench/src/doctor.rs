@@ -544,12 +544,19 @@ pub(crate) fn apply_nax_verify_kernel_status(
         return;
     }
     let version = status.mlx_version.as_deref().unwrap_or("unknown");
-    let advice = if status.active {
+    let advice = if status.active || status.native_sdpa_active {
+        let handoffs = match (status.active, status.native_sdpa_active) {
+            (true, true) => "the skinny-row NAX QMM and sdpa_split kernels",
+            (true, false) => {
+                "the skinny-row NAX QMM kernels (no sdpa_split, so verify attention keeps AX's path)"
+            }
+            _ => "the sdpa_split kernels (no NAX qmv, so verify projections keep AX's kernels)",
+        };
         DoctorAdvice::info(
             "nax_verify_kernels_active",
             "M5+ speculative verify uses MLX NAX kernels.",
             &format!(
-                "MLX {version} carries the skinny-row NAX QMM and sdpa_split kernels; DFlash2 and relaxed MTP verify windows hand off to them (AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS=0 and AX_MLX_NAX_VERIFY_NATIVE_SDPA=0 turn them off)."
+                "MLX {version} carries {handoffs}; DFlash2 and relaxed MTP verify windows hand off to them (AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS=0 and AX_MLX_NAX_VERIFY_NATIVE_SDPA=0 turn them off)."
             ),
         )
     } else if !status.version_ok {
@@ -560,12 +567,20 @@ pub(crate) fn apply_nax_verify_kernel_status(
                 "The linked MLX reports {version}; speculative verify keeps AX's own kernels until the runtime moves to 0.32.5+."
             ),
         )
+    } else if status.metallib_has_qmv_nax.is_none() {
+        DoctorAdvice::warning(
+            "nax_verify_kernels_metallib_not_found",
+            "The linked mlx.metallib could not be located or read.",
+            &format!(
+                "MLX {version} should carry the NAX verify kernels, but no readable mlx.metallib sits next to the loaded libmlx.dylib, so speculative verify keeps AX's own kernels. Install the published wheel or set MLX_LIB_DIR to a complete MLX build."
+            ),
+        )
     } else {
         DoctorAdvice::warning(
             "nax_verify_kernels_compiled_out",
             "The linked mlx.metallib has no NAX qmv kernels.",
             &format!(
-                "MLX {version} was built with a deployment target below macOS 26.2, so the NAX kernels are compiled out; rebuild with MACOSX_DEPLOYMENT_TARGET=26.2 or install the published wheel."
+                "MLX {version} was built without the NAX kernels (for example a deployment target below macOS 26.2); rebuild with MACOSX_DEPLOYMENT_TARGET=26.2 or install the published wheel."
             ),
         )
     };
