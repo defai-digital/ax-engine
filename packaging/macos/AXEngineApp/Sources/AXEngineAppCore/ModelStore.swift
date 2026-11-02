@@ -22,7 +22,22 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public var source = "Local folder"
     /// Bytes that removing this row frees (whole repository for a cache snapshot).
     public var sizeBytes: Int64?
-    public var displayName: String { name.components(separatedBy: " · ").first?.components(separatedBy: "/").last ?? name }
+    /// Human title plus variant tags, e.g. "Tiel Coder 35B A3B" + [MXFP4, MTP].
+    public var label: ModelLabel { ModelLabel(repositoryName: repositoryName) }
+    /// One-line text form for alerts and accessibility: "Clef 27B · MXFP4".
+    public var displayName: String { label.text }
+    /// The repository part of the name without organization or revision.
+    public var repositoryName: String {
+        let url = URL(fileURLWithPath: path)
+        if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
+            return name.components(separatedBy: " · ").first?.components(separatedBy: "/").last ?? name
+        }
+        var folder = url.lastPathComponent
+        if managed, let range = folder.range(of: "--") { folder = String(folder[range.upperBound...]) }
+        // App-managed folders end with "--<revision>".
+        if let range = folder.range(of: #"--[0-9a-f]{7,40}$"#, options: .regularExpression) { folder.removeSubrange(range) }
+        return folder
+    }
     public var id: String { path }
     public var isAutomatosX: Bool {
         let url = URL(fileURLWithPath: path)
@@ -51,6 +66,35 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
                 + " · " + String(url.lastPathComponent.prefix(8))
         }
         return url.lastPathComponent
+    }
+}
+
+/// Display name for a model pack. Brand and format words every pack shares
+/// (AX, MLX, AXQ) are dropped; quantization and MTP become tags so variants
+/// of one model stay distinguishable without a long string.
+public struct ModelLabel: Equatable, Sendable {
+    public let title: String
+    public let tags: [String]
+    public var text: String { ([title] + tags).joined(separator: " · ") }
+
+    public init(title: String, tags: [String]) { self.title = title; self.tags = tags }
+
+    public init(repositoryName: String) {
+        var tokens = repositoryName.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+        if tokens.first?.uppercased() == "AX", tokens.count > 1 { tokens.removeFirst() }
+        var words: [String] = [], quant: [String] = [], features: [String] = []
+        for token in tokens {
+            let upper = token.uppercased()
+            if ["MLX", "AXQ"].contains(upper) { continue }
+            if upper == "MTP" { features.append("MTP") }
+            else if upper.range(of: #"^(MX|NV)FP\d+$"#, options: .regularExpression) != nil { quant.append(upper) }
+            else if let match = token.range(of: #"^(\d+)[- ]?bits?$"#, options: [.regularExpression, .caseInsensitive]) {
+                quant.append(String(token[match].prefix { $0.isNumber }) + "-bit")
+            } else { words.append(token) }
+        }
+        // A name made only of tags keeps its original spelling as the title.
+        title = words.isEmpty ? repositoryName : words.joined(separator: " ")
+        tags = words.isEmpty ? [] : quant + features
     }
 }
 

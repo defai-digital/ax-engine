@@ -82,11 +82,19 @@ struct ServerControls: View {
                         if model.favoriteModels.contains(model.selectedPath) {
                             Image(systemName: "star.fill").foregroundStyle(Brand.accentChrome)
                         }
-                        Text(selectedTitle).lineLimit(1).truncationMode(.middle)
+                        if let selectedModel {
+                            ModelTitle(label: selectedModel.label)
+                            if let size = selectedModel.sizeBytes {
+                                Text(TransferFormat.bytes(size)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text(selectedTitle).lineLimit(1).truncationMode(.middle)
+                        }
                         Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .disabled(attached).frame(maxWidth: 420, alignment: .leading)
+                .help(selectedModel.map { $0.name + "\n" + $0.path } ?? "Choose a downloaded model")
                 .popover(isPresented: $pickerOpen, arrowEdge: .bottom) {
                     ModelPickerPopover(models: selectable, selectedPath: model.selectedPath,
                                        favorites: model.favoriteModels, recent: model.recentModels, scanning: models.scanning,
@@ -96,7 +104,7 @@ struct ServerControls: View {
                 }
                     .accessibilityLabel("Model to serve")
                 if !model.selectedPath.isEmpty {
-                    Button("Show in Library") { model.modelSearch = selectedModel?.displayName ?? ""; model.modelsSection = "library"; model.page = .models }
+                    Button("Show in Library") { model.modelSearch = selectedModel?.repositoryName ?? ""; model.modelsSection = "library"; model.page = .models }
                 }
             }
             if showsPath && !model.selectedPath.isEmpty {

@@ -112,8 +112,7 @@ struct ModelPickerPopover: View {
         return HStack(spacing: 8) {
             Button { choose(item.path) } label: {
                 HStack(spacing: 8) {
-                    Text(item.displayName).font(.callout.weight(selected ? .semibold : .regular))
-                        .lineLimit(1).truncationMode(.middle)
+                    ModelTitle(label: item.label, font: .callout.weight(selected ? .semibold : .regular))
                     if let size = item.sizeBytes {
                         Text(TransferFormat.bytes(size)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
@@ -122,7 +121,7 @@ struct ModelPickerPopover: View {
                 }.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(item.path)
+            .help(item.name + "\n" + item.path)
             Button { toggleFavorite(item.path) } label: {
                 Image(systemName: favorite ? "star.fill" : "star")
                     .foregroundStyle(favorite ? Brand.accentChrome : .secondary)
@@ -148,5 +147,28 @@ struct ModelPickerPopover: View {
     private func chooseHighlighted() {
         if let path = highlighted, navigable.contains(where: { $0.path == path }) { choose(path) }
         else if let first = navigable.first { choose(first.path) }
+    }
+}
+
+/// A model's short title followed by its variant tags (quantization, MTP).
+/// The title truncates first; tags stay readable because they tell variants
+/// of the same model apart.
+struct ModelTitle: View {
+    let label: ModelLabel
+    var font: Font = .callout
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(label.title).font(font).lineLimit(1).truncationMode(.tail)
+                .layoutPriority(0)
+            ForEach(label.tags, id: \.self) { tag in
+                Text(tag).font(.caption2.weight(.semibold)).monospaced()
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .foregroundStyle(tag == "MTP" ? Brand.accentChrome : .secondary)
+                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                    .fixedSize().layoutPriority(1)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label.text)
     }
 }
