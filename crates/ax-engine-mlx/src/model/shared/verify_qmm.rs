@@ -102,9 +102,11 @@ fn mxfp4_window_min_n() -> i32 {
 /// (`hardware::skinny_qmv_nax_active`: M5 or later, macOS 26.2+, MLX >=
 /// 0.32.5). M5 Max probe (`bench_verify_route_vs_stock_all`, 27B shapes):
 /// stock at 6 rows costs 1.0-1.3x one row and beats AX's kernels 1.3-2.0x at
-/// 6..=8 rows, and a 3..=5-row window padded to 6 beats AX's kernels on every
-/// affine 4/6-bit and MXFP4 projection (affine4 gate_up 3 rows: route 81.9 us,
-/// stock-6 75.9 us; mxfp4 down 5 rows: route 117.8 us, stock-6 84.5 us).
+/// 6..=8 rows (and a 3..=5-row window padded to 6 beats AX's kernels per
+/// call, but not end to end: see [`nax_pad_enabled`]). End to end, stock at
+/// 6..=8 rows with the NAX verify SDPA: Qwen 3.8 27B MXFP4 + DFlash2, 17
+/// prompts, 1.176x mean / 1.222x median over both hand-offs off, code
+/// prompts up to 1.31x, no prompt slower.
 const NAX_STOCK_MIN_ROWS: i32 = 6;
 /// Fp-mode (MXFP4/MXFP8) projections at least this wide stay on AX's kernel:
 /// stock NAX at 6..=16 rows is 2.1-2.8x slower there (mxfp4 248K lm_head:
@@ -124,11 +126,15 @@ fn nax_stock_min_rows() -> i32 {
     })
 }
 
-/// `AX_MLX_MTP_VERIFY_QMM_NAX_PAD` (default on): pad 3..cut-over verify rows
-/// with zero rows up to the cut-over and serve them with stock NAX QMM.
+/// `AX_MLX_MTP_VERIFY_QMM_NAX_PAD` (default **off**, `1` opts in): pad
+/// 3..cut-over verify rows with zero rows up to the cut-over and serve them
+/// with stock NAX QMM. The per-call probe favours it, but end to end it
+/// loses: M5 Max, Qwen 3.8 27B MXFP4 + DFlash2, 17-prompt real suite vs both
+/// hand-offs off, padding on 1.124x mean (min 0.852x, prose 0.96-0.97x)
+/// against padding off 1.176x mean (min 1.003x).
 fn nax_pad_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| crate::fastpath::env_flag_default_on("AX_MLX_MTP_VERIFY_QMM_NAX_PAD"))
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_NAX_PAD"))
 }
 
 /// How one armed verify projection runs on this host.

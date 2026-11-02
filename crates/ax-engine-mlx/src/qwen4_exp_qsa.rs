@@ -1718,7 +1718,10 @@ const QSA_TILE_WORKSPACE_BUDGET: usize = 128 * 1024 * 1024;
 const QSA_SCORE_WORKSPACE_LIMIT: usize = 256 * 1024 * 1024;
 /// GPU architectures whose tiled f32 GEMM matched the monolithic score bits.
 const QSA_TILED_SCORE_ARCHES: &[&str] = &["applegpu_g14d", "applegpu_g17s"];
-const QSA_TILED_MLX_VERSION: &str = "0.32.4";
+/// MLX runtimes whose tiled f32 score GEMM was proven bit-identical to the
+/// monolithic scores by `qsa_tiled_score_bits_match_monolithic` on the
+/// architectures above. 0.32.5 is the `914732419` NAX pin (M5 Max proof).
+const QSA_TILED_MLX_VERSIONS: &[&str] = &["0.32.4", "0.32.5"];
 
 /// Query tiles for one score. `query_rows` sums to the chunk length.
 /// `workspace_bytes` is the largest tile's scratch estimate.
@@ -1842,7 +1845,7 @@ fn tiled_score_runtime_matches() -> bool {
     let version_ok = if let Some(matches) = VERSION.get() {
         *matches
     } else if let Ok(version) = mlx_sys::runtime_version() {
-        *VERSION.get_or_init(|| version == QSA_TILED_MLX_VERSION)
+        *VERSION.get_or_init(|| QSA_TILED_MLX_VERSIONS.contains(&version.as_str()))
     } else {
         false
     };
@@ -7342,7 +7345,9 @@ mod tests {
     fn qsa_tiled_score_bits_match_monolithic() {
         let arch = gpu_device_architecture().unwrap();
         let version = mlx_sys::runtime_version().unwrap();
-        if !QSA_TILED_SCORE_ARCHES.contains(&arch.as_str()) || version != QSA_TILED_MLX_VERSION {
+        if !QSA_TILED_SCORE_ARCHES.contains(&arch.as_str())
+            || !QSA_TILED_MLX_VERSIONS.contains(&version.as_str())
+        {
             eprintln!("skipping: {arch} / MLX {version} is not a proven tiled-score target");
             return;
         }
