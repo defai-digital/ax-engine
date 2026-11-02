@@ -105,9 +105,23 @@ fn text_of_tool_result(content: Option<&Value>) -> Result<String, HttpError> {
                     Some("text") => {
                         text.push_str(block.get("text").and_then(Value::as_str).unwrap_or(""))
                     }
+                    // Tool search results name tools to load. AX renders
+                    // every declared tool already, so the reference only
+                    // needs to reach the model as the tool's name.
+                    Some("tool_reference") => {
+                        let name = block
+                            .get("tool_name")
+                            .or_else(|| block.get("name"))
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| invalid("tool_reference requires tool_name"))?;
+                        if !text.is_empty() && !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                        text.push_str(name);
+                    }
                     other => {
                         return Err(invalid(format!(
-                            "unsupported block type {other:?} inside tool_result; only text is supported"
+                            "unsupported block type {other:?} inside tool_result; only text and tool_reference are supported"
                         )));
                     }
                 }
@@ -840,6 +854,37 @@ pub(crate) async fn anthropic_count_tokens(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_reference_results_render_as_tool_names() {
+        let body = json!({"max_tokens": 8, "messages": [
+            {"role": "user", "content": "find a weather tool"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "s1", "name": "tool_search", "input": {"query": "weather"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "s1", "content": [
+                    {"type": "tool_reference", "tool_name": "get_weather"},
+                    {"type": "tool_reference", "tool_name": "get_time"}
+                ]}
+            ]}
+        ]});
+        let chat = to_openai_chat_body(&body).unwrap();
+        let tool = chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .unwrap();
+        assert_eq!(tool["content"], json!("get_weather\nget_time"));
+
+        let missing_name = json!({"max_tokens": 8, "messages": [
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "s1", "content": [{"type": "tool_reference"}]}
+            ]}
+        ]});
+        assert!(to_openai_chat_body(&missing_name).is_err());
+    }
 
     #[test]
     fn trailing_assistant_text_is_continued_but_tool_use_is_not() {
