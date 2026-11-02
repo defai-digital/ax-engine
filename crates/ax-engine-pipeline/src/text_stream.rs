@@ -181,10 +181,10 @@ mod tests {
             &["ab\u{FFFD}", "ab你"][..],
             &["hello"][..],
         ] {
-            let final_decode = decodes.last().expect("non-empty decodes");
+            let streamed = replay_stream_with_final_flush(decodes);
             assert_eq!(
-                replay_stream_with_final_flush(decodes),
-                *final_decode,
+                Some(streamed.as_str()),
+                decodes.last().copied(),
                 "streamed text must equal final decode for {decodes:?}"
             );
         }

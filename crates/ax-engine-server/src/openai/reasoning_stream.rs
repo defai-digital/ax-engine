@@ -375,7 +375,7 @@ mod tests {
         for text in cases {
             let (want_content, want_reasoning) =
                 crate::openai::responses::split_reasoning_content(text, true);
-            let want_reasoning = want_reasoning.expect("case has a think block");
+            let want_reasoning = want_reasoning.as_deref();
             for stride in [1, 2, 3, 5, 8, usize::MAX] {
                 let mut scanner = ThinkTagScanner::new();
                 let (mut reasoning, mut content) = (String::new(), String::new());
@@ -388,7 +388,11 @@ mod tests {
                 let tail = scanner.finish();
                 reasoning.push_str(&tail.reasoning);
                 content.push_str(&tail.content);
-                assert_eq!(reasoning, want_reasoning, "stride {stride}: {text:?}");
+                assert_eq!(
+                    Some(reasoning.as_str()),
+                    want_reasoning,
+                    "stride {stride}: {text:?}"
+                );
                 assert_eq!(
                     content.trim_end(),
                     want_content,
