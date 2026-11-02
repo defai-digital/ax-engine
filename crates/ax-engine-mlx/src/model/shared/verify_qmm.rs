@@ -1397,6 +1397,151 @@ mod tests {
         assert_route_matches_affine_qmm(2048, 0, 3, "small split-K");
     }
 
+    /// Route vs stock QMM for every routed format, every Qwen 3.8 27B
+    /// projection shape and every routed row count (3..=8). Use it to decide
+    /// per-row cut-overs when the linked MLX changes its skinny-row kernels
+    /// (e.g. NAX `affine_qmv_nax` on M5+). Data is arbitrary bit patterns.
+    /// Run: `cargo test -p ax-engine-mlx --release --lib
+    /// bench_verify_route_vs_stock_all -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing probe; run on Apple Silicon with --ignored --nocapture"]
+    fn bench_verify_route_vs_stock_all() {
+        const CALLS: usize = 16;
+        const REPEATS: usize = 7;
+        let time_us = |build: &dyn Fn(&MlxArray) -> MlxArray, inputs: &[MlxArray]| {
+            let mut best = f64::INFINITY;
+            for _ in 0..REPEATS {
+                let start = std::time::Instant::now();
+                let outputs: Vec<MlxArray> = inputs.iter().map(build).collect();
+                eval(&outputs.iter().collect::<Vec<_>>());
+                best = best.min(start.elapsed().as_secs_f64() * 1e6 / CALLS as f64);
+            }
+            best
+        };
+        let shapes = [
+            ("gate_up", 17_408, 5_120),
+            ("down", 5_120, 17_408),
+            ("qkv", 12_288, 5_120),
+            ("o_proj", 5_120, 6_144),
+            ("lm_head", 248_320, 5_120),
+        ];
+        println!(
+            "mlx {}",
+            mlx_sys::runtime_version().unwrap_or_else(|err| err)
+        );
+        println!("format   shape        m  stock_us  route_us  route/stock");
+        for (label, bits, group_size) in [
+            ("affine4", 4, 64),
+            ("affine6", 6, 64),
+            ("affine8", 8, 64),
+            ("mxfp4", 4, 32),
+        ] {
+            let mxfp4 = label == "mxfp4";
+            for (name, n, k) in shapes {
+                let words = k * bits / 32;
+                let packed = reshape(
+                    &arange(
+                        0.0,
+                        f64::from(n) * f64::from(words),
+                        1.0,
+                        MlxDtype::Uint32,
+                        None,
+                    ),
+                    &[n, words],
+                    None,
+                );
+                let (scales, biases, mode) = if mxfp4 {
+                    (
+                        zeros(&[n, k / group_size], MlxDtype::Uint8, None),
+                        None,
+                        MlxQuantizationMode::Mxfp4,
+                    )
+                } else {
+                    (
+                        zeros(&[n, k / group_size], MlxDtype::Bfloat16, None),
+                        Some(zeros(&[n, k / group_size], MlxDtype::Bfloat16, None)),
+                        MlxQuantizationMode::Affine,
+                    )
+                };
+                match &biases {
+                    Some(b) => eval(&[&packed, &scales, b]),
+                    None => eval(&[&packed, &scales]),
+                }
+                let weight = QuantizedWeight {
+                    weight: packed,
+                    scales: Some(scales),
+                    biases,
+                    group_size,
+                    bits,
+                    mode: if mxfp4 { "mxfp4" } else { "affine" }.to_owned(),
+                    linear_bias: None,
+                    decode_weight_t: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
+                    weight_t_view: Default::default(),
+                };
+                let stock = |x: &MlxArray| {
+                    quantized_matmul_with_mode(
+                        x,
+                        &weight.weight,
+                        weight.scales.as_ref().unwrap(),
+                        weight.biases.as_ref(),
+                        true,
+                        Some(group_size),
+                        Some(bits),
+                        mode,
+                        None,
+                    )
+                };
+                let route_of = |x: &MlxArray| {
+                    if mxfp4 {
+                        mxfp4_window_qmm(x, &weight, 0)
+                    } else {
+                        try_qwen_mtp_verify_qmm_for_min_n(x, &weight, 0)
+                    }
+                };
+                for m in 3..=8 {
+                    let inputs: Vec<MlxArray> = (0..CALLS)
+                        .map(|call| {
+                            let start = call as f64;
+                            astype(
+                                &reshape(
+                                    &arange(
+                                        start,
+                                        start + f64::from(m * k),
+                                        1.0,
+                                        MlxDtype::Float32,
+                                        None,
+                                    ),
+                                    &[1, m, k],
+                                    None,
+                                ),
+                                MlxDtype::Bfloat16,
+                                None,
+                            )
+                        })
+                        .collect();
+                    eval(&inputs.iter().collect::<Vec<_>>());
+                    let _guard = QwenMtpVerifyQmmGuard::arm(true);
+                    if route_of(&inputs[0]).is_none() {
+                        println!("{label:8} {name:8} {m:>5}  (not routed)");
+                        continue;
+                    }
+                    let route = |x: &MlxArray| route_of(x).expect("eligible");
+                    let _ = time_us(&stock, &inputs);
+                    let _ = time_us(&route, &inputs);
+                    let stock_m = time_us(&stock, &inputs);
+                    let route_m = time_us(&route, &inputs);
+                    println!(
+                        "{label:8} {name:8} {m:>5} {stock_m:>9.1} {route_m:>9.1} {:>12.3}",
+                        route_m / stock_m
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn multi_simdgroup_matches_affine_qmm_on_large_n_shape() {
         assert_route_matches_affine_qmm(MSG_ROUTE_N, MIN_ROUTE_N, 3, "multi-simdgroup");
