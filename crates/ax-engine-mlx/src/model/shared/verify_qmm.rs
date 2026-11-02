@@ -169,8 +169,7 @@ fn nax_verify_route_for(
     );
     if !skinny_nax
         || cutover == 0
-        || rows < 3
-        || rows > AFFINE_MAX_ROWS
+        || !(3..=AFFINE_MAX_ROWS).contains(&rows)
         // Affine 8-bit: route and stock tie on M5 (0.98-1.04x).
         || (!fp_mode && weight.bits == 8)
         || (fp_mode && n >= NAX_FP_WIDE_N)
