@@ -117,9 +117,10 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    (`ax-engine serve <model> -- --speculation-profile <mode>`; Automatic passes
    nothing, so the runtime default and any `AX_MLX_SPECULATION_PROFILE` in the
    environment still apply). The chips live in the shared inference header at
-   the top of Dashboard, Server and Playground, next to the Playground profile
-   chips; choosing one saves it immediately, and when the running server uses a
-   different mode the header offers **Restart in … Mode** in place. The same
+   the top of Dashboard and Server (Playground's header carries the request
+   profile chips instead, because that profile only shapes Playground
+   requests); choosing one saves it immediately, and when the running server
+   uses a different mode the header offers **Restart in … Mode** in place. The same
    setting is on Settings › Runtime, where it can be changed while a server is
    running because it does not need a rescan. The server status row and the
    header show which mode the running server was started with. An app-owned

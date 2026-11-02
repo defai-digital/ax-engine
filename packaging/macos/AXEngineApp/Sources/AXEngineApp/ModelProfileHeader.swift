@@ -2,8 +2,9 @@ import SwiftUI
 import AXEngineAppCore
 
 /// One shared inference context on Dashboard, Server and Playground: the
-/// running model, the serving mode the server drafts with, and the saved
-/// Playground request profile. Both selectors can be switched here.
+/// running model and the mode it drafts with. Dashboard and Server carry the
+/// serving mode selector (a server-level setting); Playground carries the
+/// request profile selector, which only shapes Playground requests.
 struct ModelProfileHeader: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
@@ -14,6 +15,7 @@ struct ModelProfileHeader: View {
         chat.generating || (runtime.metrics["ax_engine_generation_active_streams"] ?? 0) > 0
     }
     private var modeAwaitsRestart: Bool { runtime.owned && runtime.servingMode != model.settings.servingMode }
+    private var showsServingMode: Bool { model.page != .chat }
 
     var body: some View {
         Card {
@@ -42,22 +44,25 @@ struct ModelProfileHeader: View {
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle",
                           tint: runtime.ready ? Brand.accentChrome : .secondary)
             }
-            selectorRow("Serving mode", chips: servingModes)
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(servingGuidance).font(.caption).foregroundStyle(.secondary)
-                if modeAwaitsRestart {
-                    Button("Restart in \(model.settings.servingMode.title) Mode", systemImage: "arrow.clockwise") {
-                        let settings = model.settings
-                        Task { await chat.stop(); await runtime.restart(settings: settings) }
+            if showsServingMode {
+                selectorRow("Serving mode", chips: servingModes)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(servingGuidance).font(.caption).foregroundStyle(.secondary)
+                    if modeAwaitsRestart {
+                        Button("Restart in \(model.settings.servingMode.title) Mode", systemImage: "arrow.clockwise") {
+                            let settings = model.settings
+                            Task { await chat.stop(); await runtime.restart(settings: settings) }
+                        }
+                        .controlSize(.small)
+                        .disabled(runtime.busy || runtime.state == "Stopping" || inferenceActive)
+                        .help(inferenceActive ? "Finish or stop the current reply first, or restart from the Server page."
+                                              : "Stop this server and start it again in the saved serving mode.")
                     }
-                    .controlSize(.small)
-                    .disabled(runtime.busy || runtime.state == "Stopping" || inferenceActive)
-                    .help(inferenceActive ? "Finish or stop the current reply first, or restart from the Server page."
-                                          : "Stop this server and start it again in the saved serving mode.")
                 }
+            } else {
+                selectorRow("Playground profile", chips: profiles)
+                Text(guidance).font(.caption).foregroundStyle(.secondary)
             }
-            selectorRow("Playground profile", chips: profiles)
-            Text(guidance).font(.caption).foregroundStyle(.secondary)
             if let error = model.settingsError { ErrorBanner(text: error) }
         }
     }
