@@ -31,6 +31,7 @@ use crate::openai::chat_requests::{
     reject_video_chat_content, render_gemma4_unified_chat_with_media,
     render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
     render_openai_chat_prompt_with_family_offsets, render_qwen3_vl_chat_with_media,
+    sort_parallel_tool_results,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -562,6 +563,7 @@ fn build_openai_chat_request_with_control(
         &request.messages,
         crate::metadata::model_supports_video(live),
     )?;
+    sort_parallel_tool_results(&mut request.messages);
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     // Masking constrains what the model may write, not what it plans: tell
@@ -881,9 +883,10 @@ fn validate_native_chat_artifacts(
 
 pub(crate) fn build_openai_mlx_lm_chat_request(
     live: &LiveState,
-    request: OpenAiChatCompletionHttpRequest,
+    mut request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_grammar_budget(request.grammar_budget)?;
+    sort_parallel_tool_results(&mut request.messages);
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     reject_mlx_lm_ignore_eos(live, request.ignore_eos)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
@@ -949,9 +952,10 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
 
 pub(crate) fn build_openai_llama_cpp_chat_request(
     live: &LiveState,
-    request: OpenAiChatCompletionHttpRequest,
+    mut request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_grammar_budget(request.grammar_budget)?;
+    sort_parallel_tool_results(&mut request.messages);
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);

@@ -27,6 +27,83 @@ use crate::openai::validation::{openai_tool_choice_enables_tool_call, openai_val
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 type ChatMessagePairs = Vec<(String, String)>;
 
+/// Put each run of tool results back in the order of the assistant turn's
+/// `tool_calls`.
+///
+/// Clients that run parallel calls often append results as they complete.
+/// Templates that pair results with calls by position (Qwen
+/// `<tool_response>`, DeepSeek, Llama) would then attach a result to the
+/// wrong call. A run is reordered only when every result names a distinct
+/// `tool_call_id` from the preceding assistant's `tool_calls`; anything else
+/// is left exactly as sent.
+pub(crate) fn sort_parallel_tool_results(messages: &mut [OpenAiChatMessage]) {
+    let mut index = 0;
+    while index < messages.len() {
+        let call_ids: Vec<String> = match (
+            messages[index].role.eq_ignore_ascii_case("assistant"),
+            messages[index]
+                .tool_calls
+                .as_ref()
+                .and_then(Value::as_array),
+        ) {
+            (true, Some(calls)) if calls.len() > 1 => calls
+                .iter()
+                .filter_map(|call| call.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect(),
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        let start = index + 1;
+        let mut end = start;
+        while end < messages.len() && messages[end].role.eq_ignore_ascii_case("tool") {
+            end += 1;
+        }
+        let run = &mut messages[start..end];
+        let positions: Option<Vec<usize>> = run
+            .iter()
+            .map(|message| {
+                let id = message._tool_call_id.as_deref()?;
+                call_ids.iter().position(|call_id| call_id == id)
+            })
+            .collect();
+        if let Some(positions) = positions {
+            let mut distinct = positions.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if distinct.len() == positions.len() {
+                let mut keyed: Vec<(usize, usize)> = positions
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(offset, position)| (position, offset))
+                    .collect();
+                keyed.sort_unstable();
+                // Apply the permutation in place; messages are not `Clone`.
+                let order: Vec<usize> = keyed.into_iter().map(|(_, offset)| offset).collect();
+                apply_permutation(run, order);
+            }
+        }
+        index = end.max(start);
+    }
+}
+
+/// Reorder `items` so that `items[i]` becomes the old `items[order[i]]`.
+fn apply_permutation<T>(items: &mut [T], mut order: Vec<usize>) {
+    for i in 0..items.len() {
+        let mut current = i;
+        while order[current] != i {
+            let next = order[current];
+            items.swap(current, next);
+            order[current] = current;
+            current = next;
+        }
+        order[current] = current;
+    }
+}
+
 /// A native-MLX chat prompt with Gemma 4 unified media already expanded into
 /// soft-token spans and preprocessed tensors.
 pub(crate) struct Gemma4UnifiedChatPrompt {

@@ -5509,3 +5509,74 @@ async fn delegated_llama_cpp_chat_ignore_eos_keeps_only_client_stops() {
         stopping.chat_request.stop_sequences
     );
 }
+
+fn parallel_tool_messages(result_ids: &[&str]) -> Vec<OpenAiChatMessage> {
+    let mut messages = vec![
+        json!({"role": "user", "content": "weather in Paris and Tokyo"}),
+        json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_a", "type": "function",
+             "function": {"name": "weather", "arguments": "{\"city\":\"Paris\"}"}},
+            {"id": "call_b", "type": "function",
+             "function": {"name": "weather", "arguments": "{\"city\":\"Tokyo\"}"}}
+        ]}),
+    ];
+    for id in result_ids {
+        messages
+            .push(json!({"role": "tool", "tool_call_id": id, "content": format!("result {id}")}));
+    }
+    serde_json::from_value(Value::Array(messages)).expect("messages deserialize")
+}
+
+fn tool_result_order(messages: &[OpenAiChatMessage]) -> Vec<String> {
+    let prompt = render_openai_chat_prompt("qwen3", messages).expect("qwen prompt");
+    let a = prompt.find("result call_a").expect("result a rendered");
+    let b = prompt.find("result call_b").expect("result b rendered");
+    if a < b {
+        vec!["a".into(), "b".into()]
+    } else {
+        vec!["b".into(), "a".into()]
+    }
+}
+
+#[test]
+fn parallel_tool_results_follow_the_tool_calls_order() {
+    let mut messages = parallel_tool_messages(&["call_b", "call_a"]);
+    assert_eq!(tool_result_order(&messages), ["b", "a"], "precondition");
+    crate::openai::chat_requests::sort_parallel_tool_results(&mut messages);
+    assert_eq!(tool_result_order(&messages), ["a", "b"]);
+}
+
+#[test]
+fn parallel_tool_results_keep_client_order_when_ids_do_not_match() {
+    for ids in [&["call_b", "call_x"][..], &["call_b", "call_b"][..]] {
+        let mut messages = parallel_tool_messages(ids);
+        let before: Vec<Option<String>> =
+            messages.iter().map(|m| m._tool_call_id.clone()).collect();
+        crate::openai::chat_requests::sort_parallel_tool_results(&mut messages);
+        let after: Vec<Option<String>> = messages.iter().map(|m| m._tool_call_id.clone()).collect();
+        assert_eq!(before, after, "{ids:?}");
+    }
+}
+
+#[tokio::test]
+async fn chat_request_builder_sorts_parallel_tool_results() {
+    let state = test_app_state(|args| {
+        args.model_id = "qwen3".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let live = state.snapshot();
+    let mut request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "placeholder"}],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+    request.messages = parallel_tool_messages(&["call_b", "call_a"]);
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
+    let prompt = built
+        .generate_request
+        .input_text
+        .expect("text prompt for the llama.cpp backend");
+    let a = prompt.find("result call_a").expect("result a rendered");
+    let b = prompt.find("result call_b").expect("result b rendered");
+    assert!(a < b, "{prompt}");
+}
