@@ -2611,7 +2611,7 @@ fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
     apply_nax_verify_kernel_status(&mut off_host, Default::default());
     assert!(off_host.nax_verify_kernels.is_none());
     assert!(advice_ids(&off_host).is_empty());
-    let json = serde_json::to_value(&off_host).unwrap();
+    let json = serde_json::to_value(&off_host).expect("doctor report serializes");
     assert!(json.get("nax_verify_kernels").is_none());
 
     let cases = [
