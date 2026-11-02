@@ -117,3 +117,26 @@ import Testing
     let stage = PartialDownload(path: "/models/.AutomatosX--Fixture--abc123.ax-download", label: "AutomatosX/Fixture", sizeBytes: 1)
     #expect(URL(fileURLWithPath: stage.path).lastPathComponent == "." + item.folderName + ".ax-download")
 }
+
+@Test func restartedTransferStillDetectsAStall() {
+    var estimator = TransferRateEstimator()
+    let start = Date(timeIntervalSince1970: 1_000)
+    estimator.observe(bytes: 1_000, at: start)
+    let restarted = start.addingTimeInterval(2)
+    estimator.observe(bytes: 0, at: restarted)
+    #expect(estimator.stalledFor(at: restarted.addingTimeInterval(30)) == 30)
+    estimator.observe(bytes: 0, at: restarted.addingTimeInterval(31))
+    #expect(estimator.stalledFor(at: restarted.addingTimeInterval(32)) == 32)
+    estimator.observe(bytes: 100, at: restarted.addingTimeInterval(33))
+    #expect(estimator.stalledFor(at: restarted.addingTimeInterval(34)) == nil)
+}
+
+@Test func catalogCacheAssociationRespectsTheRequestedRevision() {
+    let row = LocalModel(path: "/cache/models--AutomatosX--Pack/snapshots/older", ready: true, managed: false)
+    let old = CatalogModel(alias: "Pack", repoId: "AutomatosX/Pack", revision: "older", mtpIncluded: false)
+    let current = CatalogModel(alias: "Pack", repoId: "AutomatosX/Pack", revision: "newer", mtpIncluded: false)
+    let unpinned = CatalogModel(alias: "Pack", repoId: "AutomatosX/Pack", revision: nil, mtpIncluded: false)
+    #expect(row.isCatalogAssociated([old]))
+    #expect(!row.isCatalogAssociated([current]))
+    #expect(row.isCatalogAssociated([unpinned]))
+}

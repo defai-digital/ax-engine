@@ -36,7 +36,10 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
         let url = URL(fileURLWithPath: path)
         if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
             let repository = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
-            return catalog.contains { repository == "models--" + $0.repoId.replacingOccurrences(of: "/", with: "--") }
+            return catalog.contains {
+                repository == "models--" + $0.repoId.replacingOccurrences(of: "/", with: "--")
+                    && ($0.revision == nil || $0.revision == url.lastPathComponent)
+            }
         }
         return managed && catalog.contains { url.lastPathComponent == $0.folderName }
     }

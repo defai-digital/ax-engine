@@ -43,7 +43,7 @@ public struct TransferRateEstimator: Sendable, Equatable {
     public mutating func observe(bytes: Int64, at time: Date = Date()) -> Double? {
         if let last = samples.last {
             // A resumed or restarted transfer may report fewer bytes; start over.
-            if bytes < last.bytes || time < last.time { samples.removeAll(); lastAdvance = nil }
+            if bytes < last.bytes || time < last.time { samples.removeAll(); lastAdvance = time }
             else if bytes > last.bytes { lastAdvance = time }
         } else {
             lastAdvance = time
