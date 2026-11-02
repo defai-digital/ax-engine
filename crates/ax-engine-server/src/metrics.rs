@@ -333,6 +333,33 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             process.mtp_direct_fallback_steps_total,
             |step| step.mtp_direct_fallback_steps_total,
         );
+        for (name, help, baseline, value) in [
+            (
+                "ax_engine_speculative_draft_tokens_total",
+                "Speculative draft tokens proposed, split by draft_source (dflash2, mtp head, ngram, hybrid_mtp), across observed engine steps (model-less series: summed across loaded models).",
+                process.speculative_drafted_by_source_total,
+                (|step: &crate::app_state::EngineStepGauges, index: usize| {
+                    step.speculative_drafted_by_source_total[index]
+                }) as fn(&crate::app_state::EngineStepGauges, usize) -> u64,
+            ),
+            (
+                "ax_engine_speculative_accepted_tokens_total",
+                "Speculative draft tokens accepted, split by draft_source (dflash2, mtp head, ngram, hybrid_mtp), across observed engine steps (model-less series: summed across loaded models).",
+                process.speculative_accepted_by_source_total,
+                |step, index| step.speculative_accepted_by_source_total[index],
+            ),
+        ] {
+            append_step_metric_by_label(
+                &mut body,
+                name,
+                help,
+                "draft_source",
+                &crate::app_state::SPECULATIVE_DRAFT_SOURCES,
+                &step_models,
+                &baseline,
+                value,
+            );
+        }
         // Attribute the Flash Next direct-fallback total by the block or error
         // reason that forced it. The suffix is derived from the engine's route
         // key so the two cannot drift.
@@ -1315,6 +1342,40 @@ fn append_step_metric(
         body.push_str("\"} ");
         body.push_str(&value(step).to_string());
         body.push('\n');
+    }
+}
+
+/// A counter family with one extra label: a model-less series per label
+/// value (summed across models plus the retired-model baseline) and one series
+/// per loaded model and label value.
+#[allow(clippy::too_many_arguments)]
+fn append_step_metric_by_label(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label: &str,
+    label_values: &[&str],
+    step_models: &[(String, crate::app_state::EngineStepGauges)],
+    baseline: &[u64],
+    value: impl Fn(&crate::app_state::EngineStepGauges, usize) -> u64,
+) {
+    use std::fmt::Write as _;
+    let _ = writeln!(body, "# HELP {name} {help}");
+    let _ = writeln!(body, "# TYPE {name} counter");
+    for (index, label_value) in label_values.iter().enumerate() {
+        let total = baseline[index]
+            .saturating_add(step_models.iter().map(|(_, step)| value(step, index)).sum());
+        let _ = writeln!(body, "{name}{{{label}=\"{label_value}\"}} {total}");
+    }
+    for (model_id, step) in step_models {
+        let model = escape_label_value(model_id);
+        for (index, label_value) in label_values.iter().enumerate() {
+            let _ = writeln!(
+                body,
+                "{name}{{model=\"{model}\",{label}=\"{label_value}\"}} {}",
+                value(step, index)
+            );
+        }
     }
 }
 

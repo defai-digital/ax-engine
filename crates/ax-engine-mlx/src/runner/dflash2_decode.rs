@@ -701,6 +701,7 @@ fn record_dflash2_committed_drafts(
         None,
         committed_drafts,
     );
+    telemetry.record_dflash2_drafts(drafted, committed_drafts);
 }
 
 /// Drafts one window. `pending_hidden` stays in place until the caller commits
@@ -2471,6 +2472,19 @@ mod tests {
             committed_draft_count(accepted, eos_keep),
         );
         assert_eq!(telemetry.accepted_tokens, 3 + 4);
+        // The DFlash2 share is split out for metrics but still counts as MTP.
+        assert_eq!(telemetry.accepted_source_dflash2_tokens, 3 + 4);
+        assert_eq!(
+            telemetry.draft_source_dflash2_tokens,
+            2 * drafts.len() as u32
+        );
+        assert_eq!(
+            telemetry.draft_source_mtp_tokens,
+            telemetry.draft_source_dflash2_tokens
+        );
+        let mut decisions: Vec<(String, u32)> = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        assert!(decisions.contains(&("ax_mtp_accepted_source_dflash2_tokens".into(), 7)));
     }
 
     #[test]

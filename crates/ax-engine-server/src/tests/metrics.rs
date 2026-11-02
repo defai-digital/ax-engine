@@ -555,6 +555,66 @@ async fn metrics_mtp_counters_do_not_sum_cumulative_snapshots() {
     assert!(body.contains("ax_engine_flash_next_mtp_cursor_dropped_total 2\n"));
 }
 
+#[tokio::test]
+async fn metrics_split_speculative_tokens_by_draft_source() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let app = build_router(state);
+
+    // DFlash2 drafts are counted as MTP source tokens in the runner; the
+    // dflash2 pair splits that share back out.
+    let report =
+        |mtp: u32, mtp_ok: u32, dflash2: u32, dflash2_ok: u32, ngram: u32| EngineStepReport {
+            route: Some(GenerateRouteReport {
+                crossover_decisions: BTreeMap::from([
+                    ("ax_mtp_draft_source_mtp_tokens".to_string(), mtp),
+                    ("ax_mtp_accepted_source_mtp_tokens".to_string(), mtp_ok),
+                    ("ax_mtp_draft_source_dflash2_tokens".to_string(), dflash2),
+                    (
+                        "ax_mtp_accepted_source_dflash2_tokens".to_string(),
+                        dflash2_ok,
+                    ),
+                    ("ax_mtp_draft_source_ngram_tokens".to_string(), ngram),
+                    ("ax_mtp_accepted_source_ngram_tokens".to_string(), ngram / 2),
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+    // One request: DFlash2 rounds, then a hand-off to MTP (running totals).
+    metrics.record_step_report("qwen3", &report(56, 30, 56, 30, 0));
+    metrics.record_step_report("qwen3", &report(65, 36, 56, 30, 4));
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for line in [
+        "ax_engine_speculative_draft_tokens_total{draft_source=\"dflash2\"} 56\n",
+        "ax_engine_speculative_draft_tokens_total{draft_source=\"mtp\"} 9\n",
+        "ax_engine_speculative_draft_tokens_total{draft_source=\"ngram\"} 4\n",
+        "ax_engine_speculative_draft_tokens_total{draft_source=\"hybrid_mtp\"} 0\n",
+        "ax_engine_speculative_accepted_tokens_total{draft_source=\"dflash2\"} 30\n",
+        "ax_engine_speculative_accepted_tokens_total{draft_source=\"mtp\"} 6\n",
+        "ax_engine_speculative_accepted_tokens_total{draft_source=\"ngram\"} 2\n",
+        "ax_engine_speculative_draft_tokens_total{model=\"qwen3\",draft_source=\"dflash2\"} 56\n",
+    ] {
+        assert!(body.contains(line), "missing {line:?}: {body}");
+    }
+    assert_eq!(
+        body.matches("# TYPE ax_engine_speculative_draft_tokens_total counter")
+            .count(),
+        1
+    );
+}
+
 /// Node-saturation series follow the AX Serving fleet-dispatch contract:
 /// config-derived series are always present once a model is loaded, while
 /// measurement-derived series stay hidden until real traffic produces them.
