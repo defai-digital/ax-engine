@@ -1502,6 +1502,35 @@ mod tests {
     }
 
     #[test]
+    fn qwen_inner_closer_is_invariant_across_all_chunk_splits() {
+        let text = "<tool_call>\n<function=echo>\n<parameter=text>\na</tool_call>b\n</parameter>\n</function>\n</tool_call>tail";
+        for split in 0..=text.len() {
+            let mut scanner = scanner();
+            let mut events = scanner.push(&text[..split]);
+            events.extend(scanner.push(&text[split..]));
+            events.extend(scanner.finish());
+            assert_eq!(calls(&events).len(), 1, "split {split}");
+            assert_eq!(content(&events), "tail", "split {split}");
+            assert_eq!(
+                calls(&events)[0].function.arguments,
+                r#"{"text":"a</tool_call>b"}"#,
+                "split {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn qwen_call_without_function_close_is_emitted_at_finish() {
+        let mut scanner = scanner();
+        let mut events =
+            scanner.push("<tool_call>\n<function=f>\n<parameter=x>\n1\n</parameter>\n</tool_call>");
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.arguments, r#"{"x":1}"#);
+    }
+
+    #[test]
     fn unterminated_xml_call_parses_at_finish() {
         let mut scanner = scanner();
         let first = scanner.push("<tool_call>{\"name\":\"f\",\"arguments\":{\"x\":1}}");
