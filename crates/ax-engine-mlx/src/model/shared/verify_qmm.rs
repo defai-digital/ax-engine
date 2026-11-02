@@ -137,6 +137,12 @@ fn nax_pad_enabled() -> bool {
     *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_NAX_PAD"))
 }
 
+/// True when 6..=8-row verify projections go to stock NAX QMM on this host,
+/// which makes a wide verify window almost as cheap as a four-row one.
+pub(crate) fn nax_stock_handoff_active() -> bool {
+    nax_stock_min_rows() > 0 && crate::hardware::skinny_qmv_nax_active()
+}
+
 /// How one armed verify projection runs on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NaxVerifyRoute {

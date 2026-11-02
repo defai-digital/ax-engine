@@ -288,8 +288,27 @@ const DECAY: f64 = 0.92;
 /// pack (pinned windows, 7 prompts): 40.0 ms at four rows, 50.2 at six and 60.3
 /// at eight. The fused matmul makes up to four rows cost the same; each row
 /// after that adds about 5 ms.
-fn round_cost_ms(window: usize) -> f64 {
+fn round_cost_ms_classic(window: usize) -> f64 {
     40.0 + 5.07 * window.saturating_sub(4) as f64
+}
+
+/// The same round on M5 or later with the NAX verify hand-off
+/// (`verify_qmm::nax_stock_handoff_active`): stock NAX QMM serves 6..=8 rows
+/// for about the cost of four. Measured on the M5 Max, 27B MXFP4, MLX 0.32.5,
+/// pinned windows over 7 prompts: 39.2 ms at four rows, 42.1 at six and 43.0
+/// at eight; pinned eight then decoded 1.31x pinned four and 1.10x the
+/// classic-cost adaptive policy.
+fn round_cost_ms_nax(window: usize) -> f64 {
+    39.2 + 0.95 * window.saturating_sub(4) as f64
+}
+
+/// Round cost on this host: the NAX fit where the hand-off is active.
+fn round_cost_ms(window: usize) -> f64 {
+    if crate::model::shared::verify_qmm::nax_stock_handoff_active() {
+        round_cost_ms_nax(window)
+    } else {
+        round_cost_ms_classic(window)
+    }
 }
 
 /// Per-position acceptance of one request's drafts, as decayed counts.
@@ -2049,7 +2068,7 @@ mod tests {
         for _ in 0..12 {
             code.record(7, 7);
         }
-        assert_eq!(code.best_window(8, round_cost_ms), 8);
+        assert_eq!(code.best_window(8, round_cost_ms_classic), 8);
         // Drafts that are always wrong shrink it to the four rows a round costs
         // the same as three.
         let mut noise = WindowStats::new();
@@ -2057,26 +2076,54 @@ mod tests {
             noise.record(3, 0);
         }
         assert!(
-            noise.best_window(8, round_cost_ms) <= 4,
+            noise.best_window(8, round_cost_ms_classic) <= 4,
             "{}",
-            noise.best_window(8, round_cost_ms)
+            noise.best_window(8, round_cost_ms_classic)
         );
         // Prose-like acceptance (one or two drafts per round) stays narrow.
         let mut prose = WindowStats::new();
         for round in 0..40 {
-            prose.record(prose.best_window(8, round_cost_ms) - 1, 1 + round % 2);
+            prose.record(
+                prose.best_window(8, round_cost_ms_classic) - 1,
+                1 + round % 2,
+            );
         }
         assert!(
-            prose.best_window(8, round_cost_ms) <= 5,
+            prose.best_window(8, round_cost_ms_classic) <= 5,
             "{}",
-            prose.best_window(8, round_cost_ms)
+            prose.best_window(8, round_cost_ms_classic)
         );
         // A request that turns into code widens again.
         for _ in 0..40 {
-            let window = prose.best_window(8, round_cost_ms);
+            let window = prose.best_window(8, round_cost_ms_classic);
             prose.record(window - 1, window - 1);
         }
-        assert_eq!(prose.best_window(8, round_cost_ms), 8);
+        assert_eq!(prose.best_window(8, round_cost_ms_classic), 8);
+    }
+
+    #[test]
+    fn nax_round_cost_widens_mid_acceptance_windows() {
+        assert!(round_cost_ms_nax(8) < round_cost_ms_classic(6));
+        assert!((round_cost_ms_nax(3) - round_cost_ms_nax(4)).abs() < 1e-9);
+        // Mid acceptance observed over full eight-row windows (per-position
+        // rate about 0.7): the classic fit stops short of the block, the NAX
+        // fit takes the nearly free extra rows.
+        let mut stats = WindowStats::new();
+        for round in 0..48 {
+            stats.record(7, [7, 2, 5, 1, 7, 3, 4, 2][round % 8]);
+        }
+        let (classic, nax) = (
+            stats.best_window(8, round_cost_ms_classic),
+            stats.best_window(8, round_cost_ms_nax),
+        );
+        assert!(nax > classic, "nax {nax} classic {classic}");
+        assert_eq!(nax, 8);
+        // Drafts that are always wrong still shrink the window.
+        let mut noise = WindowStats::new();
+        for _ in 0..12 {
+            noise.record(3, 0);
+        }
+        assert!(noise.best_window(8, round_cost_ms_nax) <= 4);
     }
 
     fn gap_rows(n: usize) -> MlxArray {
@@ -2330,8 +2377,8 @@ mod tests {
             assert!(tokens > previous);
             previous = tokens;
         }
-        assert!(round_cost_ms(8) > round_cost_ms(4));
-        assert!((round_cost_ms(3) - round_cost_ms(4)).abs() < 1e-9);
+        assert!(round_cost_ms_classic(8) > round_cost_ms_classic(4));
+        assert!((round_cost_ms_classic(3) - round_cost_ms_classic(4)).abs() < 1e-9);
     }
 
     #[test]
