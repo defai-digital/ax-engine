@@ -46,6 +46,12 @@ if '--speculation-profile' in sys.argv:
     if '--' not in sys.argv[:index] or sys.argv[index + 1:index + 2] not in (['auto'], ['coding'], ['agentic'], ['chatbot']):
         sys.stderr.write('speculation profile must follow -- with a known value\n')
         sys.exit(2)
+if '--max-concurrent-requests' in sys.argv:
+    index = sys.argv.index('--max-concurrent-requests')
+    value = sys.argv[index + 1:index + 2]
+    if '--' not in sys.argv[:index] or not value or not value[0].isdigit() or not 1 <= int(value[0]) <= 8:
+        sys.stderr.write('max concurrent requests must follow -- with a value from 1 to 8\n')
+        sys.exit(2)
 key = os.environ.get('AX_ENGINE_API_KEY', '')
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'

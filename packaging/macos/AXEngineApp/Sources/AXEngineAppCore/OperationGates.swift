@@ -79,25 +79,31 @@ public enum ServerGate {
 
     /// Restart button title for an app-owned server, naming what the restart
     /// changes so a plain restart and a configuration switch read differently.
-    public static func restartTitle(modelChanged: Bool, modeChanged: Bool, mode: ServingMode) -> String {
+    public static func restartTitle(modelChanged: Bool, modeChanged: Bool, capChanged: Bool = false, mode: ServingMode) -> String {
         switch (modelChanged, modeChanged) {
         case (true, true): "Restart with Selected Model in \(mode.title) Mode"
-        case (true, false): "Restart with Selected Model"
+        case (true, false): capChanged ? "Restart with Selected Model and New Request Cap" : "Restart with Selected Model"
         case (false, true): "Restart in \(mode.title) Mode"
-        case (false, false): "Restart Server"
+        case (false, false): capChanged ? "Restart with New Request Cap" : "Restart Server"
         }
     }
 
     /// Explains a saved change that the running server does not use yet.
-    public static func pendingRestartNotice(modelChanged: Bool, modeChanged: Bool, running: ServingMode, selected: ServingMode) -> String? {
+    public static func pendingRestartNotice(modelChanged: Bool, modeChanged: Bool, running: ServingMode, selected: ServingMode,
+                                            runningCap: Int? = nil, selectedCap: Int? = nil) -> String? {
+        let capChanged = runningCap != nil && selectedCap != nil && runningCap != selectedCap
+        let capNote = capChanged ? " The request cap changes from \(runningCap ?? 0) to \(selectedCap ?? 0) at the same time." : ""
         switch (modelChanged, modeChanged) {
         case (true, true):
-            "The selected model and serving mode differ from the running server. Restart to switch; it keeps serving in \(running.title) mode until then."
+            return "The selected model and serving mode differ from the running server. Restart to switch; it keeps serving in \(running.title) mode until then." + capNote
         case (true, false):
-            "The selected model differs from the running one. Restart to switch; the current server keeps serving until then."
+            return "The selected model differs from the running one. Restart to switch; the current server keeps serving until then." + capNote
         case (false, true):
-            "\(selected.title) mode is saved for the next launch. The running server keeps \(running.title) mode until you restart."
-        case (false, false): nil
+            return "\(selected.title) mode is saved for the next launch. The running server keeps \(running.title) mode until you restart." + capNote
+        case (false, false):
+            return capChanged
+                ? "Up to \(selectedCap ?? 0) concurrent requests is saved for the next launch. The running server still admits \(runningCap ?? 0) until you restart."
+                : nil
         }
     }
 

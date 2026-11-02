@@ -148,6 +148,10 @@ struct SettingsView: View {
             Text("Applies when the app starts its server. Restart a running server from the Server page to switch; attached services keep their own mode. Command line: "
                  + model.settingsDraft.servingMode.commandLineHint)
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Stepper("Concurrent requests: \(model.settingsDraft.concurrentRequests)", value: $model.settingsDraft.concurrentRequests,
+                    in: AppSettings.concurrentRequestRange)
+            Text("How many requests one server decodes at once before new ones receive 429 (`--max-concurrent-requests`). 4 keeps each request near full speed on batched models; 8 is the runtime's batch limit. Memory planning sizes per-request state for this count.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 

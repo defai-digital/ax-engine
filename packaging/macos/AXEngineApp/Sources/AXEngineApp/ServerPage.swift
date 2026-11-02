@@ -61,6 +61,8 @@ struct ServerPage: View {
                 }
                 Card("Runtime metrics", subtitle: "Live server counters; unavailable metrics are shown as a dash.") {
                     MetricRow(label: "Active generation streams", value: metric("ax_engine_generation_active_streams"))
+                    MetricRow(label: "Requests in current step", value: metric("ax_engine_step_scheduled_requests"))
+                    MetricRow(label: "Batch capacity", value: metric("ax_runtime_max_batch_size"))
                     MetricRow(label: "Scheduled tokens", value: metric("ax_engine_scheduled_tokens_total"))
                     MetricRow(label: "MLX active memory", value: memoryMetric("ax_engine_memory_mlx_active_bytes"))
                     MetricRow(label: "MLX cache memory", value: memoryMetric("ax_engine_memory_mlx_cache_bytes"))
@@ -107,6 +109,8 @@ struct ServerPage: View {
                     if runtime.owned {
                         PillBadge(text: runtime.servingMode.badge, systemImage: "bolt")
                             .help("Speculative-decode posture this server was started with.")
+                        PillBadge(text: "Up to \(runtime.concurrentRequests) requests", systemImage: "person.2")
+                            .help("Requests this server decodes at once before new ones receive 429.")
                     }
                     if let detail = ServerGate.stateDetail(state: runtime.state, startedAt: runtime.startedAt, now: context.date) {
                         Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -199,7 +203,9 @@ struct ServerPage: View {
                 if runtime.owned {
                     let switching = !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel
                     let switchingMode = model.settings.servingMode != runtime.servingMode
-                    Button(ServerGate.restartTitle(modelChanged: switching, modeChanged: switchingMode, mode: model.settings.servingMode),
+                    let switchingCap = model.settings.concurrentRequests != runtime.concurrentRequests
+                    Button(ServerGate.restartTitle(modelChanged: switching, modeChanged: switchingMode, capChanged: switchingCap,
+                                                   mode: model.settings.servingMode),
                            systemImage: "arrow.clockwise") {
                         let target = switching && models.canSelectInGUI(model.selectedPath) ? model.selectedPath : runtime.selectedModel
                         if inferenceActive { restartTarget = target }
@@ -207,8 +213,8 @@ struct ServerPage: View {
                     }
                     .disabled(runtime.busy || runtime.state == "Stopping" || models.removing
                               || (switching && !models.canSelectInGUI(model.selectedPath)))
-                    .help(switching || switchingMode
-                          ? "Stop this server and start it again with the selected model and serving mode. Active inference stops."
+                    .help(switching || switchingMode || switchingCap
+                          ? "Stop this server and start it again with the selected model, serving mode and request cap. Active inference stops."
                           : "Stop this server and start it again. Active inference stops.")
                     Button(runtime.state == "Starting" ? "Cancel Start" : "Stop Server", systemImage: "stop.fill", role: .destructive) {
                         if inferenceActive { stopConfirmation = true } else { Task { await chat.stop(); await runtime.stop() } }
@@ -228,7 +234,8 @@ struct ServerPage: View {
             if runtime.owned, let notice = ServerGate.pendingRestartNotice(
                 modelChanged: !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel,
                 modeChanged: model.settings.servingMode != runtime.servingMode,
-                running: runtime.servingMode, selected: model.settings.servingMode) {
+                running: runtime.servingMode, selected: model.settings.servingMode,
+                runningCap: runtime.concurrentRequests, selectedCap: model.settings.concurrentRequests) {
                 Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             } else if !runtime.owned, runtime.connection == nil, let reason = startBlockReason {
                 Label(reason, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)

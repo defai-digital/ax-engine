@@ -123,7 +123,18 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    uses a different mode the header offers **Restart in … Mode** in place. The same
    setting is on Settings › Runtime, where it can be changed while a server is
    running because it does not need a rescan. The server status row and the
-   header show which mode the running server was started with. An app-owned
+   header show which mode the running server was started with.
+   **Concurrent requests** (1–8, default 4) is forwarded the same way as
+   `--max-concurrent-requests`: one server decodes up to that many requests at
+   once in a single batch and answers 429 beyond it, and the runtime's memory
+   plan sizes per-request state for that count. 4 keeps each request near
+   full speed on batched models; 8 is the runtime's batched-decode cohort
+   limit. The stepper sits in the same header as the serving mode on
+   Dashboard and Server; while running, it shows the runtime's batch slots in
+   use from its own gauges, and the status row and header show the cap the
+   server was started with. Changing the cap or the mode while the server
+   runs turns Restart into **Restart with New Request Cap** / **Restart in …
+   Mode**, offered in the header on Dashboard and in the card on Server. An app-owned
    server uses a per-launch in-memory API key. **Restart Server** stops and
    relaunches the app-owned server; choosing a different installed model or
    serving mode while it runs turns the button into **Restart with Selected

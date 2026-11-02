@@ -216,7 +216,7 @@ private func temporary() throws -> URL {
     store.clearFinishedDownloads()
     #expect(store.downloads.isEmpty && store.activeDownloadCount == 0)
     let runtime = RuntimeController()
-    var launch = settings; launch.servingMode = .agentic
+    var launch = settings; launch.servingMode = .agentic; launch.concurrentRequests = 3
     runtime.start(model: "fixture", settings: launch)
     let deadline = Date().addingTimeInterval(15)
     while !runtime.ready && Date() < deadline && runtime.owned { try await Task.sleep(for: .milliseconds(50)) }
@@ -224,8 +224,8 @@ private func temporary() throws -> URL {
     #expect(runtime.startedAt != nil)
     #expect(runtime.lastSuccessfulCheck != nil)
     #expect(runtime.selectedModel == "fixture")
-    // The fixture exits when the profile is missing after `--` or unknown.
-    #expect(runtime.servingMode == .agentic)
+    // The fixture exits when the profile or cap is missing after `--` or invalid.
+    #expect(runtime.servingMode == .agentic && runtime.concurrentRequests == 3)
     let client = try #require(runtime.connection)
     let attached = RuntimeController()
     await attached.attach(port: settings.port, apiKey: "wrong")

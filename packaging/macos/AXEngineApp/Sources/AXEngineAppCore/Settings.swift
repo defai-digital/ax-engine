@@ -15,10 +15,16 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var useRuntimeSampling = true
     /// Speculative-decode posture for the next app-owned server launch.
     public var servingMode: ServingMode = .auto
+    /// Admission cap for the next app-owned server launch: how many requests
+    /// one model decodes at once before new ones receive 429. Bounded by the
+    /// runtime's batched-decode cohort (8); 4 keeps per-request speed high.
+    public var concurrentRequests = Self.defaultConcurrentRequests
+    public static let defaultConcurrentRequests = 4
+    public static let concurrentRequestRange = 1...8
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling, servingMode
+        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling, servingMode, concurrentRequests
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -32,10 +38,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         useRuntimeSampling = try values.decodeIfPresent(Bool.self, forKey: .useRuntimeSampling) ?? false
         // Older settings files predate the selector; Automatic is the runtime default.
         servingMode = try values.decodeIfPresent(ServingMode.self, forKey: .servingMode) ?? .auto
+        concurrentRequests = try values.decodeIfPresent(Int.self, forKey: .concurrentRequests) ?? Self.defaultConcurrentRequests
     }
 
     /// Changes that need a library rescan or a new runtime location. The
-    /// serving mode is deliberately excluded: it applies at the next launch.
+    /// serving mode and request cap are deliberately excluded: they apply at
+    /// the next launch.
     public func hasRuntimeChanges(comparedTo saved: Self) -> Bool {
         executable != saved.executable || modelsDirectory != saved.modelsDirectory || port != saved.port
     }
@@ -43,8 +51,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public func validate() throws {
         guard (1024...65535).contains(port), (1...32768).contains(maxTokens),
               temperature.isFinite, (0...2).contains(temperature),
+              Self.concurrentRequestRange.contains(concurrentRequests),
               modelsDirectory.hasPrefix("/"), !modelsDirectory.contains("\0") else {
-            throw AppFailure.message("Use an absolute model folder, port 1024–65535, 1–32768 output tokens and temperature 0–2.")
+            throw AppFailure.message("Use an absolute model folder, port 1024–65535, 1–32768 output tokens, temperature 0–2 and 1–8 concurrent requests.")
         }
         if !executable.isEmpty && (!executable.hasPrefix("/") || !FileManager.default.isExecutableFile(atPath: executable)) {
             throw AppFailure.message("Select an executable AX Engine runtime using its absolute path.")
@@ -69,6 +78,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
         try RuntimeLocator.find(explicit: executable,
             bundled: bundle.bundleURL.appendingPathComponent("Contents/Helpers/AXEngineRuntime.bundle/Contents/MacOS/ax-engine").path,
             development: bundle.object(forInfoDictionaryKey: "AXEngineDevelopmentRuntime") as? String)
+    }
+}
+
+extension AppSettings {
+    /// Server options forwarded after `--` on `ax-engine serve`: the serving
+    /// mode (when not Automatic) and the request admission cap.
+    public var serverOptions: [String] {
+        servingMode.serverOptions + ["--max-concurrent-requests", String(concurrentRequests)]
     }
 }
 

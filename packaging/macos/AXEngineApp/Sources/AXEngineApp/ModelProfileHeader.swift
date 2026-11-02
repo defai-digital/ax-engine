@@ -15,7 +15,16 @@ struct ModelProfileHeader: View {
         chat.generating || (runtime.metrics["ax_engine_generation_active_streams"] ?? 0) > 0
     }
     private var modeAwaitsRestart: Bool { runtime.owned && runtime.servingMode != model.settings.servingMode }
+    private var capAwaitsRestart: Bool { runtime.owned && runtime.concurrentRequests != model.settings.concurrentRequests }
     private var showsServingMode: Bool { model.page != .chat }
+    /// The Server card carries its own restart button and notice.
+    private var showsRestartHint: Bool { model.page != .server }
+    private var pendingNotice: String? {
+        guard showsRestartHint, runtime.owned else { return nil }
+        return ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: modeAwaitsRestart,
+                                               running: runtime.servingMode, selected: model.settings.servingMode,
+                                               runningCap: runtime.concurrentRequests, selectedCap: model.settings.concurrentRequests)
+    }
 
     var body: some View {
         Card {
@@ -40,23 +49,28 @@ struct ModelProfileHeader: View {
                 if runtime.owned {
                     PillBadge(text: runtime.servingMode.badge, systemImage: "bolt")
                         .help("Speculative-decode posture the running app-owned server was started with.")
+                    PillBadge(text: "Up to \(runtime.concurrentRequests) requests", systemImage: "person.2")
+                        .help("Requests the running server decodes at once before new ones receive 429.")
                 }
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle",
                           tint: runtime.ready ? Brand.accentChrome : .secondary)
             }
             if showsServingMode {
                 selectorRow("Serving mode", chips: servingModes)
+                Text(servingGuidance).font(.caption).foregroundStyle(.secondary)
+                concurrencyRow
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(servingGuidance).font(.caption).foregroundStyle(.secondary)
-                    if modeAwaitsRestart {
-                        Button("Restart in \(model.settings.servingMode.title) Mode", systemImage: "arrow.clockwise") {
+                    Text(pendingNotice ?? concurrencyGuidance).font(.caption).foregroundStyle(.secondary)
+                    if showsRestartHint, modeAwaitsRestart || capAwaitsRestart {
+                        Button(ServerGate.restartTitle(modelChanged: false, modeChanged: modeAwaitsRestart, capChanged: capAwaitsRestart,
+                                                       mode: model.settings.servingMode), systemImage: "arrow.clockwise") {
                             let settings = model.settings
                             Task { await chat.stop(); await runtime.restart(settings: settings) }
                         }
                         .controlSize(.small)
                         .disabled(runtime.busy || runtime.state == "Stopping" || inferenceActive)
                         .help(inferenceActive ? "Finish or stop the current reply first, or restart from the Server page."
-                                              : "Stop this server and start it again in the saved serving mode.")
+                                              : "Stop this server and start it again with the saved serving mode and request cap.")
                     }
                 }
             } else {
@@ -79,6 +93,33 @@ struct ModelProfileHeader: View {
                 chips
             }
         }
+    }
+
+    private var concurrencyRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("Concurrent requests").font(.caption).foregroundStyle(.secondary).frame(width: 112, alignment: .leading)
+            Stepper(value: Binding(get: { model.settings.concurrentRequests }, set: { model.selectConcurrentRequests($0) }),
+                    in: AppSettings.concurrentRequestRange) {
+                Text("\(model.settings.concurrentRequests)").font(.callout.weight(.medium).monospacedDigit()).frame(minWidth: 18)
+            }
+            .disabled(attached || model.hasSettingsChanges)
+            .accessibilityLabel("Concurrent requests")
+            if let batchHeadroom { Text(batchHeadroom).font(.caption).foregroundStyle(.secondary) }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Live batch headroom from the runtime's own gauges, when it exports them.
+    private var batchHeadroom: String? {
+        guard runtime.ready, let capacity = runtime.metrics["ax_runtime_max_batch_size"], capacity > 0 else { return nil }
+        let scheduled = runtime.metrics["ax_engine_step_scheduled_requests"].map { Int($0) } ?? 0
+        return "\(scheduled) of \(Int(capacity)) batch slots in use"
+    }
+
+    private var concurrencyGuidance: String {
+        if attached { return "An attached service keeps its own request limits." }
+        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the request cap." }
+        return "How many requests one server decodes at once in a single batch; extra requests receive 429 until a slot frees. 4 keeps each request near full speed, 8 is the runtime's batch limit and halves per-request speed. Single-request MTP acceleration applies while only one request is active."
     }
 
     private var servingModes: some View {
@@ -111,9 +152,6 @@ struct ModelProfileHeader: View {
     private var servingGuidance: String {
         if attached { return "An attached service keeps the serving mode it was started with." }
         if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the serving mode." }
-        if modeAwaitsRestart {
-            return "\(model.settings.servingMode.title) mode is saved for the next launch. The server is still running in \(runtime.servingMode.title) mode."
-        }
         return model.settings.servingMode.summary + " Applies when the server starts and only tunes speculative drafting."
     }
 

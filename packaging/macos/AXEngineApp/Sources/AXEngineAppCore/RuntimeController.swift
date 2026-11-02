@@ -18,6 +18,8 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var selectedModel = ""
     /// The serving mode the current app-owned launch was started with.
     @Published public private(set) var servingMode: ServingMode = .auto
+    /// The request admission cap the current app-owned launch was started with.
+    @Published public private(set) var concurrentRequests = AppSettings.defaultConcurrentRequests
     @Published public private(set) var history = MetricHistory()
     private var mtpWindow = MTPCounterWindow()
     public let job = ProcessJob(terminationGrace: 8)
@@ -39,9 +41,11 @@ public final class RuntimeController: ObservableObject {
     }
 
     /// The `ax-engine serve` argument list for one launch. Loopback and offline
-    /// are fixed; the serving mode is forwarded to the server after `--`.
+    /// are fixed; the serving mode and request cap are forwarded after `--`.
     public nonisolated static func launchArguments(model: String, settings: AppSettings) -> [String] {
-        ["serve", model, "--offline", "--host", "127.0.0.1", "--port", String(settings.port)] + settings.servingMode.serverArguments
+        let options = settings.serverOptions
+        return ["serve", model, "--offline", "--host", "127.0.0.1", "--port", String(settings.port)]
+            + (options.isEmpty ? [] : ["--"] + options)
     }
 
     public func start(model: String, settings: AppSettings) {
@@ -62,7 +66,8 @@ public final class RuntimeController: ObservableObject {
             let key = UUID().uuidString + UUID().uuidString
             let candidate = EngineConnection(port: settings.port, apiKey: key)
             busy = true; owned = true; state = "Starting"; error = nil; logs = ""
-            selectedModel = model; servingMode = settings.servingMode; startedAt = Date(); lastSuccessfulCheck = nil
+            selectedModel = model; servingMode = settings.servingMode; concurrentRequests = settings.concurrentRequests
+            startedAt = Date(); lastSuccessfulCheck = nil
             launch = Task { [self] in
                 do {
                     let result = try await job.run(executable: executable,

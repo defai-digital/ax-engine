@@ -32,11 +32,11 @@ public enum ServingMode: String, Codable, CaseIterable, Sendable {
     /// The value accepted by `ax-engine-server --speculation-profile`.
     public var runtimeValue: String { rawValue }
 
-    /// Arguments appended to `ax-engine serve …`. Automatic adds nothing, so
+    /// Server options forwarded after `--`. Automatic adds nothing, so
     /// existing installs keep the runtime default and any explicit
     /// `AX_MLX_SPECULATION_PROFILE` in the environment still applies.
-    public var serverArguments: [String] {
-        self == .auto ? [] : ["--", "--speculation-profile", runtimeValue]
+    public var serverOptions: [String] {
+        self == .auto ? [] : ["--speculation-profile", runtimeValue]
     }
 
     /// The equivalent command-line flag, for users who run the CLI themselves.

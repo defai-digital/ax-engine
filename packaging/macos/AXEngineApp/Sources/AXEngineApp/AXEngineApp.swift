@@ -89,6 +89,22 @@ final class ApplicationModel: ObservableObject {
             settingsError = error.localizedDescription
         }
     }
+    /// Save the request admission cap for the next app-owned launch.
+    func selectConcurrentRequests(_ count: Int) {
+        guard !hasSettingsChanges else { page = .settings; return }
+        guard AppSettings.concurrentRequestRange.contains(count), settings.concurrentRequests != count else { return }
+        var updated = settings
+        updated.concurrentRequests = count
+        do {
+            try updated.save(to: settingsURL)
+            settings = updated
+            settingsDraft = updated
+            settingsError = nil
+            settingsSaved = true
+        } catch {
+            settingsError = error.localizedDescription
+        }
+    }
     func revertSettings() {
         settingsDraft = settings; settingsError = nil
     }
