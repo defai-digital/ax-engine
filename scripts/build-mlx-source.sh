@@ -15,7 +15,7 @@ REPO_URL="https://github.com/ml-explore/mlx.git"
 MIN_TARGET="26.2"
 
 usage() {
-  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
