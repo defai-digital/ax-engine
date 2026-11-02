@@ -497,6 +497,29 @@ fn append_deepseek_v4_history_transition(
     Ok(())
 }
 
+/// Escape assistant text the way `template` escapes message content, so a
+/// continued final assistant message can be appended after the generation
+/// prompt without forging control tokens.
+pub(crate) fn escape_content_for_template(template: ChatPromptTemplate, content: &str) -> String {
+    match template {
+        ChatPromptTemplate::QwenChatMl => escape_qwen_chatml_content(content),
+        ChatPromptTemplate::Llama3 => escape_llama3_content(content),
+        ChatPromptTemplate::Llama4 => escape_llama4_content(content),
+        ChatPromptTemplate::Gemma4 => escape_gemma4_content(content),
+        ChatPromptTemplate::Glm47 => escape_glm_content(content),
+        ChatPromptTemplate::MistralInstruct => escape_mistral_content(content),
+        ChatPromptTemplate::MinistralInstruct => escape_ministral_content(content),
+        ChatPromptTemplate::GptOssHarmony => escape_gpt_oss_harmony_content(content),
+        ChatPromptTemplate::MuseGlimmerAtem => escape_muse_glimmer_content(content),
+        ChatPromptTemplate::DeepSeekChat => escape_deepseek_content(content),
+        ChatPromptTemplate::MiniMaxM3 => escape_minimax_content(content),
+        ChatPromptTemplate::HyV3 => escape_hy_v3_content(content),
+        ChatPromptTemplate::PlainRolePrefix | ChatPromptTemplate::Unsupported(_) => {
+            content.to_string()
+        }
+    }
+}
+
 pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
     match role.trim() {
         "system" => Ok("system"),

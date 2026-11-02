@@ -207,6 +207,11 @@ impl AnthropicMessagesRequest {
             });
         }
 
+        // Anthropic treats a trailing assistant message as the start of the
+        // reply (prefill): continue it rather than open a new turn.
+        let continue_final_message = messages
+            .last()
+            .is_some_and(|message| message.role == "assistant");
         Ok(OpenAiChatCompletionHttpRequest {
             model: self.model,
             messages,
@@ -227,6 +232,7 @@ impl AnthropicMessagesRequest {
                 .map(OpenAiStopInput::Multiple),
             seed: None,
             ignore_eos: false,
+            continue_final_message,
             stream: false,
             stream_options: Default::default(),
             n: None,

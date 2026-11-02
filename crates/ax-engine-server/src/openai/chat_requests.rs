@@ -27,6 +27,83 @@ use crate::openai::validation::{openai_tool_choice_enables_tool_call, openai_val
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 type ChatMessagePairs = Vec<(String, String)>;
 
+/// Put each run of tool results back in the order of the assistant turn's
+/// `tool_calls`.
+///
+/// Clients that run parallel calls often append results as they complete.
+/// Templates that pair results with calls by position (Qwen
+/// `<tool_response>`, DeepSeek, Llama) would then attach a result to the
+/// wrong call. A run is reordered only when every result names a distinct
+/// `tool_call_id` from the preceding assistant's `tool_calls`; anything else
+/// is left exactly as sent.
+pub(crate) fn sort_parallel_tool_results(messages: &mut [OpenAiChatMessage]) {
+    let mut index = 0;
+    while index < messages.len() {
+        let call_ids: Vec<String> = match (
+            messages[index].role.eq_ignore_ascii_case("assistant"),
+            messages[index]
+                .tool_calls
+                .as_ref()
+                .and_then(Value::as_array),
+        ) {
+            (true, Some(calls)) if calls.len() > 1 => calls
+                .iter()
+                .filter_map(|call| call.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect(),
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        let start = index + 1;
+        let mut end = start;
+        while end < messages.len() && messages[end].role.eq_ignore_ascii_case("tool") {
+            end += 1;
+        }
+        let run = &mut messages[start..end];
+        let positions: Option<Vec<usize>> = run
+            .iter()
+            .map(|message| {
+                let id = message._tool_call_id.as_deref()?;
+                call_ids.iter().position(|call_id| call_id == id)
+            })
+            .collect();
+        if let Some(positions) = positions {
+            let mut distinct = positions.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if distinct.len() == positions.len() {
+                let mut keyed: Vec<(usize, usize)> = positions
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(offset, position)| (position, offset))
+                    .collect();
+                keyed.sort_unstable();
+                // Apply the permutation in place; messages are not `Clone`.
+                let order: Vec<usize> = keyed.into_iter().map(|(_, offset)| offset).collect();
+                apply_permutation(run, order);
+            }
+        }
+        index = end.max(start);
+    }
+}
+
+/// Reorder `items` so that `items[i]` becomes the old `items[order[i]]`.
+fn apply_permutation<T>(items: &mut [T], mut order: Vec<usize>) {
+    for i in 0..items.len() {
+        let mut current = i;
+        while order[current] != i {
+            let next = order[current];
+            items.swap(current, next);
+            order[current] = current;
+            current = next;
+        }
+        order[current] = current;
+    }
+}
+
 /// A native-MLX chat prompt with Gemma 4 unified media already expanded into
 /// soft-token spans and preprocessed tensors.
 pub(crate) struct Gemma4UnifiedChatPrompt {
@@ -175,6 +252,11 @@ pub(crate) struct ChatPromptRenderOptions {
     /// `AX_API_POLISH`, stamped at the request edge. Tool-schema rendering
     /// does not consult it; object keys are already sorted by serde_json.
     pub(crate) api_polish: crate::openai::schema::ApiPolish,
+    /// Continue a final assistant message instead of opening a new turn:
+    /// render the earlier messages with the generation prompt, then append
+    /// the assistant text unclosed (Anthropic prefill, vLLM
+    /// `continue_final_message`). Thinking is rendered off for that turn.
+    pub(crate) continue_final_message: bool,
 }
 
 /// Tools-free convenience wrapper for tests that don't care about tool
@@ -253,6 +335,33 @@ pub(crate) fn render_openai_chat_prompt_with_family_offsets(
 ) -> Result<chat::RenderedPrompt, HttpErrorResponse> {
     // Object keys are sorted by serde_json, which keeps the prompt-cache identity stable.
     let _ = options.api_polish;
+    if options.continue_final_message
+        && let Some((last, earlier)) = messages.split_last()
+        && last.role.eq_ignore_ascii_case("assistant")
+        && last
+            .tool_calls
+            .as_ref()
+            .is_none_or(|calls| !openai_value_is_present(calls))
+    {
+        let prefill = render_openai_chat_content(last.content.as_ref())?;
+        let mut rendered = render_openai_chat_prompt_with_family_offsets(
+            model_id,
+            family_hint,
+            earlier,
+            tools,
+            tool_choice,
+            ChatPromptRenderOptions {
+                enable_thinking: false,
+                continue_final_message: false,
+                ..options
+            },
+        )?;
+        rendered.text.push_str(&chat::escape_content_for_template(
+            chat::resolve_chat_template(model_id, family_hint),
+            &prefill,
+        ));
+        return Ok(rendered);
+    }
     validate_openai_tool_names(messages, tools, tool_choice)?;
     let no_offsets = |text: String| chat::RenderedPrompt {
         text,
@@ -324,6 +433,8 @@ pub(crate) fn render_openai_chat_prompt_with_family_offsets(
     )?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
+    let rendered_messages =
+        prepend_qwen38_reasoning_instruction(model_id, rendered_messages, options.enable_thinking);
     chat::render_prompt_with_template_and_framing_offsets(
         model_id,
         template,
@@ -1962,9 +2073,12 @@ fn prepend_qwen_tool_contract(
     let Some(contract) = render_tool_contract_system_message(tools, tool_choice, style) else {
         return messages;
     };
-    // Ornith and audited Tiel templates put the tools contract first, then caller
-    // system text, in the same system turn.
-    if chat::is_ornith_model(model_id) || chat::is_tiel_coder_model(model_id) {
+    // Ornith, audited Tiel and the hub Qwen 3.5 / 3.6 / 3.8 templates put the
+    // tools contract first, then caller system text, in the same system turn.
+    if chat::is_ornith_model(model_id)
+        || chat::is_tiel_coder_model(model_id)
+        || qwen_template_puts_tools_before_system(model_id)
+    {
         if let Some((role, content)) = messages.first_mut()
             && role == "system"
         {
@@ -1993,6 +2107,64 @@ fn prepend_qwen_tool_contract(
             contract
         };
         messages.insert(0, ("system".to_string(), content));
+    }
+    messages
+}
+
+/// Hub Qwen 3.5 / 3.6 / 3.8 templates (and the 3.5-class fine-tunes that ship
+/// them) render `# Tools ... </IMPORTANT>` and then the trimmed caller system
+/// text. The original Qwen3 template, and Qwen3-Next until a pack template is
+/// checked, keep caller system text first.
+fn qwen_template_puts_tools_before_system(model_id: &str) -> bool {
+    let normalized = chat::normalize_model_id_token(model_id);
+    normalized.contains("qwen3-5")
+        || normalized.contains("qwen35")
+        || normalized.contains("qwen3-6")
+        || normalized.contains("qwen36")
+        || chat::is_qwen38_model_id(model_id)
+        || chat::is_qwen35_class_named_finetune(model_id)
+}
+
+/// Qwen 3.8 hub templates default `reasoning_effort` to `xhigh` when thinking
+/// is on and open the system turn with this instruction.
+pub(crate) const QWEN38_XHIGH_REASONING_INSTRUCTION: &str = "Reasoning effort is set to xhigh. \
+Please think carefully through the task, validate key assumptions, consider plausible \
+alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
+
+/// Put the Qwen 3.8 default reasoning instruction at the start of the system
+/// turn (before the tools contract and caller text), creating the turn when
+/// there is none, exactly as the hub template does with thinking on.
+fn prepend_qwen38_reasoning_instruction(
+    model_id: &str,
+    mut messages: ChatMessagePairs,
+    enable_thinking: bool,
+) -> ChatMessagePairs {
+    if !enable_thinking
+        || !chat::is_qwen38_model_id(model_id)
+        || !matches!(
+            chat::ChatPromptTemplate::for_model_id(model_id),
+            chat::ChatPromptTemplate::QwenChatMl
+        )
+    {
+        return messages;
+    }
+    if let Some((role, content)) = messages.first_mut()
+        && role == "system"
+    {
+        let existing = std::mem::take(content);
+        content.push_str(QWEN38_XHIGH_REASONING_INSTRUCTION);
+        if !existing.trim().is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&existing);
+        }
+    } else {
+        messages.insert(
+            0,
+            (
+                "system".to_string(),
+                QWEN38_XHIGH_REASONING_INSTRUCTION.to_string(),
+            ),
+        );
     }
     messages
 }
@@ -2777,6 +2949,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     }
 
     let pairs = prepend_qwen_tool_contract(model_id, pairs, tools, tool_choice);
+    let pairs = prepend_qwen38_reasoning_instruction(model_id, pairs, options.enable_thinking);
     // Resolve the template from the loaded artifact family too, as the
     // text path does: a product model id need not name the Qwen family.
     let prompt = chat::render_prompt_with_template_and_framing(
@@ -5571,6 +5744,7 @@ mod deepseek_dsml_contract_tests {
                 preserve_thinking: false,
                 deepseek_v4_framing: None,
                 api_polish: crate::openai::schema::ApiPolish::default(),
+                continue_final_message: false,
             },
         )
         .expect("render");
@@ -5616,6 +5790,7 @@ mod deepseek_dsml_contract_tests {
                 preserve_thinking: false,
                 deepseek_v4_framing: None,
                 api_polish: crate::openai::schema::ApiPolish::default(),
+                continue_final_message: false,
             },
         )
         .expect("render");
@@ -5649,6 +5824,7 @@ mod deepseek_dsml_contract_tests {
                     preserve_thinking: false,
                     deepseek_v4_framing: None,
                     api_polish: crate::openai::schema::ApiPolish::default(),
+                    continue_final_message: false,
                 },
             )
             .expect("render")
@@ -5688,6 +5864,7 @@ mod deepseek_dsml_contract_tests {
                 preserve_thinking: true,
                 deepseek_v4_framing: None,
                 api_polish: crate::openai::schema::ApiPolish::default(),
+                continue_final_message: false,
             },
         )
         .expect("render");

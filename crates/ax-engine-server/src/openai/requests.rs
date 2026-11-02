@@ -31,6 +31,7 @@ use crate::openai::chat_requests::{
     reject_video_chat_content, render_gemma4_unified_chat_with_media,
     render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
     render_openai_chat_prompt_with_family_offsets, render_qwen3_vl_chat_with_media,
+    sort_parallel_tool_results,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -562,6 +563,7 @@ fn build_openai_chat_request_with_control(
         &request.messages,
         crate::metadata::model_supports_video(live),
     )?;
+    sort_parallel_tool_results(&mut request.messages);
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     // Masking constrains what the model may write, not what it plans: tell
@@ -578,6 +580,7 @@ fn build_openai_chat_request_with_control(
         add_system_instruction(&mut request.messages, &instruction);
     }
     let prompt_options = openai_chat_prompt_render_options_for_live(&request, live);
+    reject_thinking_with_continued_message(&request, prompt_options)?;
     // Reasoning extraction must follow the prompt's resolved thinking state.
     // The prompt falls back to the live model id when `model` is omitted; a
     // default-thinking model would otherwise render `<think>` into the prompt
@@ -881,9 +884,10 @@ fn validate_native_chat_artifacts(
 
 pub(crate) fn build_openai_mlx_lm_chat_request(
     live: &LiveState,
-    request: OpenAiChatCompletionHttpRequest,
+    mut request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_grammar_budget(request.grammar_budget)?;
+    sort_parallel_tool_results(&mut request.messages);
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     reject_mlx_lm_ignore_eos(live, request.ignore_eos)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
@@ -949,9 +953,10 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
 
 pub(crate) fn build_openai_llama_cpp_chat_request(
     live: &LiveState,
-    request: OpenAiChatCompletionHttpRequest,
+    mut request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_grammar_budget(request.grammar_budget)?;
+    sort_parallel_tool_results(&mut request.messages);
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
@@ -1942,7 +1947,7 @@ fn openai_chat_prompt_render_options_for_model(
     model_id: &str,
 ) -> ChatPromptRenderOptions {
     let template = request.chat_template_kwargs.as_ref();
-    ChatPromptRenderOptions {
+    let mut options = ChatPromptRenderOptions {
         enable_thinking: template
             .and_then(|kwargs| kwargs.enable_thinking)
             // Invalid values are rejected when the request options are built.
@@ -1964,7 +1969,56 @@ fn openai_chat_prompt_render_options_for_model(
         // wrapper resolves the contract framing (ADR-025 Phase 2).
         deepseek_v4_framing: None,
         api_polish: request.api_polish,
+        continue_final_message: continues_final_assistant_message(request),
+    };
+    // A continued assistant message is answer text: the turn renders
+    // without thinking, and the reply is not split into reasoning.
+    if options.continue_final_message {
+        options.enable_thinking = false;
     }
+    options
+}
+
+/// A continued assistant message is answer text, so an explicit request for
+/// thinking cannot also be honoured (Anthropic rejects prefill with thinking
+/// enabled the same way). Model-default thinking just turns off.
+fn reject_thinking_with_continued_message(
+    request: &OpenAiChatCompletionHttpRequest,
+    options: ChatPromptRenderOptions,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let explicit_thinking = request
+        .chat_template_kwargs
+        .as_ref()
+        .and_then(|kwargs| kwargs.enable_thinking)
+        .or_else(|| {
+            openai_thinking_switch(request.thinking.as_ref())
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_else(|| openai_reasoning_is_enabled(request.reasoning.as_ref()));
+    if options.continue_final_message && explicit_thinking {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "a final assistant message (prefill) cannot be continued with thinking enabled; \
+disable thinking or drop the trailing assistant message"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// `continue_final_message` applies only when the last message is an
+/// assistant message with no tool calls.
+fn continues_final_assistant_message(request: &OpenAiChatCompletionHttpRequest) -> bool {
+    request.continue_final_message
+        && request.messages.last().is_some_and(|message| {
+            message.role.eq_ignore_ascii_case("assistant")
+                && message
+                    .tool_calls
+                    .as_ref()
+                    .is_none_or(|calls| !openai_value_is_present(calls))
+        })
 }
 
 /// DeepSeek-style top-level `thinking` switch: `Some(true)` for

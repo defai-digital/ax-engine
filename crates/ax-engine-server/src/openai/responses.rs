@@ -513,23 +513,58 @@ fn extract_xml_tool_call_payload(
     }
     let body_start = start + "<tool_call>".len();
     // An argument string may legitimately contain the closing marker, so
-    // try each successive closer and keep the first body that parses.
+    // try each successive closer and keep the first body that parses. A
+    // Qwen `<function=` body that has not reached its `</function>` parses
+    // leniently (models do omit it), but the closer it stopped at may sit
+    // inside an argument: it is kept only as a fallback when no later closer,
+    // and no completed body at EOF, gives a closed body.
+    let mut lenient: Option<(OpenAiFunctionCall, usize)> = None;
     let mut search = body_start;
     while let Some(relative) = content[search..].find("</tool_call>") {
         let end = search + relative;
-        if let Some(function) = parse_tool_call_body(content[body_start..end].trim()) {
-            let suffix_start = end + "</tool_call>".len();
-            let remaining = format!("{}{}", &content[..start], &content[suffix_start..]);
-            return Some((function, remaining));
+        let body = content[body_start..end].trim();
+        if let Some(function) = parse_tool_call_body(body) {
+            if !qwen_function_body_is_unclosed(body) {
+                return Some(tool_call_with_remaining(content, start, end, function));
+            }
+            if lenient.is_none() {
+                lenient = Some((function, end));
+            }
         }
         search = end + "</tool_call>".len();
     }
     if !allow_unterminated {
+        // Streaming: more text may still close the function; wait for it.
         return None;
     }
     // Unterminated call: the body runs to the end of the content.
-    let function = parse_tool_call_body(content[body_start..].trim())?;
-    Some((function, content[..start].to_string()))
+    let tail = content[body_start..].trim();
+    let unterminated = parse_tool_call_body(tail);
+    if let Some(function) = unterminated.as_ref()
+        && !qwen_function_body_is_unclosed(tail)
+    {
+        return Some((function.clone(), content[..start].to_string()));
+    }
+    if let Some((function, end)) = lenient {
+        return Some(tool_call_with_remaining(content, start, end, function));
+    }
+    unterminated.map(|function| (function, content[..start].to_string()))
+}
+
+fn tool_call_with_remaining(
+    content: &str,
+    start: usize,
+    end: usize,
+    function: OpenAiFunctionCall,
+) -> (OpenAiFunctionCall, String) {
+    let suffix_start = end + "</tool_call>".len();
+    let remaining = format!("{}{}", &content[..start], &content[suffix_start..]);
+    (function, remaining)
+}
+
+/// A Qwen `<function=NAME>` body that has not reached its `</function>`.
+fn qwen_function_body_is_unclosed(body: &str) -> bool {
+    body.starts_with("<function=") && !body.contains("</function>")
 }
 
 /// Whether the text after an unterminated `<tool_call>` opener is the start
@@ -1382,6 +1417,28 @@ mod xml_tool_call_tests {
             "{}",
             function.arguments
         );
+        assert_eq!(remaining, " tail");
+    }
+
+    const QWEN_CALL_WITH_INNER_CLOSER: &str = "<tool_call>\n<function=echo>\n<parameter=text>\na </tool_call> b\n</parameter>\n</function>\n</tool_call> tail";
+
+    #[test]
+    fn qwen_xml_tool_call_survives_a_closing_marker_inside_a_parameter() {
+        let (function, remaining) =
+            extract_xml_tool_call_payload_at(QWEN_CALL_WITH_INNER_CLOSER, 0)
+                .expect("call must be extracted");
+        assert_eq!(function.name, "echo");
+        assert_eq!(function.arguments, r#"{"text":"a </tool_call> b"}"#);
+        assert_eq!(remaining, " tail");
+    }
+
+    #[test]
+    fn qwen_xml_tool_call_without_function_close_still_parses() {
+        let content =
+            "<tool_call>\n<function=echo>\n<parameter=text>\nhi\n</parameter>\n</tool_call> tail";
+        let (function, remaining) =
+            extract_xml_tool_call_payload_at(content, 0).expect("lenient call must be extracted");
+        assert_eq!(function.arguments, r#"{"text":"hi"}"#);
         assert_eq!(remaining, " tail");
     }
 }

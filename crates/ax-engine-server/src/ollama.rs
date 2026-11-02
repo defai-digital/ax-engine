@@ -1118,6 +1118,7 @@ fn ollama_chat_to_openai_request(
             .seed
             .and_then(|seed| u64::try_from(seed).ok()),
         ignore_eos: false,
+        continue_final_message: false,
         stream: false,
         stream_options: Default::default(),
         n: None,
