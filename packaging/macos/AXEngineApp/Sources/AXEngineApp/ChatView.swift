@@ -136,6 +136,14 @@ struct ChatView: View {
             } description: { Text(error) } actions: {
                 Button("Review Server") { model.page = .server }.buttonStyle(.borderedProminent)
             }
+        } else if model.attachedToService {
+            ContentUnavailableView {
+                Label("Waiting for the connected service", systemImage: "network")
+            } description: {
+                Text("AX Engine is attached to a service it did not start. Playground opens once that service reports ready.")
+            } actions: {
+                Button("Review Server Settings") { model.page = .server }
+            }
         } else if model.models.scanning && model.servableModels.isEmpty {
             ContentUnavailableView {
                 Label("Checking your models…", systemImage: "magnifyingglass")
@@ -168,7 +176,8 @@ struct ChatView: View {
     private var notServingBanner: some View {
         HStack(spacing: 10) {
             Label(runtime.state == "Starting" ? "Loading the model…"
-                  : runtime.error ?? "The server is not running. Start it to continue this conversation.",
+                  : runtime.error ?? (model.attachedToService ? "Waiting for the connected service to report ready."
+                                     : "The server is not running. Start it to continue this conversation."),
                   systemImage: runtime.error == nil ? "info.circle" : "exclamationmark.triangle")
                 .font(.callout).foregroundStyle(runtime.error == nil ? Color.secondary : Color.orange).lineLimit(2)
             Spacer()
