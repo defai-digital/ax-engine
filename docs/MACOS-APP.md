@@ -111,11 +111,21 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    configured port is already in use instead of failing after the model has
    loaded. While starting, the status shows the elapsed time and the runtime's
    latest output line; Stop Server cancels the launch. Runtime MTP and
-   expert-streaming defaults remain unchanged. An app-owned server uses a
-   per-launch in-memory API key. **Restart Server** stops and relaunches the
-   app-owned server; choosing a different installed model while it runs turns the
-   button into **Restart with Selected Model** and the page notes that the
-   current server keeps serving until then. Stop and Restart ask for
+   expert-streaming defaults remain unchanged. **Serving mode** (Automatic,
+   Coding, Agentic, Chatbot) mirrors the Playground profile chips and selects
+   the runtime's speculation profile for the next app-owned launch
+   (`ax-engine serve <model> -- --speculation-profile <mode>`; Automatic passes
+   nothing, so the runtime default and any `AX_MLX_SPECULATION_PROFILE` in the
+   environment still apply). Choosing a chip saves it immediately; the same
+   setting is on Settings › Runtime, where it can be changed while a server is
+   running because it does not need a rescan. The status row and the shared
+   header show which mode the running server was started with. An app-owned
+   server uses a per-launch in-memory API key. **Restart Server** stops and
+   relaunches the app-owned server; choosing a different installed model or
+   serving mode while it runs turns the button into **Restart with Selected
+   Model**, **Restart in Coding Mode** or both, and the page notes that the
+   current server keeps serving in its current mode until then. Attached
+   services keep their own mode. Stop and Restart ask for
    confirmation only while a reply is being generated. Stop gives the runtime
    eight seconds to drain before it is force-killed. When the runtime exits on
    its own, the error shows its last diagnostic line with **Start Again** and

@@ -16,6 +16,8 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var startedAt: Date?
     @Published public private(set) var lastSuccessfulCheck: Date?
     @Published public private(set) var selectedModel = ""
+    /// The serving mode the current app-owned launch was started with.
+    @Published public private(set) var servingMode: ServingMode = .auto
     @Published public private(set) var history = MetricHistory()
     private var mtpWindow = MTPCounterWindow()
     public let job = ProcessJob(terminationGrace: 8)
@@ -36,6 +38,12 @@ public final class RuntimeController: ObservableObject {
         return line.count > 400 ? String(line.prefix(400)) + "…" : line
     }
 
+    /// The `ax-engine serve` argument list for one launch. Loopback and offline
+    /// are fixed; the serving mode is forwarded to the server after `--`.
+    public nonisolated static func launchArguments(model: String, settings: AppSettings) -> [String] {
+        ["serve", model, "--offline", "--host", "127.0.0.1", "--port", String(settings.port)] + settings.servingMode.serverArguments
+    }
+
     public func start(model: String, settings: AppSettings) {
         guard !busy, !owned, connection == nil else { return }
         do {
@@ -54,11 +62,11 @@ public final class RuntimeController: ObservableObject {
             let key = UUID().uuidString + UUID().uuidString
             let candidate = EngineConnection(port: settings.port, apiKey: key)
             busy = true; owned = true; state = "Starting"; error = nil; logs = ""
-            selectedModel = model; startedAt = Date(); lastSuccessfulCheck = nil
+            selectedModel = model; servingMode = settings.servingMode; startedAt = Date(); lastSuccessfulCheck = nil
             launch = Task { [self] in
                 do {
                     let result = try await job.run(executable: executable,
-                        arguments: ["serve", model, "--offline", "--host", "127.0.0.1", "--port", String(settings.port)],
+                        arguments: Self.launchArguments(model: model, settings: settings),
                         environment: ["AX_ENGINE_API_KEY": key]) { [weak self] value in
                             self?.logs = String(value.stderr.suffix(32_768)).replacingOccurrences(of: key, with: "[redacted]")
                         }

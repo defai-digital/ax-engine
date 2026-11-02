@@ -39,6 +39,13 @@ if sys.argv[1:2] == ['download']:
     sys.exit(0)
 
 port = int(sys.argv[sys.argv.index('--port') + 1])
+# Same contract as ax-engine serve: server options follow `--` and the
+# speculation profile must be one of the runtime's names.
+if '--speculation-profile' in sys.argv:
+    index = sys.argv.index('--speculation-profile')
+    if '--' not in sys.argv[:index] or sys.argv[index + 1:index + 2] not in (['auto'], ['coding'], ['agentic'], ['chatbot']):
+        sys.stderr.write('speculation profile must follow -- with a known value\n')
+        sys.exit(2)
 key = os.environ.get('AX_ENGINE_API_KEY', '')
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'

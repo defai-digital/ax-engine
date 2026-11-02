@@ -100,7 +100,7 @@ struct MainView: View {
         switch model.page ?? .overview {
         case .overview: "Memory, storage and the models on your Mac."
         case .models: "Download public AutomatosX models, manage local folders and follow transfers."
-        case .server: "Start a local model or connect to an existing AX Engine service."
+        case .server: "Start a local model in the serving mode that fits your workload, or connect to an existing AX Engine service."
         case .chat: "Test your model’s responses and inference speed."
         case .settings: "Configure your local runtime and generation defaults."
         }

@@ -31,7 +31,10 @@ struct SettingsView: View {
                     settingsForm { generationSection }
                 }
                 Tab("Runtime", systemImage: "cpu", value: SettingsPane.runtime) {
-                    settingsForm { runtimeSection }
+                    settingsForm {
+                        runtimeSection
+                        servingSection
+                    }
                 }
                 Tab("Updates", systemImage: "arrow.down.circle", value: SettingsPane.updates) {
                     settingsForm { AppUpdatesSettings(updates: model.updates) }
@@ -136,6 +139,18 @@ struct SettingsView: View {
         }.disabled(locked)
     }
 
+    private var servingSection: some View {
+        Section("Serving mode") {
+            Picker("Speculative decoding for", selection: $model.settingsDraft.servingMode) {
+                ForEach(ServingMode.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Text(model.settingsDraft.servingMode.summary).font(.callout).foregroundStyle(.secondary)
+            Text("Applies when the app starts its server. Restart a running server from the Server page to switch; attached services keep their own mode. Command line: "
+                 + model.settingsDraft.servingMode.commandLineHint)
+                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+    }
+
     private var privacySection: some View {
         Section("Privacy") {
             Label("No analytics or telemetry uploads", systemImage: "hand.raised.fill")
@@ -154,7 +169,7 @@ struct SettingsView: View {
     private var settingsFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
             if locked {
-                Label("Runtime locations and port are locked during server or model operations. Profile changes apply to the next Playground request.", systemImage: "lock")
+                Label("Runtime locations and port are locked during server or model operations. Profile changes apply to the next Playground request; serving mode changes apply at the next server launch.", systemImage: "lock")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {

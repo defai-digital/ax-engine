@@ -649,7 +649,9 @@ gate defaults (the ablation found lowering the gate does not add code
 throughput); on Qwen they lower the gate to the measured per-workload optima.
 `chatbot` applies the diversity posture explicitly. Explicit per-knob env vars still override the
 profile, and the resolved posture is reported in route metadata as
-`ax_mlx_speculation_profile`.
+`ax_mlx_speculation_profile`. The macOS app exposes the same selector as
+**Serving mode** on its Server page and in Settings › Runtime
+(`docs/MACOS-APP.md`).
 
 `--mlx-numerics {exact,fast}` is a process-level Flash Next numerics preset.
 `exact` is the default and changes nothing. `fast` turns on relaxed indexed

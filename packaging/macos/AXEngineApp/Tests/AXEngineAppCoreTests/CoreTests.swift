@@ -216,13 +216,16 @@ private func temporary() throws -> URL {
     store.clearFinishedDownloads()
     #expect(store.downloads.isEmpty && store.activeDownloadCount == 0)
     let runtime = RuntimeController()
-    runtime.start(model: "fixture", settings: settings)
+    var launch = settings; launch.servingMode = .agentic
+    runtime.start(model: "fixture", settings: launch)
     let deadline = Date().addingTimeInterval(15)
     while !runtime.ready && Date() < deadline && runtime.owned { try await Task.sleep(for: .milliseconds(50)) }
     #expect(runtime.ready)
     #expect(runtime.startedAt != nil)
     #expect(runtime.lastSuccessfulCheck != nil)
     #expect(runtime.selectedModel == "fixture")
+    // The fixture exits when the profile is missing after `--` or unknown.
+    #expect(runtime.servingMode == .agentic)
     let client = try #require(runtime.connection)
     let attached = RuntimeController()
     await attached.attach(port: settings.port, apiKey: "wrong")

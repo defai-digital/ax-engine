@@ -104,6 +104,10 @@ struct ServerPage: View {
                               tint: runtime.ready ? Brand.accentChrome : runtime.state == "Failed" || runtime.state == "Connection degraded" ? .orange : .secondary,
                               emphasized: runtime.ready || transitioning)
                     if transitioning { ProgressView().controlSize(.small) }
+                    if runtime.owned {
+                        PillBadge(text: runtime.servingMode.badge, systemImage: "bolt")
+                            .help("Speculative-decode posture this server was started with.")
+                    }
                     if let detail = ServerGate.stateDetail(state: runtime.state, startedAt: runtime.startedAt, now: context.date) {
                         Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
@@ -143,8 +147,9 @@ struct ServerPage: View {
             }
             Divider()
             modelSelection
+            servingModeSelection
             actions
-            Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults. No model performance or certification setting is changed.")
+            Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults; the serving mode only tunes speculative drafting. No model certification setting is changed.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -176,6 +181,43 @@ struct ServerPage: View {
         }
     }
 
+    private var servingModeSelection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("Serving mode").font(.caption).foregroundStyle(.secondary)
+                    servingModeChips
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Serving mode").font(.caption).foregroundStyle(.secondary)
+                    servingModeChips
+                }
+            }
+            Text(servingModeGuidance).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var servingModeChips: some View {
+        HStack(spacing: 6) {
+            ForEach(ServingMode.allCases, id: \.self) { mode in
+                SelectionChip(title: mode.title, selected: model.settings.servingMode == mode,
+                              accessibilityLabel: mode.title + " serving mode", help: mode.summary) {
+                    model.selectServingMode(mode)
+                }.disabled(attached || model.hasSettingsChanges)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Serving mode")
+    }
+
+    private var servingModeGuidance: String {
+        if attached { return "An attached service keeps the serving mode it was started with." }
+        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the serving mode." }
+        return model.settings.servingMode.summary
+            + " Applies when the server starts and tunes how tokens are drafted; the Playground profile only sets request parameters."
+    }
+
     private var selectedModel: LocalModel? { models.productLibrary.first { $0.path == model.selectedPath } }
     private var runningTitle: String {
         models.productLibrary.first { $0.path == runtime.selectedModel }?.displayName
@@ -194,15 +236,18 @@ struct ServerPage: View {
             HStack {
                 if runtime.owned {
                     let switching = !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel
-                    Button(switching ? "Restart with Selected Model" : "Restart Server", systemImage: "arrow.clockwise") {
+                    let switchingMode = model.settings.servingMode != runtime.servingMode
+                    Button(ServerGate.restartTitle(modelChanged: switching, modeChanged: switchingMode, mode: model.settings.servingMode),
+                           systemImage: "arrow.clockwise") {
                         let target = switching && models.canSelectInGUI(model.selectedPath) ? model.selectedPath : runtime.selectedModel
                         if inferenceActive { restartTarget = target }
                         else { Task { await chat.stop(); await runtime.restart(model: target, settings: model.settings) } }
                     }
                     .disabled(runtime.busy || runtime.state == "Stopping" || models.removing
                               || (switching && !models.canSelectInGUI(model.selectedPath)))
-                    .help(switching ? "Stop this server and start it again on the selected model. Active inference stops."
-                                    : "Stop this server and start it again. Active inference stops.")
+                    .help(switching || switchingMode
+                          ? "Stop this server and start it again with the selected model and serving mode. Active inference stops."
+                          : "Stop this server and start it again. Active inference stops.")
                     Button(runtime.state == "Starting" ? "Cancel Start" : "Stop Server", systemImage: "stop.fill", role: .destructive) {
                         if inferenceActive { stopConfirmation = true } else { Task { await chat.stop(); await runtime.stop() } }
                     }.disabled(runtime.state == "Stopping")
@@ -218,9 +263,11 @@ struct ServerPage: View {
                 }
                 Spacer()
             }
-            if runtime.owned, !model.selectedPath.isEmpty, model.selectedPath != runtime.selectedModel {
-                Label("The selected model differs from the running one. Restart to switch; the current server keeps serving until then.", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
+            if runtime.owned, let notice = ServerGate.pendingRestartNotice(
+                modelChanged: !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel,
+                modeChanged: model.settings.servingMode != runtime.servingMode,
+                running: runtime.servingMode, selected: model.settings.servingMode) {
+                Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             } else if !runtime.owned, runtime.connection == nil, let reason = startBlockReason {
                 Label(reason, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }

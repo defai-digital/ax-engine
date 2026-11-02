@@ -25,6 +25,10 @@ struct ModelProfileHeader: View {
                     }
                 }
                 Spacer(minLength: 0)
+                if runtime.ready && runtime.owned {
+                    PillBadge(text: runtime.servingMode.badge, systemImage: "bolt")
+                        .help("Speculative-decode posture of the running app-owned server. Change it on the Server page.")
+                }
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle",
                           tint: runtime.ready ? Brand.accentChrome : .secondary)
             }
@@ -47,23 +51,11 @@ struct ModelProfileHeader: View {
     private var profiles: some View {
         HStack(spacing: 6) {
             ForEach(GenerationProfile.allCases, id: \.self) { profile in
-                let selected = model.settings.effectiveProfile == profile
-                Button { model.selectPlaygroundProfile(profile) } label: {
-                    HStack(spacing: 5) {
-                        if selected { Image(systemName: "checkmark.circle.fill") }
-                        Text(profile.title)
-                    }
-                    .font(.callout.weight(selected ? .semibold : .regular))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .foregroundStyle(selected ? Brand.accentChrome : Color.primary)
-                    .background(selected ? Brand.accentChrome.opacity(0.14) : Color.secondary.opacity(0.08), in: Capsule())
-                    .overlay(Capsule().strokeBorder(selected ? Brand.accentChrome.opacity(0.5) : Color.clear))
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain).disabled(chat.generating)
-                .accessibilityLabel(profile.title + " profile")
-                .accessibilityAddTraits(selected ? [.isSelected] : [])
-                .help(profile == .custom ? "Edit your own generation parameters in Settings." : profile.summary)
+                SelectionChip(title: profile.title, selected: model.settings.effectiveProfile == profile,
+                              accessibilityLabel: profile.title + " profile",
+                              help: profile == .custom ? "Edit your own generation parameters in Settings." : profile.summary) {
+                    model.selectPlaygroundProfile(profile)
+                }.disabled(chat.generating)
             }
         }
         .accessibilityElement(children: .contain)

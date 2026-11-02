@@ -13,10 +13,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var temperature = 0.7
     public var generationProfile: GenerationProfile = .chatbot
     public var useRuntimeSampling = true
+    /// Speculative-decode posture for the next app-owned server launch.
+    public var servingMode: ServingMode = .auto
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling
+        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling, servingMode
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -28,8 +30,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         // Existing installs keep their exact behavior until a profile is selected.
         generationProfile = try values.decodeIfPresent(GenerationProfile.self, forKey: .generationProfile) ?? .custom
         useRuntimeSampling = try values.decodeIfPresent(Bool.self, forKey: .useRuntimeSampling) ?? false
+        // Older settings files predate the selector; Automatic is the runtime default.
+        servingMode = try values.decodeIfPresent(ServingMode.self, forKey: .servingMode) ?? .auto
     }
 
+    /// Changes that need a library rescan or a new runtime location. The
+    /// serving mode is deliberately excluded: it applies at the next launch.
     public func hasRuntimeChanges(comparedTo saved: Self) -> Bool {
         executable != saved.executable || modelsDirectory != saved.modelsDirectory || port != saved.port
     }

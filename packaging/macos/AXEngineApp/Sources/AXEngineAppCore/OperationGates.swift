@@ -77,6 +77,30 @@ public enum ServerGate {
         return nil
     }
 
+    /// Restart button title for an app-owned server, naming what the restart
+    /// changes so a plain restart and a configuration switch read differently.
+    public static func restartTitle(modelChanged: Bool, modeChanged: Bool, mode: ServingMode) -> String {
+        switch (modelChanged, modeChanged) {
+        case (true, true): "Restart with Selected Model in \(mode.title) Mode"
+        case (true, false): "Restart with Selected Model"
+        case (false, true): "Restart in \(mode.title) Mode"
+        case (false, false): "Restart Server"
+        }
+    }
+
+    /// Explains a saved change that the running server does not use yet.
+    public static func pendingRestartNotice(modelChanged: Bool, modeChanged: Bool, running: ServingMode, selected: ServingMode) -> String? {
+        switch (modelChanged, modeChanged) {
+        case (true, true):
+            "The selected model and serving mode differ from the running server. Restart to switch; it keeps serving in \(running.title) mode until then."
+        case (true, false):
+            "The selected model differs from the running one. Restart to switch; the current server keeps serving until then."
+        case (false, true):
+            "\(selected.title) mode is saved for the next launch. The running server keeps \(running.title) mode until you restart."
+        case (false, false): nil
+        }
+    }
+
     /// Human text for the server state pill, with elapsed time for transitions.
     public static func stateDetail(state: String, startedAt: Date?, now: Date = Date()) -> String? {
         guard let startedAt else { return nil }

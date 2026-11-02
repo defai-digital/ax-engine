@@ -72,6 +72,23 @@ final class ApplicationModel: ObservableObject {
             settingsError = error.localizedDescription
         }
     }
+    /// Save the serving mode for the next app-owned launch. A running server
+    /// keeps its mode until it is restarted; Settings owns any pending edits.
+    func selectServingMode(_ mode: ServingMode) {
+        guard !hasSettingsChanges else { page = .settings; return }
+        guard settings.servingMode != mode else { return }
+        var updated = settings
+        updated.servingMode = mode
+        do {
+            try updated.save(to: settingsURL)
+            settings = updated
+            settingsDraft = updated
+            settingsError = nil
+            settingsSaved = true
+        } catch {
+            settingsError = error.localizedDescription
+        }
+    }
     func revertSettings() {
         settingsDraft = settings; settingsError = nil
     }
