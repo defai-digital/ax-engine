@@ -388,7 +388,8 @@ struct MenuBarContent: View {
             if !model.servableModels.isEmpty {
                 Menu("Start with…") {
                     ForEach(model.servableModels) { item in
-                        Button(item.displayName) { model.selectedPath = item.path; model.startServer() }
+                        Button(item.displayName) { model.serve(item.path); openWindow(id: "main") }
+                            .disabled(!model.models.canSelectInGUI(item.path))
                     }
                 }.disabled(runtime.busy || model.models.scanning || model.models.removing)
             }
