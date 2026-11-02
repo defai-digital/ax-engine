@@ -14,6 +14,8 @@ struct ModelsPage: View {
     @State private var discardTarget: PartialDownload?
     @State private var spaceWarning: CatalogModel?
     @State private var redownloadTarget: CatalogModel?
+    @State private var cancelTarget: DownloadItem?
+    @State private var largerExpanded = false
 
     private static let spaceMargin: Int64 = 64 * 1024 * 1024
 
@@ -28,13 +30,15 @@ struct ModelsPage: View {
                     }
                 }
                 Picker("Models view", selection: $model.modelsSection) {
-                    Text("Local Library").tag("library")
+                    Text("Your Models").tag("library")
                     Text("Catalog").tag("catalog")
-                    Text(models.activeDownloadCount > 0 ? "Transfers (\(models.activeDownloadCount))" : "Transfers").tag("transfers")
+                    Text(models.activeDownloadCount > 0 ? "Downloads (\(models.activeDownloadCount))" : "Downloads").tag("transfers")
                 }.pickerStyle(.segmented).frame(maxWidth: 460)
                 if model.modelsSection != "transfers" {
                     HStack {
-                        TextField("Search models", text: $model.modelSearch).textFieldStyle(.roundedBorder).focused($searchFocused)
+                        TextField(model.modelsSection == "catalog" ? "Search catalog" : "Search your models",
+                                  text: model.modelsSection == "catalog" ? $model.catalogSearch : $model.modelSearch)
+                            .textFieldStyle(.roundedBorder).focused($searchFocused)
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await models.refresh(settings: model.settings) } }
                             .disabled(models.refreshing || models.scanning)
                     }
@@ -79,10 +83,16 @@ struct ModelsPage: View {
         } message: {
             Text(discardTarget.map { "Deletes the incomplete files at \($0.path)\($0.sizeBytes.map { ", freeing about " + bytes($0) } ?? ""). A later download starts over." } ?? "")
         }
-        .alert("Not enough free space", isPresented: Binding(get: { spaceWarning != nil }, set: { if !$0 { spaceWarning = nil } })) {
+        .alert("Probably not enough free space", isPresented: Binding(get: { spaceWarning != nil }, set: { if !$0 { spaceWarning = nil } })) {
             Button("Download Anyway") { if let item = spaceWarning { startDownload(item) }; spaceWarning = nil }
+            Button("Change Download Folder…") { spaceWarning = nil; model.page = .settings }
             Button("Cancel", role: .cancel) { spaceWarning = nil }
         } message: { Text(spaceWarning.map(spaceMessage) ?? "") }
+        .alert(cancelTarget.map { "Stop downloading \($0.model.alias)?" } ?? "Stop download?",
+               isPresented: Binding(get: { cancelTarget != nil }, set: { if !$0 { cancelTarget = nil } })) {
+            Button("Stop Download", role: .destructive) { if let item = cancelTarget { models.cancel(item.id) }; cancelTarget = nil }
+            Button("Keep Downloading", role: .cancel) { cancelTarget = nil }
+        } message: { Text("Files already verified stay on disk, so Retry or Resume continues from there.") }
         .alert(redownloadTarget.map { "Download \($0.alias) again?" } ?? "Download again?",
                isPresented: Binding(get: { redownloadTarget != nil }, set: { if !$0 { redownloadTarget = nil } })) {
             Button("Download") { if let item = redownloadTarget { requestDownload(item) }; redownloadTarget = nil }
@@ -135,7 +145,7 @@ struct ModelsPage: View {
 
     private func spaceMessage(_ item: CatalogModel) -> String {
         guard let needed = item.approxSizeBytes, let snapshot = availableSpace() else { return "" }
-        return "\(item.alias) needs about \(bytes(needed)) but \(snapshot.volumeName) has \(bytes(snapshot.availableBytes)) available. The runtime refuses to stage a download it cannot verify, so free up space or choose another model folder in Settings first."
+        return "The catalog estimates \(item.alias) at about \(bytes(needed)); \(snapshot.volumeName) has \(bytes(snapshot.availableBytes)) free. Before downloading, AX Engine checks the exact remaining size and stops without touching existing models if it does not fit; a resumed download may need less. Free up space or choose another download folder."
     }
 
     private func requestDownload(_ item: CatalogModel) {
@@ -151,10 +161,31 @@ struct ModelsPage: View {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
+    /// The single "use this model" action shared by Library, Catalog and
+    /// Downloads. Starts at once when nothing is serving; otherwise selects the
+    /// model on Dashboard, where Restart switches to it.
+    private func serveButton(path: String, ready: Bool, prominent: Bool = false) -> some View {
+        let busy = runtime.owned
+        let reason: String? = !ready ? "Weights are incomplete or not checked yet. Refresh, or download it again from Catalog."
+            : model.attachedToService ? "Disconnect from the attached service on Server Settings to serve your own model."
+            : model.connecting ? "Wait for the connection to the existing service to finish."
+            : model.models.canSelectInGUI(path) ? nil : "The library scan has not checked this model yet."
+        return Group {
+            if prominent {
+                Button(busy ? "Select on Dashboard" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.borderedProminent)
+            } else {
+                Button(busy ? "Select on Dashboard" : "Serve", systemImage: "play.fill") { model.serve(path) }
+            }
+        }
+        .disabled(reason != nil)
+        .help(reason ?? (busy ? "Select this model on Dashboard; Restart there switches the server to it." : "Start the server on this model"))
+        .accessibilityHint(reason ?? "")
+    }
+
     // MARK: - Local Library
 
     private func library(filter: String) -> some View {
-        Card("Local library", subtitle: "\(models.productLibrary.count) folders · \(models.productLibrary.filter { $0.ready && models.checkedPaths.contains($0.path) }.count) with checked, complete weight files") {
+        Card("Your models", subtitle: "\(models.productLibrary.count) on this Mac · \(model.servableModels.count) ready to serve") {
             Text("Public AutomatosX models downloaded on this Mac. Other models can be used through the AX Engine CLI.")
                 .font(.caption).foregroundStyle(.secondary)
             if models.scanning {
@@ -172,8 +203,13 @@ struct ModelsPage: View {
                 Text("Last complete scan: " + date.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
             }
             if models.productLibrary.isEmpty && !models.scanning && models.libraryIssue == nil {
-                Text("No local models found. Browse Catalog to download a public AutomatosX model.")
-                Button("Browse Catalog") { model.modelSearch = ""; model.modelsSection = "catalog" }
+                ContentUnavailableView {
+                    Label("No models yet", systemImage: "square.stack.3d.up")
+                } description: {
+                    Text("Download a public AutomatosX model from the Catalog. No account or token needed.")
+                } actions: {
+                    Button("Browse Catalog") { model.catalogSearch = ""; model.modelsSection = "catalog" }.buttonStyle(.borderedProminent)
+                }
             }
             let matches = models.productLibrary.filter {
                 filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter)
@@ -190,7 +226,13 @@ struct ModelsPage: View {
                 libraryRow(item)
                 Divider()
             }
-            if !models.partialDownloads.isEmpty { partialDownloads }
+            if !models.partialDownloads.isEmpty {
+                HStack {
+                    Label("\(models.partialDownloads.count) interrupted download\(models.partialDownloads.count == 1 ? "" : "s") on disk", systemImage: "arrow.down.circle.dotted")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Review in Downloads") { model.modelsSection = "transfers" }.buttonStyle(.link)
+                }
+            }
         }
     }
 
@@ -204,18 +246,16 @@ struct ModelsPage: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         ModelTitle(label: item.label, font: .headline).help(item.name)
-                        if running { PillBadge(text: "Running in this app", systemImage: "circle.fill", tint: Brand.accentChrome, emphasized: true) }
-                        else if model.selectedPath == item.path { PillBadge(text: "Selected for Server", systemImage: "checkmark") }
+                        if running { PillBadge(text: "Serving", systemImage: "circle.fill", tint: Brand.accentChrome, emphasized: true) }
+                        else if model.selectedPath == item.path { PillBadge(text: "Selected", systemImage: "checkmark") }
                     }
                     Text(item.source + (item.sizeBytes.map { " · " + bytes($0) } ?? "")).font(.caption).foregroundStyle(.secondary)
-                    Text(checked ? (item.ready ? "Downloaded · compatibility unverified" : "Weights incomplete or metadata only")
-                                 : "Not checked in this scan · previous result")
-                        .font(.callout).foregroundStyle(.secondary)
+                    Label(checked ? (item.ready ? "Ready to serve" : "Weights incomplete or metadata only") : "Not checked in this scan",
+                          systemImage: checked ? (item.ready ? "checkmark.circle" : "exclamationmark.triangle") : "questionmark.circle")
+                        .font(.callout).foregroundStyle(checked && !item.ready ? .orange : .secondary)
                 }
                 Spacer()
-                Button("Select Model") { model.selectedPath = item.path; model.page = .server }
-                    .disabled(!item.ready || !checked)
-                    .accessibilityLabel("Select " + item.displayName)
+                if !running { serveButton(path: item.path, ready: item.ready && checked) }
                 if state.removable {
                     Button("Remove", systemImage: "trash", role: .destructive) { removeTarget = item }
                         .disabled(reason != nil)
@@ -241,7 +281,7 @@ struct ModelsPage: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Select Model") { model.selectedPath = item.path; model.page = .server }.disabled(!item.ready || !checked)
+            Button("Serve") { model.serve(item.path) }.disabled(!item.ready || !checked || running)
             Button("Show in Finder") { showInFinder(item.path) }
             Button("Copy Path") { copyText(item.path) }
             if state.removable {
@@ -262,7 +302,7 @@ struct ModelsPage: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(partial.label).font(.callout)
-                        Text((partial.sizeBytes.map(bytes) ?? "Size unknown") + (resuming ? " · resuming in Transfers" : "")).font(.caption).foregroundStyle(.secondary)
+                        Text((partial.sizeBytes.map(bytes) ?? "Size unknown") + (resuming ? " · resuming in Downloads" : "")).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if let entry, !resuming {
@@ -283,12 +323,19 @@ struct ModelsPage: View {
 
     // MARK: - Catalog
 
+    private var memoryBytes: Int64 { Int64(ProcessInfo.processInfo.physicalMemory) }
+
     private var catalog: some View {
-        Card("Public AutomatosX models", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
+        let search = model.catalogSearch
+        let matches = models.catalog.filter { search.isEmpty || $0.alias.localizedCaseInsensitiveContains(search) || $0.repoId.localizedCaseInsensitiveContains(search) }
+        // Download size against unified memory: a size comparison, not a fit claim.
+        let fits = matches.filter { ($0.approxSizeBytes ?? 0) <= memoryBytes }
+        let larger = matches.filter { ($0.approxSizeBytes ?? 0) > memoryBytes }
+        return Card("Catalog", subtitle: "Public AutomatosX models. Pinned profiles come from your AX Engine runtime; an entry is not a hardware qualification.") {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("No Hugging Face account or token required", systemImage: "arrow.down.circle").font(.headline)
-                    Text("Downloads connect to Hugging Face and its delivery hosts. Only public AutomatosX packs are offered; use other models through the AX Engine CLI.")
+                    Text("Downloads connect to Hugging Face and its delivery hosts. Use other models through the AX Engine CLI.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -299,6 +346,9 @@ struct ModelsPage: View {
                     }
                 } else if storage.refreshing {
                     ProgressView().controlSize(.small)
+                } else {
+                    Button("Free space unknown · Check") { Task { await storage.refresh(path: model.settings.modelsDirectory) } }
+                        .buttonStyle(.link).font(.caption)
                 }
             }
             Divider()
@@ -306,15 +356,40 @@ struct ModelsPage: View {
             if let blocked = models.downloadsBlockReason, !models.refreshing {
                 Label(blocked, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
             }
-            if models.catalog.isEmpty && !models.refreshing { Text("Select your AX Engine runtime in Settings, then refresh.").foregroundStyle(.secondary) }
-            let matches = models.catalog.filter { model.modelSearch.isEmpty || $0.alias.localizedCaseInsensitiveContains(model.modelSearch) || $0.repoId.localizedCaseInsensitiveContains(model.modelSearch) }
-            if matches.isEmpty && !model.modelSearch.isEmpty && !models.refreshing {
-                Text("No catalog profiles match your search.").foregroundStyle(.secondary)
-                Button("Clear search") { model.modelSearch = "" }
+            if models.catalog.isEmpty && !models.refreshing {
+                ContentUnavailableView {
+                    Label("Catalog unavailable", systemImage: "books.vertical")
+                } description: {
+                    Text("The catalog comes from your installed AX Engine runtime. Check the runtime location in Settings, then refresh.")
+                } actions: {
+                    HStack {
+                        Button("Open Settings") { model.page = .settings }
+                        Button("Refresh Catalog") { Task { await models.refresh(settings: model.settings) } }.buttonStyle(.borderedProminent)
+                    }
+                }
             }
-            ForEach(matches) { item in
+            if matches.isEmpty && !search.isEmpty && !models.refreshing {
+                Text("No catalog models match “\(search)”.").foregroundStyle(.secondary)
+                Button("Clear search") { model.catalogSearch = "" }
+            }
+            if !fits.isEmpty && !larger.isEmpty {
+                Text("Download size under this Mac's \(ByteCountFormatter.string(fromByteCount: memoryBytes, countStyle: .memory)) memory")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+            }
+            ForEach(fits) { item in
                 catalogRow(item)
                 Divider()
+            }
+            if !larger.isEmpty {
+                DisclosureGroup(isExpanded: $largerExpanded) {
+                    ForEach(larger) { item in
+                        catalogRow(item)
+                        Divider()
+                    }
+                } label: {
+                    Text("Download size over this Mac's memory (\(larger.count))")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+                }
             }
         }
     }
@@ -324,12 +399,13 @@ struct ModelsPage: View {
         let active = models.activeDownload(for: item)
         let blocked = models.downloadBlockReason(for: item)
         let shortfall = spaceShortfall(item)
-        let memory = Int64(ProcessInfo.processInfo.physicalMemory)
+        let memory = memoryBytes
+        let label = ModelLabel(repositoryName: item.repoId.components(separatedBy: "/").last ?? item.repoId)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.alias).font(.headline)
-                    Text(item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    ModelTitle(label: label, font: .headline).help(item.repoId)
+                    Text(item.alias + " · " + item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack(spacing: 6) {
                         if let size = item.approxSizeBytes { PillBadge(text: "about " + bytes(size), systemImage: "internaldrive") }
                         if item.mtpIncluded == true { PillBadge(text: "MTP included", systemImage: "bolt") }
@@ -343,15 +419,14 @@ struct ModelsPage: View {
                         if let fraction = active.fraction { ProgressView(value: fraction).frame(width: 150) } else { ProgressView().controlSize(.small) }
                         Text(active.state == "Queued" ? "Queued" : active.phaseTitle + (active.fraction.map { " · \(Int($0 * 100)) %" } ?? ""))
                             .font(.caption).foregroundStyle(.secondary)
-                        Button("View Transfer") { model.modelsSection = "transfers" }
+                        Button("View Progress") { model.modelsSection = "transfers" }
                     }
                 } else if let installed {
                     HStack(spacing: 8) {
                         PillBadge(text: "Downloaded", systemImage: "checkmark.circle.fill", tint: Brand.accentChrome, emphasized: true)
-                        Button("Use Model") { model.selectedPath = installed.path; model.page = .server }
-                            .disabled(!models.canSelectInGUI(installed.path))
+                        serveButton(path: installed.path, ready: models.canSelectInGUI(installed.path))
                         Menu {
-                            Button("Show in Library") { model.modelSearch = installed.repositoryName; model.modelsSection = "library" }
+                            Button("Show in Your Models") { model.modelSearch = installed.repositoryName; model.modelsSection = "library" }
                             Button("Show in Finder") { showInFinder(installed.path) }
                             Button("Download Again…") { redownloadTarget = item }.disabled(blocked != nil)
                             Divider()
@@ -382,11 +457,15 @@ struct ModelsPage: View {
     private var transfers: some View {
         VStack(spacing: 16) {
             if models.downloads.isEmpty {
-                ContentUnavailableView("No transfers in this session", systemImage: "arrow.down.circle",
-                                       description: Text("Downloads you start from Catalog appear here with their progress. The list clears when the app quits; downloaded models stay in Local Library."))
-                HStack {
-                    Button("Browse Catalog") { model.modelSearch = ""; model.modelsSection = "catalog" }
-                    Button("View Local Library (\(models.productLibrary.count))") { model.modelSearch = ""; model.modelsSection = "library" }
+                ContentUnavailableView {
+                    Label("No downloads in this session", systemImage: "arrow.down.circle")
+                } description: {
+                    Text("Downloads you start from Catalog appear here with their progress. The list clears when the app quits; downloaded models stay in Your Models.")
+                } actions: {
+                    HStack {
+                        Button("Browse Catalog") { model.catalogSearch = ""; model.modelsSection = "catalog" }.buttonStyle(.borderedProminent)
+                        Button("Your Models (\(models.productLibrary.count))") { model.modelSearch = ""; model.modelsSection = "library" }
+                    }
                 }
             } else {
                 HStack {
@@ -394,7 +473,7 @@ struct ModelsPage: View {
                     Spacer()
                     Button("Clear Finished") { models.clearFinishedDownloads() }.disabled(models.finishedDownloadCount == 0)
                 }
-                Text("Transfers run one at a time and resume interrupted files on retry. Ready means complete, verified weight files; the runtime still validates compatibility on start.")
+                Text("Downloads run one at a time and resume interrupted files on retry. Downloaded means complete, verified weight files; the runtime still validates compatibility on start.")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             ForEach(models.downloads) { item in transferCard(item) }
@@ -422,9 +501,22 @@ struct ModelsPage: View {
         }
     }
 
+    /// "Ready" is reserved for a serving server; a finished download reads
+    /// "Downloaded" everywhere.
+    private func transferState(_ item: DownloadItem) -> String {
+        switch item.state {
+        case "Ready": return "Downloaded"
+        case "Queued":
+            let queued = models.downloads.filter { $0.state == "Queued" }
+            return (queued.firstIndex { $0.id == item.id }).map { "Queued · #\($0 + 1) of \(queued.count)" } ?? "Queued"
+        default: return item.state
+        }
+    }
+
     private func transferCard(_ item: DownloadItem) -> some View {
-        Card(item.model.alias, subtitle: item.model.repoId, trailing: {
-            PillBadge(text: item.state, systemImage: item.state == "Downloading" ? "arrow.down.circle" : item.state == "Ready" ? "checkmark.circle.fill" : "circle",
+        let label = ModelLabel(repositoryName: item.model.repoId.components(separatedBy: "/").last ?? item.model.repoId)
+        return Card(label.text, subtitle: item.model.alias + " · " + item.model.repoId, trailing: {
+            PillBadge(text: transferState(item), systemImage: item.state == "Downloading" ? "arrow.down.circle" : item.state == "Ready" ? "checkmark.circle.fill" : "circle",
                       tint: transferTint(item.state), emphasized: item.state != "Queued")
         }) {
             if item.state == "Downloading" {
@@ -460,19 +552,28 @@ struct ModelsPage: View {
             HStack {
                 Text(item.destination).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 Spacer()
-                if item.isActive { Button("Cancel", role: .destructive) { models.cancel(item.id) } }
+                if item.isActive {
+                    Button(item.state == "Queued" ? "Remove from Queue" : "Cancel", role: .destructive) {
+                        if item.state == "Queued" { models.cancel(item.id) } else { cancelTarget = item }
+                    }
+                }
                 if ["Failed", "Cancelled"].contains(item.state) { Button("Retry") { models.retry(item.id, settings: model.settings) } }
                 if item.state == "Ready" {
                     Button("Show in Finder", systemImage: "folder") { showInFinder(item.destination) }
-                    if let installed = models.installedModel(for: item.model) {
-                        Button("Remove…", systemImage: "trash", role: .destructive) { removeTarget = installed }
-                            .disabled(removalReason(installed) != nil)
-                            .help(removalReason(installed) ?? "Delete this downloaded model from disk")
-                    }
-                    Button("Use Model") { model.selectedPath = item.destination; model.page = .server }
-                        .buttonStyle(.borderedProminent).disabled(!models.canSelectInGUI(item.destination))
+                    serveButton(path: item.destination, ready: models.canSelectInGUI(item.destination), prominent: true)
                 }
-                if item.isFinished { Button("Dismiss") { models.clearFinishedDownloads(id: item.id) } }
+                if item.isFinished {
+                    Menu {
+                        if item.state == "Ready", let installed = models.installedModel(for: item.model) {
+                            Button("Remove from Disk…", role: .destructive) { removeTarget = installed }
+                                .disabled(removalReason(installed) != nil)
+                            Divider()
+                        }
+                        Button("Dismiss") { models.clearFinishedDownloads(id: item.id) }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .accessibilityLabel("More actions for " + label.title)
+                }
             }
         }
     }

@@ -7,6 +7,8 @@ struct DashboardView: View {
     @ObservedObject var models: ModelStore
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var chat: ChatStore
+    let clipboard: SensitiveClipboard
+    @Binding var copyNotice: String
     @ObservedObject var monitor: HostMonitor
     @ObservedObject var storage: StorageMonitor
     @Environment(\.scenePhase) private var scenePhase
@@ -16,7 +18,7 @@ struct DashboardView: View {
         GeometryReader { geometry in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                InferenceServiceCard(model: model, runtime: runtime, models: models, chat: chat)
+                InferenceServiceCard(model: model, runtime: runtime, models: models, chat: chat, clipboard: clipboard, copyNotice: $copyNotice)
                 HStack {
                     Label("This Mac", systemImage: "desktopcomputer").font(.headline)
                     Text(memoryTotal + " unified memory").font(.callout).foregroundStyle(.secondary)
@@ -128,42 +130,21 @@ struct DashboardView: View {
 }
 
 /// One-click serving: pick a downloaded model, then Start, Restart or Stop.
-/// Authentication and attach live on Server Settings.
+/// Serving options fold away; authentication and attach live on Server Settings.
 private struct InferenceServiceCard: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var models: ModelStore
     @ObservedObject var chat: ChatStore
-    @State private var copied = false
-    private var transitioning: Bool { ["Starting", "Stopping", "Connecting"].contains(runtime.state) }
+    let clipboard: SensitiveClipboard
+    @Binding var copyNotice: String
 
     var body: some View {
-        Card("Inference service", subtitle: "Choose a downloaded model and start serving it on this Mac.", trailing: {
+        Card("Inference service", subtitle: "Serve a downloaded model to apps on this Mac.", trailing: {
             Button("Server Settings", systemImage: "gearshape") { model.page = .server }.controlSize(.small)
                 .help("API key, connect to an existing service, metrics and runtime output")
         }) {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : transitioning ? "clock" : "circle",
-                              tint: runtime.ready ? Brand.accentChrome : runtime.state == "Failed" || runtime.state == "Connection degraded" ? .orange : .secondary,
-                              emphasized: runtime.ready || transitioning)
-                    if transitioning { ProgressView().controlSize(.small) }
-                    if let detail = ServerGate.stateDetail(state: runtime.state, startedAt: runtime.startedAt, now: context.date) {
-                        Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if let connection = runtime.connection {
-                        Text(connection.apiURL.absoluteString).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                        Button(copied ? "Copied" : "Copy URL", systemImage: copied ? "checkmark" : "doc.on.doc") {
-                            copyText(connection.apiURL.absoluteString); copied = true
-                        }.controlSize(.small)
-                        if connection.hasAPIKey {
-                            PillBadge(text: "API key", systemImage: "key")
-                                .help("This server requires an API key. Copy it from Server Settings.")
-                        }
-                    }
-                }
-            }
+            ServerStatusRow(model: model, runtime: runtime)
             if let error = runtime.error {
                 HStack(alignment: .firstTextBaseline) {
                     Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
@@ -172,13 +153,14 @@ private struct InferenceServiceCard: View {
                     Button("Details") { model.page = .server }.buttonStyle(.link).font(.caption)
                 }
             }
-            if runtime.state == "Starting" {
-                Text("Large models can take a few minutes from a cold start. Cancel Start stops the launch.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             ServerControls(model: model, runtime: runtime, models: models, chat: chat, showsPath: false)
+            ClientCopyButtons(runtime: runtime, clipboard: clipboard, notice: $copyNotice,
+                              showsPlayground: true, openPlayground: { model.page = .chat })
+            if !model.servableModels.isEmpty || runtime.owned {
+                Divider()
+                ServingOptionsDisclosure(model: model, runtime: runtime)
+            }
         }
-        .onChange(of: runtime.connection?.id) { _, _ in copied = false }
     }
 }
 
@@ -238,17 +220,17 @@ private struct ModelInventoryCard: View {
         let inventory = ModelInventory(library: models.productLibrary, checked: models.checkedPaths)
         let hasInventory = models.lastScanAt != nil || !models.productLibrary.isEmpty
         VStack(alignment: .leading, spacing: 14) {
-            Label("Models on disk", systemImage: "square.stack.3d.up").font(.system(size: 13, weight: .semibold))
+            Label("Your models", systemImage: "square.stack.3d.up").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(hasInventory ? String(inventory.total) : "—")
                     .font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text("folders").font(.callout).foregroundStyle(.secondary)
+                Text("models").font(.callout).foregroundStyle(.secondary)
             }
             Text(models.scanning ? "Checking your library…" : models.libraryIssue != nil ? "Partial scan · counts may be incomplete" : "Discovered in your library")
                 .font(.caption).foregroundStyle(.secondary)
             if hasInventory {
                 Chart {
-                BarMark(x: .value("Folders", inventory.complete), y: .value("Status", "Complete"))
+                BarMark(x: .value("Folders", inventory.complete), y: .value("Status", "Ready to serve"))
                     .foregroundStyle(Brand.accentChrome).cornerRadius(3)
                     .annotation(position: .trailing) { Text(String(inventory.complete)).font(.caption.monospacedDigit()) }
                 BarMark(x: .value("Folders", inventory.incomplete), y: .value("Status", "Incomplete"))

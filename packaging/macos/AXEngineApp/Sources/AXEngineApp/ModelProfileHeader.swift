@@ -1,30 +1,14 @@
 import SwiftUI
 import AXEngineAppCore
 
-/// One shared inference context on Dashboard, Server and Playground: the
-/// running model and the mode it drafts with. Dashboard and Server carry the
-/// serving mode selector (a server-level setting); Playground carries the
-/// request profile selector, which only shapes Playground requests.
+/// Playground's context bar: the running model and the request profile,
+/// which only shapes Playground requests. Server-level options (serving mode,
+/// request cap) live in the server card on Dashboard and Server Settings.
 struct ModelProfileHeader: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var chat: ChatStore
 
-    private var attached: Bool { runtime.connection != nil && !runtime.owned }
-    private var inferenceActive: Bool {
-        chat.generating || (runtime.metrics["ax_engine_generation_active_streams"] ?? 0) > 0
-    }
-    private var modeAwaitsRestart: Bool { runtime.owned && runtime.servingMode != model.settings.servingMode }
-    private var capAwaitsRestart: Bool { runtime.owned && runtime.concurrentRequests != model.settings.concurrentRequests }
-    private var showsServingMode: Bool { model.page != .chat }
-    /// Dashboard and Server Settings carry their own restart button and notice.
-    private var showsRestartHint: Bool { ![.server, .overview].contains(model.page) }
-    private var pendingNotice: String? {
-        guard showsRestartHint, runtime.owned else { return nil }
-        return ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: modeAwaitsRestart,
-                                               running: runtime.servingMode, selected: model.settings.servingMode,
-                                               runningCap: runtime.concurrentRequests, selectedCap: model.settings.concurrentRequests)
-    }
 
     var body: some View {
         Card {
@@ -32,7 +16,7 @@ struct ModelProfileHeader: View {
                 Label(runtime.ready ? "Running model" : "No model running", systemImage: "cpu")
                     .font(.caption).foregroundStyle(.secondary)
                 if runtime.ready {
-                    if model.page == .chat && runtime.models.count > 1 {
+                    if runtime.models.count > 1 {
                         Picker("Running model", selection: $chat.selectedModel) {
                             Text("Default model").tag("")
                             ForEach(runtime.models) { Text($0.id).tag($0.id) }
@@ -53,28 +37,8 @@ struct ModelProfileHeader: View {
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle",
                           tint: runtime.ready ? Brand.accentChrome : .secondary)
             }
-            if showsServingMode {
-                selectorRow("Serving mode", chips: servingModes)
-                Text(servingGuidance).font(.caption).foregroundStyle(.secondary)
-                concurrencyRow
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(pendingNotice ?? concurrencyGuidance).font(.caption).foregroundStyle(.secondary)
-                    if showsRestartHint, modeAwaitsRestart || capAwaitsRestart {
-                        Button(ServerGate.restartTitle(modelChanged: false, modeChanged: modeAwaitsRestart, capChanged: capAwaitsRestart,
-                                                       mode: model.settings.servingMode), systemImage: "arrow.clockwise") {
-                            let settings = model.settings
-                            Task { await chat.stop(); await runtime.restart(settings: settings) }
-                        }
-                        .controlSize(.small)
-                        .disabled(runtime.busy || runtime.state == "Stopping" || inferenceActive)
-                        .help(inferenceActive ? "Finish or stop the current reply first, or restart from Server Settings."
-                                              : "Stop this server and start it again with the saved serving mode and request cap.")
-                    }
-                }
-            } else {
-                selectorRow("Playground profile", chips: profiles)
-                Text(guidance).font(.caption).foregroundStyle(.secondary)
-            }
+            selectorRow("Playground profile", chips: profiles)
+            Text(guidance).font(.caption).foregroundStyle(.secondary)
             if let error = model.settingsError { ErrorBanner(text: error) }
         }
     }
@@ -93,46 +57,6 @@ struct ModelProfileHeader: View {
         }
     }
 
-    private var concurrencyRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("Concurrent requests").font(.caption).foregroundStyle(.secondary).frame(width: 112, alignment: .leading)
-            Stepper(value: Binding(get: { model.settings.concurrentRequests }, set: { model.selectConcurrentRequests($0) }),
-                    in: AppSettings.concurrentRequestRange) {
-                Text("\(model.settings.concurrentRequests)").font(.callout.weight(.medium).monospacedDigit()).frame(minWidth: 18)
-            }
-            .disabled(attached || model.hasSettingsChanges)
-            .accessibilityLabel("Concurrent requests")
-            if let batchHeadroom { Text(batchHeadroom).font(.caption).foregroundStyle(.secondary) }
-            Spacer(minLength: 0)
-        }
-    }
-
-    /// Live batch headroom from the runtime's own gauges, when it exports them.
-    private var batchHeadroom: String? {
-        guard runtime.ready, let capacity = runtime.metrics["ax_runtime_max_batch_size"], capacity > 0 else { return nil }
-        let scheduled = runtime.metrics["ax_engine_step_scheduled_requests"].map { Int($0) } ?? 0
-        return "\(scheduled) of \(Int(capacity)) batch slots in use"
-    }
-
-    private var concurrencyGuidance: String {
-        if attached { return "An attached service keeps its own request limits." }
-        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the request cap." }
-        return "How many requests one server decodes at once in a single batch; extra requests receive 429 until a slot frees. 4 keeps each request near full speed, 8 is the runtime's batch limit and halves per-request speed. Single-request MTP acceleration applies while only one request is active."
-    }
-
-    private var servingModes: some View {
-        HStack(spacing: 6) {
-            ForEach(ServingMode.allCases, id: \.self) { mode in
-                SelectionChip(title: mode.title, selected: model.settings.servingMode == mode,
-                              accessibilityLabel: mode.title + " serving mode", help: mode.summary) {
-                    model.selectServingMode(mode)
-                }.disabled(attached || model.hasSettingsChanges)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Serving mode")
-    }
-
     private var profiles: some View {
         HStack(spacing: 6) {
             ForEach(GenerationProfile.allCases, id: \.self) { profile in
@@ -147,12 +71,6 @@ struct ModelProfileHeader: View {
         .accessibilityLabel("Playground request profile")
     }
 
-    private var servingGuidance: String {
-        if attached { return "An attached service keeps the serving mode it was started with." }
-        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing the serving mode." }
-        return model.settings.servingMode.summary + " Applies when the server starts and only tunes speculative drafting."
-    }
-
     private var guidance: String {
         if chat.generating { return "Finish or stop the current reply before changing its profile." }
         if model.hasSettingsChanges { return "You have unsaved Settings changes. Choose a profile to review them first." }
@@ -160,5 +78,68 @@ struct ModelProfileHeader: View {
             return "Media sets text response parameters. Playground accepts text only; your model and client determine media support."
         }
         return "Applies to new Playground requests. Other clients use their own parameters. Custom opens Settings."
+    }
+}
+
+/// Serving mode chips and the request cap. Both save at once and apply at the
+/// next start or restart. Shared by the Dashboard card and Server Settings.
+struct ServingOptions: View {
+    @ObservedObject var model: ApplicationModel
+    @ObservedObject var runtime: RuntimeController
+    private var attached: Bool { runtime.connection != nil && !runtime.owned }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            row("Serving mode") {
+                HStack(spacing: 6) {
+                    ForEach(ServingMode.allCases, id: \.self) { mode in
+                        SelectionChip(title: mode.title, selected: model.settings.servingMode == mode,
+                                      accessibilityLabel: mode.title + " serving mode", help: mode.summary) {
+                            model.selectServingMode(mode)
+                        }.disabled(attached)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Serving mode")
+            }
+            Text(attached ? "An attached service keeps the serving mode it was started with."
+                          : model.settings.servingMode.summary + " Applies when the server starts and only tunes speculative drafting.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            row("Concurrent requests") {
+                HStack(spacing: 12) {
+                    Stepper(value: Binding(get: { model.settings.concurrentRequests }, set: { model.selectConcurrentRequests($0) }),
+                            in: AppSettings.concurrentRequestRange) {
+                        Text("\(model.settings.concurrentRequests)").font(.callout.weight(.medium).monospacedDigit()).frame(minWidth: 18)
+                    }
+                    .disabled(attached)
+                    .accessibilityLabel("Concurrent requests")
+                    if let batchHeadroom { Text(batchHeadroom).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            Text(attached ? "An attached service keeps its own request limits."
+                          : "Requests one server decodes at once; extra requests receive 429 until a slot frees. 4 keeps each request near full speed; 8 is the runtime's batch limit.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func row<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(title).font(.caption).foregroundStyle(.secondary).frame(width: 124, alignment: .leading)
+                content()
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                content()
+            }
+        }
+    }
+
+    /// Live batch headroom from the runtime's own gauges, when it exports them.
+    private var batchHeadroom: String? {
+        guard runtime.ready, let capacity = runtime.metrics["ax_runtime_max_batch_size"], capacity > 0 else { return nil }
+        let scheduled = runtime.metrics["ax_engine_step_scheduled_requests"].map { Int($0) } ?? 0
+        return "\(scheduled) of \(Int(capacity)) batch slots in use"
     }
 }

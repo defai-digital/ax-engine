@@ -6,8 +6,8 @@ import AXEngineAppCore
 struct ChatView: View {
     @ObservedObject var chat: ChatStore
     @ObservedObject var runtime: RuntimeController
-    let settings: AppSettings
-    var openServer: () -> Void
+    @ObservedObject var model: ApplicationModel
+    private var settings: AppSettings { model.settings }
     @State private var clearConfirmation = false
     private var modelID: String { runtime.models.contains(where: { $0.id == chat.selectedModel }) ? chat.selectedModel : runtime.models.first?.id ?? "" }
     private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
@@ -28,16 +28,13 @@ struct ChatView: View {
                 Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || (chat.messages.isEmpty && !chat.recoveryRequired))
             }.padding(.horizontal, 26).padding(.vertical, 14)
             if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 26) }
-            if !runtime.ready {
-                HStack {
-                    ErrorBanner(text: runtime.error ?? "Start or connect to a server to send messages.")
-                    Button(runtime.error == nil ? "Start a Model" : "Review Server") { openServer() }
-                }.padding(.horizontal, 26)
-            }
+            if !runtime.ready && !chat.messages.isEmpty { notServingBanner.padding(.horizontal, 26) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
-                        if chat.messages.isEmpty {
+                        if !runtime.ready && chat.messages.isEmpty {
+                            notServing.frame(maxWidth: .infinity).padding(.vertical, 30)
+                        } else if chat.messages.isEmpty {
                             ContentUnavailableView("Try your model", systemImage: "bubble.left.and.bubble.right",
                                 description: Text("Send a prompt to inspect response quality and inference speed. History stays on this Mac."))
                                 .frame(maxWidth: .infinity).padding(.vertical, 45)
@@ -49,8 +46,7 @@ struct ChatView: View {
                                         .font(.headline)
                                     Spacer()
                                     if message.state != "Complete" { Text(message.state).font(.caption).foregroundStyle(.secondary) }
-                                    Button { copyText(message.content) } label: { Image(systemName: "doc.on.doc") }
-                                        .buttonStyle(.plain).help("Copy message").accessibilityLabel("Copy message")
+                                    CopyButton(text: message.content, label: "Copy message")
                                 }
                                 if !message.reasoning.isEmpty {
                                     DisclosureGroup("Reasoning") { Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -74,7 +70,7 @@ struct ChatView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Message your model…", text: $chat.draft, axis: .vertical)
+                TextField(placeholder, text: $chat.draft, axis: .vertical)
                     .onSubmit { send() }
                     .onKeyPress(.return, phases: .down) { key in
                         // Keep native selection, undo and IME handling. Let
@@ -87,7 +83,7 @@ struct ChatView: View {
                     }
                     .lineLimit(2...7).textFieldStyle(.plain).padding(12)
                     .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
-                    .disabled(chat.generating)
+                    .disabled(chat.recoveryRequired)
                 HStack(alignment: .firstTextBaseline) {
                     Text("Enter to send · Shift+Enter for a new line")
                     Spacer(minLength: 12)
@@ -102,7 +98,10 @@ struct ChatView: View {
                     Button("Retry", systemImage: "arrow.clockwise") {
                         if let connection = runtime.connection { chat.retry(model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature) }
                     }.disabled(chat.generating || chat.messages.isEmpty || !runtime.ready)
-                    if chat.generating { Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } } }
+                    if chat.generating {
+                        Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } }
+                            .keyboardShortcut(".", modifiers: .command).help("Stop this reply (⌘.)")
+                    }
                     else { Button("Send", systemImage: "arrow.up") { send() }.buttonStyle(.borderedProminent)
                             .keyboardShortcut(.return, modifiers: .command)
                             .disabled(!canSend) }
@@ -117,6 +116,74 @@ struct ChatView: View {
             Button("Cancel", role: .cancel) {}
         } message: { Text("This removes the saved local conversation.") }
     }
+    private var placeholder: String {
+        if chat.generating { return "Write your next message; Send is available when this reply finishes…" }
+        if runtime.state == "Starting" { return "Loading the model…" }
+        return runtime.ready ? "Message your model…" : "Start the server to send messages"
+    }
+
+    /// One state for "nothing to talk to", with the next step that applies.
+    @ViewBuilder private var notServing: some View {
+        if runtime.state == "Starting" || runtime.state == "Connecting" {
+            ContentUnavailableView {
+                Label("Loading the model…", systemImage: "hourglass")
+            } description: {
+                Text("Large models can take a few minutes from a cold start. You can type your message meanwhile.")
+            }
+        } else if let error = runtime.error {
+            ContentUnavailableView {
+                Label("The server is not available", systemImage: "exclamationmark.triangle")
+            } description: { Text(error) } actions: {
+                Button("Review Server") { model.page = .server }.buttonStyle(.borderedProminent)
+            }
+        } else if model.models.scanning && model.servableModels.isEmpty {
+            ContentUnavailableView {
+                Label("Checking your models…", systemImage: "magnifyingglass")
+            } description: { Text("Playground can start a server once the library scan finds a downloaded model.") }
+        } else if model.servableModels.isEmpty {
+            ContentUnavailableView {
+                Label("Download a model to try", systemImage: "arrow.down.circle")
+            } description: {
+                Text("Playground talks to a model served on this Mac. Download one from the Catalog first.")
+            } actions: {
+                Button("Download a Model") { model.catalogSearch = ""; model.modelsSection = "catalog"; model.page = .models }
+                    .buttonStyle(.borderedProminent)
+            }
+        } else {
+            ContentUnavailableView {
+                Label("Start the server to try your model", systemImage: "play.circle")
+            } description: {
+                Text(model.models.productLibrary.first { $0.path == model.selectedPath }.map { "Starts " + $0.displayName + " on this Mac." }
+                     ?? "Choose a downloaded model on Dashboard.")
+            } actions: {
+                if model.canStartServer {
+                    Button("Start Server", systemImage: "play.fill") { model.startServer() }.buttonStyle(.borderedProminent)
+                }
+                Button("Choose Model") { model.page = .overview }
+            }
+        }
+    }
+
+    /// Compact form of the not-serving state above an existing conversation.
+    private var notServingBanner: some View {
+        HStack(spacing: 10) {
+            Label(runtime.state == "Starting" ? "Loading the model…"
+                  : runtime.error ?? "The server is not running. Start it to continue this conversation.",
+                  systemImage: runtime.error == nil ? "info.circle" : "exclamationmark.triangle")
+                .font(.callout).foregroundStyle(runtime.error == nil ? Color.secondary : Color.orange).lineLimit(2)
+            Spacer()
+            if runtime.error != nil {
+                Button("Review Server") { model.page = .server }
+            } else if model.canStartServer {
+                Button("Start Server", systemImage: "play.fill") { model.startServer() }.buttonStyle(.borderedProminent)
+            } else if runtime.state != "Starting" {
+                Button("Open Dashboard") { model.page = .overview }
+            }
+        }
+        .padding(10)
+        .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
+    }
+
     private func exportConversation() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
@@ -173,8 +240,10 @@ private struct MarkdownMessage: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                 if index % 2 == 1 {
-                    ScrollView(.horizontal) { Text(part).font(.system(.callout, design: .monospaced)).textSelection(.enabled).padding(12) }
+                    let code = CodeFence.body(part)
+                    ScrollView(.horizontal) { Text(code).font(.system(.callout, design: .monospaced)).textSelection(.enabled).padding(12) }
                         .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(alignment: .topTrailing) { CopyButton(text: code, label: "Copy code").padding(8) }
                 } else {
                     Text((try? AttributedString(markdown: part, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(part))
                         .textSelection(.enabled)
@@ -185,5 +254,30 @@ private struct MarkdownMessage: View {
             guard ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return .discarded }
             return .systemAction
         })
+    }
+}
+
+/// Copies text and confirms with a checkmark for two seconds.
+struct CopyButton: View {
+    let text: String
+    var label = "Copy"
+    @State private var copied = false
+    var body: some View {
+        Button {
+            copyText(text); copied = true
+            Task { try? await Task.sleep(for: .seconds(2)); copied = false }
+        } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
+        .buttonStyle(.plain).help(copied ? "Copied" : label)
+        .accessibilityLabel(copied ? "Copied" : label)
+    }
+}
+
+enum CodeFence {
+    /// The code inside a fence, without a language tag on its first line.
+    static func body(_ fenced: String) -> String {
+        guard let newline = fenced.firstIndex(of: "\n") else { return fenced }
+        let info = String(fenced[..<newline])
+        let isLanguageTag = info.count <= 24 && info.range(of: #"^[A-Za-z0-9+#._-]*$"#, options: .regularExpression) != nil
+        return isLanguageTag ? String(fenced[fenced.index(after: newline)...]) : fenced
     }
 }

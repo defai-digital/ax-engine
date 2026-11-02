@@ -15,32 +15,32 @@ struct ServerControls: View {
     @State private var restartTarget: String?
     @State private var pickerOpen = false
 
-    private var attached: Bool { runtime.connection != nil && !runtime.owned }
-    private var selectable: [LocalModel] { models.productLibrary.filter { $0.ready && models.checkedPaths.contains($0.path) } }
-    private var startBlockReason: String? {
-        ServerGate.startBlockReason(.init(selectedPath: model.selectedPath, selectable: models.canSelectInGUI(model.selectedPath),
-                                          libraryEmpty: selectable.isEmpty, scanning: models.scanning,
-                                          runtimeBusy: runtime.busy, removing: models.removing, attached: attached))
-    }
-    private var inferenceActive: Bool {
-        chat.generating || (runtime.metrics["ax_engine_generation_active_streams"] ?? 0) > 0
+    private var attached: Bool { model.attachedToService }
+    private var selectable: [LocalModel] { model.servableModels }
+    private var startBlockReason: String? { model.startBlockReason }
+    private var inferenceActive: Bool { model.inferenceActive }
+    /// Nothing downloaded yet: lead with the download instead of a dead Start.
+    private var needsFirstModel: Bool {
+        selectable.isEmpty && !models.scanning && !runtime.owned && runtime.connection == nil
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            modelSelection
-            actions
+            if needsFirstModel { firstModel } else {
+                modelSelection
+                actions
+            }
         }
         .onAppear(perform: preselect)
         .onChange(of: selectable.map(\.path)) { _, _ in preselect() }
         .onChange(of: models.scanning) { _, _ in preselect() }
         .alert("Stop \(runningTitle)?", isPresented: $stopConfirmation) {
-            Button("Stop", role: .destructive) { Task { await chat.stop(); await runtime.stop() } }
+            Button("Stop", role: .destructive) { model.stopServer() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("A reply is being generated. Stopping the app-owned server ends it. You can start the server again at any time.") }
         .alert("Restart \(runningTitle)?", isPresented: Binding(get: { restartTarget != nil }, set: { if !$0 { restartTarget = nil } })) {
             Button("Restart", role: .destructive) {
-                if let target = restartTarget { restart(target) }
+                if let target = restartTarget { model.restartServer(model: target) }
                 restartTarget = nil
             }
             Button("Cancel", role: .cancel) { restartTarget = nil }
@@ -63,14 +63,20 @@ struct ServerControls: View {
         }
     }
 
-    private func start(_ path: String) {
-        model.recordRecentModel(path)
-        runtime.start(model: path, settings: model.settings)
-    }
-
-    private func restart(_ path: String) {
-        model.recordRecentModel(path)
-        Task { await chat.stop(); await runtime.restart(model: path, settings: model.settings) }
+    private var firstModel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("No model downloaded yet", systemImage: "arrow.down.circle").font(.headline)
+            Text("Download a public AutomatosX model once; then Start Server serves it on this Mac. No account or token needed.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Download a Model", systemImage: "arrow.down") {
+                    model.catalogSearch = ""; model.modelsSection = "catalog"; model.page = .models
+                }.buttonStyle(.borderedProminent)
+                if models.activeDownloadCount > 0 {
+                    Button("View Downloads (\(models.activeDownloadCount))") { model.modelsSection = "transfers"; model.page = .models }
+                }
+            }
+        }
     }
 
     private var modelSelection: some View {
@@ -100,7 +106,7 @@ struct ServerControls: View {
                                        favorites: model.favoriteModels, recent: model.recentModels, scanning: models.scanning,
                                        choose: { model.selectedPath = $0; pickerOpen = false },
                                        toggleFavorite: { model.toggleFavoriteModel($0) },
-                                       browseCatalog: { pickerOpen = false; model.modelsSection = "catalog"; model.page = .models })
+                                       browseCatalog: { pickerOpen = false; model.catalogSearch = ""; model.modelsSection = "catalog"; model.page = .models })
                 }
                     .accessibilityLabel("Model to serve")
                 if !model.selectedPath.isEmpty {
@@ -134,30 +140,31 @@ struct ServerControls: View {
                     let switching = !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel
                     let switchingMode = model.settings.servingMode != runtime.servingMode
                     let switchingCap = model.settings.concurrentRequests != runtime.concurrentRequests
+                    let switchingKey = model.settings.requireAPIKey != runtime.requiresAPIKey
                     Button(ServerGate.restartTitle(modelChanged: switching, modeChanged: switchingMode, capChanged: switchingCap,
-                                                   mode: model.settings.servingMode),
+                                                   keyChanged: switchingKey, mode: model.settings.servingMode),
                            systemImage: "arrow.clockwise") {
-                        let target = switching && models.canSelectInGUI(model.selectedPath) ? model.selectedPath : runtime.selectedModel
-                        if inferenceActive { restartTarget = target }
-                        else { restart(target) }
+                        if inferenceActive { restartTarget = model.restartTarget } else { model.restartServer() }
                     }
-                    .disabled(runtime.busy || runtime.state == "Stopping" || models.removing
-                              || (switching && !models.canSelectInGUI(model.selectedPath)))
-                    .help(switching || switchingMode || switchingCap
-                          ? "Stop this server and start it again with the selected model, serving mode and request cap. Active inference stops."
-                          : "Stop this server and start it again. Active inference stops.")
+                    .buttonStyle(.borderedProminent, when: switching || switchingMode || switchingCap || switchingKey)
+                    .disabled(!model.canRestartServer)
+                    .help(switching || switchingMode || switchingCap || switchingKey
+                          ? "Stop this server and start it again with the saved changes. Active inference stops. (⇧⌘R)"
+                          : "Stop this server and start it again. Active inference stops. (⇧⌘R)")
                     Button(runtime.state == "Starting" ? "Cancel Start" : "Stop Server", systemImage: "stop.fill", role: .destructive) {
-                        if inferenceActive { stopConfirmation = true } else { Task { await chat.stop(); await runtime.stop() } }
+                        if inferenceActive { stopConfirmation = true } else { model.stopServer() }
                     }.disabled(runtime.state == "Stopping")
-                    .help(runtime.state == "Starting" ? "Cancel the launch" : "Stop the app-owned server")
+                    .help(runtime.state == "Starting" ? "Cancel the launch (⇧⌘.)" : "Stop the app-owned server (⇧⌘.)")
                 } else if runtime.connection != nil {
-                    Button("Disconnect") { Task { await chat.stop(); runtime.detach() } }
+                    Button("Disconnect") { model.stopServer() }
+                        .help("Stop using the attached service. It keeps running.")
+                } else if model.connecting {
+                    Button("Cancel Connecting") { runtime.detach() }
                 } else {
-                    Button("Start Server", systemImage: "play.fill") {
-                        if models.canSelectInGUI(model.selectedPath) { start(model.selectedPath) }
-                    }
-                    .buttonStyle(.borderedProminent).disabled(startBlockReason != nil)
-                    .help(startBlockReason ?? "Start a loopback server on the selected model")
+                    Button("Start Server", systemImage: "play.fill") { model.startServer() }
+                        .buttonStyle(.borderedProminent).disabled(startBlockReason != nil)
+                        .help(startBlockReason ?? "Start a loopback server on the selected model (⇧⌘R)")
+                        .accessibilityHint(startBlockReason ?? "Serves the selected model on this Mac")
                 }
                 Spacer()
             }
@@ -165,11 +172,21 @@ struct ServerControls: View {
                 modelChanged: !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel,
                 modeChanged: model.settings.servingMode != runtime.servingMode,
                 running: runtime.servingMode, selected: model.settings.servingMode,
-                runningCap: runtime.concurrentRequests, selectedCap: model.settings.concurrentRequests) {
-                Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+                runningCap: runtime.concurrentRequests, selectedCap: model.settings.concurrentRequests,
+                runningRequiresKey: runtime.requiresAPIKey, selectedRequiresKey: model.settings.requireAPIKey) {
+                let blocked = !models.canSelectInGUI(model.selectedPath) && model.selectedPath != runtime.selectedModel
+                Label(blocked ? "The selected model is incomplete or not checked yet. Choose another model to switch, or select the running one to restart it."
+                              : notice, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             } else if !runtime.owned, runtime.connection == nil, let reason = startBlockReason {
                 Label(reason, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+private extension View {
+    /// Applies a button style only when a condition holds.
+    @ViewBuilder func buttonStyle<S: PrimitiveButtonStyle>(_ style: S, when condition: Bool) -> some View {
+        if condition { buttonStyle(style) } else { self }
     }
 }

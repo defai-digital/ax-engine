@@ -79,8 +79,10 @@ public enum ServerGate {
 
     /// Restart button title for an app-owned server, naming what the restart
     /// changes so a plain restart and a configuration switch read differently.
-    public static func restartTitle(modelChanged: Bool, modeChanged: Bool, capChanged: Bool = false, mode: ServingMode) -> String {
-        switch (modelChanged, modeChanged) {
+    public static func restartTitle(modelChanged: Bool, modeChanged: Bool, capChanged: Bool = false, keyChanged: Bool = false,
+                                    mode: ServingMode) -> String {
+        if keyChanged && !modelChanged && !modeChanged && !capChanged { return "Restart to Apply API Key Setting" }
+        return switch (modelChanged, modeChanged) {
         case (true, true): "Restart with Selected Model in \(mode.title) Mode"
         case (true, false): capChanged ? "Restart with Selected Model and New Request Cap" : "Restart with Selected Model"
         case (false, true): "Restart in \(mode.title) Mode"
@@ -90,7 +92,19 @@ public enum ServerGate {
 
     /// Explains a saved change that the running server does not use yet.
     public static func pendingRestartNotice(modelChanged: Bool, modeChanged: Bool, running: ServingMode, selected: ServingMode,
-                                            runningCap: Int? = nil, selectedCap: Int? = nil) -> String? {
+                                            runningCap: Int? = nil, selectedCap: Int? = nil,
+                                            runningRequiresKey: Bool? = nil, selectedRequiresKey: Bool? = nil) -> String? {
+        let base = restartNotice(modelChanged: modelChanged, modeChanged: modeChanged, running: running, selected: selected,
+                                 runningCap: runningCap, selectedCap: selectedCap)
+        guard let runningRequiresKey, let selectedRequiresKey, runningRequiresKey != selectedRequiresKey else { return base }
+        let key = selectedRequiresKey
+            ? "Require an API key is saved for the next launch; the running server stays open to local clients until you restart."
+            : "No API key is saved for the next launch; the running server keeps requiring its key until you restart."
+        return base.map { $0 + " " + key } ?? key
+    }
+
+    private static func restartNotice(modelChanged: Bool, modeChanged: Bool, running: ServingMode, selected: ServingMode,
+                                      runningCap: Int?, selectedCap: Int?) -> String? {
         let capChanged = runningCap != nil && selectedCap != nil && runningCap != selectedCap
         let capNote = capChanged ? " The request cap changes from \(runningCap ?? 0) to \(selectedCap ?? 0) at the same time." : ""
         switch (modelChanged, modeChanged) {
