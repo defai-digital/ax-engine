@@ -602,15 +602,12 @@ pub(crate) fn deepseek_v4_lid_top_k_mask(
     } else {
         q_pe
     };
-    let q_pe = rope(
+    let q_pe = rope_indexer_query_pe(
         &q_pe,
         rot as i32,
-        true,
         rope_base,
-        1.0,
-        token_offset as i32,
         rope_freqs.as_ref(),
-        None,
+        token_offset as i32,
     );
     let q = astype(
         &concatenate(&[&q_nope, &q_pe], -1, None),
@@ -643,6 +640,24 @@ pub(crate) fn deepseek_v4_lid_top_k_mask(
     let threshold = slice_last_dim(&top_vals, 0, 1, None);
     let selected = greater_equal(&scores, &threshold, None);
     logical_and(&vis, &selected, None)
+}
+
+/// RoPE the indexer query's pe slice, laid out `[seq, Hi, rot]`.
+///
+/// MLX fast rope takes positions from axis -2, so the slice is roped as
+/// `[Hi, seq, rot]`: each query row gets `token_offset + i` and every head in
+/// a row shares it. Roping the `[seq, Hi, rot]` layout directly would give
+/// head `h` the position `token_offset + h` and every row the same rotation.
+fn rope_indexer_query_pe(
+    q_pe: &MlxArray,
+    rot: i32,
+    rope_base: Option<f32>,
+    rope_freqs: Option<&MlxArray>,
+    token_offset: i32,
+) -> MlxArray {
+    let by_head = transpose(q_pe, &[1, 0, 2], None);
+    let roped = rope(&by_head, rot, true, rope_base, 1.0, token_offset, rope_freqs, None);
+    transpose(&roped, &[1, 0, 2], None)
 }
 
 #[cfg(test)]
@@ -1090,15 +1105,12 @@ mod tests {
         let q = reshape(&q, &[seq as i32, THI as i32, TI as i32], None);
         let q_nope = slice_last_dim(&q, 0, (TI - TROT) as i32, None);
         let q_pe = slice_last_dim(&q, (TI - TROT) as i32, TI as i32, None);
-        let q_pe = rope(
+        let q_pe = rope_indexer_query_pe(
             &q_pe,
             TROT as i32,
-            true,
             Some(v4_cfg.compress_rope_theta),
-            1.0,
+            None,
             offset as i32,
-            None,
-            None,
         );
         let q = concatenate(&[&q_nope, &q_pe], -1, None);
         let q_data = f32_data(&q);
@@ -1135,6 +1147,44 @@ mod tests {
                 expect.as_slice(),
                 "query {i}: scores {scores:?}"
             );
+        }
+    }
+
+    #[test]
+    fn indexer_query_rope_positions_follow_rows_not_heads() {
+        // Same values in every (row, head): after rope, heads in one row must
+        // match and each row must equal a single-row rope at offset + i.
+        let (seq, heads, rot, offset, theta) = (3usize, 2usize, 4usize, 5usize, 10000.0f32);
+        let values: Vec<f32> = (0..rot).map(|d| 0.3 + 0.1 * d as f32).collect();
+        let data: Vec<f32> = (0..seq * heads).flat_map(|_| values.clone()).collect();
+        let q_pe = array_f32(&data, &[seq as i32, heads as i32, rot as i32]);
+        let roped = f32_data(&mlx_sys::contiguous(
+            &rope_indexer_query_pe(&q_pe, rot as i32, Some(theta), None, offset as i32),
+            None,
+        ));
+        for i in 0..seq {
+            let one_row = array_f32(&values, &[1, 1, rot as i32]);
+            let expect = f32_data(&rope(
+                &one_row,
+                rot as i32,
+                true,
+                Some(theta),
+                1.0,
+                (offset + i) as i32,
+                None,
+                None,
+            ));
+            for h in 0..heads {
+                let start = (i * heads + h) * rot;
+                for d in 0..rot {
+                    assert!(
+                        (roped[start + d] - expect[d]).abs() < 1e-5,
+                        "row {i} head {h} dim {d}: {} vs {}",
+                        roped[start + d],
+                        expect[d]
+                    );
+                }
+            }
         }
     }
 
