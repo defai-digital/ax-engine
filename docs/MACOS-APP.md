@@ -66,114 +66,124 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
 
 ## Workflow
 
-1. **Models:** Local Library shows app-managed and cached AutomatosX models.
-   One snapshot per cached repository is shown, preferring complete
-   weights before the newest revision. Metadata-only caches and missing indexed
-   shards are marked incomplete. Catalog explicitly explains that downloads are
-   public AutomatosX packs only and need no Hugging Face account or token.
-   Download third-party models independently and use CLI local model paths.
-   Arbitrary local folder imports and editable server paths are not GUI features.
-   Revisions are retained in download requests. Catalog inclusion is not a
-   memory-fit or qualification claim. Each catalog row shows the runtime's
-   approximate pack size, whether MTP artifacts are included and its
-   certification word when recorded, plus the free space on the model volume.
-   A row that is already in Local Library shows **Downloaded** with **Use
-   Model** and a menu for Show in Library, Show in Finder, Download Again and
-   Remove; a row that is transferring shows its phase and percentage inline.
-   A pack whose estimate exceeds the free space on the model volume is flagged
-   and asks for confirmation before it is queued; a pack larger than this
-   Mac's unified memory is labeled as such. These are size comparisons, not
-   fit or qualification claims.
-2. **Models → Transfers:** choosing Download in Catalog queues the pack and
-   keeps you in Catalog; the Transfers segment shows how many are active.
-   Transfers shows each download's phase (checking files, downloading,
-   verifying, ready), bytes done of total, smoothed throughput and an estimated
-   time left, the file being transferred, when it started and how long it
-   took, and a warning when no data has arrived for 30 seconds. Byte counts
-   come from runtimes that report them; with an older runtime the sizes are
-   catalog estimates and are labeled "about". You can cancel, retry, dismiss
-   finished rows or clear them all; a Ready row also offers Show in Finder and
-   Remove. This is the current session's queue; an empty queue does not mean
-   no models are downloaded. Transfers run sequentially through
-   `ax-engine download --progress-json`. Ready requires complete weight files,
-   a successful terminal record and a successful process exit, not just a
-   100% progress bar. There is no separate Downloads sidebar page.
-   Interrupted native downloads leave a hidden stage folder so a retry can
-   resume; Local Library and Transfers list these under **Interrupted
-   downloads** with their size, offer **Resume** when the stage matches a
-   catalog entry, and **Discard**, which refuses while the runtime still holds
-   the download lock.
-3. **Start serving (Dashboard):** the **Inference service** card at the top of
+**First run.** When a complete library scan finds no models, a short guide
+opens: what AX Engine does, a list of catalog models (download size within
+this Mac's memory first, smallest first; a size comparison, not a fit
+claim), the download with live progress, and **Start Server**. Closing it
+keeps any download running. It is offered once; reopen it from **Help ›
+Getting Started**.
+
+1. **Start serving (Dashboard):** the **Inference service** card at the top of
    Dashboard is the quickest way to serve: pick a downloaded model and press
-   **Start Server**. The model picker is searchable and groups models under
+   **Start Server** (or Shift-Command-R, or the menu-bar item). With nothing
+   downloaded yet, the card says so and offers **Download a Model**, which
+   opens the Catalog. The model picker is searchable and groups models under
    **Favorites** (star a row to pin it), **Recent** (the last five models you
    started) and the rest; arrow keys and Return work from the search field,
-   and **Download more models** opens the Catalog. With nothing chosen, the
-   running model, then the most recently started one, a favorite or the
-   first download is preselected. While
-   it runs the same card offers **Restart Server** and **Stop Server**, the
-   API URL with **Copy URL**, and a link to **Server Settings**. By default the
-   server needs no API key: it listens on 127.0.0.1 only, so local clients can
-   call it directly. To require a key, switch on **Require an API key** in
-   **Server Settings** (sidebar); each later launch then gets a fresh
-   in-memory key, copied with **Copy API key**, and a running server switches
-   only after a restart.
-   **Server Settings** carries the same model menu and lifecycle buttons, plus
-   authentication, connecting to an existing service, metrics and runtime
-   output. The picker lists each model with its size and marks the selected
-   one; favorites and recents are kept per user on this Mac. When Start is
-   unavailable the page says why (no model installed, none selected, the
+   and **Download more models** opens the Catalog. Model names are short
+   titles (for example **Tiel Coder 35B A3B**) with quantization and MTP as
+   tags; the full name and path are in the tooltip. With nothing chosen, the
+   running model, then the most recently started one, a favorite or the first
+   download is preselected. Before anything is listening the card says **Not
+   listening**; while starting it shows the elapsed time and the runtime's
+   latest output line, and **Cancel Start** stops the launch. Once running it
+   offers **Restart Server**, **Stop Server** (Shift-Command-Period), **Copy
+   API URL**, **Copy API Key** when the server uses one, and **Open
+   Playground**. **Serving options** folds the serving mode and request cap
+   behind a one-line summary such as "Automatic mode · up to 4 requests · no
+   API key". By default the server needs no API key: it listens on 127.0.0.1
+   only, so local clients can call it directly.
+2. **Server Settings:** the same status, model picker and lifecycle buttons,
+   with the serving options and API key always visible. **Require an API key**
+   gives each later launch a fresh in-memory key, copied with **Copy API
+   Key**; while a server is running the toggle shows **Restart required** and
+   **Restart Now**. **Serving mode** (Automatic, Coding, Agentic, Chatbot)
+   selects the runtime's speculation profile for the next app-owned launch
+   (`ax-engine serve <model> -- --speculation-profile <mode>`; Automatic
+   passes nothing, so the runtime default and any `AX_MLX_SPECULATION_PROFILE`
+   in the environment still apply). **Concurrent requests** (1–8, default 4)
+   is forwarded as `--max-concurrent-requests`: one server decodes up to that
+   many requests at once in a single batch and answers 429 beyond it, and the
+   runtime's memory plan sizes per-request state for that count. 4 keeps each
+   request near full speed on batched models; 8 is the runtime's
+   batched-decode cohort limit. While running, the options show the runtime's
+   batch slots in use from its own gauges. Serving mode, request cap and API
+   key save as soon as they change, on Dashboard, Server Settings or Settings
+   › Runtime, without touching other unsaved Settings edits, and apply at the
+   next start or restart. When the running server differs from them, Restart
+   names the change (**Restart with Selected Model**, **Restart in Coding
+   Mode**, **Restart with New Request Cap**, **Restart to Apply API Key
+   Setting**) and a note explains what keeps running until then. Attached
+   services keep their own mode, limits and authentication. When Start is
+   unavailable the card says why (no model downloaded, none selected, the
    selection incomplete, the server busy, or an attached service). Start uses
    offline resolution and loopback only, and refuses up front when the
    configured port is already in use instead of failing after the model has
-   loaded. While starting, the status shows the elapsed time and the runtime's
-   latest output line; Stop Server cancels the launch. Runtime MTP and
-   expert-streaming defaults remain unchanged. **Serving mode** (Automatic,
-   Coding, Agentic, Chatbot) mirrors the Playground profile chips and selects
-   the runtime's speculation profile for the next app-owned launch
-   (`ax-engine serve <model> -- --speculation-profile <mode>`; Automatic passes
-   nothing, so the runtime default and any `AX_MLX_SPECULATION_PROFILE` in the
-   environment still apply). The chips live in the shared inference header at
-   the top of Dashboard and Server (Playground's header carries the request
-   profile chips instead, because that profile only shapes Playground
-   requests); choosing one saves it immediately, and when the running server
-   uses a different mode the header offers **Restart in … Mode** in place. The same
-   setting is on Settings › Runtime, where it can be changed while a server is
-   running because it does not need a rescan. The server status row and the
-   header show which mode the running server was started with.
-   **Concurrent requests** (1–8, default 4) is forwarded the same way as
-   `--max-concurrent-requests`: one server decodes up to that many requests at
-   once in a single batch and answers 429 beyond it, and the runtime's memory
-   plan sizes per-request state for that count. 4 keeps each request near
-   full speed on batched models; 8 is the runtime's batched-decode cohort
-   limit. The stepper sits in the same header as the serving mode on
-   Dashboard and Server; while running, it shows the runtime's batch slots in
-   use from its own gauges, and the status row and header show the cap the
-   server was started with. Changing the cap or the mode while the server
-   runs turns Restart into **Restart with New Request Cap** / **Restart in …
-   Mode**, offered on Dashboard and Server Settings. With **Require an API
-   key** on, an app-owned server uses a per-launch in-memory API key. **Restart Server** stops and
-   relaunches the app-owned server; choosing a different installed model or
-   serving mode while it runs turns the button into **Restart with Selected
-   Model**, **Restart in Coding Mode** or both, and the page notes that the
-   current server keeps serving in its current mode until then. Attached
-   services keep their own mode. Stop and Restart ask for
-   confirmation only while a reply is being generated. Stop gives the runtime
-   eight seconds to drain before it is force-killed. When the runtime exits on
-   its own, the error shows its last diagnostic line with **Start Again** and
-   **Copy Diagnostics** (the bounded runtime output, with the API key
-   redacted).
-   Once connected, **Copy API URL** copies the actual connected endpoint,
-   and **Copy API key** copies its current key for an external local client.
-   The key is copied only on your click, stays on this device, and is cleared
-   after 60 seconds if the clipboard has not changed. It is also cleared when
-   the connection becomes unavailable or the window closes. Confidential and
-   transient markers request exclusion from compatible clipboard histories;
-   they do not prevent other local apps from reading the clipboard. The key
-   is never added to saved settings. A restarted app-owned server gets a new
-   key, so copy it again after restarting.
+   loaded. Runtime MTP and expert-streaming defaults remain unchanged. Stop
+   and Restart ask for confirmation only while a reply is being generated.
+   Stop gives the runtime eight seconds to drain before it is force-killed.
+   When the runtime exits on its own, the error shows its last diagnostic line
+   with **Start Again** and **Copy Diagnostics** (the bounded runtime output,
+   with the API key redacted), and **Runtime output** opens. Runtime output
+   can be filtered by text, narrowed to warnings and errors, and limited to
+   the last 100 or 500 lines; filters change the view only, and **Copy All**
+   copies the whole bounded output. Runtime metrics
+   and history appear only while something is serving; Mac CPU, GPU and memory
+   charts are on Dashboard. **Already running AX Engine on this Mac? Connect to
+   it** (collapsed) attaches to a service on the configured port; a key you
+   enter is held in memory for that connection only.
+   **Copy API URL** copies the actual connected endpoint, and **Copy API Key**
+   copies its current key for an external local client. The key is copied
+   only on your click, stays on this device, and is cleared after 60 seconds
+   if the clipboard has not changed. It is also cleared when the connection
+   becomes unavailable or the window closes. Confidential and transient
+   markers request exclusion from compatible clipboard histories; they do not
+   prevent other local apps from reading the clipboard. The key is never
+   added to saved settings. A restarted app-owned server gets a new key, so
+   copy it again after restarting.
+3. **Models:** three segments. **Your Models** lists app-managed and cached
+   AutomatosX models; each row says **Ready to serve**, **Weights incomplete
+   or metadata only** or **Not checked in this scan**, and marks the
+   **Selected** and **Serving** model. One snapshot per cached repository is
+   shown, preferring complete weights before the newest revision. **Serve**
+   on a ready row starts the server on it when nothing is serving; while a
+   server runs, **Select on Dashboard** selects it there so Restart switches
+   to it. The same action is on downloaded Catalog rows and finished
+   downloads. **Catalog** lists public AutomatosX packs (no Hugging Face
+   account or token) grouped into those that fit this Mac's unified memory and
+   a collapsed group of larger ones; each row shows the runtime's approximate
+   pack size, whether MTP artifacts are included and its certification word
+   when recorded, plus the free space on the model volume. These are size
+   comparisons, not fit or qualification claims. A pack whose estimate exceeds
+   the free space asks first: AX Engine checks the exact remaining size before
+   downloading and stops without touching existing models when it does not
+   fit, so **Download Anyway** is safe and a resumed download may need less.
+   Download third-party models independently and use CLI local model paths.
+   Arbitrary local folder imports and editable server paths are not GUI
+   features. **Downloads** (the count of active ones is on the segment) shows
+   each download's phase (checking files, downloading, verifying), bytes done
+   of total, smoothed throughput and an estimated time left, the file being
+   transferred, queue position, when it started and how long it took, and a
+   warning when no data has arrived for 30 seconds, with **Restart Download**,
+   which reconnects the same row and keeps verified files. Byte counts come from
+   runtimes that report them; with an older runtime the sizes are catalog
+   estimates and are labeled "about". Cancel asks first and keeps verified
+   files for Retry or Resume; a finished row offers **Serve**, Show in Finder
+   and a menu with Remove from Disk and Dismiss. Downloads run sequentially
+   through `ax-engine download --progress-json`. **Downloaded** requires
+   complete weight files, a successful terminal record and a successful
+   process exit, not just a 100% progress bar. This is the current session's
+   queue. Interrupted native downloads leave a hidden stage folder so a retry
+   can resume; Downloads lists these under **Interrupted downloads** with
+   their size, **Resume** when the stage matches a catalog entry, and
+   **Discard**, which refuses while the runtime still holds the download lock.
+   Your Models links to them.
 4. **Playground:** select a running model, send text, inspect reasoning when supplied,
-   copy replies, retry or stop. Return or Command-Return sends; Shift-Return enters a new line.
+   copy replies or code blocks, retry or stop (Command-Period). Return or
+   Command-Return sends; Shift-Return enters a new line. You can type the next
+   message while a reply streams. Without a server, Playground shows one state
+   with the next step: **Start Server** on the selected model, **Download a
+   Model** when nothing is downloaded, or **Review Server** after an error.
    Streaming text is coalesced; settled replies receive basic Markdown/code-block
    rendering. Generated HTML and tool calls are never executed.
    History is bounded to 200 messages and 4 MiB of combined prompt, answer, and
@@ -185,8 +195,15 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    an explicit **Clear** replaces them. These are storage/display limits, not
    a model token-context limit; the server still validates the model context.
 
-5. **Server metrics:** inspect live runtime counters. Missing measurements appear
-   as unavailable. Counters are not a benchmark or a throughput certification.
+5. **Server metrics:** inspect live runtime counters on Server Settings while a
+   server runs. Missing measurements appear as unavailable. Counters are not a
+   benchmark or a throughput certification.
+6. **Menu bar and Server menu:** the menu-bar item (on by default; Settings ›
+   Runtime › Menu bar) shows the server state and offers Start Server, Start
+   with… (any downloaded model), Restart, Stop, Copy API URL, Open Playground
+   and Open AX Engine. The **Server** menu has Start/Restart Server
+   (Shift-Command-R), Stop Server (Shift-Command-Period), Copy API URL and
+   Open Playground.
 
 Connect attaches to an existing AX Engine service on the configured local port.
 Its API key stays in memory. Disconnect and app quit do not stop an attached
@@ -204,9 +221,9 @@ and the port while busy. Generation-only changes remain editable and apply to
 the next Chat request without restarting the server or rescanning models.
 Third-party notices remain available from Settings and the app menu.
 
-## Usage profiles
+## Playground profiles
 
-Settings opens with **Coding**, **Chatbot**, **Media**, and **Custom**. Profiles
+Settings › Generation opens with **Coding**, **Chatbot**, **Media**, and **Custom**. Profiles
 set a response ceiling and use runtime sampling defaults (no temperature, top-p,
 top-k, or penalty overrides). These are app starting points, not model-specific
 quality or performance qualifications:
@@ -231,7 +248,7 @@ original temperature and output limit as Custom; fresh installs start with
 Chatbot. Save commits the draft, and Revert restores it.
 
 Profiles apply to built-in Chat requests. Other apps continue to supply their own
-parameters. **Copy saved request defaults** copies only a JSON request fragment
+parameters. **Copy Request Defaults** copies the saved only a JSON request fragment
 (`max_tokens` and an optional `temperature`) for configuration in a compatible
 client; it contains no API key or local path and does not change a running server's
 global defaults. Only supported request parameters should be used by that client.
@@ -245,8 +262,9 @@ explicitly imported folders. Complete weight files are not proof that a model wi
 
 Models that AX Engine downloaded can be deleted from the GUI after a
 confirmation that names the folder and the space it frees. **Remove** sits on
-every removable Local Library row and in the row's context menu; the same
-action is in the Downloaded menu of a Catalog row and on a Ready transfer.
+every removable Your Models row and in the row's context menu; the same
+action is in the Downloaded menu of a Catalog row and in the menu of a
+finished download.
 When removal is temporarily blocked the row says why inline (the server is
 serving it, a download or model operation is running, or an attached service
 may be using it). Rows that AX Engine will never delete (imported folders,
@@ -280,10 +298,10 @@ AX Engine provides inference; MTPLX inference code and model assets are not bund
 ## Dashboard and discovery
 
 Dashboard is a resource overview, with charts for RAM usage, available disk space,
-CPU/GPU activity and the model folders on disk, under the **Inference service**
+CPU/GPU activity and your models on disk, under the **Inference service**
 card that starts, restarts and stops the app-owned server on a downloaded
-model. Downloads stay in Models; authentication, attach and metrics stay in
-Server Settings.
+model. Downloads stay in Models; authentication, attach and runtime metrics
+stay in Server Settings.
 
 The disk-space ring shows the volume containing the configured model download
 folder, not the size of model files. Used/reserved includes other files and APFS
@@ -293,7 +311,7 @@ and every minute while it stays active. Missing volumes and broken links remain
 unavailable. No weights are read or directories sized for this chart. A local
 privacy manifest declares the disk-capacity API's display-only usage.
 
-The inventory chart separates complete weight files, incomplete/metadata-only
+The inventory chart separates models ready to serve (complete weight files), incomplete/metadata-only
 folders and folders not yet checked in the current scan. These are discovered
 folders, not a count of models verified to run. One cached snapshot per repository
 is included. Partial and ongoing scans are labeled. Refresh updates storage and
@@ -347,12 +365,13 @@ compatibility, and absence from the runtime catalog does not mean unsupported.
 Library filters distinguish all folders, catalog matches and other folders without
 claiming compatibility. Search offers a clear recovery action when nothing matches.
 The app-owned running model is labeled explicitly. Catalog links an active
-download to Transfers.
+download to Downloads.
 The app performs compatibility validation when the operator explicitly starts a
 model. Models from other tools are not silently deleted or hidden.
 
 Use Command-1 through Command-5 to navigate Dashboard, Models, Server Settings, Chat and
-Settings; Command-F focuses model search and Command-R refreshes models.
+Settings; Command-F focuses model search, Command-R refreshes models,
+Shift-Command-R starts or restarts the server and Shift-Command-Period stops it.
 Command-Comma still opens inline Settings. Search, selection and chat drafts
 survive page switches and main-window reopening for the current app session.
 API credentials remain in memory, and starting/connecting never happens merely

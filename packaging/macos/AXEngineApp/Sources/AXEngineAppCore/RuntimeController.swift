@@ -20,6 +20,8 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var servingMode: ServingMode = .auto
     /// The request admission cap the current app-owned launch was started with.
     @Published public private(set) var concurrentRequests = AppSettings.defaultConcurrentRequests
+    /// Whether the current app-owned launch requires a bearer key.
+    @Published public private(set) var requiresAPIKey = false
     @Published public private(set) var history = MetricHistory()
     private var mtpWindow = MTPCounterWindow()
     public let job = ProcessJob(terminationGrace: 8)
@@ -69,6 +71,7 @@ public final class RuntimeController: ObservableObject {
             let candidate = EngineConnection(port: settings.port, apiKey: key)
             busy = true; owned = true; state = "Starting"; error = nil; logs = ""
             selectedModel = model; servingMode = settings.servingMode; concurrentRequests = settings.concurrentRequests
+            requiresAPIKey = settings.requireAPIKey
             startedAt = Date(); lastSuccessfulCheck = nil
             launch = Task { [self] in
                 do {

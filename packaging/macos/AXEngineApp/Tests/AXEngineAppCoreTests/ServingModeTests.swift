@@ -65,4 +65,14 @@ import Testing
     #expect(ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: false, running: .auto, selected: .auto, runningCap: 4, selectedCap: 4) == nil)
     let modeAndCap = ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: true, running: .auto, selected: .coding, runningCap: 4, selectedCap: 2) ?? ""
     #expect(modeAndCap.contains("Coding mode is saved") && modeAndCap.contains("from 4 to 2"))
+    #expect(ServerGate.restartTitle(modelChanged: false, modeChanged: false, keyChanged: true, mode: .auto) == "Restart to Apply API Key Setting")
+    #expect(ServerGate.restartTitle(modelChanged: true, modeChanged: false, keyChanged: true, mode: .auto) == "Restart with Selected Model")
+    let keyOnly = ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: false, running: .auto, selected: .auto,
+                                                  runningRequiresKey: false, selectedRequiresKey: true) ?? ""
+    #expect(keyOnly.contains("Require an API key is saved") && keyOnly.contains("stays open"))
+    let modelAndKey = ServerGate.pendingRestartNotice(modelChanged: true, modeChanged: false, running: .auto, selected: .auto,
+                                                      runningRequiresKey: true, selectedRequiresKey: false) ?? ""
+    #expect(modelAndKey.contains("selected model differs") && modelAndKey.contains("keeps requiring its key"))
+    #expect(ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: false, running: .auto, selected: .auto,
+                                            runningRequiresKey: true, selectedRequiresKey: true) == nil)
 }

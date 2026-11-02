@@ -288,7 +288,7 @@ Python wheel, source builds, and troubleshooting:
 `ax-engine download --list` prints the curated public
 [AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical).
 The GUI shows the runtime catalog in **Models → Catalog**, completed models in
-**Local Library**, and current downloads in **Transfers**. Downloads are public,
+**Your Models**, and current downloads in **Downloads**. Downloads are public,
 unrestricted AutomatosX packs only; no Hugging Face account or token is needed.
 Download other models independently and use the CLI with a local model path.
 Local models remain accessible when the Hub is unavailable. Qwen 3.8 27B AXQ (MXFP4 MTP pack),

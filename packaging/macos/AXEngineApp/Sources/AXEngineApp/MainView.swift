@@ -54,27 +54,36 @@ struct MainView: View {
                         Text(subtitle).font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if runtime.ready && model.page != .chat { Button("Open Playground", systemImage: "bubble.left") { model.page = .chat } }
+                    if runtime.ready && ![.chat, .overview].contains(model.page) { Button("Open Playground", systemImage: "bubble.left") { model.page = .chat } }
                 }.padding(26)
-                if [.overview, .server, .chat].contains(model.page) {
+                if model.page == .chat {
                     ModelProfileHeader(model: model, runtime: runtime, chat: chat)
                         .padding(.horizontal, 26).padding(.bottom, 16)
                 }
                 Divider()
                 Group {
                     switch model.page ?? .overview {
-                    case .overview: DashboardView(model: model, models: models, runtime: runtime, chat: chat, monitor: model.hostMonitor, storage: model.storageMonitor)
+                    case .overview: DashboardView(model: model, models: models, runtime: runtime, chat: chat, clipboard: clientClipboard, copyNotice: $clientCopyNotice, monitor: model.hostMonitor, storage: model.storageMonitor)
                     case .models: ModelsPage(model: model, runtime: runtime, models: models, storage: model.storageMonitor, searchFocused: $searchFocused)
                     case .server: ServerPage(model: model, runtime: runtime, models: models, chat: chat,
                                              clientCopyNotice: $clientCopyNotice, clientClipboard: clientClipboard)
-                    case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings, openServer: { model.page = runtime.error == nil ? .overview : .server })
+                    case .chat: ChatView(chat: chat, runtime: runtime, model: model)
                     case .settings: SettingsView(model: model)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
-        .task { if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) } }
+        .task {
+            if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) }
+            model.offerOnboardingIfNeeded()
+        }
+        .onChange(of: models.scanning) { _, scanning in if !scanning { model.offerOnboardingIfNeeded() } }
+        .sheet(isPresented: $model.showsOnboarding, onDismiss: { model.onboardingCompleted = true }) {
+            OnboardingView(model: model, models: models, runtime: runtime) {
+                model.onboardingCompleted = true; model.showsOnboarding = false
+            }
+        }
         .onAppear { syncHostMonitoring() }
         .onChange(of: model.hostMonitoringEnabled) { _, _ in syncHostMonitoring() }
         .onDisappear { model.hostMonitor.setActive(false); clientClipboard.clearIfOwned() }
@@ -98,11 +107,11 @@ struct MainView: View {
     }
     private var subtitle: String {
         switch model.page ?? .overview {
-        case .overview: "Start a downloaded model, then watch memory, storage and activity on your Mac."
-        case .models: "Download public AutomatosX models, manage local folders and follow transfers."
-        case .server: "API key, client connection, an existing AX Engine service, runtime metrics and output."
-        case .chat: "Test your model’s responses and inference speed."
-        case .settings: "Configure your local runtime and generation defaults."
+        case .overview: "Serve a model, then watch your Mac."
+        case .models: "Download, follow and manage models."
+        case .server: "Serving options, API key, connections and runtime output."
+        case .chat: "Try your model and measure its speed."
+        case .settings: "Runtime location, port and Playground defaults."
         }
     }
 }

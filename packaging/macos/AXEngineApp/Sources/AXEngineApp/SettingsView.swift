@@ -34,6 +34,11 @@ struct SettingsView: View {
                     settingsForm {
                         runtimeSection
                         servingSection
+                        Section("Menu bar") {
+                            Toggle("Show AX Engine in the menu bar", isOn: $model.showsMenuBarItem)
+                            Text("Start, restart or stop the server and copy its URL without opening the window.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Tab("Updates", systemImage: "arrow.down.circle", value: SettingsPane.updates) {
@@ -78,8 +83,8 @@ struct SettingsView: View {
     }
 
     private var generationSection: some View {
-        Section("Usage profile") {
-            Picker("Use AX Engine for", selection: Binding(
+        Section("Playground profile") {
+            Picker("Profile", selection: Binding(
                 get: { model.settingsDraft.effectiveProfile },
                 set: { model.settingsDraft.apply($0) }
             )) {
@@ -111,13 +116,14 @@ struct SettingsView: View {
             }
             Text("Saved profiles apply to new requests in Playground. Other apps keep their own request parameters; copy the saved defaults to configure them.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button(copiedDefaults ? "Copied request defaults" : "Copy saved request defaults") {
+            Button(copiedDefaults ? "Copied request defaults" : "Copy Request Defaults") {
                 do {
                     let json = try model.settings.requestDefaultsJSON()
                     NSPasteboard.general.clearContents()
                     copiedDefaults = NSPasteboard.general.setString(json, forType: .string)
                 } catch { model.settingsError = error.localizedDescription }
             }.disabled(model.hasSettingsChanges)
+            .help(model.hasSettingsChanges ? "Save or revert your changes first; this copies the saved values." : "Copy the saved request parameters as JSON")
         }
     }
 
@@ -132,6 +138,10 @@ struct SettingsView: View {
                 Button("Choose…") { choose(directory: true) }
             }
             TextField("Local port", value: $model.settingsDraft.port, format: .number.grouping(.never))
+            if locked {
+                Label("Runtime, download folder and port unlock after the server stops and model operations finish.", systemImage: "lock")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if let executable = try? model.settings.runtime() {
                 LabeledContent("Current runtime", value: executable.path)
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -140,19 +150,25 @@ struct SettingsView: View {
     }
 
     private var servingSection: some View {
-        Section("Serving mode") {
-            Picker("Speculative decoding for", selection: $model.settingsDraft.servingMode) {
+        Section("Serving") {
+            Picker("Serving mode", selection: Binding(get: { model.settings.servingMode }, set: { model.selectServingMode($0) })) {
                 ForEach(ServingMode.allCases, id: \.self) { Text($0.title).tag($0) }
             }
-            Text(model.settingsDraft.servingMode.summary).font(.callout).foregroundStyle(.secondary)
-            Text("Applies when the app starts its server. Restart a running server from Dashboard or Server Settings to switch; attached services keep their own mode. Command line: "
-                 + model.settingsDraft.servingMode.commandLineHint)
+            Text(model.settings.servingMode.summary).font(.callout).foregroundStyle(.secondary)
+            Text("Command line: " + model.settings.servingMode.commandLineHint)
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            Stepper("Concurrent requests: \(model.settingsDraft.concurrentRequests)", value: $model.settingsDraft.concurrentRequests,
+            Stepper("Concurrent requests: \(model.settings.concurrentRequests)",
+                    value: Binding(get: { model.settings.concurrentRequests }, set: { model.selectConcurrentRequests($0) }),
                     in: AppSettings.concurrentRequestRange)
-            Text("How many requests one server decodes at once before new ones receive 429 (`--max-concurrent-requests`). 4 keeps each request near full speed on batched models; 8 is the runtime's batch limit. Memory planning sizes per-request state for this count.")
+            Text("How many requests one server decodes at once before new ones receive 429 (`--max-concurrent-requests`). 4 keeps each request near full speed on batched models; 8 is the runtime's batch limit.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Require an API key", isOn: Binding(get: { model.settings.requireAPIKey }, set: { model.selectRequireAPIKey($0) }))
+            Text(model.attachedToService
+                 ? "An attached service keeps its own options. Disconnect to change the options for your own server."
+                 : "Serving options save as soon as you change them, here or on Dashboard and Server Settings, and apply at the next start or restart.")
                 .font(.caption).foregroundStyle(.secondary)
         }
+        .disabled(model.attachedToService)
     }
 
     private var privacySection: some View {
@@ -173,7 +189,7 @@ struct SettingsView: View {
     private var settingsFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
             if locked {
-                Label("Runtime locations and port are locked during server or model operations. Profile changes apply to the next Playground request; serving mode changes apply at the next server launch.", systemImage: "lock")
+                Label("Runtime location and port are locked during server or model operations. Profile changes apply to the next Playground request.", systemImage: "lock")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
