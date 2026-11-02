@@ -301,6 +301,7 @@ pub(crate) fn handle_doctor(args: &[String]) -> Result<(), CliError> {
         doctor_args.mlx_model_artifacts_dir.as_deref(),
     );
     report.workflow = detect_doctor_workflow_report()?;
+    apply_nax_verify_kernel_status(&mut report, ax_engine_mlx::nax_verify_kernel_status());
 
     if doctor_args.json {
         let json = serde_json::to_string_pretty(&report).map_err(|error| {

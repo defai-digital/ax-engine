@@ -2583,6 +2583,60 @@ fn doctor_metal_toolchain_fixture(
 }
 
 #[test]
+fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
+    let base = || {
+        build_doctor_report(
+            doctor_host_fixture(true, false, Some("Apple M5 Max")),
+            doctor_metal_toolchain_fixture(true, true, true),
+        )
+    };
+    let status =
+        |version: &str, version_ok, kernels: Option<bool>| ax_engine_mlx::NaxVerifyKernelStatus {
+            neural_accelerator: true,
+            mlx_version: Some(version.to_string()),
+            version_ok,
+            metallib_has_qmv_nax: kernels,
+            active: version_ok && kernels != Some(false),
+        };
+    let advice_ids = |report: &crate::doctor::DoctorReport| -> Vec<String> {
+        report
+            .performance_advice
+            .iter()
+            .filter(|advice| advice.id.starts_with("nax_verify_kernels"))
+            .map(|advice| advice.id.clone())
+            .collect()
+    };
+
+    let mut off_host = base();
+    apply_nax_verify_kernel_status(&mut off_host, Default::default());
+    assert!(off_host.nax_verify_kernels.is_none());
+    assert!(advice_ids(&off_host).is_empty());
+    let json = serde_json::to_value(&off_host).unwrap();
+    assert!(json.get("nax_verify_kernels").is_none());
+
+    let cases = [
+        (
+            status("0.32.5", true, Some(true)),
+            "nax_verify_kernels_active",
+        ),
+        (
+            status("0.32.4", false, Some(false)),
+            "nax_verify_kernels_need_newer_mlx",
+        ),
+        (
+            status("0.32.5", true, Some(false)),
+            "nax_verify_kernels_compiled_out",
+        ),
+    ];
+    for (status, expected) in cases {
+        let mut report = base();
+        apply_nax_verify_kernel_status(&mut report, status.clone());
+        assert_eq!(advice_ids(&report), vec![expected.to_string()]);
+        assert_eq!(report.nax_verify_kernels, Some(status));
+    }
+}
+
+#[test]
 fn doctor_report_marks_supported_m4_host_ready() {
     let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
     let toolchain = doctor_metal_toolchain_fixture(true, true, true);

@@ -102,6 +102,9 @@ pub(crate) struct DoctorReport {
     pub(crate) issues: Vec<String>,
     pub(crate) notes: Vec<String>,
     pub(crate) performance_advice: Vec<DoctorAdvice>,
+    /// M5+ verify hand-off to stock MLX NAX kernels; absent off NAX hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nax_verify_kernels: Option<ax_engine_mlx::NaxVerifyKernelStatus>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -527,7 +530,47 @@ fn build_doctor_report_with_runtime_assets(
         issues: doctor_issues(&host, &metal_toolchain, &runtime_assets),
         notes: doctor_notes(&host, &metal_toolchain, &runtime_assets),
         performance_advice,
+        nax_verify_kernels: None,
     }
+}
+
+/// Records whether the M5+ verify hand-off to stock MLX NAX kernels is live
+/// and, when it is not, which of its three conditions is missing.
+pub(crate) fn apply_nax_verify_kernel_status(
+    report: &mut DoctorReport,
+    status: ax_engine_mlx::NaxVerifyKernelStatus,
+) {
+    if !status.neural_accelerator {
+        return;
+    }
+    let version = status.mlx_version.as_deref().unwrap_or("unknown");
+    let advice = if status.active {
+        DoctorAdvice::info(
+            "nax_verify_kernels_active",
+            "M5+ speculative verify uses MLX NAX kernels.",
+            &format!(
+                "MLX {version} carries the skinny-row NAX QMM and sdpa_split kernels; DFlash2 and relaxed MTP verify windows hand off to them (AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS=0 and AX_MLX_NAX_VERIFY_NATIVE_SDPA=0 turn them off)."
+            ),
+        )
+    } else if !status.version_ok {
+        DoctorAdvice::info(
+            "nax_verify_kernels_need_newer_mlx",
+            "M5+ verify NAX kernels need MLX 0.32.5 or newer.",
+            &format!(
+                "The linked MLX reports {version}; speculative verify keeps AX's own kernels until the runtime moves to 0.32.5+."
+            ),
+        )
+    } else {
+        DoctorAdvice::warning(
+            "nax_verify_kernels_compiled_out",
+            "The linked mlx.metallib has no NAX qmv kernels.",
+            &format!(
+                "MLX {version} was built with a deployment target below macOS 26.2, so the NAX kernels are compiled out; rebuild with MACOSX_DEPLOYMENT_TARGET=26.2 or install the published wheel."
+            ),
+        )
+    };
+    report.performance_advice.push(advice);
+    report.nax_verify_kernels = Some(status);
 }
 
 pub(crate) fn detect_runtime_assets_report(

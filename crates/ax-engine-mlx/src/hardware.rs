@@ -163,27 +163,60 @@ pub(crate) fn skinny_qmv_nax_active() -> bool {
     if let Some(value) = SKINNY_OVERRIDE.with(|slot| slot.get()) {
         return value;
     }
-    static LINKED: OnceLock<bool> = OnceLock::new();
-    neural_accelerator_active()
-        && *LINKED.get_or_init(|| {
-            let version_ok = mlx_sys::runtime_version()
-                .ok()
-                .and_then(|raw| parse_semver(&raw))
+    nax_verify_kernel_status().active
+}
+
+/// What `skinny_qmv_nax_active` decided and why; surfaced by `ax-engine doctor`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NaxVerifyKernelStatus {
+    /// M5 or later on macOS 26.2+.
+    pub neural_accelerator: bool,
+    /// Version string the linked MLX runtime reports.
+    pub mlx_version: Option<String>,
+    /// The linked MLX is 0.32.5 or newer.
+    pub version_ok: bool,
+    /// Whether the linked `mlx.metallib` carries `qmv_nax`; `None` when it
+    /// could not be located.
+    pub metallib_has_qmv_nax: Option<bool>,
+    /// The verify QMM / SDPA hand-offs to stock NAX kernels are enabled.
+    pub active: bool,
+}
+
+/// Resolved once per process from the host and the loaded MLX runtime.
+pub fn nax_verify_kernel_status() -> NaxVerifyKernelStatus {
+    static LINKED: OnceLock<(Option<String>, bool, Option<bool>)> = OnceLock::new();
+    let neural_accelerator = neural_accelerator_active();
+    if !neural_accelerator {
+        return NaxVerifyKernelStatus::default();
+    }
+    let (mlx_version, version_ok, kernels) = LINKED
+        .get_or_init(|| {
+            let raw = mlx_sys::runtime_version().ok();
+            let version_ok = raw
+                .as_deref()
+                .and_then(parse_semver)
                 .is_some_and(|version| version >= MLX_SKINNY_QMV_NAX_VERSION);
             // A runtime built below macOS 26.2 reports the same version with
             // the NAX kernels compiled out; stock QMM would then be the slow
             // pre-NAX curve. Fail open only when no metallib can be found.
             let kernels = linked_metallib_has(NAX_QMV_KERNEL_MARKER);
-            let active = version_ok && kernels != Some(false);
             tracing::info!(
                 target = "ax_engine_mlx",
                 version_ok,
                 metallib_has_qmv_nax = ?kernels,
-                active,
+                active = version_ok && kernels != Some(false),
                 "MLX skinny NAX verify kernels"
             );
-            active
+            (raw, version_ok, kernels)
         })
+        .clone();
+    NaxVerifyKernelStatus {
+        neural_accelerator,
+        active: version_ok && kernels != Some(false),
+        mlx_version,
+        version_ok,
+        metallib_has_qmv_nax: kernels,
+    }
 }
 
 /// Kernel-name fragment every MLX `affine_qmv_nax` instantiation carries.
