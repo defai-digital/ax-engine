@@ -5580,3 +5580,94 @@ async fn chat_request_builder_sorts_parallel_tool_results() {
     let b = prompt.find("result call_b").expect("result b rendered");
     assert!(a < b, "{prompt}");
 }
+
+fn qwen_tool_render(model_id: &str, enable_thinking: bool) -> String {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "Weather?"}
+    ]))
+    .expect("messages deserialize");
+    let tools = json!([{"type": "function", "function": {
+        "name": "weather", "parameters": {"type": "object"}}}]);
+    render_openai_chat_prompt_with_options(
+        model_id,
+        &messages,
+        Some(&tools),
+        None,
+        ChatPromptRenderOptions {
+            enable_thinking,
+            ..Default::default()
+        },
+    )
+    .expect("prompt renders")
+}
+
+#[test]
+fn qwen35_class_templates_render_tools_before_caller_system_text() {
+    for model_id in ["qwen3.5-9b", "qwen3.6-27b", "qwen3.8-27b"] {
+        let prompt = qwen_tool_render(model_id, false);
+        assert!(
+            prompt.starts_with("<|im_start|>system\n# Tools\n"),
+            "{model_id}: {prompt}"
+        );
+        assert!(
+            prompt.contains("</IMPORTANT>\n\nBe brief.<|im_end|>"),
+            "{model_id}: {prompt}"
+        );
+    }
+    // The original Qwen3 template keeps caller system text first.
+    let prompt = qwen_tool_render("qwen3", false);
+    assert!(
+        prompt.starts_with("<|im_start|>system\nBe brief.\n\n# Tools"),
+        "{prompt}"
+    );
+}
+
+#[test]
+fn qwen38_thinking_opens_the_system_turn_with_the_xhigh_instruction() {
+    let instruction = crate::openai::chat_requests::QWEN38_XHIGH_REASONING_INSTRUCTION;
+    let user_only: Vec<OpenAiChatMessage> =
+        serde_json::from_value(json!([{"role": "user", "content": "Hi"}])).expect("messages");
+    let options = |enable_thinking| ChatPromptRenderOptions {
+        enable_thinking,
+        ..Default::default()
+    };
+    let on = render_openai_chat_prompt_with_options(
+        "qwen3.8-27b",
+        &user_only,
+        None,
+        None,
+        options(true),
+    )
+    .expect("prompt");
+    assert!(
+        on.starts_with(&format!(
+            "<|im_start|>system\n{instruction}<|im_end|>\n<|im_start|>user\nHi"
+        )),
+        "{on}"
+    );
+    let off = render_openai_chat_prompt_with_options(
+        "qwen3.8-27b",
+        &user_only,
+        None,
+        None,
+        options(false),
+    )
+    .expect("prompt");
+    assert!(off.starts_with("<|im_start|>user\nHi"), "{off}");
+    let with_tools = qwen_tool_render("qwen3.8-flash-next", true);
+    assert!(
+        with_tools.starts_with(&format!("<|im_start|>system\n{instruction}\n\n# Tools\n")),
+        "{with_tools}"
+    );
+    // Other Qwen families never get it.
+    let qwen36 = render_openai_chat_prompt_with_options(
+        "qwen3.6-27b",
+        &user_only,
+        None,
+        None,
+        options(true),
+    )
+    .expect("prompt");
+    assert!(!qwen36.contains("Reasoning effort"), "{qwen36}");
+}

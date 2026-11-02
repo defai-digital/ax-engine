@@ -401,6 +401,8 @@ pub(crate) fn render_openai_chat_prompt_with_family_offsets(
     )?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
+    let rendered_messages =
+        prepend_qwen38_reasoning_instruction(model_id, rendered_messages, options.enable_thinking);
     chat::render_prompt_with_template_and_framing_offsets(
         model_id,
         template,
@@ -2039,9 +2041,12 @@ fn prepend_qwen_tool_contract(
     let Some(contract) = render_tool_contract_system_message(tools, tool_choice, style) else {
         return messages;
     };
-    // Ornith and audited Tiel templates put the tools contract first, then caller
-    // system text, in the same system turn.
-    if chat::is_ornith_model(model_id) || chat::is_tiel_coder_model(model_id) {
+    // Ornith, audited Tiel and the hub Qwen 3.5 / 3.6 / 3.8 templates put the
+    // tools contract first, then caller system text, in the same system turn.
+    if chat::is_ornith_model(model_id)
+        || chat::is_tiel_coder_model(model_id)
+        || qwen_template_puts_tools_before_system(model_id)
+    {
         if let Some((role, content)) = messages.first_mut()
             && role == "system"
         {
@@ -2070,6 +2075,64 @@ fn prepend_qwen_tool_contract(
             contract
         };
         messages.insert(0, ("system".to_string(), content));
+    }
+    messages
+}
+
+/// Hub Qwen 3.5 / 3.6 / 3.8 templates (and the 3.5-class fine-tunes that ship
+/// them) render `# Tools ... </IMPORTANT>` and then the trimmed caller system
+/// text. The original Qwen3 template, and Qwen3-Next until a pack template is
+/// checked, keep caller system text first.
+fn qwen_template_puts_tools_before_system(model_id: &str) -> bool {
+    let normalized = chat::normalize_model_id_token(model_id);
+    normalized.contains("qwen3-5")
+        || normalized.contains("qwen35")
+        || normalized.contains("qwen3-6")
+        || normalized.contains("qwen36")
+        || chat::is_qwen38_model_id(model_id)
+        || chat::is_qwen35_class_named_finetune(model_id)
+}
+
+/// Qwen 3.8 hub templates default `reasoning_effort` to `xhigh` when thinking
+/// is on and open the system turn with this instruction.
+pub(crate) const QWEN38_XHIGH_REASONING_INSTRUCTION: &str = "Reasoning effort is set to xhigh. \
+Please think carefully through the task, validate key assumptions, consider plausible \
+alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
+
+/// Put the Qwen 3.8 default reasoning instruction at the start of the system
+/// turn (before the tools contract and caller text), creating the turn when
+/// there is none, exactly as the hub template does with thinking on.
+fn prepend_qwen38_reasoning_instruction(
+    model_id: &str,
+    mut messages: ChatMessagePairs,
+    enable_thinking: bool,
+) -> ChatMessagePairs {
+    if !enable_thinking
+        || !chat::is_qwen38_model_id(model_id)
+        || !matches!(
+            chat::ChatPromptTemplate::for_model_id(model_id),
+            chat::ChatPromptTemplate::QwenChatMl
+        )
+    {
+        return messages;
+    }
+    if let Some((role, content)) = messages.first_mut()
+        && role == "system"
+    {
+        let existing = std::mem::take(content);
+        content.push_str(QWEN38_XHIGH_REASONING_INSTRUCTION);
+        if !existing.trim().is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&existing);
+        }
+    } else {
+        messages.insert(
+            0,
+            (
+                "system".to_string(),
+                QWEN38_XHIGH_REASONING_INSTRUCTION.to_string(),
+            ),
+        );
     }
     messages
 }
@@ -2854,6 +2917,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     }
 
     let pairs = prepend_qwen_tool_contract(model_id, pairs, tools, tool_choice);
+    let pairs = prepend_qwen38_reasoning_instruction(model_id, pairs, options.enable_thinking);
     // Resolve the template from the loaded artifact family too, as the
     // text path does: a product model id need not name the Qwen family.
     let prompt = chat::render_prompt_with_template_and_framing(
