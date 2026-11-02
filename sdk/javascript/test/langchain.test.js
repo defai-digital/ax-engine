@@ -487,6 +487,27 @@ test("ChatAXEngine reports token usage in LangChain's shape", skipIfNoLangChain,
   });
 });
 
+test("ChatAXEngine streaming preserves terminal token usage", skipIfNoLangChain, async () => {
+  const requests = [];
+  const chat = new ChatAXEngine({ fetch: async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    const chunks = [
+      { choices: [{ delta: { content: "hello" }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 } },
+    ];
+    return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n");
+  } });
+  const chunks = [];
+  for await (const chunk of await chat.stream("hello")) chunks.push(chunk);
+  const combined = chunks.slice(1).reduce((message, chunk) => message.concat(chunk), chunks[0]);
+  assert.equal(combined.content, "hello");
+  assert.equal(combined.usage_metadata?.input_tokens, 5);
+  assert.equal(combined.usage_metadata?.output_tokens, 7);
+  assert.equal(combined.usage_metadata?.total_tokens, 12);
+  assert.deepEqual(requests[0].stream_options, { include_usage: true });
+});
+
 test("ChatAXEngine preserves fragmented streaming tool calls", skipIfNoLangChain, async () => {
   const chat = new ChatAXEngine();
   chat.client = {

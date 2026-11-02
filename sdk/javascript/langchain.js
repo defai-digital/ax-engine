@@ -478,23 +478,29 @@ export class ChatAXEngine extends BaseChatModel {
   }
 
   async *_streamResponseChunks(messages, options, runManager) {
-    const request = { ...this._buildChatRequest(messages, options), stream: true };
+    const request = {
+      ...this._buildChatRequest(messages, options),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
     for await (const event of this.client.streamChatCompletion(request, {
       signal: options?.signal,
     })) {
       const choice = event.data?.choices?.[0];
-      if (!choice) continue;
-      const text = choice.delta?.content ?? "";
+      const usage = langchainUsageMetadata(event.data?.usage);
+      if (!choice && !usage) continue;
+      const text = choice?.delta?.content ?? "";
       yield new ChatGenerationChunk({
         text,
         message: new AIMessageChunk({
           content: text,
-          additional_kwargs: messageAdditionalKwargs(choice.delta),
-          tool_call_chunks: toolCallChunks(choice.delta),
+          additional_kwargs: messageAdditionalKwargs(choice?.delta),
+          tool_call_chunks: toolCallChunks(choice?.delta),
+          usage_metadata: usage,
         }),
-        generationInfo: { finishReason: choice.finish_reason },
+        generationInfo: choice ? { finishReason: choice.finish_reason } : undefined,
       });
-      await runManager?.handleLLMNewToken(text);
+      if (choice) await runManager?.handleLLMNewToken(text);
     }
   }
 }

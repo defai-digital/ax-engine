@@ -377,6 +377,7 @@ export class AxEngineClient {
     try {
       while (true) {
         const { value, done } = await reader.read();
+        if (signal) signal.throwIfAborted();
         if (done) {
           streamEnded = true;
           break;

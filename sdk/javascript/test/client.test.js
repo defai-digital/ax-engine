@@ -771,6 +771,18 @@ test("native streams discard incomplete trailers and require no DONE", async () 
   assert.deepEqual(events, [{ event: "response", data: { id: 1 } }]);
 });
 
+test("native stream cancellation at EOF does not report success", async () => {
+  const controller = new AbortController();
+  const client = new AxEngineClient({ fetch: async () => new Response(
+    'event: response\ndata: {"id":1}\n\n',
+  ) });
+  await assert.rejects(async () => {
+    for await (const _event of client.streamGenerate({}, { signal: controller.signal })) {
+      controller.abort();
+    }
+  }, (error) => error.name === "AbortError");
+});
+
 
 test("extra data whitespace cannot manufacture a DONE sentinel", async () => {
   const client = new AxEngineClient({ fetch: async () => new Response("data:  [DONE]\n\n") });
