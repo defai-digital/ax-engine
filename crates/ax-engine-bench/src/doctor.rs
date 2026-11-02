@@ -1200,6 +1200,17 @@ fn doctor_expert_stream_decision(
     }
 }
 
+/// AXQuant artifact envelopes the doctor reads, each with the one runtime
+/// schema it carries. `axquant.artifact.v3` / `axquant.runtime.v2` add the
+/// AX Engine weight-layout declaration (v2 / v1 are frozen by AXQ-042).
+fn axquant_runtime_schema_for(artifact_schema: Option<&str>) -> Option<&'static str> {
+    match artifact_schema? {
+        "axquant.artifact.v2" => Some("axquant.runtime.v1"),
+        "axquant.artifact.v3" => Some("axquant.runtime.v2"),
+        _ => None,
+    }
+}
+
 fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
     let manifest_path = path.join("axquant_manifest.json");
     if !manifest_path.is_file() {
@@ -1218,7 +1229,9 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
     };
 
     report.manifest_schema_version = json_string(&manifest, "schema_version");
-    if report.manifest_schema_version.as_deref() != Some("axquant.artifact.v2") {
+    let expected_runtime_schema =
+        axquant_runtime_schema_for(report.manifest_schema_version.as_deref());
+    if expected_runtime_schema.is_none() {
         report.issues.push(format!(
             "unsupported artifact schema {}",
             report
@@ -1547,7 +1560,9 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
         validate_axquant_metadata_file(path, "axquant_runtime.json", &manifest, &mut report.issues);
         match load_json_value(&runtime_path) {
             Ok(runtime) => {
-                if json_string(&runtime, "schema_version").as_deref() != Some("axquant.runtime.v1")
+                let runtime_schema = json_string(&runtime, "schema_version");
+                if expected_runtime_schema.is_some()
+                    && runtime_schema.as_deref() != expected_runtime_schema
                 {
                     report
                         .issues

@@ -14,6 +14,11 @@ use super::ConvertError;
 const AXQUANT_MANIFEST_FILE: &str = "axquant_manifest.json";
 
 const EXPECTED_SCHEMA_VERSION: &str = "axquant.artifact.v2";
+/// AXQuant envelope that adds `runtime.ax_engine.weight_layout`. AXQuant froze
+/// `axquant.artifact.v2` / `axquant.runtime.v1` (AXQ-042), so the declared
+/// layout ships under this new pair; both strings are required together.
+const DECLARED_LAYOUT_SCHEMA_VERSION: &str = "axquant.artifact.v3";
+const DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION: &str = "axquant.runtime.v2";
 const EXPECTED_AXQUANT_VERSION: &str = "1.9.0";
 const EXPECTED_QUANTIZER: &str = "axquant";
 const EXPECTED_FORMAT: &str = "mlx";
@@ -326,8 +331,9 @@ fn push_layout_unknown(manifest: &mut NativeModelManifest) {
         .blockers
         .push(QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER.to_string());
     manifest.runtime_status.notes.push(format!(
-        "qwen4_exp weight layout could not be determined from {AXQUANT_MANIFEST_FILE} (missing \
-or an unrecognized exporter); set an explicit weight_sanitize in the native model manifest \
+        "qwen4_exp weight layout could not be determined from {AXQUANT_MANIFEST_FILE} (missing, \
+or an unrecognized exporter without a {DECLARED_LAYOUT_SCHEMA_VERSION} \
+runtime.ax_engine.weight_layout declaration); set an explicit weight_sanitize in the native model manifest \
 (e.g. hf_norm_only or hf_to_mlx) before this checkpoint can load."
     ));
 }
@@ -381,8 +387,12 @@ fn matches_audited_legacy_tuple(value: &serde_json::Value) -> bool {
 /// legacy tuple implies: raw norm deltas, conv1d in MLX axis order, and
 /// `weight_sanitize=hf_norm_only`. Everything in the declaration is required;
 /// the conv-axis shape checks and the dedicated `qwen4_exp` validator still run.
+///
+/// Accepted envelopes: `axquant.artifact.v3` with `runtime.schema_version`
+/// `axquant.runtime.v2` (what AXQuant writes), and the earlier
+/// `axquant.artifact.v2` form that some local packs carry.
 fn matches_declared_layout(value: &serde_json::Value) -> bool {
-    json_str(value, &["schema_version"]) == Some(EXPECTED_SCHEMA_VERSION)
+    declared_layout_envelope(value)
         && json_str(value, &["quantizer"]) == Some(EXPECTED_QUANTIZER)
         && json_str(value, &["format"]) == Some(EXPECTED_FORMAT)
         && json_str(value, &["runtime", "ax_engine", "weight_sanitize"]) == Some(HF_NORM_ONLY)
@@ -394,6 +404,17 @@ fn matches_declared_layout(value: &serde_json::Value) -> bool {
             value,
             &["runtime", "ax_engine", "weight_layout", "conv1d_axes"],
         ) == Some(DECLARED_CONV1D_AXES_MLX)
+}
+
+fn declared_layout_envelope(value: &serde_json::Value) -> bool {
+    match json_str(value, &["schema_version"]) {
+        Some(EXPECTED_SCHEMA_VERSION) => true,
+        Some(DECLARED_LAYOUT_SCHEMA_VERSION) => {
+            json_str(value, &["runtime", "schema_version"])
+                == Some(DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION)
+        }
+        _ => false,
+    }
 }
 
 /// How a Flash Next norm gain is stored on disk.
@@ -862,6 +883,75 @@ mod tests {
             assert!(has_unknown_layout_blocker(&manifest), "{path:?}");
             assert_eq!(manifest.weight_sanitize, WeightSanitize::None, "{path:?}");
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    fn declared_layout_v3_json(model_id: &str) -> serde_json::Value {
+        let mut value = declared_layout_json(model_id);
+        value["schema_version"] = DECLARED_LAYOUT_SCHEMA_VERSION.into();
+        value["axquant_version"] = "2.4.0".into();
+        value["runtime"]["schema_version"] = DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION.into();
+        value
+    }
+
+    #[test]
+    fn declared_layout_admits_the_axquant_artifact_v3_envelope() {
+        let dir = temp_model_dir("declared-layout-v3");
+        write_axquant_manifest(&dir, &declared_layout_v3_json("Qwen/Qwen3.8-Flash-Next"));
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        assert_eq!(manifest.weight_sanitize, WeightSanitize::HfNormOnly);
+        assert!(!has_unknown_layout_blocker(&manifest));
+        assert!(layout_apply_matches(&dir, &manifest));
+        let claim = qwen4_exp_axquant_norm_claim(&declared_layout_v3_json("Qwen/Qwen4"))
+            .expect("v3 declared layout");
+        assert_eq!(claim.source, "the declared AXQuant weight layout");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn declared_layout_v3_requires_the_matching_runtime_schema() {
+        for runtime_schema in [None, Some("axquant.runtime.v1"), Some("axquant.runtime.v3")] {
+            let mut value = declared_layout_v3_json("Qwen/Qwen3.8-Flash-Next");
+            match runtime_schema {
+                Some(version) => value["runtime"]["schema_version"] = version.into(),
+                None => {
+                    value["runtime"]
+                        .as_object_mut()
+                        .expect("runtime object")
+                        .remove("schema_version");
+                }
+            }
+            assert!(!matches_declared_layout(&value), "{runtime_schema:?}");
+            let dir = temp_model_dir("declared-layout-v3-runtime");
+            write_axquant_manifest(&dir, &value);
+            let mut manifest = base_manifest();
+            apply(&dir, &mut manifest).unwrap();
+            assert!(has_unknown_layout_blocker(&manifest), "{runtime_schema:?}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        // Unknown artifact versions stay closed even with a full declaration.
+        let mut future = declared_layout_v3_json("Qwen/Qwen3.8-Flash-Next");
+        future["schema_version"] = "axquant.artifact.v4".into();
+        assert!(!matches_declared_layout(&future));
+    }
+
+    #[test]
+    fn declared_layout_v3_requires_every_declared_field() {
+        for path in [
+            vec!["runtime", "ax_engine", "weight_sanitize"],
+            vec!["runtime", "ax_engine", "weight_layout", "norm_weights"],
+            vec!["runtime", "ax_engine", "weight_layout", "conv1d_axes"],
+            vec!["quantizer"],
+            vec!["format"],
+        ] {
+            let mut value = declared_layout_v3_json("Qwen/Qwen3.8-Flash-Next");
+            let mut cursor = &mut value;
+            for key in &path[..path.len() - 1] {
+                cursor = cursor.get_mut(*key).unwrap();
+            }
+            cursor[path[path.len() - 1]] = "something-else".into();
+            assert!(!matches_declared_layout(&value), "{path:?}");
         }
     }
 

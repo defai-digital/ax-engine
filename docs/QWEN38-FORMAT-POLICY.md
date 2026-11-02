@@ -31,6 +31,16 @@ Older Qwen models share the `qwen3_5` architecture, so architecture name
 alone cannot identify the 27B format scope. Unknown Flash Next exporter
 identities remain blocked. Experimental flags do not bypass this scope.
 
+A Flash Next pack from a newer AXQuant exporter loads only when it declares
+its weight layout. `axquant_manifest.json` must use `schema_version`
+`axquant.artifact.v3` with `runtime.schema_version` `axquant.runtime.v2`, and
+set `runtime.ax_engine.weight_sanitize` to `hf_norm_only`,
+`weight_layout.norm_weights` to `raw_delta` and `weight_layout.conv1d_axes` to
+`mlx`. The engine still checks the conv1d tensor shapes and the format scope
+above. The declaration is the exporter's claim, not a numerical-parity
+qualification. `ax-engine-bench doctor` accepts the artifact.v2 / runtime.v1
+and artifact.v3 / runtime.v2 pairs and reports any other combination.
+
 MTP sidecar availability does not promote MTP to a product default. Use
 `--mlx-mtp-policy required` for explicit MTP; the normal route remains a
 necessary control. DFlash2 is a separate block drafter for greedy text on

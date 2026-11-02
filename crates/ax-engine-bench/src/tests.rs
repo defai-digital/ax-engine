@@ -3890,6 +3890,96 @@ fn doctor_report_rejects_malformed_axquant_manifest() {
     fs::remove_dir_all(root).expect("test dir should clean up");
 }
 
+/// Move the fixture to a given artifact / runtime schema pair, keeping the
+/// runtime bytes bound in the artifact file list and mirrored in `runtime`.
+fn set_doctor_axquant_schema_pair(model_dir: &Path, artifact: &str, runtime_schema: &str) {
+    let runtime_path = model_dir.join("axquant_runtime.json");
+    let mut runtime: Value =
+        serde_json::from_slice(&fs::read(&runtime_path).expect("runtime should read"))
+            .expect("runtime should parse");
+    runtime["schema_version"] = json!(runtime_schema);
+    rewrite_doctor_axquant_bound_json(model_dir, "axquant_runtime.json", &runtime);
+    let manifest_path = model_dir.join("axquant_manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("artifact should read"))
+            .expect("artifact should parse");
+    manifest["schema_version"] = json!(artifact);
+    manifest["runtime"] = runtime;
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("artifact should serialize"),
+    )
+    .expect("artifact should write");
+}
+
+#[test]
+fn doctor_report_accepts_the_axquant_artifact_v3_envelope() {
+    let root = unique_test_dir("doctor-axquant-v3");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    set_doctor_axquant_schema_pair(&model_dir, "axquant.artifact.v3", "axquant.runtime.v2");
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(axquant.metadata_valid, "{:?}", axquant.issues);
+    assert_eq!(
+        axquant.manifest_schema_version.as_deref(),
+        Some("axquant.artifact.v3")
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_a_mismatched_axquant_schema_pair() {
+    for (artifact, runtime_schema, issue) in [
+        (
+            "axquant.artifact.v3",
+            "axquant.runtime.v1",
+            "unsupported or missing AXQuant runtime schema",
+        ),
+        (
+            "axquant.artifact.v2",
+            "axquant.runtime.v2",
+            "unsupported or missing AXQuant runtime schema",
+        ),
+        (
+            "axquant.artifact.v4",
+            "axquant.runtime.v2",
+            "unsupported artifact schema axquant.artifact.v4",
+        ),
+    ] {
+        let root = unique_test_dir("doctor-axquant-schema-pair");
+        let model_dir = root.join("axquant-qwen36");
+        write_doctor_axquant_model_fixture(&model_dir);
+        set_doctor_axquant_schema_pair(&model_dir, artifact, runtime_schema);
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        let axquant = report
+            .model_artifacts
+            .axquant
+            .as_ref()
+            .expect("AXQuant metadata should be detected");
+        assert!(!axquant.metadata_valid, "{artifact} {runtime_schema}");
+        assert!(
+            axquant.issues.iter().any(|found| found.contains(issue)),
+            "{artifact} {runtime_schema}: {:?}",
+            axquant.issues
+        );
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+}
+
 #[test]
 fn doctor_report_rejects_axquant_metadata_sha_mismatch() {
     let root = unique_test_dir("doctor-axquant-sha-mismatch");
