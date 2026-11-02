@@ -1,8 +1,7 @@
 //! Active-serving host pressure policy. Unavailable probes cannot clear a
 //! previous pressure episode. Existing requests retain their owned state.
 
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub enum HostPressure {
@@ -81,6 +80,19 @@ impl PressureLatch {
 /// probe has a five-second TTL; escalation applies on the first observed
 /// warning/critical sample, recovery requires a sustained lower level.
 pub fn sample() -> HostPressure {
+    // Unit tests must not depend on the build host's memory state: a busy
+    // host at kernel level 2 made the runner reclaim prefix snapshots that
+    // prefix-cache tests had just published. The latch has its own tests.
+    #[cfg(test)]
+    return HostPressure::Normal;
+    #[cfg(not(test))]
+    sample_host()
+}
+
+#[cfg(not(test))]
+fn sample_host() -> HostPressure {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
     static STATE: OnceLock<(Instant, Mutex<PressureLatch>)> = OnceLock::new();
     let (epoch, latch) = STATE.get_or_init(|| (Instant::now(), Mutex::default()));
     let observed = crate::idle_residency::cached_vm_pressure_level();
