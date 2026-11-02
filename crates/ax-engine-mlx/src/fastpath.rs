@@ -954,7 +954,8 @@ pub(crate) fn qwen_linear_mtp_target_verify_enabled() -> bool {
 }
 
 env_flag_default_on!(
-    /// `AX_MLX_NAX_VERIFY_NATIVE_SDPA` — on M5 or later (NAX active), a relaxed
+    /// `AX_MLX_NAX_VERIFY_NATIVE_SDPA` — on M5 or later (NAX active, linked MLX
+    /// >= 0.32.5 so `sdpa_split` exists), a relaxed
     /// target verify (DFlash2, relaxed MTP) skips the per-row singleton SDPA
     /// fold and hands the whole 2..8-row window to MLX's native SDPA, which
     /// routes it to the NAX `sdpa_split` kernel. The fold exists only to keep
@@ -968,7 +969,8 @@ env_flag_default_on!(
 pub(crate) fn nax_verify_native_sdpa_active() -> bool {
     qwen_linear_mtp_target_verify_enabled()
         && !qwen_linear_mtp_exact_enabled()
-        && crate::hardware::neural_accelerator_active()
+        // NAX host *and* an MLX with `sdpa_split` (the 0.32.5 line).
+        && crate::hardware::skinny_qmv_nax_active()
         && nax_verify_native_sdpa_env()
 }
 

@@ -1940,12 +1940,13 @@ mod tests {
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         let _verify = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
         {
-            let _m4 =
-                crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m4());
-            assert!(!crate::fastpath::nax_verify_native_sdpa_active());
+            let _m4 = crate::hardware::override_skinny_qmv_nax(false);
+            assert!(
+                !crate::fastpath::nax_verify_native_sdpa_active(),
+                "M3/M4 or an MLX without sdpa_split keep the fold"
+            );
         }
-        let _m5 =
-            crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m5_na());
+        let _m5 = crate::hardware::override_skinny_qmv_nax(true);
         if !crate::fastpath::nax_verify_native_sdpa_env() {
             return;
         }
@@ -1988,7 +1989,7 @@ mod tests {
         };
         let native = host(&full_precision_attention(&q, &k, &v, scale, seq, &None));
         drop(_m5);
-        let _m4 = crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m4());
+        let _m4 = crate::hardware::override_skinny_qmv_nax(false);
         let folded = host(&full_precision_attention(&q, &k, &v, scale, seq, &None));
         assert_eq!(native.len(), folded.len());
         let diff = native
