@@ -38,6 +38,7 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md), [Flash Next (`qwen3.8-flash-next:axq`)](model-certifications/qwen3.8-flash-next.md), [Testing](TESTING.md). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; Flash Next also supports affine 6-bit MTP (`qwen3.8-flash-next:axq-6bit`); other standalone affine formats are not supported. MXFP8 MTP admission is pending. |
 | Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
+| Use DFlash2 on greedy Qwen text | [MTP Docs: DFlash2](mtp/README.md#dflash2) | [MLX Backend: DFlash2 artifact selection](MLX-BACKEND.md#dflash2-artifact-selection) |
 | Write or backfill GitHub release notes | [Release notes policy](releases/README.md) | [Releasing](RELEASING.md), [template](releases/TEMPLATE.md) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Compare AX vs peer MLX server on chat serving | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) | [Performance Results: serving](PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx) |
@@ -70,6 +71,8 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 
 Prefer the **6-bit** `download-mtp` lane for practical AX usage. Keep **4-bit**
 rows as labeled comparison evidence for peer engines that publish 4-bit results.
+DFlash2 is a separate greedy block drafter and is not one of those MTP rows.
+See [DFlash2](mtp/README.md#dflash2).
 
 ### Benchmark reviewer
 

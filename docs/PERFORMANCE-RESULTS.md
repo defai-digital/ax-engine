@@ -72,6 +72,10 @@ share a same-artifact denominator.
 
 ### Session Mode: MTP Generation
 
+The rows in this session measure MTP. DFlash2, when its checkpoint is
+present, is a separate greedy block drafter and is not in these tables. See
+[DFlash2](mtp/README.md#dflash2).
+
 #### Qwen 3.8 27B AXQ (Engine default)
 
 Product-path MTP on `qwen3.8-27b:axq`. Direct AR already saturates DRAM

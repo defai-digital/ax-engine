@@ -16,9 +16,9 @@ consistent across the workspace.
 
 - `ax-engine-core`: request lifecycle, scheduler, KV cache, runner integration,
   and deterministic bring-up loop
-- `ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, MTP,
-  and runner dispatch (only crate where `unsafe` is permitted, via
-  `mlx-sys`)
+- `ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, DFlash2
+  block drafting, MTP, and runner dispatch (only crate where `unsafe` is
+  permitted, via `mlx-sys`)
 - `mlx-sys`: bindgen FFI over `ax_shim.h` to MLX C++; safe `MlxArray` RAII
   wrappers and type-tagged handle system
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
@@ -32,6 +32,11 @@ consistent across the workspace.
 - `ax-engine-microbench`: isolated microbenchmarks and kernel dispatch probes
   (RMSNorm, MoE, diffusion, MLA, disk-prefix-cache); depends on
   `ax-engine-core`, `ax-engine-mlx`, and `mlx-sys` only
+
+DFlash2 block drafting runs in `ax-engine-mlx` for greedy text on Qwen 3.8
+27B and Qwen 3.6 35B-A3B when the matching drafter checkpoint is already on
+disk. The server does not download that checkpoint. MTP stays explicit
+opt-in. See [DFlash2](mtp/README.md#dflash2).
 
 This means AX Engine already has a practical split between:
 

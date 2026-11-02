@@ -275,11 +275,15 @@ local decode is still too slow to recommend or certify.
 
 AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve path.
 Start with the pinned `qwen3.8-27b:axq` MXFP4 MTP pack. Its checkpoint path is
-Tier 1; MTP Tier 2 performance certification remains pending. Public throughput
-on that pack is **31.05 tok/s** decode on Mac mini M4 Pro 64 GB and
-**76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max 128 GB — 2.4–2.8×
-direct AR, which already saturates DRAM. Do not mix those dense-27B decode
-numbers with Tiel completion tok/s.
+Tier 1; MTP Tier 2 performance certification remains pending. Published MTP
+throughput from the retired 6-bit campaign is **31.05 tok/s** decode on Mac
+mini M4 Pro 64 GB and **76.90 tok/s** decode / **795.3 tok/s** prefill on M5
+Max 128 GB — 2.4–2.8× direct AR, which already saturates DRAM. Those rows do
+not measure DFlash2 and do not qualify the MXFP4 pack. Current greedy text on
+Qwen 3.8 27B and Qwen 3.6 35B-A3B uses DFlash2 when the matching drafter
+checkpoint is already on disk. The server does not download that checkpoint.
+MTP stays explicit opt-in. See [DFlash2](mtp/README.md#dflash2). Do not mix
+those dense-27B decode numbers with Tiel completion tok/s.
 
 Qwen 3.8 Flash Next MXFP4 MTP is a second SKU. Its qualification and
 certification standard is MacBook Pro M5 Max 128 GB, single-stream resident

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1262" width="960" height="1262" role="img">
   <title>AX Engine components and workflow</title>
-  <desc>Callers enter the HTTP server or an in-process SDK. ax-engine-sdk owns one session per loaded model. ax-engine-core plans a decode-first batch and the paged KV ledger. ax-engine-mlx runs the graph. A native step admits, plans, executes, updates KV, and streams tokens.</desc>
+  <desc>Callers enter the HTTP server or an in-process SDK. ax-engine-sdk owns one session per loaded model. ax-engine-core plans a decode-first batch and the paged KV ledger. ax-engine-mlx runs the graph, including DFlash2 block drafting for eligible greedy Qwen text, MTP, n-gram acceleration, and expert paging. A native step admits, plans, executes, updates KV, and streams tokens.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M 0 1.4 L 8.2 5 L 0 8.6 Z" fill="#8aa0b8"/>
@@ -68,8 +68,8 @@
   <rect x="342" y="652" width="276" height="116" rx="10" fill="#e8f6ee" stroke="#b7e0c8"/>
   <text x="358" y="678" fill="#1f6b45" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">ax-engine-mlx</text>
   <text x="358" y="702" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">Model graphs on MLX.</text>
-  <text x="358" y="722" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">MTP, n-gram, and</text>
-  <text x="358" y="742" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">expert paging.</text>
+  <text x="358" y="722" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">DFlash2, MTP, n-gram,</text>
+  <text x="358" y="742" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">and expert paging.</text>
 
   <rect x="636" y="652" width="276" height="116" rx="10" fill="#fbf6ee" stroke="#ead9b5"/>
   <text x="652" y="678" fill="#8a5a12" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">mlx-sys</text>
@@ -117,8 +117,8 @@
   <text x="54" y="1111" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">4</text>
   <text x="74" y="1111" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Execute</text>
   <text x="48" y="1142" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">ax-engine-mlx runs the step.</text>
-  <text x="48" y="1162" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">A prefill chunk, or a decode.</text>
-  <text x="48" y="1182" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">The default route stays sequential.</text>
+  <text x="48" y="1162" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Prefill, decode, or a DFlash2</text>
+  <text x="48" y="1182" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">verify. The route stays sequential.</text>
 
   <line x1="316" y1="1156" x2="334" y2="1156" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
 

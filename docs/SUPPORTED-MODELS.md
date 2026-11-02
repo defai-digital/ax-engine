@@ -16,6 +16,13 @@ and what benchmark claims are allowed.
 ([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
 @ `b2c5354f779e430d0c1733143db848a72b71c16e`). Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
+Greedy text on this pack uses DFlash2 when `z-lab/Qwen3.8-27B-DFlash2` is
+already on disk. Qwen 3.6 35B-A3B uses the same path with
+`incoai/Qwen3.6-35B-A3B-DFlash2`. The drafter is not in the AXQ pack, the
+server does not download it, and a missing checkpoint leaves MTP and direct
+decode unchanged. MTP stays explicit opt-in. See
+[DFlash2](mtp/README.md#dflash2).
+
 Record: [Qwen 3.8 27B AXQ certification](model-certifications/qwen3.8-27b-axq.md).
 Super-class Qwen 3.8 (2.4T) is experimental and is not this pack.
 

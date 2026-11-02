@@ -33,7 +33,11 @@ identities remain blocked. Experimental flags do not bypass this scope.
 
 MTP sidecar availability does not promote MTP to a product default. Use
 `--mlx-mtp-policy required` for explicit MTP; the normal route remains a
-necessary control. MTP-S, MTP-P and MTP-D require evidence tied to each pack.
+necessary control. DFlash2 is a separate block drafter for greedy text on
+Qwen 3.8 27B and Qwen 3.6 35B-A3B. It runs only when its own checkpoint is
+already present, and it does not promote MTP or change this format scope.
+See [DFlash2](mtp/README.md#dflash2). MTP-S, MTP-P and MTP-D require evidence
+tied to each pack.
 Receipts of one format do not qualify another: the MXFP4 release gates do
 not qualify the 6-bit pack, and the September 6-bit receipts do not qualify
 MXFP4 or MXFP8. SKU targets remain

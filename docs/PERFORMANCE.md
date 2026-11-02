@@ -213,6 +213,10 @@ should not be read as a complete inference-serving proof. In particular:
 
 ## MTP Mode
 
+DFlash2 block drafting is a separate greedy path for Qwen 3.8 27B and Qwen
+3.6 35B-A3B when its checkpoint is present. The tables in this section are
+MTP rows. They do not measure DFlash2. See [DFlash2](mtp/README.md#dflash2).
+
 The current MTP publication contract has two separate views. The AX Engine-only
 6-bit package acceleration view covers Qwen fused sidecars and Gemma assistant
 drafters. The cross-engine peer comparison is

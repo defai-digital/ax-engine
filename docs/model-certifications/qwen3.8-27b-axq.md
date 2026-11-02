@@ -20,6 +20,9 @@ memory and release inventory gates are open. Prior 6-bit qualification,
 MTP-S and performance results do not transfer. MTP-S/P/D are not assessed
 for this replacement pack; MTP execution remains explicit opt-in with
 `--mlx-mtp-policy required`. Direct/default controls remain necessary.
+DFlash2 block drafting is not an MTP default. It runs for greedy text when
+the pinned drafter checkpoint is already present, and it is outside this
+certification record. See [DFlash2](../mtp/README.md#dflash2).
 
 ## Historical retired affine-pack record
 

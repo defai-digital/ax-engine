@@ -1,8 +1,8 @@
 # MTP Docs
 
-This is the MTP-specific documentation hub. Use it when the question is about
-`ax-engine download-mtp`, MTP benchmark lanes, sidecar or assistant package
-validation, or MTP tuning reports.
+This hub covers MTP packages and DFlash2 block drafting. Use it when the
+question is about `ax-engine download-mtp`, MTP benchmark lanes, sidecar or
+assistant package validation, MTP tuning, or the DFlash2 drafter.
 
 ## Read This First
 
@@ -139,6 +139,8 @@ direct decode than the route it replaces. It applies to dense MXFP4 weights
 during a throughput-profile verify forward only; the exact profile, Flash Next
 and MoE experts are unchanged.
 
+## DFlash2
+
 DFlash2 block drafting is on by default for greedy text requests on the Qwen 3.8
 27B target (the pack's recorded source model must be `Qwen/Qwen3.8-27B`: Qwen 3.6
 27B has the same shapes but other weights) whenever the Apache-2.0 `z-lab/Qwen3.8-27B-DFlash2`
@@ -215,6 +217,7 @@ the default, and simulated gains should be read as upper bounds.
 
 | Need | Read |
 | --- | --- |
+| Use DFlash2 on greedy Qwen text | [DFlash2](#dflash2), [MLX Backend: artifact selection](../MLX-BACKEND.md#dflash2-artifact-selection) |
 | Download or prepare an MTP package | [Supported Models: MTP Downloads](../SUPPORTED-MODELS.md#mtp-downloads), [CLI](../CLI.md#ax-engine) |
 | Read headline MTP result tables | [Performance Results: MTP](../PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Qwen3.6 MTP peer benchmark](qwen36-peer-comparison.md), [Performance: MTP Mode](../PERFORMANCE.md#mtp-mode) |
 | Reproduce or review MTP benchmarks | [Benchmarks: MTP Matrix](../BENCHMARKS.md#mtp-matrix), [Benchmark Design](../BENCH-DESIGN.md) |

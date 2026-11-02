@@ -67,6 +67,13 @@ still depend on memory capacity and workload; see the
   MXFP4 MTP pack. Flash Next has its own `qwen4_exp` route and MXFP4 MTP
   selector. MXFP8 is in scope with pack admission pending. See the
   [format and migration policy](docs/QWEN38-FORMAT-POLICY.md).
+- **DFlash2 on eligible greedy Qwen text** — Qwen 3.8 27B and Qwen 3.6
+  35B-A3B draft a block with DFlash2 when the matching Apache-2.0 checkpoint
+  is already on disk (`z-lab/Qwen3.8-27B-DFlash2`,
+  `incoai/Qwen3.6-35B-A3B-DFlash2`). The server does not download it, and it
+  is not inside the AXQ pack. Sampled requests, grammars, images, and a
+  missing checkpoint stay on the normal routes. MTP stays explicit opt-in.
+  See [DFlash2](docs/mtp/README.md#dflash2).
 - **Evidence tied to the pack** — historical 6-bit benchmark results remain
   published below and do not describe the replacement default. MXFP4 and
   MXFP8 need their own runtime, quality, memory and MTP evidence.
@@ -104,8 +111,10 @@ still depend on memory capacity and workload; see the
 Clients enter through the HTTP server, the Python binding, or a language SDK.
 `ax-engine-sdk` keeps one session per loaded model on that model's worker
 thread. `ax-engine-core` admits the request, plans a decode-first batch, and
-owns the paged KV ledger. `ax-engine-mlx` runs the graph. Optional
-`mlx_lm.server` and llama.cpp adapters stay on the compatibility route.
+owns the paged KV ledger. `ax-engine-mlx` runs the graph, including DFlash2
+block drafting for eligible greedy Qwen text, MTP, n-gram acceleration, and
+expert paging. Optional `mlx_lm.server` and llama.cpp adapters stay on the
+compatibility route.
 Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 ## Install AX Engine for macOS
@@ -486,7 +495,10 @@ Decode and prefill for Qwen 27B are 20-run medians. Tiel completion includes TTF
 
 Qwen 3.8 6-bit rows below are **historical retired-pack evidence**. The
 old AXQ selector binding selected 6-bit; it now selects MXFP4 MTP. These
-numbers and MTP findings do not qualify MXFP4 or MXFP8.
+numbers and MTP findings do not qualify MXFP4 or MXFP8. The charts in this
+section measure MTP or direct decode. They do not measure DFlash2. Greedy
+text uses DFlash2 when its checkpoint is already present; see
+[DFlash2](docs/mtp/README.md#dflash2).
 
 
 ### Qualification SKU: Mac mini M4 Pro 64 GB (2026-09-17)
