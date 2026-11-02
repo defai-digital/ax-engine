@@ -38,8 +38,16 @@ set `runtime.ax_engine.weight_sanitize` to `hf_norm_only`,
 `weight_layout.norm_weights` to `raw_delta` and `weight_layout.conv1d_axes` to
 `mlx`. The engine still checks the conv1d tensor shapes and the format scope
 above. The declaration is the exporter's claim, not a numerical-parity
-qualification. `ax-engine-bench doctor` accepts the artifact.v2 / runtime.v1
-and artifact.v3 / runtime.v2 pairs and reports any other combination.
+qualification. Each artifact version pairs with one runtime version: the
+loader and `ax-engine-bench doctor` accept only artifact.v2 / runtime.v1 and
+artifact.v3 / runtime.v2, and refuse any other combination.
+
+Next to MXFP4 experts, protected projections are affine 8-bit at group size
+32 (the output head may also use group size 64). A pack with 8-bit/group-64
+attention stays refused. Admitting it needs, on that pack: MTP acceptance and
+greedy quality within the MXFP4 baseline's run noise, decode throughput on
+the Flash Next SKU (MacBook Pro M5 Max 128 GB), and the native-path checks
+above.
 
 MTP sidecar availability does not promote MTP to a product default. Use
 `--mlx-mtp-policy required` for explicit MTP; the normal route remains a

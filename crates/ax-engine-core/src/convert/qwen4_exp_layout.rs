@@ -19,6 +19,8 @@ const EXPECTED_SCHEMA_VERSION: &str = "axquant.artifact.v2";
 /// layout ships under this new pair; both strings are required together.
 const DECLARED_LAYOUT_SCHEMA_VERSION: &str = "axquant.artifact.v3";
 const DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION: &str = "axquant.runtime.v2";
+/// Runtime schema that pairs with `axquant.artifact.v2`.
+const LEGACY_RUNTIME_SCHEMA_VERSION: &str = "axquant.runtime.v1";
 const EXPECTED_AXQUANT_VERSION: &str = "1.9.0";
 const EXPECTED_QUANTIZER: &str = "axquant";
 const EXPECTED_FORMAT: &str = "mlx";
@@ -390,7 +392,9 @@ fn matches_audited_legacy_tuple(value: &serde_json::Value) -> bool {
 ///
 /// Accepted envelopes: `axquant.artifact.v3` with `runtime.schema_version`
 /// `axquant.runtime.v2` (what AXQuant writes), and the earlier
-/// `axquant.artifact.v2` form that some local packs carry.
+/// `axquant.artifact.v2` form with `axquant.runtime.v1` that some local packs
+/// carry. Each artifact version pairs with exactly one runtime version, the
+/// same pairs `ax-engine-bench doctor` accepts.
 fn matches_declared_layout(value: &serde_json::Value) -> bool {
     declared_layout_envelope(value)
         && json_str(value, &["quantizer"]) == Some(EXPECTED_QUANTIZER)
@@ -407,11 +411,11 @@ fn matches_declared_layout(value: &serde_json::Value) -> bool {
 }
 
 fn declared_layout_envelope(value: &serde_json::Value) -> bool {
+    let runtime = json_str(value, &["runtime", "schema_version"]);
     match json_str(value, &["schema_version"]) {
-        Some(EXPECTED_SCHEMA_VERSION) => true,
+        Some(EXPECTED_SCHEMA_VERSION) => runtime == Some(LEGACY_RUNTIME_SCHEMA_VERSION),
         Some(DECLARED_LAYOUT_SCHEMA_VERSION) => {
-            json_str(value, &["runtime", "schema_version"])
-                == Some(DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION)
+            runtime == Some(DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION)
         }
         _ => false,
     }
@@ -773,6 +777,7 @@ mod tests {
                 "revision": "0000000000000000000000000000000000000000",
             },
             "runtime": {
+                "schema_version": LEGACY_RUNTIME_SCHEMA_VERSION,
                 "ax_engine": {
                     "weight_sanitize": HF_NORM_ONLY,
                     "weight_layout": {
@@ -930,6 +935,11 @@ mod tests {
             assert!(has_unknown_layout_blocker(&manifest), "{runtime_schema:?}");
             std::fs::remove_dir_all(dir).unwrap();
         }
+        // The v2 form pairs only with runtime.v1, matching doctor.
+        let mut v2_with_v2_runtime = declared_layout_json("Qwen/Qwen3.8-Flash-Next");
+        v2_with_v2_runtime["runtime"]["schema_version"] =
+            DECLARED_LAYOUT_RUNTIME_SCHEMA_VERSION.into();
+        assert!(!matches_declared_layout(&v2_with_v2_runtime));
         // Unknown artifact versions stay closed even with a full declaration.
         let mut future = declared_layout_v3_json("Qwen/Qwen3.8-Flash-Next");
         future["schema_version"] = "axquant.artifact.v4".into();

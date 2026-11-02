@@ -969,8 +969,8 @@ env_flag_default_on!(
 pub(crate) fn nax_verify_native_sdpa_active() -> bool {
     qwen_linear_mtp_target_verify_enabled()
         && !qwen_linear_mtp_exact_enabled()
-        // NAX host *and* an MLX with `sdpa_split` (the 0.32.5 line).
-        && crate::hardware::skinny_qmv_nax_active()
+        // NAX host *and* an MLX whose metallib carries `sdpa_split`.
+        && crate::hardware::nax_verify_sdpa_kernels_active()
         && nax_verify_native_sdpa_env()
 }
 
