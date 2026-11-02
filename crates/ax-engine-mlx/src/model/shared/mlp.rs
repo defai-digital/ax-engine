@@ -6287,8 +6287,10 @@ pub(crate) fn moe_router_deepseek_v3(
         .as_ref()
         .expect("DeepSeek V3 MoE layer must have router_proj");
     // MiniMax-M3 mlx-vlm / mlxcel run the gate in f32 (`x.astype(float32)` then
-    // Linear). DeepSeek keeps the activation dtype for the matmul.
-    let logits = if cfg.model_family == "minimax_m3" {
+    // Linear). Hy3 / Hy-MT2's reference computes `F.linear(x.float(),
+    // w.float())`; bf16 logits flip near-tied picks among its 128-192
+    // experts. DeepSeek keeps the activation dtype for the matmul.
+    let logits = if matches!(cfg.model_family.as_str(), "minimax_m3" | "hy_v3") {
         qw(&astype(x, MlxDtype::Float32, None), router_proj)
     } else {
         qw(x, router_proj)
