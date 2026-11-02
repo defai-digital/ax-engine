@@ -3683,6 +3683,10 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     relaxed.relaxed_mtp = false;
     push("relaxed_mtp=0", relaxed);
 
+    let mut nax_sdpa = base;
+    nax_sdpa.nax_verify_sdpa = false;
+    push("nax_verify_sdpa=0", nax_sdpa);
+
     let mut throughput = base;
     throughput.throughput_mtp = false;
     push("throughput_mtp=0", throughput);

@@ -7321,6 +7321,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `invariant_mxfp4` — MXFP4 qmv-fast verify on (diverges)
 /// - `dense_gemv=0` — exact dense weight-T GEMV off (greedy may shift)
 /// - `relaxed_mtp=0` — relaxed Qwen MTP target verify off
+/// - `nax_verify_sdpa=0` — M5+ relaxed verify keeps the singleton SDPA fold
 /// - `throughput_mtp=0` — Qwen throughput MTP profile off
 /// - `mtp_depth=N` — throughput draft width not 3, only while that profile is on
 /// - `qwen_exact=0` — explicit `AX_MLX_QWEN_LINEAR_MTP_EXACT` kill
@@ -7408,6 +7409,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) invariant_mxfp4: bool,
     pub(crate) dense_weight_t_gemv: bool,
     pub(crate) relaxed_mtp: bool,
+    pub(crate) nax_verify_sdpa: bool,
     pub(crate) throughput_mtp: bool,
     pub(crate) throughput_mtp_depth: usize,
     pub(crate) qwen_exact_killed: bool,
@@ -7555,6 +7557,7 @@ impl Default for NumericsTierSwitches {
             invariant_mxfp4: false,
             dense_weight_t_gemv: true,
             relaxed_mtp: true,
+            nax_verify_sdpa: true,
             throughput_mtp: true,
             throughput_mtp_depth: QWEN_LINEAR_THROUGHPUT_MTP_DEPTH,
             qwen_exact_killed: false,
@@ -7708,6 +7711,7 @@ impl NumericsTierSwitches {
             invariant_mxfp4: invariant_mxfp4_qmv_fast_enabled(),
             dense_weight_t_gemv: exact_dense_weight_t_gemv_enabled(),
             relaxed_mtp: mtp_relaxed_target_verify_enabled(),
+            nax_verify_sdpa: nax_verify_native_sdpa_env(),
             throughput_mtp: qwen_linear_throughput_mtp_enabled(),
             throughput_mtp_depth: qwen_linear_throughput_mtp_depth(),
             qwen_exact_killed: qwen_linear_mtp_exact_env_override() == Some(false),
@@ -8010,6 +8014,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if !switches.relaxed_mtp {
         tokens.push("relaxed_mtp=0".to_string());
+    }
+    if !switches.nax_verify_sdpa {
+        tokens.push("nax_verify_sdpa=0".to_string());
     }
     if !switches.throughput_mtp {
         tokens.push("throughput_mtp=0".to_string());
