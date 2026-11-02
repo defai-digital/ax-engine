@@ -953,6 +953,25 @@ pub(crate) fn qwen_linear_mtp_target_verify_enabled() -> bool {
     QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| current.get())
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_NAX_VERIFY_NATIVE_SDPA` — on M5 or later (NAX active), a relaxed
+    /// target verify (DFlash2, relaxed MTP) skips the per-row singleton SDPA
+    /// fold and hands the whole 2..8-row window to MLX's native SDPA, which
+    /// routes it to the NAX `sdpa_split` kernel. The fold exists only to keep
+    /// singleton-decode reduction identity; the relaxed verifier does not
+    /// promise that identity. Exact profiles and M3/M4 keep the fold.
+    nax_verify_native_sdpa_env,
+    "AX_MLX_NAX_VERIFY_NATIVE_SDPA"
+);
+
+/// True when this forward may give multi-row verify attention to MLX whole.
+pub(crate) fn nax_verify_native_sdpa_active() -> bool {
+    qwen_linear_mtp_target_verify_enabled()
+        && !qwen_linear_mtp_exact_enabled()
+        && crate::hardware::neural_accelerator_active()
+        && nax_verify_native_sdpa_env()
+}
+
 env_flag!(
     /// `AX_MLX_MTP_TARGET_LAYER_COMPILE` — allow the existing fixed-shape
     /// Qwen S=2..=4 layer closures inside the relaxed target verifier. The

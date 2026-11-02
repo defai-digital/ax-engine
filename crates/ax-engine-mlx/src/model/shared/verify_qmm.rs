@@ -98,6 +98,30 @@ fn mxfp4_window_min_n() -> i32 {
     })
 }
 
+/// First verify row count handed back to stock MLX QMM when the linked MLX
+/// has the skinny-row NAX GEMV (`hardware::skinny_qmv_nax_active`: M5 or
+/// later, macOS 26.2+, MLX >= 0.32.5). Below it AX's kernels still serve the
+/// 3..5-row window, where stock NAX gives no help.
+const NAX_STOCK_MIN_ROWS: i32 = 6;
+
+/// `AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS`: cut-over row count on skinny-NAX
+/// hosts; `0` keeps AX's kernels for every routed row count.
+fn nax_stock_min_rows() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|value| *value >= 0)
+            .unwrap_or(NAX_STOCK_MIN_ROWS)
+    })
+}
+
+/// True when this verify width is better served by stock MLX on this host.
+fn handed_to_stock_nax(rows: i32, cutover: i32) -> bool {
+    cutover > 0 && rows >= cutover && crate::hardware::skinny_qmv_nax_active()
+}
+
 fn split_k_huge_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_SPLIT_K_HUGE"))
@@ -696,8 +720,12 @@ fn mxfp4_window_eligible(
     Some((m, k, n))
 }
 
+fn rows_of(x: &MlxArray) -> i32 {
+    x.shape().get(1).copied().unwrap_or(0)
+}
+
 fn try_mxfp4_window_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
-    if !mxfp4_window_enabled() {
+    if !mxfp4_window_enabled() || handed_to_stock_nax(rows_of(x), nax_stock_min_rows()) {
         return None;
     }
     mxfp4_window_qmm(x, weight, mxfp4_window_min_n())
@@ -806,6 +834,9 @@ pub(crate) fn try_qwen_mtp_verify_qmm(x: &MlxArray, weight: &QuantizedWeight) ->
         mlx_sys::MlxQuantizationMode::Mxfp4
     ) {
         return try_mxfp4_window_qmm(x, weight);
+    }
+    if handed_to_stock_nax(rows_of(x), nax_stock_min_rows()) {
+        return None;
     }
     try_qwen_mtp_verify_qmm_for_min_n(x, weight, min_route_n())
 }
@@ -1540,6 +1571,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn skinny_nax_hosts_hand_wide_verify_windows_to_stock() {
+        {
+            let _nax = crate::hardware::override_skinny_qmv_nax(true);
+            assert!(!handed_to_stock_nax(5, 6));
+            assert!(handed_to_stock_nax(6, 6));
+            assert!(handed_to_stock_nax(8, 6));
+            assert!(!handed_to_stock_nax(8, 0), "0 keeps AX kernels");
+
+            let weight = mxfp4_test_weight(64, 256);
+            let _guard = QwenMtpVerifyQmmGuard::arm(true);
+            if nax_stock_min_rows() == NAX_STOCK_MIN_ROWS {
+                assert!(try_qwen_mtp_verify_qmm(&mxfp4_test_input(8, 256), &weight).is_none());
+                assert!(try_qwen_mtp_verify_qmm(&mxfp4_test_input(4, 256), &weight).is_some());
+            }
+        }
+        let _plain = crate::hardware::override_skinny_qmv_nax(false);
+        assert!(
+            !handed_to_stock_nax(8, 6),
+            "M3/M4 and older MLX keep AX kernels"
+        );
     }
 
     #[test]

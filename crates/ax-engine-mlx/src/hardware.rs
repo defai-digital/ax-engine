@@ -150,6 +150,61 @@ pub(crate) fn generation_has_neural_accelerator(generation: Option<u32>) -> bool
     generation.is_some_and(|generation| generation >= 5)
 }
 
+/// First MLX release line carrying `affine_qmv_nax` (skinny 6-16 row quantized
+/// GEMV on the neural accelerators; MLX 914732419, reported as 0.32.5).
+const MLX_SKINNY_QMV_NAX_VERSION: (u32, u32, u32) = (0, 32, 5);
+
+/// True on M5+ / macOS 26.2+ when the linked MLX also has the skinny-row NAX
+/// quantized GEMV. AX's own verify QMM kernels were admitted against the
+/// older stock curve; this gate lets them hand wider verify windows back to
+/// stock MLX without touching M3/M4 or older MLX builds.
+pub(crate) fn skinny_qmv_nax_active() -> bool {
+    #[cfg(test)]
+    if let Some(value) = SKINNY_OVERRIDE.with(|slot| slot.get()) {
+        return value;
+    }
+    static LINKED: OnceLock<bool> = OnceLock::new();
+    neural_accelerator_active()
+        && *LINKED.get_or_init(|| {
+            mlx_sys::runtime_version()
+                .ok()
+                .and_then(|raw| parse_semver(&raw))
+                .is_some_and(|version| version >= MLX_SKINNY_QMV_NAX_VERSION)
+        })
+}
+
+#[cfg(test)]
+thread_local! {
+    static SKINNY_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Restores the previous skinny-NAX override on drop (tests).
+#[cfg(test)]
+pub struct SkinnyNaxOverrideGuard {
+    previous: Option<bool>,
+}
+
+#[cfg(test)]
+impl Drop for SkinnyNaxOverrideGuard {
+    fn drop(&mut self) {
+        SKINNY_OVERRIDE.with(|slot| slot.set(self.previous));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_skinny_qmv_nax(value: bool) -> SkinnyNaxOverrideGuard {
+    let previous = SKINNY_OVERRIDE.with(|slot| slot.replace(Some(value)));
+    SkinnyNaxOverrideGuard { previous }
+}
+
+pub(crate) fn parse_semver(raw: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = raw.trim().split(|ch: char| !ch.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
 pub(crate) fn macos_supports_neural_accelerator(major: Option<u32>, minor: Option<u32>) -> bool {
     match (major, minor) {
         (Some(major), _) if major > 26 => true,
@@ -247,6 +302,29 @@ mod tests {
             );
         }
         assert!(!generation_has_neural_accelerator(None));
+    }
+
+    #[test]
+    fn parses_mlx_versions_for_the_skinny_nax_gate() {
+        assert_eq!(parse_semver("0.32.5"), Some((0, 32, 5)));
+        assert_eq!(parse_semver("0.32.4"), Some((0, 32, 4)));
+        assert_eq!(parse_semver("0.33.0.dev20261102"), Some((0, 33, 0)));
+        assert_eq!(parse_semver("1.0"), Some((1, 0, 0)));
+        assert_eq!(parse_semver("dev"), None);
+        assert!((0, 32, 4) < MLX_SKINNY_QMV_NAX_VERSION);
+        assert!((0, 33, 0) >= MLX_SKINNY_QMV_NAX_VERSION);
+    }
+
+    #[test]
+    fn skinny_nax_override_restores_previous() {
+        {
+            let _on = override_skinny_qmv_nax(true);
+            assert!(skinny_qmv_nax_active());
+            let _off = override_skinny_qmv_nax(false);
+            assert!(!skinny_qmv_nax_active());
+        }
+        let _m4 = override_hardware(HardwareCapabilities::m4());
+        assert!(!skinny_qmv_nax_active());
     }
 
     #[test]

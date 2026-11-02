@@ -913,7 +913,8 @@ pub(crate) fn full_precision_attention_with_window(
     // MoE multi-token: per-query-position bf16 SDPA (hist-sliced K/V). Needed
     // with per-pos FFN for gen exactness (smokef51); dual-edge keep_start fixes
     // successive long-prefill drift (rows 1+ must not attend expired left keys).
-    if fastpath::moe_mt_bf16_identity_enabled() {
+    let nax_native_verify = seq > 1 && seq <= 8 && fastpath::nax_verify_native_sdpa_active();
+    if fastpath::moe_mt_bf16_identity_enabled() && !nax_native_verify {
         if seq > 1 && seq <= 8 {
             use mlx_sys::{concatenate, slice};
             let q_shape = q_rope.shape();
@@ -1077,6 +1078,7 @@ pub(crate) fn full_precision_attention_with_window(
     if fastpath::multi_token_f32_attention_enabled()
         && seq > 1
         && seq <= 8
+        && !nax_native_verify
         && fastpath::dense_long_mt_bf16_fold_enabled()
     {
         let q_shape = q_rope.shape();
@@ -1217,6 +1219,9 @@ pub(crate) fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
         // tokens with f32 upcast off. Skip the extra cast on S=2..4.
         && !(fastpath::qwen_linear_mtp_verify_fast_kernels_enabled()
             && fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64))
+        // M5+: a relaxed verify window (up to DFlash2's 8 rows) stays in the
+        // model dtype so MLX can take NAX `sdpa_split`.
+        && !(seq <= 8 && fastpath::nax_verify_native_sdpa_active())
 }
 
 /// Attention with per-head learned sinks (GPT-OSS).
@@ -1928,6 +1933,70 @@ mod tests {
             !crate::fastpath::qwen_linear_mtp_exact_enabled(),
             "fast-kernel permission must not turn singleton-exact arithmetic back on"
         );
+    }
+
+    #[test]
+    fn nax_relaxed_verify_hands_the_window_to_native_sdpa() {
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _verify = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+        {
+            let _m4 =
+                crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m4());
+            assert!(!crate::fastpath::nax_verify_native_sdpa_active());
+        }
+        let _m5 =
+            crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m5_na());
+        if !crate::fastpath::nax_verify_native_sdpa_env() {
+            return;
+        }
+        assert!(crate::fastpath::nax_verify_native_sdpa_active());
+        assert!(
+            !super::should_upcast_multi_token_sdpa_to_f32(8),
+            "an 8-row DFlash2 window stays bf16 on NAX hosts"
+        );
+        {
+            let _exact_on = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+            assert!(
+                !crate::fastpath::nax_verify_native_sdpa_active(),
+                "exact profiles keep the singleton fold"
+            );
+        }
+
+        // Native whole-window SDPA must agree with the folded result closely.
+        let (hq, hk, d, key_len, seq) = (8_i32, 2_i32, 128_i32, 640_i32, 6_usize);
+        let pattern = |len: i32, salt: usize| -> Vec<f32> {
+            (0..len as usize)
+                .map(|i| (((i * 31 + salt * 17) % 97) as f32 - 48.0) / 96.0)
+                .collect()
+        };
+        let tensor = |shape: &[i32], salt: usize| {
+            let len = shape.iter().product::<i32>();
+            astype(
+                &mlx_sys::reshape(&MlxArray::from_f32_slice(&pattern(len, salt)), shape, None),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let q = tensor(&[1, hq, seq as i32, d], 1);
+        let k = tensor(&[1, hk, key_len, d], 2);
+        let v = tensor(&[1, hk, key_len, d], 3);
+        let scale = 1.0 / (d as f32).sqrt();
+        let host = |x: &MlxArray| {
+            let x = mlx_sys::contiguous(&astype(x, MlxDtype::Float32, None), None);
+            eval(&[&x]);
+            x.data_f32().to_vec()
+        };
+        let native = host(&full_precision_attention(&q, &k, &v, scale, seq, &None));
+        drop(_m5);
+        let _m4 = crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m4());
+        let folded = host(&full_precision_attention(&q, &k, &v, scale, seq, &None));
+        assert_eq!(native.len(), folded.len());
+        let diff = native
+            .iter()
+            .zip(&folded)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(diff < 2e-2, "native vs fold max diff {diff}");
     }
 
     #[test]
