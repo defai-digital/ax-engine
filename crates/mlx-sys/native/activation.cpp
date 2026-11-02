@@ -78,8 +78,13 @@ bool qwen_la_dual_stream_qkvz_ba_env_enabled() {
           s == "ON" || s == "YES");
 }
 
+// Per-thread dual GPU streams for concurrent QKVZ/BA issue. MLX 0.32 binds a
+// GPU stream's Metal command encoder to its creating thread, so a process-wide
+// pair fails from a second worker thread. mx::new_thread_unsafe_stream was
+// rejected because concurrent worker threads would share one encoder without
+// serialization.
 std::pair<mx::Stream, mx::Stream>& qwen_la_dual_streams() {
-  static std::pair<mx::Stream, mx::Stream> streams = []() {
+  static thread_local std::pair<mx::Stream, mx::Stream> streams = []() {
     return std::make_pair(
         mx::new_stream(mx::Device::gpu), mx::new_stream(mx::Device::gpu));
   }();
@@ -1715,10 +1720,13 @@ bool dual_stream_gate_up_env_enabled() {
           s == "ON" || s == "YES");
 }
 
-// Process-static dual GPU streams for concurrent gate/up issue. Created once
-// so per-layer cost is only the two qmm graph builds, not stream allocation.
+// Per-thread dual GPU streams for concurrent gate/up issue. MLX 0.32 binds a
+// GPU stream's Metal command encoder to its creating thread, so a process-wide
+// pair fails from a second worker thread. mx::new_thread_unsafe_stream was
+// rejected because concurrent worker threads would share one encoder without
+// serialization.
 std::pair<mx::Stream, mx::Stream>& dual_gate_up_streams() {
-  static std::pair<mx::Stream, mx::Stream> streams = []() {
+  static thread_local std::pair<mx::Stream, mx::Stream> streams = []() {
     return std::make_pair(
         mx::new_stream(mx::Device::gpu), mx::new_stream(mx::Device::gpu));
   }();

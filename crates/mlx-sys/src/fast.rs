@@ -2,6 +2,7 @@ use std::ffi::CString;
 use std::sync::LazyLock;
 
 use crate::array::{MlxArray, null_ffi_array};
+use crate::closure::MlxVectorArray;
 use crate::error::{ensure_error_handler, panic_on_status, status_to_result};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
@@ -44,6 +45,65 @@ pub fn try_gated_delta_update(
     initial_state: &MlxArray,
     s: Option<&MlxStream>,
 ) -> Result<(MlxArray, MlxArray), String> {
+    gated_delta_update_impl(
+        q,
+        k,
+        v,
+        gamma,
+        beta,
+        Some(initial_state),
+        None,
+        s,
+        "try_gated_delta_update",
+    )
+}
+
+/// Masked MLX gated-delta recurrence with an optional initial state.
+///
+/// `mask` is a bool `[B,T]` tensor: where it is false, that batch row's state
+/// is carried unchanged through that step, which implements right-padded
+/// batched prefill. A `None` initial state means a zero state. All other
+/// requirements match [`try_gated_delta_update`].
+#[allow(clippy::too_many_arguments)]
+pub fn try_gated_delta_update_masked(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    gamma: &MlxArray,
+    beta: &MlxArray,
+    initial_state: Option<&MlxArray>,
+    mask: Option<&MlxArray>,
+    s: Option<&MlxStream>,
+) -> Result<(MlxArray, MlxArray), String> {
+    gated_delta_update_impl(
+        q,
+        k,
+        v,
+        gamma,
+        beta,
+        initial_state,
+        mask,
+        s,
+        "try_gated_delta_update_masked",
+    )
+}
+
+/// Shared gated-delta validation, dispatch, and fallible output extraction.
+///
+/// Every check runs before the op counter bump and the FFI call, so a rejected
+/// call leaves the thread's op count untouched.
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_update_impl(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    gamma: &MlxArray,
+    beta: &MlxArray,
+    initial_state: Option<&MlxArray>,
+    mask: Option<&MlxArray>,
+    s: Option<&MlxStream>,
+    op_name: &'static str,
+) -> Result<(MlxArray, MlxArray), String> {
     let qs = q.shape();
     let vs = v.shape();
     if qs.len() != 4 || vs.len() != 4 || qs.iter().chain(&vs).any(|&d| d <= 0) {
@@ -56,34 +116,67 @@ pub fn try_gated_delta_update(
         || hv % hk != 0
         || gamma.shape() != [batch, seq, hv]
         || beta.shape() != [batch, seq, hv]
-        || initial_state.shape() != [batch, hv, dv, dk]
+        || initial_state.is_some_and(|state| state.shape() != [batch, hv, dv, dk])
     {
         return Err("gated_delta_update has incompatible tensor shapes".into());
     }
-    if [q, k, v, gamma, beta, initial_state]
+    if let Some(mask) = mask
+        && (mask.shape() != [batch, seq] || mask.dtype() != crate::MlxDtype::Bool)
+    {
+        return Err("gated_delta_update mask must be a bool [batch, seq] tensor".into());
+    }
+    let float_inputs = [
+        Some(q),
+        Some(k),
+        Some(v),
+        Some(gamma),
+        Some(beta),
+        initial_state,
+    ];
+    if float_inputs
         .iter()
+        .flatten()
         .any(|a| a.dtype() != crate::MlxDtype::Float32)
     {
         return Err("gated_delta_update binding requires float32 tensors".into());
     }
-    crate::op_count::bump_named("try_gated_delta_update");
+    crate::op_count::bump_named(op_name);
     ensure_error_handler();
-    let mut output = MlxArray::empty();
-    let mut final_state = MlxArray::empty();
+    let mut vec = MlxVectorArray::new();
+    let null_arr = null_ffi_array();
     let rc = unsafe {
-        ffi::ax_mlx_gated_delta_update(
-            &mut output.inner,
-            &mut final_state.inner,
+        ffi::mlx_fast_gated_delta_update(
+            &mut vec.inner,
             q.inner,
             k.inner,
             v.inner,
             gamma.inner,
             beta.inner,
-            initial_state.inner,
+            initial_state.map(|a| a.inner).unwrap_or(null_arr),
+            mask.map(|a| a.inner).unwrap_or(null_arr),
             s.map(|s| s.inner).unwrap_or_else(default_gpu_raw),
         )
     };
-    status_to_result("ax_mlx_gated_delta_update", rc)?;
+    status_to_result("mlx_fast_gated_delta_update", rc)?;
+    // Fallible equivalent of MlxVectorArray::len/get: neither helper may panic
+    // here because this entry point reports MLX failures as Err.
+    ensure_error_handler();
+    let size = unsafe { ffi::mlx_vector_array_size(vec.inner) };
+    if size != 2 {
+        return Err(format!(
+            "gated_delta_update returned {size} outputs, expected 2"
+        ));
+    }
+    let mut raw_output = null_ffi_array();
+    let rc = unsafe { ffi::mlx_vector_array_get(&mut raw_output, vec.inner, 0) };
+    status_to_result("mlx_vector_array_get", rc)?;
+    // SAFETY: mlx_vector_array_get returns an owned, refcounted array handle;
+    // MlxArray::Drop releases it.
+    let output = unsafe { MlxArray::from_raw(raw_output) };
+    let mut raw_state = null_ffi_array();
+    let rc = unsafe { ffi::mlx_vector_array_get(&mut raw_state, vec.inner, 1) };
+    status_to_result("mlx_vector_array_get", rc)?;
+    let final_state = unsafe { MlxArray::from_raw(raw_state) };
     Ok((output, final_state))
 }
 
@@ -369,6 +462,42 @@ mod gated_delta_tests {
         )
     }
 
+    /// Build a bool mask from 0/1 float flags laid out in `shape` order.
+    fn bool_mask(bits: &[f32], shape: &[i32]) -> MlxArray {
+        let raw = array(bits, shape);
+        crate::ops::astype(&raw, MlxDtype::Bool, None)
+    }
+
+    fn ramp(bias: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| bias + 0.05 * (i as f32) + 0.01).collect()
+    }
+
+    /// Q, K, V, gamma, beta, and state fixtures for a two-row batch.
+    type TwoRowData = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+
+    /// B=2, T=4, Hk=Hv=1, Dk=4, Dv=2 fixtures with distinct non-zero rows.
+    fn two_row_data() -> TwoRowData {
+        let mut q = ramp(0.02, 16);
+        q.extend(ramp(-0.09, 16));
+        let mut k = ramp(-0.03, 16);
+        k.extend(ramp(0.06, 16));
+        let mut v = ramp(0.04, 8);
+        v.extend(ramp(-0.05, 8));
+        let gamma = vec![0.6, 0.55, 0.5, 0.45, 0.7, 0.65, 0.6, 0.55];
+        let beta = vec![0.5, 0.4, 0.3, 0.2, 0.6, 0.5, 0.4, 0.3];
+        let mut state = ramp(0.1, 8);
+        state.extend(ramp(-0.12, 8));
+        (q, k, v, gamma, beta, state)
+    }
+
+    fn max_abs(a: &MlxArray, b: &MlxArray) -> f32 {
+        a.data_f32()
+            .iter()
+            .zip(b.data_f32())
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max)
+    }
+
     #[test]
     fn gated_delta_binding_matches_independent_recurrence() {
         let q_data = [
@@ -446,6 +575,166 @@ mod gated_delta_tests {
         ] {
             assert!(try_gated_delta_update(q, k, v, g, b, s, None).is_err());
         }
+    }
+
+    #[test]
+    fn gated_delta_masked_all_true_matches_unmasked() {
+        let q_data = [
+            0.1, 0.2, -0.3, 0.4, 0.2, -0.1, 0.4, 0.3, -0.1, 0.4, 0.2, 0.3,
+        ];
+        let k_data = [0.2, -0.3, 0.1, 0.2, 0.4, 0.3, 0.2, -0.1, 0.1, 0.2, 0.3, 0.4];
+        let v_data = [0.3, 0.4, -0.2, 0.1, 0.2, -0.3];
+        let gamma = [0.6, 0.7, 0.8];
+        let beta = [0.5, 0.4, 0.3];
+        let initial = [0.1, -0.2, 0.2, 0.3, 0.4, 0.2, -0.1, 0.1];
+        let q = array(&q_data, &[1, 3, 1, 4]);
+        let k = array(&k_data, &[1, 3, 1, 4]);
+        let v = array(&v_data, &[1, 3, 1, 2]);
+        let g = array(&gamma, &[1, 3, 1]);
+        let b = array(&beta, &[1, 3, 1]);
+        let s = array(&initial, &[1, 1, 2, 4]);
+        let mask = bool_mask(&[1.0, 1.0, 1.0], &[1, 3]);
+        let (out, state) =
+            try_gated_delta_update(&q, &k, &v, &g, &b, &s, None).expect("unmasked recurrence");
+        let (masked_out, masked_state) =
+            try_gated_delta_update_masked(&q, &k, &v, &g, &b, Some(&s), Some(&mask), None)
+                .expect("all-true mask recurrence");
+        eval(&[&out, &state, &masked_out, &masked_state]);
+        assert_eq!(masked_out.shape(), out.shape());
+        assert_eq!(masked_state.shape(), state.shape());
+        assert!(max_abs(&masked_out, &out) <= 1e-6);
+        assert!(max_abs(&masked_state, &state) <= 1e-6);
+    }
+
+    #[test]
+    fn gated_delta_masked_trailing_padding_preserves_row_state() {
+        let (q_data, k_data, v_data, gamma, beta, state_data) = two_row_data();
+        let q = array(&q_data, &[2, 4, 1, 4]);
+        let k = array(&k_data, &[2, 4, 1, 4]);
+        let v = array(&v_data, &[2, 4, 1, 2]);
+        let g = array(&gamma, &[2, 4, 1]);
+        let b = array(&beta, &[2, 4, 1]);
+        let s = array(&state_data, &[2, 1, 2, 4]);
+        // Row 0 is full; row 1 has two real steps and two padded steps.
+        let mask = bool_mask(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0], &[2, 4]);
+        let (_, masked_state) =
+            try_gated_delta_update_masked(&q, &k, &v, &g, &b, Some(&s), Some(&mask), None)
+                .expect("masked recurrence");
+        eval(&[&masked_state]);
+
+        let run_single =
+            |qd: &[f32], kd: &[f32], vd: &[f32], gd: &[f32], bd: &[f32], sd: &[f32], steps: i32| {
+                let q = array(qd, &[1, steps, 1, 4]);
+                let k = array(kd, &[1, steps, 1, 4]);
+                let v = array(vd, &[1, steps, 1, 2]);
+                let g = array(gd, &[1, steps, 1]);
+                let b = array(bd, &[1, steps, 1]);
+                let s = array(sd, &[1, 1, 2, 4]);
+                let (out, state) =
+                    try_gated_delta_update(&q, &k, &v, &g, &b, &s, None).expect("single-row run");
+                eval(&[&out, &state]);
+                state
+            };
+        let row0_state = run_single(
+            &q_data[..16],
+            &k_data[..16],
+            &v_data[..8],
+            &gamma[..4],
+            &beta[..4],
+            &state_data[..8],
+            4,
+        );
+        let row1_state = run_single(
+            &q_data[16..24],
+            &k_data[16..24],
+            &v_data[8..12],
+            &gamma[4..6],
+            &beta[4..6],
+            &state_data[8..],
+            2,
+        );
+
+        assert_eq!(masked_state.shape(), vec![2, 1, 2, 4]);
+        let (masked_row0, masked_row1) = masked_state.data_f32().split_at(8);
+        assert!(max_abs(&array(masked_row0, &[1, 1, 2, 4]), &row0_state) <= 1e-6);
+        assert!(max_abs(&array(masked_row1, &[1, 1, 2, 4]), &row1_state) <= 1e-6);
+    }
+
+    #[test]
+    fn gated_delta_masked_interior_false_skips_only_that_step() {
+        let (q_data, k_data, v_data, gamma, beta, state_data) = two_row_data();
+        let q = array(&q_data[16..], &[1, 4, 1, 4]);
+        let k = array(&k_data[16..], &[1, 4, 1, 4]);
+        let v = array(&v_data[8..], &[1, 4, 1, 2]);
+        let g = array(&gamma[4..], &[1, 4, 1]);
+        let b = array(&beta[4..], &[1, 4, 1]);
+        let s = array(&state_data[8..], &[1, 1, 2, 4]);
+        let mask = bool_mask(&[1.0, 0.0, 1.0, 0.0], &[1, 4]);
+        let (_, masked_state) =
+            try_gated_delta_update_masked(&q, &k, &v, &g, &b, Some(&s), Some(&mask), None)
+                .expect("interior-masked recurrence");
+
+        // Expected: the same row run over only steps 0 and 2.
+        let pick = |data: &[f32], width: usize| -> Vec<f32> {
+            [0, 2]
+                .iter()
+                .flat_map(|t| data[t * width..(t + 1) * width].to_vec())
+                .collect()
+        };
+        let (_, expected_state) = try_gated_delta_update(
+            &array(&pick(&q_data[16..], 4), &[1, 2, 1, 4]),
+            &array(&pick(&k_data[16..], 4), &[1, 2, 1, 4]),
+            &array(&pick(&v_data[8..], 2), &[1, 2, 1, 2]),
+            &array(&pick(&gamma[4..], 1), &[1, 2, 1]),
+            &array(&pick(&beta[4..], 1), &[1, 2, 1]),
+            &s,
+            None,
+        )
+        .expect("steps 0 and 2 only");
+        eval(&[&masked_state, &expected_state]);
+        assert!(max_abs(&masked_state, &expected_state) <= 1e-6);
+    }
+
+    #[test]
+    fn gated_delta_masked_rejects_bad_mask_before_ffi() {
+        let (q_data, k_data, v_data, gamma, beta, state_data) = two_row_data();
+        let q = array(&q_data, &[2, 4, 1, 4]);
+        let k = array(&k_data, &[2, 4, 1, 4]);
+        let v = array(&v_data, &[2, 4, 1, 2]);
+        let g = array(&gamma, &[2, 4, 1]);
+        let b = array(&beta, &[2, 4, 1]);
+        let s = array(&state_data, &[2, 1, 2, 4]);
+        let too_long = bool_mask(&[1.0; 10], &[2, 5]);
+        let too_flat = bool_mask(&[1.0; 2], &[2]);
+        let too_ranked = bool_mask(&[1.0; 8], &[2, 4, 1]);
+        let float_mask = array(&[1.0; 8], &[2, 4]);
+        let before = crate::op_count::op_count_snapshot();
+        for mask in [&too_long, &too_flat, &too_ranked, &float_mask] {
+            assert!(
+                try_gated_delta_update_masked(&q, &k, &v, &g, &b, Some(&s), Some(mask), None)
+                    .is_err()
+            );
+        }
+        assert_eq!(crate::op_count::op_count_snapshot(), before);
+    }
+
+    #[test]
+    fn gated_delta_masked_none_initial_state_matches_zero_state() {
+        let (q_data, k_data, v_data, gamma, beta, _state_data) = two_row_data();
+        let q = array(&q_data, &[2, 4, 1, 4]);
+        let k = array(&k_data, &[2, 4, 1, 4]);
+        let v = array(&v_data, &[2, 4, 1, 2]);
+        let g = array(&gamma, &[2, 4, 1]);
+        let b = array(&beta, &[2, 4, 1]);
+        let zero_state = zeros(&[2, 1, 2, 4], MlxDtype::Float32, None);
+        let (_, implied_zero) = try_gated_delta_update_masked(&q, &k, &v, &g, &b, None, None, None)
+            .expect("implicit zero state");
+        let (_, explicit_zero) =
+            try_gated_delta_update_masked(&q, &k, &v, &g, &b, Some(&zero_state), None, None)
+                .expect("explicit zero state");
+        eval(&[&implied_zero, &explicit_zero]);
+        assert_eq!(implied_zero.shape(), explicit_zero.shape());
+        assert!(max_abs(&implied_zero, &explicit_zero) <= 1e-6);
     }
 }
 

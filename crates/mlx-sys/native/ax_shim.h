@@ -1,10 +1,10 @@
 /* ax_shim.h — C ABI over MLX C++ for the operations AX calls.
  *
- * Names that also exist in mlx-c 0.7.0 use that signature. That includes
+ * Names that also exist in mlx-c 0.8.0 use that signature. That includes
  * scaled_dot_product_attention's force_fused flag and the Metal kernel
  * init_value / verbose setters. CUDA entry points are not declared.
- * ax_mlx_* names are AX extensions: mlx-c 0.7.0 does not bind
- * gated_delta_update. The implementation calls mlx::core directly.
+ * ax_mlx_* names are AX extensions. The implementation calls mlx::core
+ * directly.
  */
 #ifndef AX_SHIM_H
 #define AX_SHIM_H
@@ -278,9 +278,11 @@ int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array querie
 int mlx_fast_scaled_dot_product_attention_windowed(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, int window_size, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, bool force_fused, const mlx_stream s);
 #endif
 int mlx_fast_layer_norm(mlx_array* res, const mlx_array x, const mlx_array weight, const mlx_array bias, float eps, const mlx_stream s);
-int ax_mlx_gated_delta_update(mlx_array* output, mlx_array* final_state,
-    const mlx_array q, const mlx_array k, const mlx_array v,
-    const mlx_array gamma, const mlx_array beta, const mlx_array initial_state,
+int mlx_fast_gated_delta_update(mlx_vector_array* res,
+    const mlx_array queries, const mlx_array keys, const mlx_array values,
+    const mlx_array gates, const mlx_array beta_,
+    const mlx_array initial_state /* may be null */,
+    const mlx_array mask /* may be null */,
     const mlx_stream s);
 
 /* ================================================================
