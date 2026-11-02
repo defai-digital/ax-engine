@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1262" width="960" height="1262" role="img">
   <title>AX Engine components and workflow</title>
-  <desc>Callers enter the HTTP server or an in-process SDK. ax-engine-sdk owns one session per loaded model. ax-engine-core plans a decode-first batch and the paged KV ledger. ax-engine-mlx runs the graph, including DFlash2 block drafting for eligible greedy Qwen text, MTP, n-gram acceleration, and expert paging. A native step admits, plans, executes, updates KV, and streams tokens.</desc>
+  <desc>Callers enter the HTTP server or an in-process SDK. ax-engine-sdk owns one session per loaded model. ax-engine-core plans a decode-first batch and the paged KV ledger. ax-engine-mlx runs the graph, including DFlash2 block drafting for eligible greedy Qwen text, MTP, n-gram acceleration, expert paging, and NAX attention on M5. A native step admits, plans, executes, updates KV, and streams tokens.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M 0 1.4 L 8.2 5 L 0 8.6 Z" fill="#8aa0b8"/>
@@ -69,7 +69,7 @@
   <text x="358" y="678" fill="#1f6b45" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">ax-engine-mlx</text>
   <text x="358" y="702" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">Model graphs on MLX.</text>
   <text x="358" y="722" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">DFlash2, MTP, n-gram,</text>
-  <text x="358" y="742" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">and expert paging.</text>
+  <text x="358" y="742" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">NAX on M5, expert paging.</text>
 
   <rect x="636" y="652" width="276" height="116" rx="10" fill="#fbf6ee" stroke="#ead9b5"/>
   <text x="652" y="678" fill="#8a5a12" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">mlx-sys</text>

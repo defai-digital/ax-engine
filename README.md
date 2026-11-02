@@ -74,6 +74,12 @@ still depend on memory capacity and workload; see the
   is not inside the AXQ pack. Sampled requests, grammars, images, and a
   missing checkpoint stay on the normal routes. MTP stays explicit opt-in.
   See [DFlash2](docs/mtp/README.md#dflash2).
+- **NAX attention on M5** — on M5 or later with macOS 26.2 or newer, MLX
+  selects Neural Accelerator GEMM and SDPA. AX keeps native causal attention
+  for allowlisted full-attention prefill of at least 1024 tokens, including
+  Qwen 3.8 27B. Gemma stays off that policy. M3 and M4 do not arm it.
+  `AX_MLX_NAX_ATTENTION=0` turns the attention policy off. See
+  [NAX attention](docs/MLX-BACKEND.md#nax-attention).
 - **Evidence tied to the pack** — historical 6-bit benchmark results remain
   published below and do not describe the replacement default. MXFP4 and
   MXFP8 need their own runtime, quality, memory and MTP evidence.
@@ -112,9 +118,9 @@ Clients enter through the HTTP server, the Python binding, or a language SDK.
 `ax-engine-sdk` keeps one session per loaded model on that model's worker
 thread. `ax-engine-core` admits the request, plans a decode-first batch, and
 owns the paged KV ledger. `ax-engine-mlx` runs the graph, including DFlash2
-block drafting for eligible greedy Qwen text, MTP, n-gram acceleration, and
-expert paging. Optional `mlx_lm.server` and llama.cpp adapters stay on the
-compatibility route.
+block drafting for eligible greedy Qwen text, MTP, n-gram acceleration,
+expert paging, and NAX attention on M5. Optional `mlx_lm.server` and llama.cpp
+adapters stay on the compatibility route.
 Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 ## Install AX Engine for macOS

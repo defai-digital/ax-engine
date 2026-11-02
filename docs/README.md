@@ -39,6 +39,7 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
 | Use DFlash2 on greedy Qwen text | [MTP Docs: DFlash2](mtp/README.md#dflash2) | [MLX Backend: DFlash2 artifact selection](MLX-BACKEND.md#dflash2-artifact-selection) |
+| See when NAX attention is used | [MLX Backend: NAX attention](MLX-BACKEND.md#nax-attention) | [Architecture](ARCHITECTURE.md) |
 | Write or backfill GitHub release notes | [Release notes policy](releases/README.md) | [Releasing](RELEASING.md), [template](releases/TEMPLATE.md) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Compare AX vs peer MLX server on chat serving | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) | [Performance Results: serving](PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx) |

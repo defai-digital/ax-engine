@@ -64,7 +64,7 @@ ax-engine-sdk (Rust)
 | Layer | What it does |
 |---|---|
 | `mlx-sys` | Unsafe FFI + safe RAII wrappers. No logic. |
-| `ax-engine-mlx` | Model graph, inference loop, KV cache, n-gram acceleration, DFlash2 block drafting, and MTP. All MLX ops live here. |
+| `ax-engine-mlx` | Model graph, inference loop, KV cache, n-gram acceleration, DFlash2 block drafting, MTP, and the M5 NAX attention policy. All MLX ops live here. |
 | `ax-engine-sdk` | Session routing: `mlx` → MlxRunner; `mlx_lm_delegated` → `mlx_lm.server`; `llama_cpp` → llama.cpp. |
 
 ## Key design decisions
@@ -342,10 +342,27 @@ what the kill switch restores.
 | `AX_MLX_DFLASH2_WINDOW` | unset | Pins the DFlash2 verify window to N rows (3 to the drafter block size). Unset or `0` lets acceptance choose the window. |
 | `AX_MLX_DFLASH2_BF16` | off | Keeps the drafter in bf16. Unset quantizes its large matrices to MXFP4 at load. |
 | `AX_MLX_TREE_VERIFY` | off | Verifies a DFlash2 draft as a tree of at most four nodes (top-2 tokens at the first two draft positions) instead of one linear chain. Each root-to-leaf branch runs the canonical greedy verify on its own cache clone; the longest accepted prefix wins and a tie keeps the primary branch, so only target-greedy-accepted tokens are emitted and greedy output is identical to the linear path. `1` opts in; unset or `0` keeps the linear DFlash2 path. |
+| `AX_MLX_NAX_ATTENTION` | on when M5 or later and macOS 26.2 or newer | Keeps native causal SDPA for allowlisted full-attention prefill chunks of at least 1024 tokens, so MLX can use NAX fused attention. Gemma stays on its existing mask. `0` keeps the array-mask path. The switch cannot arm NAX on M4 or older, or on macOS older than 26.2. AX does not ship the NAX kernels. See [NAX attention](#nax-attention). |
 | `AX_MLX_IDLE_TICK_MS` | `0` (off) | Positive interval in milliseconds (whitespace trimmed). After the last request the model worker submits one tiny GPU copy on that cadence so macOS keeps the model's buffers wired. The tick is skipped while a request runs, under memory pressure, and after shutdown; it never changes the wired, cache, or memory limit and does not affect model output. Unset, empty, non-numeric, or `0` leaves the worker on its blocking receive. Delegated builds ignore it. |
 | `AX_MLX_IDLE_TICK_MAX_S` | `900` | Seconds to keep ticking after the last request. Unset, empty, or non-numeric values keep 900; `0` is a zero window. Only bounds the keep-warm episode. |
 | `AGX_RELAX_CDM_CTXSTORE_TIMEOUT` | `1` when unset (macOS) | Apple Metal driver flag that relaxes the compute-preemption context-store timeout, so pre-M5 GPUs do not end long prefill command buffers with `kIOGPUCommandBufferCallbackErrorImpactingInteractivity`. `mlx-sys` sets it once, before its first MLX call and therefore before the Metal device exists, as llama.cpp and oMLX do. Any value already in the environment, including `0`, is left untouched. The driver reads it only at device creation, so it cannot change mid-process. Scheduling only: kernels and output are unchanged. |
 | `MLX_LIB_DIR` / `AX_MLX_EXPERIMENT_COMMIT` | unset | Build-time only, experiment path. `MLX_LIB_DIR` (with `MLX_INCLUDE_DIR`) is the first resolution choice for the MLX include and library directories. A dev-suffixed MLX version header is linked only when `AX_MLX_EXPERIMENT_COMMIT` names the exact full 40-hex commit embedded in that header and in the built `libmlx` provenance bytes; otherwise the build fails. Production stays on the pinned MLX release, and no bit-exactness claim applies to a dev build. |
+
+### NAX attention
+
+On M5 or later with macOS 26.2 or newer, the admitted MLX wheel selects
+Neural Accelerator GEMM and SDPA. AX does not ship those kernels. Its policy
+gate, `AX_MLX_NAX_ATTENTION`, defaults on only when that hardware and OS are
+both present.
+
+When the gate is on, allowlisted full-attention families use native
+`mask="causal"` SDPA for a prefill chunk of at least 1024 tokens. The
+allowlist includes `qwen3`, `qwen3_5` (Qwen 3.8 27B and Qwen 3.6 35B-A3B),
+`qwen3_next`, `qwen3_vl`, Llama, Mistral, Mixtral, and GLM. Gemma,
+Unlimited-OCR, Whisper, and DeepSeek stay off it. Sliding-window layers still
+materialize their own masks. M3 and M4 do not arm the policy.
+`AX_MLX_NAX_ATTENTION=0` restores the array-mask path on an M5 host. This
+policy does not change MTP defaults or DFlash2 discovery.
 
 ### `--mlx-numerics exact|fast`
 
