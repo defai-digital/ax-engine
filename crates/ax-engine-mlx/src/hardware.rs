@@ -127,7 +127,7 @@ fn detect_hardware() -> HardwareCapabilities {
         silicon_generation,
         macos_major,
         macos_minor,
-        has_neural_accelerator: silicon_generation.is_some_and(|generation| generation >= 5),
+        has_neural_accelerator: generation_has_neural_accelerator(silicon_generation),
         macos_supports_na: macos_supports_neural_accelerator(macos_major, macos_minor),
     };
     tracing::info!(
@@ -141,6 +141,13 @@ fn detect_hardware() -> HardwareCapabilities {
         "detected Apple Silicon Neural Accelerator policy snapshot"
     );
     caps
+}
+
+/// Every Apple M-series generation from M5 on carries the GPU neural
+/// accelerators. NAX policy is "M5 or later", never an M5-only match, so new
+/// generations (M6, ...) take the NAX paths without code changes.
+pub(crate) fn generation_has_neural_accelerator(generation: Option<u32>) -> bool {
+    generation.is_some_and(|generation| generation >= 5)
 }
 
 pub(crate) fn macos_supports_neural_accelerator(major: Option<u32>, minor: Option<u32>) -> bool {
@@ -219,6 +226,27 @@ mod tests {
         assert_eq!(parse_apple_m_series_generation("Apple M5 Ultra"), Some(5));
         assert_eq!(parse_apple_m_series_generation("Apple M10 Ultra"), Some(10));
         assert_eq!(parse_apple_m_series_generation("Intel Core i9"), None);
+    }
+
+    #[test]
+    fn neural_accelerator_policy_covers_m5_and_later() {
+        for (brand, expected) in [
+            ("Apple M3 Max", false),
+            ("Apple M4 Pro", false),
+            ("Apple M5", true),
+            ("Apple M5 Max", true),
+            ("Apple M6", true),
+            ("Apple M6 Max", true),
+            ("Apple M6 Ultra", true),
+            ("Apple M7 Pro", true),
+        ] {
+            assert_eq!(
+                generation_has_neural_accelerator(parse_apple_m_series_generation(brand)),
+                expected,
+                "{brand}"
+            );
+        }
+        assert!(!generation_has_neural_accelerator(None));
     }
 
     #[test]
