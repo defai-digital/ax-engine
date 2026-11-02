@@ -409,6 +409,41 @@ fn lock_file_is_ignored_by_eviction_budget() {
 }
 
 #[test]
+fn timed_out_insert_publishes_nothing_and_recovers_after_unlock() {
+    let dir = unique_tempdir("lock-timeout");
+    let cache = DiskPrefixCache::open(&dir).expect("open");
+    let key = test_key("m", "p", "l", 16, 4, 0x10cc, &[11, 22, 33, 44]);
+    let held = cache.lock_exclusive().expect("hold directory lock");
+
+    let result = cache.insert(&key, &payload_only(b"payload"));
+    assert!(matches!(
+        result,
+        Err(DiskPrefixCacheError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
+    ));
+    assert!(
+        !cache.contains(&key),
+        "a timed-out store must not publish an entry"
+    );
+    assert!(fs::read_dir(&dir).expect("read_dir").all(|entry| {
+        !entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp.")
+    }));
+
+    drop(held);
+    cache
+        .insert(&key, &payload_only(b"payload"))
+        .expect("insert after unlock");
+    assert_eq!(
+        cache.get(&key).expect("get").expect("hit").payload,
+        b"payload"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn with_policy_evicts_existing_entries_to_budget_on_open() {
     // Pre-populate three entries under the permissive default
     // policy, then reopen with a tight `max_entries=1` budget.
@@ -504,8 +539,9 @@ fn temp_file_guard_disarmed_does_not_remove() {
 fn concurrent_inserts_and_eviction_preserve_cache_consistency() {
     // M3B advisory-lock stress proxy. Eight threads share an
     // `Arc<DiskPrefixCache>` with a tight `max_entries=8` budget
-    // and hammer it with 25 inserts each (200 total) plus parallel
-    // explicit eviction sweeps. The lock serializes
+    // and attempt 100 inserts plus 100 explicit eviction sweeps.
+    // Stores may time out under contention, as they do in production.
+    // The lock serializes
     // `insert -> rename -> eviction` per thread; without it,
     // concurrent evictors would race against in-flight renames and
     // produce orphan `.tmp.<pid>` files, dropped entries, or
@@ -516,6 +552,7 @@ fn concurrent_inserts_and_eviction_preserve_cache_consistency() {
     //   - every surviving `.axkv` file parses cleanly when looked
     //     up by its canonical key — i.e. no torn writes.
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
     let dir = unique_tempdir("multi-thread-stress");
@@ -525,6 +562,7 @@ fn concurrent_inserts_and_eviction_preserve_cache_consistency() {
         ..DiskPrefixCachePolicy::default()
     };
     let cache = Arc::new(DiskPrefixCache::with_policy(&dir, policy).expect("open"));
+    let timeouts = Arc::new(AtomicUsize::new(0));
 
     let threads_per_role = 4;
     let inserts_per_thread = 25;
@@ -534,23 +572,32 @@ fn concurrent_inserts_and_eviction_preserve_cache_consistency() {
     // with unique keys, returning the key bytes it produced.
     for worker_id in 0..threads_per_role {
         let cache = Arc::clone(&cache);
+        let timeouts = Arc::clone(&timeouts);
         handles.push(thread::spawn(move || -> Vec<Vec<u8>> {
             let mut written = Vec::with_capacity(inserts_per_thread);
             for op in 0..inserts_per_thread {
                 let token_hash = ((worker_id as u64) << 32) | op as u64;
                 let key = test_key("m", "p", "l", 16, 4, token_hash, &[11, 22, 33, 44]);
                 let payload = format!("payload-w{worker_id}-op{op}").into_bytes();
-                cache
-                    .insert(
-                        &key,
-                        &DiskPrefixCacheEntry {
-                            payload,
-                            prefill_output_token: Some(op as u32),
-                            producer_cold_prefill_us: 0,
-                            producer_serialize_us: 0,
-                        },
-                    )
-                    .expect("insert");
+                let result = cache.insert(
+                    &key,
+                    &DiskPrefixCacheEntry {
+                        payload,
+                        prefill_output_token: Some(op as u32),
+                        producer_cold_prefill_us: 0,
+                        producer_serialize_us: 0,
+                    },
+                );
+                match &result {
+                    Err(DiskPrefixCacheError::Io(error))
+                        if error.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        timeouts.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    _ => {}
+                }
+                result.expect("insert");
                 written.push(key);
             }
             written
@@ -578,9 +625,13 @@ fn concurrent_inserts_and_eviction_preserve_cache_consistency() {
         .flat_map(|h| h.join().expect("worker panicked"))
         .collect();
     assert_eq!(
-        all_written.len(),
+        all_written.len() + timeouts.load(Ordering::Relaxed),
         threads_per_role * inserts_per_thread,
-        "every insert must have completed without error",
+        "every insert must either succeed or report a bounded lock timeout",
+    );
+    assert!(
+        !all_written.is_empty(),
+        "stress test must exercise successful stores"
     );
 
     // No `.tmp.*` orphans left behind.
