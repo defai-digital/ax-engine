@@ -312,8 +312,17 @@ pub(crate) fn to_openai_chat_body(body: &Value) -> Result<Value, HttpError> {
         translate_message(message, &mut messages)?;
     }
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    // Anthropic treats a trailing assistant message as the start of the reply
+    // (prefill): continue it rather than open a new turn.
+    let continue_final_message = messages.last().is_some_and(|message| {
+        message.get("role").and_then(Value::as_str) == Some("assistant")
+            && message.get("tool_calls").is_none()
+    });
     let mut out = Map::new();
     out.insert("messages".into(), Value::Array(messages));
+    if continue_final_message {
+        out.insert("continue_final_message".into(), json!(true));
+    }
     out.insert("max_tokens".into(), json!(max_tokens));
     out.insert("stream".into(), json!(streaming));
     if streaming {
@@ -831,6 +840,39 @@ pub(crate) async fn anthropic_count_tokens(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailing_assistant_text_is_continued_but_tool_use_is_not() {
+        let prefill = json!({"max_tokens": 8, "messages": [
+            {"role": "user", "content": "Count to five"},
+            {"role": "assistant", "content": "1, 2, 3,"}
+        ]});
+        let chat = to_openai_chat_body(&prefill).unwrap();
+        assert_eq!(chat["continue_final_message"], json!(true));
+
+        let user_last = json!({"max_tokens": 8, "messages": [
+            {"role": "user", "content": "Hi"}
+        ]});
+        assert!(
+            to_openai_chat_body(&user_last)
+                .unwrap()
+                .get("continue_final_message")
+                .is_none()
+        );
+
+        let tool_use_last = json!({"max_tokens": 8, "messages": [
+            {"role": "user", "content": "Weather?"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "weather", "input": {}}
+            ]}
+        ]});
+        assert!(
+            to_openai_chat_body(&tool_use_last)
+                .unwrap()
+                .get("continue_final_message")
+                .is_none()
+        );
+    }
 
     #[tokio::test]
     async fn disconnect_drops_an_idle_upstream_stream() {

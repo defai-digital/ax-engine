@@ -252,6 +252,11 @@ pub(crate) struct ChatPromptRenderOptions {
     /// `AX_API_POLISH`, stamped at the request edge. Tool-schema rendering
     /// does not consult it; object keys are already sorted by serde_json.
     pub(crate) api_polish: crate::openai::schema::ApiPolish,
+    /// Continue a final assistant message instead of opening a new turn:
+    /// render the earlier messages with the generation prompt, then append
+    /// the assistant text unclosed (Anthropic prefill, vLLM
+    /// `continue_final_message`). Thinking is rendered off for that turn.
+    pub(crate) continue_final_message: bool,
 }
 
 /// Tools-free convenience wrapper for tests that don't care about tool
@@ -330,6 +335,33 @@ pub(crate) fn render_openai_chat_prompt_with_family_offsets(
 ) -> Result<chat::RenderedPrompt, HttpErrorResponse> {
     // Object keys are sorted by serde_json, which keeps the prompt-cache identity stable.
     let _ = options.api_polish;
+    if options.continue_final_message
+        && let Some((last, earlier)) = messages.split_last()
+        && last.role.eq_ignore_ascii_case("assistant")
+        && last
+            .tool_calls
+            .as_ref()
+            .is_none_or(|calls| !openai_value_is_present(calls))
+    {
+        let prefill = render_openai_chat_content(last.content.as_ref())?;
+        let mut rendered = render_openai_chat_prompt_with_family_offsets(
+            model_id,
+            family_hint,
+            earlier,
+            tools,
+            tool_choice,
+            ChatPromptRenderOptions {
+                enable_thinking: false,
+                continue_final_message: false,
+                ..options
+            },
+        )?;
+        rendered.text.push_str(&chat::escape_content_for_template(
+            chat::resolve_chat_template(model_id, family_hint),
+            &prefill,
+        ));
+        return Ok(rendered);
+    }
     validate_openai_tool_names(messages, tools, tool_choice)?;
     let no_offsets = |text: String| chat::RenderedPrompt {
         text,
@@ -5712,6 +5744,7 @@ mod deepseek_dsml_contract_tests {
                 preserve_thinking: false,
                 deepseek_v4_framing: None,
                 api_polish: crate::openai::schema::ApiPolish::default(),
+                continue_final_message: false,
             },
         )
         .expect("render");
@@ -5757,6 +5790,7 @@ mod deepseek_dsml_contract_tests {
                 preserve_thinking: false,
                 deepseek_v4_framing: None,
                 api_polish: crate::openai::schema::ApiPolish::default(),
+                continue_final_message: false,
             },
         )
         .expect("render");
@@ -5790,6 +5824,7 @@ mod deepseek_dsml_contract_tests {
                     preserve_thinking: false,
                     deepseek_v4_framing: None,
                     api_polish: crate::openai::schema::ApiPolish::default(),
+                    continue_final_message: false,
                 },
             )
             .expect("render")
@@ -5829,6 +5864,7 @@ mod deepseek_dsml_contract_tests {
                 preserve_thinking: true,
                 deepseek_v4_framing: None,
                 api_polish: crate::openai::schema::ApiPolish::default(),
+                continue_final_message: false,
             },
         )
         .expect("render");

@@ -215,6 +215,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     /// [`OpenAiCompletionHttpRequest::ignore_eos`].
     #[serde(default)]
     pub(crate) ignore_eos: bool,
+    /// vLLM extension: when the last message is an assistant message,
+    /// continue its text instead of opening a new assistant turn. The
+    /// Anthropic routes set it for every trailing assistant message
+    /// (prefill). Native AX renders only.
+    #[serde(default)]
+    pub(crate) continue_final_message: bool,
     #[serde(default)]
     pub(crate) stream: bool,
     #[serde(default)]

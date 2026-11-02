@@ -580,6 +580,7 @@ fn build_openai_chat_request_with_control(
         add_system_instruction(&mut request.messages, &instruction);
     }
     let prompt_options = openai_chat_prompt_render_options_for_live(&request, live);
+    reject_thinking_with_continued_message(&request, prompt_options)?;
     // Reasoning extraction must follow the prompt's resolved thinking state.
     // The prompt falls back to the live model id when `model` is omitted; a
     // default-thinking model would otherwise render `<think>` into the prompt
@@ -1946,7 +1947,7 @@ fn openai_chat_prompt_render_options_for_model(
     model_id: &str,
 ) -> ChatPromptRenderOptions {
     let template = request.chat_template_kwargs.as_ref();
-    ChatPromptRenderOptions {
+    let mut options = ChatPromptRenderOptions {
         enable_thinking: template
             .and_then(|kwargs| kwargs.enable_thinking)
             // Invalid values are rejected when the request options are built.
@@ -1968,7 +1969,56 @@ fn openai_chat_prompt_render_options_for_model(
         // wrapper resolves the contract framing (ADR-025 Phase 2).
         deepseek_v4_framing: None,
         api_polish: request.api_polish,
+        continue_final_message: continues_final_assistant_message(request),
+    };
+    // A continued assistant message is answer text: the turn renders
+    // without thinking, and the reply is not split into reasoning.
+    if options.continue_final_message {
+        options.enable_thinking = false;
     }
+    options
+}
+
+/// A continued assistant message is answer text, so an explicit request for
+/// thinking cannot also be honoured (Anthropic rejects prefill with thinking
+/// enabled the same way). Model-default thinking just turns off.
+fn reject_thinking_with_continued_message(
+    request: &OpenAiChatCompletionHttpRequest,
+    options: ChatPromptRenderOptions,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let explicit_thinking = request
+        .chat_template_kwargs
+        .as_ref()
+        .and_then(|kwargs| kwargs.enable_thinking)
+        .or_else(|| {
+            openai_thinking_switch(request.thinking.as_ref())
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_else(|| openai_reasoning_is_enabled(request.reasoning.as_ref()));
+    if options.continue_final_message && explicit_thinking {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "a final assistant message (prefill) cannot be continued with thinking enabled; \
+disable thinking or drop the trailing assistant message"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// `continue_final_message` applies only when the last message is an
+/// assistant message with no tool calls.
+fn continues_final_assistant_message(request: &OpenAiChatCompletionHttpRequest) -> bool {
+    request.continue_final_message
+        && request.messages.last().is_some_and(|message| {
+            message.role.eq_ignore_ascii_case("assistant")
+                && message
+                    .tool_calls
+                    .as_ref()
+                    .is_none_or(|calls| !openai_value_is_present(calls))
+        })
 }
 
 /// DeepSeek-style top-level `thinking` switch: `Some(true)` for
