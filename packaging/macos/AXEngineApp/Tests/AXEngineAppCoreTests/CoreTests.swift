@@ -18,6 +18,14 @@ private func temporary() throws -> URL {
     #expect(try AppSettings.load(from: url) == settings)
     let data = String(decoding: try Data(contentsOf: url), as: UTF8.self)
     #expect(!data.contains("apiKey"))
+    // No key by default: the loopback server is open to local clients.
+    #expect(!settings.requireAPIKey)
+    settings.requireAPIKey = true
+    try settings.save(to: url)
+    #expect(try AppSettings.load(from: url).requireAPIKey)
+    // Settings files written before the switch decode to the open default.
+    try Data(#"{"executable":"","modelsDirectory":"/tmp","port":31418,"maxTokens":2048,"temperature":0.7}"#.utf8).write(to: url)
+    #expect(try !AppSettings.load(from: url).requireAPIKey)
     settings.port = 0
     #expect(throws: AppFailure.self) { try settings.validate() }
 }
@@ -216,7 +224,7 @@ private func temporary() throws -> URL {
     store.clearFinishedDownloads()
     #expect(store.downloads.isEmpty && store.activeDownloadCount == 0)
     let runtime = RuntimeController()
-    var launch = settings; launch.servingMode = .agentic; launch.concurrentRequests = 3
+    var launch = settings; launch.servingMode = .agentic; launch.concurrentRequests = 3; launch.requireAPIKey = true
     runtime.start(model: "fixture", settings: launch)
     let deadline = Date().addingTimeInterval(15)
     while !runtime.ready && Date() < deadline && runtime.owned { try await Task.sleep(for: .milliseconds(50)) }
@@ -294,6 +302,31 @@ private func temporary() throws -> URL {
     #expect(runtime.startedAt == nil)
     #expect(runtime.lastSuccessfulCheck == nil)
     #expect(runtime.error == nil)
+}
+
+@Test @MainActor func defaultLaunchServesWithoutAPIKey() async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = root.appendingPathComponent("runtime")
+    try FileManager.default.copyItem(at: #require(Bundle.module.url(forResource: "runtime", withExtension: "py", subdirectory: "Fixtures")), to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path)
+    let portResult = try await ProcessJob().run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+        arguments: ["-c", "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1])"])
+    var settings = AppSettings(); settings.executable = fixture.path
+    settings.port = try #require(Int(portResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+    settings.modelsDirectory = root.appendingPathComponent("models").path
+    let runtime = RuntimeController()
+    runtime.start(model: "fixture", settings: settings)
+    let deadline = Date().addingTimeInterval(15)
+    while !runtime.ready && Date() < deadline && runtime.owned { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(runtime.ready)
+    #expect(runtime.connection?.hasAPIKey == false)
+    // Any local client reaches the open server without a key.
+    let client = RuntimeController()
+    await client.attach(port: settings.port, apiKey: "")
+    #expect(client.ready)
+    client.detach()
+    await runtime.stop()
+    #expect(runtime.state == "Stopped" && !runtime.job.running)
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AX_ENGINE_GUI_REAL_PORT"] != nil, "Requires an explicitly provisioned model test service")) @MainActor func realRuntimeSmokeWhenExplicitlyRequested() async throws {

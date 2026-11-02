@@ -3,7 +3,7 @@ import AppKit
 import AXEngineAppCore
 
 enum Page: String, CaseIterable, Identifiable {
-    case overview = "Dashboard", models = "Models", server = "Server", chat = "Playground", settings = "Settings"
+    case overview = "Dashboard", models = "Models", server = "Server Settings", chat = "Playground", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -63,11 +63,11 @@ struct MainView: View {
                 Divider()
                 Group {
                     switch model.page ?? .overview {
-                    case .overview: DashboardView(model: model, models: models, monitor: model.hostMonitor, storage: model.storageMonitor)
+                    case .overview: DashboardView(model: model, models: models, runtime: runtime, chat: chat, monitor: model.hostMonitor, storage: model.storageMonitor)
                     case .models: ModelsPage(model: model, runtime: runtime, models: models, storage: model.storageMonitor, searchFocused: $searchFocused)
                     case .server: ServerPage(model: model, runtime: runtime, models: models, chat: chat,
                                              clientCopyNotice: $clientCopyNotice, clientClipboard: clientClipboard)
-                    case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings, openServer: { model.page = .server })
+                    case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings, openServer: { model.page = runtime.error == nil ? .overview : .server })
                     case .settings: SettingsView(model: model)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -98,9 +98,9 @@ struct MainView: View {
     }
     private var subtitle: String {
         switch model.page ?? .overview {
-        case .overview: "Memory, storage and the models on your Mac."
+        case .overview: "Start a downloaded model, then watch memory, storage and activity on your Mac."
         case .models: "Download public AutomatosX models, manage local folders and follow transfers."
-        case .server: "Start a local model in the serving mode that fits your workload, or connect to an existing AX Engine service."
+        case .server: "API key, client connection, an existing AX Engine service, runtime metrics and output."
         case .chat: "Test your model’s responses and inference speed."
         case .settings: "Configure your local runtime and generation defaults."
         }

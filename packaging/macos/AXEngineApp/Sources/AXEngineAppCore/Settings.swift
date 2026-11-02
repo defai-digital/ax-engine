@@ -21,10 +21,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var concurrentRequests = Self.defaultConcurrentRequests
     public static let defaultConcurrentRequests = 4
     public static let concurrentRequestRange = 1...8
+    /// Whether the next app-owned launch requires a bearer key. Off by
+    /// default: the server listens on loopback only, so local clients can
+    /// call it directly. On, each launch gets a fresh in-memory key.
+    public var requireAPIKey = false
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling, servingMode, concurrentRequests
+        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling, servingMode, concurrentRequests, requireAPIKey
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,10 +43,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
         // Older settings files predate the selector; Automatic is the runtime default.
         servingMode = try values.decodeIfPresent(ServingMode.self, forKey: .servingMode) ?? .auto
         concurrentRequests = try values.decodeIfPresent(Int.self, forKey: .concurrentRequests) ?? Self.defaultConcurrentRequests
+        requireAPIKey = try values.decodeIfPresent(Bool.self, forKey: .requireAPIKey) ?? false
     }
 
     /// Changes that need a library rescan or a new runtime location. The
-    /// serving mode and request cap are deliberately excluded: they apply at
+    /// serving mode, request cap and API key requirement are deliberately excluded: they apply at
     /// the next launch.
     public func hasRuntimeChanges(comparedTo saved: Self) -> Bool {
         executable != saved.executable || modelsDirectory != saved.modelsDirectory || port != saved.port

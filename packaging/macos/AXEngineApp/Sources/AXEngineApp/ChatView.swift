@@ -31,7 +31,7 @@ struct ChatView: View {
             if !runtime.ready {
                 HStack {
                     ErrorBanner(text: runtime.error ?? "Start or connect to a server to send messages.")
-                    Button("Review Server") { openServer() }
+                    Button(runtime.error == nil ? "Start a Model" : "Review Server") { openServer() }
                 }.padding(.horizontal, 26)
             }
             ScrollViewReader { proxy in

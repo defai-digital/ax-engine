@@ -103,8 +103,25 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    downloads** with their size, offer **Resume** when the stage matches a
    catalog entry, and **Discard**, which refuses while the runtime still holds
    the download lock.
-3. **Server:** choose an installed AutomatosX model from the model menu, which
-   lists each model with its size and marks the selected one. When Start is
+3. **Start serving (Dashboard):** the **Inference service** card at the top of
+   Dashboard is the quickest way to serve: pick a downloaded model and press
+   **Start Server**. The model picker is searchable and groups models under
+   **Favorites** (star a row to pin it), **Recent** (the last five models you
+   started) and the rest; arrow keys and Return work from the search field,
+   and **Download more models** opens the Catalog. With nothing chosen, the
+   running model, then the most recently started one, a favorite or the
+   first download is preselected. While
+   it runs the same card offers **Restart Server** and **Stop Server**, the
+   API URL with **Copy URL**, and a link to **Server Settings**. By default the
+   server needs no API key: it listens on 127.0.0.1 only, so local clients can
+   call it directly. To require a key, switch on **Require an API key** in
+   **Server Settings** (sidebar); each later launch then gets a fresh
+   in-memory key, copied with **Copy API key**, and a running server switches
+   only after a restart.
+   **Server Settings** carries the same model menu and lifecycle buttons, plus
+   authentication, connecting to an existing service, metrics and runtime
+   output. The picker lists each model with its size and marks the selected
+   one; favorites and recents are kept per user on this Mac. When Start is
    unavailable the page says why (no model installed, none selected, the
    selection incomplete, the server busy, or an attached service). Start uses
    offline resolution and loopback only, and refuses up front when the
@@ -134,8 +151,8 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
    use from its own gauges, and the status row and header show the cap the
    server was started with. Changing the cap or the mode while the server
    runs turns Restart into **Restart with New Request Cap** / **Restart in …
-   Mode**, offered in the header on Dashboard and in the card on Server. An app-owned
-   server uses a per-launch in-memory API key. **Restart Server** stops and
+   Mode**, offered on Dashboard and Server Settings. With **Require an API
+   key** on, an app-owned server uses a per-launch in-memory API key. **Restart Server** stops and
    relaunches the app-owned server; choosing a different installed model or
    serving mode while it runs turns the button into **Restart with Selected
    Model**, **Restart in Coding Mode** or both, and the page notes that the
@@ -263,8 +280,10 @@ AX Engine provides inference; MTPLX inference code and model assets are not bund
 ## Dashboard and discovery
 
 Dashboard is a resource overview, with charts for RAM usage, available disk space,
-CPU/GPU activity and the model folders on disk. Model selection, downloads and
-runtime operations stay in Models and Server.
+CPU/GPU activity and the model folders on disk, under the **Inference service**
+card that starts, restarts and stops the app-owned server on a downloaded
+model. Downloads stay in Models; authentication, attach and metrics stay in
+Server Settings.
 
 The disk-space ring shows the volume containing the configured model download
 folder, not the size of model files. Used/reserved includes other files and APFS
@@ -332,7 +351,7 @@ download to Transfers.
 The app performs compatibility validation when the operator explicitly starts a
 model. Models from other tools are not silently deleted or hidden.
 
-Use Command-1 through Command-5 to navigate Dashboard, Models, Server, Chat and
+Use Command-1 through Command-5 to navigate Dashboard, Models, Server Settings, Chat and
 Settings; Command-F focuses model search and Command-R refreshes models.
 Command-Comma still opens inline Settings. Search, selection and chat drafts
 survive page switches and main-window reopening for the current app session.

@@ -12,19 +12,8 @@ struct ServerPage: View {
     @Binding var clientCopyNotice: String
     let clientClipboard: SensitiveClipboard
     @State private var apiKey = ""
-    @State private var stopConfirmation = false
-    @State private var restartTarget: String?
 
     private var attached: Bool { runtime.connection != nil && !runtime.owned }
-    private var selectable: [LocalModel] { models.productLibrary.filter { $0.ready && models.checkedPaths.contains($0.path) } }
-    private var startBlockReason: String? {
-        ServerGate.startBlockReason(.init(selectedPath: model.selectedPath, selectable: models.canSelectInGUI(model.selectedPath),
-                                          libraryEmpty: selectable.isEmpty, scanning: models.scanning,
-                                          runtimeBusy: runtime.busy, removing: models.removing, attached: attached))
-    }
-    private var inferenceActive: Bool {
-        chat.generating || (runtime.metrics["ax_engine_generation_active_streams"] ?? 0) > 0
-    }
     private var transitioning: Bool { ["Starting", "Stopping", "Connecting"].contains(runtime.state) }
 
     var body: some View {
@@ -85,17 +74,6 @@ struct ServerPage: View {
                 }
             }.padding(26)
         }
-        .alert("Stop \(runningTitle)?", isPresented: $stopConfirmation) {
-            Button("Stop", role: .destructive) { Task { await chat.stop(); await runtime.stop() } }
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("A reply is being generated. Stopping the app-owned server ends it. You can start the server again at any time.") }
-        .alert("Restart \(runningTitle)?", isPresented: Binding(get: { restartTarget != nil }, set: { if !$0 { restartTarget = nil } })) {
-            Button("Restart", role: .destructive) {
-                if let target = restartTarget { Task { await chat.stop(); await runtime.restart(model: target, settings: model.settings) } }
-                restartTarget = nil
-            }
-            Button("Cancel", role: .cancel) { restartTarget = nil }
-        } message: { Text("A reply is being generated. Restarting ends it; the server comes back with a new API key.") }
     }
 
     private var serverCard: some View {
@@ -142,105 +120,50 @@ struct ServerPage: View {
                             ? "API key copied for up to 60 seconds. Paste it into your client."
                             : "The API key could not be copied. Try again."
                     }.disabled(!runtime.ready || !connection.hasAPIKey)
+                    .help(connection.hasAPIKey ? "Copy the API key for an external local client" : "This server does not use an API key")
                 }
-                Text("Copy the URL and API key into your local client. The copied key stays on this Mac and clears after 60 seconds if unchanged.")
+                Text(connection.hasAPIKey
+                     ? "Copy the URL and API key into your local client. The copied key stays on this Mac and clears after 60 seconds if unchanged."
+                     : "No API key: local clients on this Mac can call the URL directly.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !clientCopyNotice.isEmpty {
                 Text(clientCopyNotice).font(.caption).foregroundStyle(.secondary)
             }
             Divider()
-            modelSelection
-            actions
+            ServerControls(model: model, runtime: runtime, models: models, chat: chat)
+            Divider()
+            apiKeySetting
             Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults; the serving mode only tunes speculative drafting. No model certification setting is changed.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
-    private var modelSelection: some View {
+    private var keyAwaitsRestart: Bool {
+        runtime.owned && runtime.connection.map { $0.hasAPIKey != model.settings.requireAPIKey } == true
+    }
+
+    private var apiKeySetting: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Model").font(.caption).foregroundStyle(.secondary)
-                Menu {
-                    if selectable.isEmpty {
-                        Text("No installed models")
-                        Button("Browse Catalog") { model.modelsSection = "catalog"; model.page = .models }
-                    }
-                    ForEach(selectable) { item in
-                        Button {
-                            model.selectedPath = item.path
-                        } label: {
-                            if model.selectedPath == item.path { Label(menuTitle(item), systemImage: "checkmark") } else { Text(menuTitle(item)) }
-                        }
-                    }
-                } label: {
-                    Text(selectedTitle).lineLimit(1).truncationMode(.middle)
-                }.disabled(attached).frame(maxWidth: 420)
-                if !model.selectedPath.isEmpty { Button("Show in Library") { model.modelSearch = selectedModel?.displayName ?? ""; model.modelsSection = "library"; model.page = .models } }
-            }
-            if !model.selectedPath.isEmpty {
-                Text(model.selectedPath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-            }
+            Toggle("Require an API key", isOn: Binding(get: { model.settings.requireAPIKey },
+                                                         set: { model.selectRequireAPIKey($0) }))
+                .toggleStyle(.switch).controlSize(.small)
+                .disabled(attached || model.hasSettingsChanges)
+            Text(apiKeyGuidance).font(.caption).foregroundStyle(.secondary)
         }
     }
 
-    private var selectedModel: LocalModel? { models.productLibrary.first { $0.path == model.selectedPath } }
-    private var runningTitle: String {
-        models.productLibrary.first { $0.path == runtime.selectedModel }?.displayName
-            ?? (runtime.selectedModel.isEmpty ? "the local server" : URL(fileURLWithPath: runtime.selectedModel).lastPathComponent)
-    }
-    private var selectedTitle: String {
-        if let selectedModel { return menuTitle(selectedModel) }
-        return model.selectedPath.isEmpty ? "Choose an installed model" : URL(fileURLWithPath: model.selectedPath).lastPathComponent
-    }
-    private func menuTitle(_ item: LocalModel) -> String {
-        item.displayName + (item.sizeBytes.map { " · " + TransferFormat.bytes($0) } ?? "")
-    }
-
-    private var actions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                if runtime.owned {
-                    let switching = !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel
-                    let switchingMode = model.settings.servingMode != runtime.servingMode
-                    let switchingCap = model.settings.concurrentRequests != runtime.concurrentRequests
-                    Button(ServerGate.restartTitle(modelChanged: switching, modeChanged: switchingMode, capChanged: switchingCap,
-                                                   mode: model.settings.servingMode),
-                           systemImage: "arrow.clockwise") {
-                        let target = switching && models.canSelectInGUI(model.selectedPath) ? model.selectedPath : runtime.selectedModel
-                        if inferenceActive { restartTarget = target }
-                        else { Task { await chat.stop(); await runtime.restart(model: target, settings: model.settings) } }
-                    }
-                    .disabled(runtime.busy || runtime.state == "Stopping" || models.removing
-                              || (switching && !models.canSelectInGUI(model.selectedPath)))
-                    .help(switching || switchingMode || switchingCap
-                          ? "Stop this server and start it again with the selected model, serving mode and request cap. Active inference stops."
-                          : "Stop this server and start it again. Active inference stops.")
-                    Button(runtime.state == "Starting" ? "Cancel Start" : "Stop Server", systemImage: "stop.fill", role: .destructive) {
-                        if inferenceActive { stopConfirmation = true } else { Task { await chat.stop(); await runtime.stop() } }
-                    }.disabled(runtime.state == "Stopping")
-                    .help(runtime.state == "Starting" ? "Cancel the launch" : "Stop the app-owned server")
-                } else if runtime.connection != nil {
-                    Button("Disconnect") { Task { await chat.stop(); runtime.detach() } }
-                } else {
-                    Button("Start Server", systemImage: "play.fill") {
-                        if models.canSelectInGUI(model.selectedPath) { runtime.start(model: model.selectedPath, settings: model.settings) }
-                    }
-                    .buttonStyle(.borderedProminent).disabled(startBlockReason != nil)
-                    .help(startBlockReason ?? "Start a loopback server on the selected model")
-                }
-                Spacer()
-            }
-            if runtime.owned, let notice = ServerGate.pendingRestartNotice(
-                modelChanged: !model.selectedPath.isEmpty && model.selectedPath != runtime.selectedModel,
-                modeChanged: model.settings.servingMode != runtime.servingMode,
-                running: runtime.servingMode, selected: model.settings.servingMode,
-                runningCap: runtime.concurrentRequests, selectedCap: model.settings.concurrentRequests) {
-                Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
-            } else if !runtime.owned, runtime.connection == nil, let reason = startBlockReason {
-                Label(reason, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
-            }
+    private var apiKeyGuidance: String {
+        if attached { return "An attached service keeps its own authentication. Enter its key under Connect." }
+        if model.hasSettingsChanges { return "You have unsaved Settings changes. Save or revert them before changing authentication." }
+        if keyAwaitsRestart {
+            return model.settings.requireAPIKey
+                ? "Saved for the next launch. Restart the server to require a key; it stays open until then."
+                : "Saved for the next launch. Restart the server to drop the key; it still requires one until then."
         }
+        return model.settings.requireAPIKey
+            ? "Each launch gets a new in-memory key. Copy it into your client after the server starts or restarts."
+            : "Off by default. The server listens on this Mac only (127.0.0.1), so local clients can call it without a key. Turn on if other local apps should need one."
     }
 
     private func memoryMetric(_ key: String) -> String {

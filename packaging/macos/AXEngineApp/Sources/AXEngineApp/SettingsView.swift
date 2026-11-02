@@ -145,7 +145,7 @@ struct SettingsView: View {
                 ForEach(ServingMode.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             Text(model.settingsDraft.servingMode.summary).font(.callout).foregroundStyle(.secondary)
-            Text("Applies when the app starts its server. Restart a running server from the Server page to switch; attached services keep their own mode. Command line: "
+            Text("Applies when the app starts its server. Restart a running server from Dashboard or Server Settings to switch; attached services keep their own mode. Command line: "
                  + model.settingsDraft.servingMode.commandLineHint)
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             Stepper("Concurrent requests: \(model.settingsDraft.concurrentRequests)", value: $model.settingsDraft.concurrentRequests,

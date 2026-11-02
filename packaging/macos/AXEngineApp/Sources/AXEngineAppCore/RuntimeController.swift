@@ -63,7 +63,9 @@ public final class RuntimeController: ObservableObject {
             }
             let identity = UUID(); generation = identity
             history = MetricHistory(); mtpWindow.reset()
-            let key = UUID().uuidString + UUID().uuidString
+            // Empty disables auth on the runtime and overrides any inherited key.
+            let key = settings.requireAPIKey ? UUID().uuidString + UUID().uuidString : ""
+            let redact: (String) -> String = { key.isEmpty ? $0 : $0.replacingOccurrences(of: key, with: "[redacted]") }
             let candidate = EngineConnection(port: settings.port, apiKey: key)
             busy = true; owned = true; state = "Starting"; error = nil; logs = ""
             selectedModel = model; servingMode = settings.servingMode; concurrentRequests = settings.concurrentRequests
@@ -73,16 +75,16 @@ public final class RuntimeController: ObservableObject {
                     let result = try await job.run(executable: executable,
                         arguments: Self.launchArguments(model: model, settings: settings),
                         environment: ["AX_ENGINE_API_KEY": key]) { [weak self] value in
-                            self?.logs = String(value.stderr.suffix(32_768)).replacingOccurrences(of: key, with: "[redacted]")
+                            self?.logs = redact(String(value.stderr.suffix(32_768)))
                         }
                     guard generation == identity else { return }
-                    let detail = Self.lastDiagnostic(result.stderr.replacingOccurrences(of: key, with: "[redacted]"))
+                    let detail = Self.lastDiagnostic(redact(result.stderr))
                     error = "Runtime exited (\(result.status))" + (detail.map { ": " + $0 } ?? ". Check the runtime output.")
                 } catch is CancellationError {
                     guard generation == identity else { return }
                 } catch {
                     guard generation == identity else { return }
-                    self.error = error.localizedDescription.replacingOccurrences(of: key, with: "[redacted]")
+                    self.error = redact(error.localizedDescription)
                 }
                 guard generation == identity else { return }
                 polling?.cancel(); connection = nil; models = []; metrics = [:]

@@ -19,6 +19,15 @@ final class ApplicationModel: ObservableObject {
     @Published var hostMonitoringEnabled = UserDefaults.standard.bool(forKey: "hostMonitoringEnabled") {
         didSet { UserDefaults.standard.set(hostMonitoringEnabled, forKey: "hostMonitoringEnabled") }
     }
+    /// Serve-model picker state, keyed by model path; per-user convenience.
+    @Published var favoriteModels = UserDefaults.standard.stringArray(forKey: "favoriteModels") ?? [] {
+        didSet { UserDefaults.standard.set(favoriteModels, forKey: "favoriteModels") }
+    }
+    @Published var recentModels = UserDefaults.standard.stringArray(forKey: "recentModels") ?? [] {
+        didSet { UserDefaults.standard.set(recentModels, forKey: "recentModels") }
+    }
+    func toggleFavoriteModel(_ path: String) { favoriteModels = ModelPicker.toggling(path, in: favoriteModels) }
+    func recordRecentModel(_ path: String) { recentModels = ModelPicker.recording(path, in: recentModels) }
     let updates = AppUpdateController()
     let hostMonitor = HostMonitor()
     let storageMonitor = StorageMonitor()
@@ -90,6 +99,23 @@ final class ApplicationModel: ObservableObject {
         }
     }
     /// Save the request admission cap for the next app-owned launch.
+    /// Saves the API key requirement for the next app-owned launch.
+    func selectRequireAPIKey(_ required: Bool) {
+        guard !hasSettingsChanges else { page = .settings; return }
+        guard settings.requireAPIKey != required else { return }
+        var updated = settings
+        updated.requireAPIKey = required
+        do {
+            try updated.save(to: settingsURL)
+            settings = updated
+            settingsDraft = updated
+            settingsError = nil
+            settingsSaved = true
+        } catch {
+            settingsError = error.localizedDescription
+        }
+    }
+
     func selectConcurrentRequests(_ count: Int) {
         guard !hasSettingsChanges else { page = .settings; return }
         guard AppSettings.concurrentRequestRange.contains(count), settings.concurrentRequests != count else { return }

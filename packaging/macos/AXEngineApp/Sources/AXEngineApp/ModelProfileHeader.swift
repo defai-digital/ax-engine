@@ -17,8 +17,8 @@ struct ModelProfileHeader: View {
     private var modeAwaitsRestart: Bool { runtime.owned && runtime.servingMode != model.settings.servingMode }
     private var capAwaitsRestart: Bool { runtime.owned && runtime.concurrentRequests != model.settings.concurrentRequests }
     private var showsServingMode: Bool { model.page != .chat }
-    /// The Server card carries its own restart button and notice.
-    private var showsRestartHint: Bool { model.page != .server }
+    /// Dashboard and Server Settings carry their own restart button and notice.
+    private var showsRestartHint: Bool { ![.server, .overview].contains(model.page) }
     private var pendingNotice: String? {
         guard showsRestartHint, runtime.owned else { return nil }
         return ServerGate.pendingRestartNotice(modelChanged: false, modeChanged: modeAwaitsRestart,
@@ -42,8 +42,6 @@ struct ModelProfileHeader: View {
                             .font(.callout.weight(.medium)).lineLimit(2)
                             .textSelection(.enabled)
                     }
-                } else if model.page == .overview {
-                    Button("Open Server") { model.page = .server }.buttonStyle(.link).font(.caption)
                 }
                 Spacer(minLength: 0)
                 if runtime.owned {
@@ -69,7 +67,7 @@ struct ModelProfileHeader: View {
                         }
                         .controlSize(.small)
                         .disabled(runtime.busy || runtime.state == "Stopping" || inferenceActive)
-                        .help(inferenceActive ? "Finish or stop the current reply first, or restart from the Server page."
+                        .help(inferenceActive ? "Finish or stop the current reply first, or restart from Server Settings."
                                               : "Stop this server and start it again with the saved serving mode and request cap.")
                     }
                 }

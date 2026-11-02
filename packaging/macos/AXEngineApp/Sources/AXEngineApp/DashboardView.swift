@@ -5,6 +5,8 @@ import AXEngineAppCore
 struct DashboardView: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var models: ModelStore
+    @ObservedObject var runtime: RuntimeController
+    @ObservedObject var chat: ChatStore
     @ObservedObject var monitor: HostMonitor
     @ObservedObject var storage: StorageMonitor
     @Environment(\.scenePhase) private var scenePhase
@@ -14,6 +16,7 @@ struct DashboardView: View {
         GeometryReader { geometry in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                InferenceServiceCard(model: model, runtime: runtime, models: models, chat: chat)
                 HStack {
                     Label("This Mac", systemImage: "desktopcomputer").font(.headline)
                     Text(memoryTotal + " unified memory").font(.callout).foregroundStyle(.secondary)
@@ -121,6 +124,61 @@ struct DashboardView: View {
             detail: key == "cpu" ? "Estimated utilization" : "Device utilization",
             emptyDetail: model.hostMonitoringEnabled ? "Awaiting measurements" : "Enable Live activity",
             window: model.dashboardHistoryWindow)
+    }
+}
+
+/// One-click serving: pick a downloaded model, then Start, Restart or Stop.
+/// Authentication and attach live on Server Settings.
+private struct InferenceServiceCard: View {
+    @ObservedObject var model: ApplicationModel
+    @ObservedObject var runtime: RuntimeController
+    @ObservedObject var models: ModelStore
+    @ObservedObject var chat: ChatStore
+    @State private var copied = false
+    private var transitioning: Bool { ["Starting", "Stopping", "Connecting"].contains(runtime.state) }
+
+    var body: some View {
+        Card("Inference service", subtitle: "Choose a downloaded model and start serving it on this Mac.", trailing: {
+            Button("Server Settings", systemImage: "gearshape") { model.page = .server }.controlSize(.small)
+                .help("API key, connect to an existing service, metrics and runtime output")
+        }) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : transitioning ? "clock" : "circle",
+                              tint: runtime.ready ? Brand.accentChrome : runtime.state == "Failed" || runtime.state == "Connection degraded" ? .orange : .secondary,
+                              emphasized: runtime.ready || transitioning)
+                    if transitioning { ProgressView().controlSize(.small) }
+                    if let detail = ServerGate.stateDetail(state: runtime.state, startedAt: runtime.startedAt, now: context.date) {
+                        Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let connection = runtime.connection {
+                        Text(connection.apiURL.absoluteString).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        Button(copied ? "Copied" : "Copy URL", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                            copyText(connection.apiURL.absoluteString); copied = true
+                        }.controlSize(.small)
+                        if connection.hasAPIKey {
+                            PillBadge(text: "API key", systemImage: "key")
+                                .help("This server requires an API key. Copy it from Server Settings.")
+                        }
+                    }
+                }
+            }
+            if let error = runtime.error {
+                HStack(alignment: .firstTextBaseline) {
+                    Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                        .lineLimit(3).textSelection(.enabled)
+                    Spacer()
+                    Button("Details") { model.page = .server }.buttonStyle(.link).font(.caption)
+                }
+            }
+            if runtime.state == "Starting" {
+                Text("Large models can take a few minutes from a cold start. Cancel Start stops the launch.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ServerControls(model: model, runtime: runtime, models: models, chat: chat, showsPath: false)
+        }
+        .onChange(of: runtime.connection?.id) { _, _ in copied = false }
     }
 }
 
