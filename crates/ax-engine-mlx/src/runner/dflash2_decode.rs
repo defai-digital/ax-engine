@@ -737,13 +737,9 @@ pub(super) struct Dflash2PreDraft {
 }
 
 /// `AX_MLX_DFLASH2_ROUND_TRACE=1`: one stderr line per DFlash2 round with the
-/// host-side split of the round (gap since the previous round's commit, draft
-/// build, verify build, eval wait, commit), for the host-overlap work.
+/// host-side split of the round, for the host-overlap work.
 fn round_trace_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_DFLASH2_ROUND_TRACE").is_ok_and(|v| v == "1" || v == "true")
-    })
+    crate::fastpath::dflash2_round_trace_enabled()
 }
 
 /// Cuts a drafted block to the round's verify window (lazy slice).

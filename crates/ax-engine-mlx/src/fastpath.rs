@@ -1897,6 +1897,15 @@ env_flag_default_on!(
     "AX_MLX_DFLASH2_PREDRAFT"
 );
 
+env_flag!(
+    /// `AX_MLX_DFLASH2_ROUND_TRACE` — one stderr line per DFlash2 round with
+    /// the host-side split of the round (gap since the previous commit, draft
+    /// build, cache clone, verify build, eval wait, commit), for host-overlap
+    /// work. **Default: OFF.**
+    dflash2_round_trace_enabled,
+    "AX_MLX_DFLASH2_ROUND_TRACE"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_TOPK_KERNEL` — the DFlash2 candidate selector finds each
     /// position's top-k logits with one Metal kernel (a per-row selection)
