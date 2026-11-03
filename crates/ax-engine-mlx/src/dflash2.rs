@@ -315,40 +315,60 @@ const DFLASH2_GROUPED_CONV_SOURCE: &str = r#"
 /// `Threads / 16` lists each, and thread 0 merges those. Order is value
 /// descending, then token id ascending, so the result does not depend on the
 /// thread partition.
+/// Register-resident insertion into a descending (value, then ascending id)
+/// top-K list: every index is a compile-time constant after unrolling, so the
+/// lists stay in registers instead of thread memory.
+const DFLASH2_TOPK_HEADER: &str = r#"
+    template <int K>
+    inline void ax_topk_insert(thread float (&bv)[K], thread uint (&bi)[K], float v, uint id) {
+        int p = 0;
+        #pragma unroll
+        for (int k = 0; k < K; k++) {
+            p += (bv[k] > v || (bv[k] == v && bi[k] < id)) ? 1 : 0;
+        }
+        #pragma unroll
+        for (int k = K - 1; k > 0; k--) {
+            const bool shift = k > p;
+            const bool here = k == p;
+            bv[k] = shift ? bv[k - 1] : (here ? v : bv[k]);
+            bi[k] = shift ? bi[k - 1] : (here ? id : bi[k]);
+        }
+        if (p == 0) { bv[0] = v; bi[0] = id; }
+    }
+"#;
+
+/// Per-row top-K of `logits` (`[rows, V]`, `Threads` threads per row): each
+/// thread keeps a top-K of its strided slice in registers, sixteen threads
+/// merge `Threads / 16` lists each through threadgroup memory, and thread 0
+/// merges those. Order is value descending, then token id ascending, so the
+/// result does not depend on the thread partition.
 const DFLASH2_TOPK_SOURCE: &str = r#"
     const uint row = threadgroup_position_in_grid.x;
     const uint tid = thread_position_in_threadgroup.x;
     const device T* x = logits + static_cast<size_t>(row) * static_cast<size_t>(V);
-    // The sorted lists live in thread memory (dynamic indexing); the scan only
-    // compares against the registers `thr`/`thr_id` (the current K-th entry)
-    // and touches the lists on an insert, which is rare.
     float bv[K];
     uint bi[K];
+    #pragma unroll
     for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
     float thr = -INFINITY;
     uint thr_id = 0xffffffffu;
     for (uint i = tid; i < static_cast<uint>(V); i += static_cast<uint>(Threads)) {
         const float v = static_cast<float>(x[i]);
         if (v > thr || (v == thr && i < thr_id)) {
-            int p = K - 1;
-            while (p > 0 && (bv[p - 1] < v || (bv[p - 1] == v && bi[p - 1] > i))) {
-                bv[p] = bv[p - 1];
-                bi[p] = bi[p - 1];
-                p--;
-            }
-            bv[p] = v;
-            bi[p] = i;
+            ax_topk_insert<K>(bv, bi, v, i);
             thr = bv[K - 1];
             thr_id = bi[K - 1];
         }
     }
     threadgroup float sv[Threads * K];
     threadgroup uint si[Threads * K];
+    #pragma unroll
     for (int k = 0; k < K; k++) { sv[tid * K + k] = bv[k]; si[tid * K + k] = bi[k]; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const int Groups = 16;
     const int Per = Threads / Groups;
     if (tid < static_cast<uint>(Groups)) {
+        #pragma unroll
         for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
         thr = -INFINITY;
         thr_id = 0xffffffffu;
@@ -356,16 +376,8 @@ const DFLASH2_TOPK_SOURCE: &str = r#"
             for (int k = 0; k < K; k++) {
                 const float v = sv[t * K + k];
                 const uint id = si[t * K + k];
-                if (id == 0xffffffffu) { break; }
-                if (v < thr || (v == thr && id > thr_id)) { break; }
-                int p = K - 1;
-                while (p > 0 && (bv[p - 1] < v || (bv[p - 1] == v && bi[p - 1] > id))) {
-                    bv[p] = bv[p - 1];
-                    bi[p] = bi[p - 1];
-                    p--;
-                }
-                bv[p] = v;
-                bi[p] = id;
+                if (id == 0xffffffffu || v < thr || (v == thr && id > thr_id)) { break; }
+                ax_topk_insert<K>(bv, bi, v, id);
                 thr = bv[K - 1];
                 thr_id = bi[K - 1];
             }
@@ -373,10 +385,12 @@ const DFLASH2_TOPK_SOURCE: &str = r#"
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < static_cast<uint>(Groups)) {
+        #pragma unroll
         for (int k = 0; k < K; k++) { sv[tid * K + k] = bv[k]; si[tid * K + k] = bi[k]; }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid == 0) {
+        #pragma unroll
         for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
         thr = -INFINITY;
         thr_id = 0xffffffffu;
@@ -384,30 +398,23 @@ const DFLASH2_TOPK_SOURCE: &str = r#"
             for (int k = 0; k < K; k++) {
                 const float v = sv[t * K + k];
                 const uint id = si[t * K + k];
-                if (id == 0xffffffffu) { break; }
-                if (v < thr || (v == thr && id > thr_id)) { break; }
-                int p = K - 1;
-                while (p > 0 && (bv[p - 1] < v || (bv[p - 1] == v && bi[p - 1] > id))) {
-                    bv[p] = bv[p - 1];
-                    bi[p] = bi[p - 1];
-                    p--;
-                }
-                bv[p] = v;
-                bi[p] = id;
+                if (id == 0xffffffffu || v < thr || (v == thr && id > thr_id)) { break; }
+                ax_topk_insert<K>(bv, bi, v, id);
                 thr = bv[K - 1];
                 thr_id = bi[K - 1];
             }
         }
+        #pragma unroll
         for (int k = 0; k < K; k++) { out[row * K + k] = bi[k]; }
     }
 "#;
 
 static DFLASH2_TOPK: LazyKernel = LazyKernel::new(
-    "ax_dflash2_topk_v2",
+    "ax_dflash2_topk_v3",
     &["logits"],
     &["out"],
     DFLASH2_TOPK_SOURCE,
-    "",
+    DFLASH2_TOPK_HEADER,
     true,
 );
 
@@ -692,8 +699,9 @@ struct Layer {
     o: Projection,
     q_norm: MlxArray,
     k_norm: MlxArray,
-    gate: Projection,
-    up: Projection,
+    /// `gate_proj` and `up_proj` stacked on the output axis: one matmul reads
+    /// the activation once and yields both halves (`split` on the last axis).
+    gate_up: Projection,
     down: Projection,
     input_norm: MlxArray,
     post_norm: MlxArray,
@@ -772,8 +780,17 @@ impl Dflash2Weights {
                 o: projection(&mut tensors, &name("self_attn.o_proj.weight"))?,
                 q_norm: take_tensor(&mut tensors, &name("self_attn.q_norm.weight"))?,
                 k_norm: take_tensor(&mut tensors, &name("self_attn.k_norm.weight"))?,
-                gate: projection(&mut tensors, &name("mlp.gate_proj.weight"))?,
-                up: projection(&mut tensors, &name("mlp.up_proj.weight"))?,
+                gate_up: Projection::new(
+                    &concatenate(
+                        &[
+                            &take_tensor(&mut tensors, &name("mlp.gate_proj.weight"))?,
+                            &take_tensor(&mut tensors, &name("mlp.up_proj.weight"))?,
+                        ],
+                        0,
+                        None,
+                    ),
+                    precision,
+                ),
                 down: projection(&mut tensors, &name("mlp.down_proj.weight"))?,
                 input_norm: take_tensor(&mut tensors, &name("input_layernorm.weight"))?,
                 post_norm: take_tensor(&mut tensors, &name("post_attention_layernorm.weight"))?,
@@ -846,8 +863,7 @@ impl Dflash2Weights {
                 &layer.k,
                 &layer.v,
                 &layer.o,
-                &layer.gate,
-                &layer.up,
+                &layer.gate_up,
                 &layer.down,
             ] {
                 arrays.extend(projection.arrays());
@@ -1275,11 +1291,9 @@ impl Dflash2Drafter {
             let residual = x.clone();
             let normed = rms_norm(&x, Some(&layer.post_norm), cfg.rms_norm_eps, None);
             let (prepared, taps) = layer.mlp_conv.prepare(cfg, &normed);
-            let activated = silu_mul(
-                &project_rows(&layer.gate, &prepared),
-                &project_rows(&layer.up, &prepared),
-                None,
-            );
+            let gate_up = project_rows(&layer.gate_up, &prepared);
+            let halves = split(&gate_up, 2, 2, None);
+            let activated = silu_mul(&halves[0], &halves[1], None);
             let mlp = project_rows(&layer.down, &activated);
             x = add(&residual, &layer.mlp_conv.finish(cfg, &mlp, &taps), None);
         }
@@ -1309,7 +1323,7 @@ impl Dflash2Drafter {
             Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
             _ => draft_hidden,
         };
-        let logits = crate::model::lm_head_project(&head_input, target);
+        let logits = qw(&head_input, &target.lm_head);
         let logits = if cfg.output_multiplier != 1.0 {
             multiply(
                 &logits,
@@ -1451,11 +1465,9 @@ impl Dflash2Drafter {
             let residual = x.clone();
             let normed = rms_norm(&x, Some(&layer.post_norm), cfg.rms_norm_eps, None);
             let (prepared, taps) = layer.mlp_conv.prepare(cfg, &normed);
-            let activated = silu_mul(
-                &layer.gate.project(&prepared),
-                &layer.up.project(&prepared),
-                None,
-            );
+            let gate_up = layer.gate_up.project(&prepared);
+            let halves = split(&gate_up, 2, 2, None);
+            let activated = silu_mul(&halves[0], &halves[1], None);
             let mlp = layer.down.project(&activated);
             x = add(&residual, &layer.mlp_conv.finish(cfg, &mlp, &taps), None);
             drafted_mark!("mlp block", &x);
@@ -1480,7 +1492,7 @@ impl Dflash2Drafter {
             Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
             _ => draft_hidden.clone(),
         };
-        let logits = crate::model::lm_head_project(&head_input, target);
+        let logits = qw(&head_input, &target.lm_head);
         let logits = if cfg.output_multiplier != 1.0 {
             multiply(
                 &logits,
@@ -2312,8 +2324,7 @@ pub(crate) fn dflash2_fixture_with(
         o: proj(hidden, hidden),
         q_norm: z(&[head_dim]),
         k_norm: z(&[head_dim]),
-        gate: proj(inter, hidden),
-        up: proj(inter, hidden),
+        gate_up: proj(2 * inter, hidden),
         down: proj(hidden, inter),
         input_norm: z(&[hidden]),
         post_norm: z(&[hidden]),
@@ -2343,7 +2354,6 @@ pub(crate) fn dflash2_fixture_with(
         token_embedding: embedding.clone(),
         final_norm: Some(z(&[hidden])),
         lm_head: embedding,
-        lm_head_f32: std::sync::OnceLock::new(),
         layers: Vec::new(),
         per_layer_embed: None,
         per_layer_model_proj: None,
