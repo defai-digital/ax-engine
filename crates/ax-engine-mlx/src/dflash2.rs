@@ -310,6 +310,168 @@ const DFLASH2_GROUPED_CONV_SOURCE: &str = r#"
     out[idx] = acc;
 "#;
 
+/// Per-row top-K of `logits` (`[rows, V]`, `Threads` threads per row): each
+/// thread keeps a sorted top-K of its strided slice, sixteen threads merge
+/// `Threads / 16` lists each, and thread 0 merges those. Order is value
+/// descending, then token id ascending, so the result does not depend on the
+/// thread partition.
+const DFLASH2_TOPK_SOURCE: &str = r#"
+    const uint row = threadgroup_position_in_grid.x;
+    const uint tid = thread_position_in_threadgroup.x;
+    const device T* x = logits + static_cast<size_t>(row) * static_cast<size_t>(V);
+    // The sorted lists live in thread memory (dynamic indexing); the scan only
+    // compares against the registers `thr`/`thr_id` (the current K-th entry)
+    // and touches the lists on an insert, which is rare.
+    float bv[K];
+    uint bi[K];
+    for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
+    float thr = -INFINITY;
+    uint thr_id = 0xffffffffu;
+    for (uint i = tid; i < static_cast<uint>(V); i += static_cast<uint>(Threads)) {
+        const float v = static_cast<float>(x[i]);
+        if (v > thr || (v == thr && i < thr_id)) {
+            int p = K - 1;
+            while (p > 0 && (bv[p - 1] < v || (bv[p - 1] == v && bi[p - 1] > i))) {
+                bv[p] = bv[p - 1];
+                bi[p] = bi[p - 1];
+                p--;
+            }
+            bv[p] = v;
+            bi[p] = i;
+            thr = bv[K - 1];
+            thr_id = bi[K - 1];
+        }
+    }
+    threadgroup float sv[Threads * K];
+    threadgroup uint si[Threads * K];
+    for (int k = 0; k < K; k++) { sv[tid * K + k] = bv[k]; si[tid * K + k] = bi[k]; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int Groups = 16;
+    const int Per = Threads / Groups;
+    if (tid < static_cast<uint>(Groups)) {
+        for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
+        thr = -INFINITY;
+        thr_id = 0xffffffffu;
+        for (int t = static_cast<int>(tid) * Per; t < (static_cast<int>(tid) + 1) * Per; t++) {
+            for (int k = 0; k < K; k++) {
+                const float v = sv[t * K + k];
+                const uint id = si[t * K + k];
+                if (id == 0xffffffffu) { break; }
+                if (v < thr || (v == thr && id > thr_id)) { break; }
+                int p = K - 1;
+                while (p > 0 && (bv[p - 1] < v || (bv[p - 1] == v && bi[p - 1] > id))) {
+                    bv[p] = bv[p - 1];
+                    bi[p] = bi[p - 1];
+                    p--;
+                }
+                bv[p] = v;
+                bi[p] = id;
+                thr = bv[K - 1];
+                thr_id = bi[K - 1];
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < static_cast<uint>(Groups)) {
+        for (int k = 0; k < K; k++) { sv[tid * K + k] = bv[k]; si[tid * K + k] = bi[k]; }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
+        thr = -INFINITY;
+        thr_id = 0xffffffffu;
+        for (int t = 0; t < Groups; t++) {
+            for (int k = 0; k < K; k++) {
+                const float v = sv[t * K + k];
+                const uint id = si[t * K + k];
+                if (id == 0xffffffffu) { break; }
+                if (v < thr || (v == thr && id > thr_id)) { break; }
+                int p = K - 1;
+                while (p > 0 && (bv[p - 1] < v || (bv[p - 1] == v && bi[p - 1] > id))) {
+                    bv[p] = bv[p - 1];
+                    bi[p] = bi[p - 1];
+                    p--;
+                }
+                bv[p] = v;
+                bi[p] = id;
+                thr = bv[K - 1];
+                thr_id = bi[K - 1];
+            }
+        }
+        for (int k = 0; k < K; k++) { out[row * K + k] = bi[k]; }
+    }
+"#;
+
+static DFLASH2_TOPK: LazyKernel = LazyKernel::new(
+    "ax_dflash2_topk_v2",
+    &["logits"],
+    &["out"],
+    DFLASH2_TOPK_SOURCE,
+    "",
+    true,
+);
+
+const DFLASH2_TOPK_THREADS: i32 = 192;
+
+/// Indices of the `k` largest entries along the last axis of `logits`
+/// (`[..., V]` -> `[..., k]`, uint32, value descending then id ascending) with
+/// one Metal kernel, or `None` when the kernel does not apply (then the
+/// caller partitions). `V` must hold at least `k` entries and `k` at most 32.
+fn top_k_indices(logits: &MlxArray, k: i32) -> Option<MlxArray> {
+    if !crate::fastpath::dflash2_topk_kernel_enabled() {
+        return None;
+    }
+    let shape = logits.shape();
+    let vocab = *shape.last()?;
+    if !(1..=32).contains(&k) || vocab < k || shape.len() < 2 {
+        return None;
+    }
+    let dtype = logits.dtype();
+    if !matches!(
+        dtype,
+        MlxDtype::Float32 | MlxDtype::Bfloat16 | MlxDtype::Float16
+    ) {
+        return None;
+    }
+    let rows: i32 = shape[..shape.len() - 1].iter().product();
+    if rows < 1 {
+        return None;
+    }
+    let flat = reshape(logits, &[rows, vocab], None);
+    let mut outputs = DFLASH2_TOPK
+        .get()?
+        .try_apply_with_template(
+            &[&flat],
+            &[KernelOutputSpec {
+                shape: vec![rows, k],
+                dtype: MlxDtype::Uint32,
+            }],
+            &[
+                KernelTemplateArg::Dtype { name: "T", dtype },
+                KernelTemplateArg::Int {
+                    name: "V",
+                    value: vocab,
+                },
+                KernelTemplateArg::Int {
+                    name: "K",
+                    value: k,
+                },
+                KernelTemplateArg::Int {
+                    name: "Threads",
+                    value: DFLASH2_TOPK_THREADS,
+                },
+            ],
+            (rows * DFLASH2_TOPK_THREADS, 1, 1),
+            (DFLASH2_TOPK_THREADS, 1, 1),
+            None,
+        )
+        .ok()?;
+    let out = outputs.pop()?;
+    let mut out_shape = shape.clone();
+    *out_shape.last_mut()? = k;
+    Some(reshape(&out, &out_shape, None))
+}
+
 static DFLASH2_GROUPED_CONV: LazyKernel = LazyKernel::new(
     "ax_dflash2_grouped_conv_v1",
     &["hidden", "dynamic", "base"],
@@ -1147,7 +1309,7 @@ impl Dflash2Drafter {
             Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
             _ => draft_hidden,
         };
-        let logits = qw(&head_input, &target.lm_head);
+        let logits = crate::model::lm_head_project(&head_input, target);
         let logits = if cfg.output_multiplier != 1.0 {
             multiply(
                 &logits,
@@ -1318,7 +1480,7 @@ impl Dflash2Drafter {
             Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
             _ => draft_hidden.clone(),
         };
-        let logits = qw(&head_input, &target.lm_head);
+        let logits = crate::model::lm_head_project(&head_input, target);
         let logits = if cfg.output_multiplier != 1.0 {
             multiply(
                 &logits,
@@ -1530,14 +1692,15 @@ impl Dflash2Drafter {
         let top_k = cfg.selector_top_k;
         let rank = cfg.selector_rank;
         let logits = reshape(logits, &[lanes, proposals, vocab], None);
-        let partitioned = argpartition_axis(&logits, vocab - top_k, 2, None);
-        let candidates = slice(
-            &partitioned,
-            &[0, 0, vocab - top_k],
-            &[lanes, proposals, vocab],
-            &[1, 1, 1],
-            None,
-        );
+        let candidates = top_k_indices(&logits, top_k).unwrap_or_else(|| {
+            slice(
+                &argpartition_axis(&logits, vocab - top_k, 2, None),
+                &[0, 0, vocab - top_k],
+                &[lanes, proposals, vocab],
+                &[1, 1, 1],
+                None,
+            )
+        });
         let unary = take_along_axis(&logits, &candidates, 2, None);
         let projected = matmul(
             &reshape(draft_hidden, &[lanes, proposals, hidden], None),
@@ -1634,14 +1797,15 @@ impl Dflash2Drafter {
         let proposals = shape[1];
         let vocab = shape[2];
         let top_k = cfg.selector_top_k;
-        let partitioned = argpartition_axis(logits, vocab - top_k, 2, None);
-        let candidates = slice(
-            &partitioned,
-            &[0, 0, vocab - top_k],
-            &[1, proposals, vocab],
-            &[1, 1, 1],
-            None,
-        );
+        let candidates = top_k_indices(logits, top_k).unwrap_or_else(|| {
+            slice(
+                &argpartition_axis(logits, vocab - top_k, 2, None),
+                &[0, 0, vocab - top_k],
+                &[1, proposals, vocab],
+                &[1, 1, 1],
+                None,
+            )
+        });
         let unary = take_along_axis(logits, &candidates, 2, None);
         let projected = matmul(draft_hidden, &selector.hidden_projection_t, None);
         let anchor_arr = MlxArray::from_raw_data(
@@ -2179,6 +2343,7 @@ pub(crate) fn dflash2_fixture_with(
         token_embedding: embedding.clone(),
         final_norm: Some(z(&[hidden])),
         lm_head: embedding,
+        lm_head_f32: std::sync::OnceLock::new(),
         layers: Vec::new(),
         per_layer_embed: None,
         per_layer_model_proj: None,
@@ -2305,6 +2470,78 @@ mod tests {
                 for (a, b) in solo.iter().zip(&packed) {
                     assert_eq!(a.cache_offset(), b.cache_offset());
                     assert_eq!(a.cache_rows(), b.cache_rows());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn top_k_kernel_matches_argpartition_sets() {
+        for (dtype, vocab) in [
+            (MlxDtype::Float32, 1000),
+            (MlxDtype::Bfloat16, 4099),
+            (MlxDtype::Float32, 248_000),
+        ] {
+            let mut seed = 0x2545_f491_u32;
+            let n = 3 * 7 * vocab;
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    // Coarse values so exact ties occur.
+                    ((seed % 4001) as f32 / 100.0) - 20.0
+                })
+                .collect();
+            let logits = astype(
+                &reshape(&MlxArray::from_f32_slice(&values), &[3, 7, vocab], None),
+                dtype,
+                None,
+            );
+            let k = 16;
+            let ours = top_k_indices(&logits, k).expect("kernel applies");
+            let reference = contiguous(
+                &slice(
+                    &argpartition_axis(&logits, vocab - k, 2, None),
+                    &[0, 0, vocab - k],
+                    &[3, 7, vocab],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            mlx_sys::eval(&[&ours, &reference]);
+            assert_eq!(ours.shape(), vec![3, 7, k]);
+            let ours_ids = ours.data_u32().to_vec();
+            let reference_ids = reference.data_u32().to_vec();
+            let logit_values = astype(&logits, MlxDtype::Float32, None);
+            mlx_sys::eval(&[&logit_values]);
+            let flat = logit_values.data_f32().to_vec();
+            for row in 0..21usize {
+                let base = row * vocab as usize;
+                let mut a: Vec<f32> = ours_ids[row * 16..row * 16 + 16]
+                    .iter()
+                    .map(|&id| flat[base + id as usize])
+                    .collect();
+                let mut b: Vec<f32> = reference_ids[row * 16..row * 16 + 16]
+                    .iter()
+                    .map(|&id| flat[base + id as usize])
+                    .collect();
+                a.sort_by(|x, y| y.total_cmp(x));
+                b.sort_by(|x, y| y.total_cmp(x));
+                // Same top-k values (ties at the boundary may pick other ids).
+                assert_eq!(a, b, "row {row} dtype {dtype:?} vocab {vocab}");
+                // Sorted descending, ids ascending within equal values.
+                let ids = &ours_ids[row * 16..row * 16 + 16];
+                for w in 0..15 {
+                    let (v0, v1) = (
+                        flat[base + ids[w] as usize],
+                        flat[base + ids[w + 1] as usize],
+                    );
+                    assert!(
+                        v0 > v1 || (v0 == v1 && ids[w] < ids[w + 1]),
+                        "row {row} order"
+                    );
                 }
             }
         }

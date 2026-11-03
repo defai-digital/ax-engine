@@ -1898,6 +1898,17 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_TOPK_KERNEL` — the DFlash2 candidate selector finds each
+    /// position's top-k logits with one Metal kernel (a per-row selection)
+    /// instead of `argpartition`, which sorts the whole 248K-entry row
+    /// (0.45 ms per round at one lane, 2 ms at four on the M5 Max). Same
+    /// candidate set; ties at the boundary take the lower token id.
+    /// **Default: ON**; `0` restores `argpartition`.
+    dflash2_topk_kernel_enabled,
+    "AX_MLX_DFLASH2_TOPK_KERNEL"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DFLASH2_DENSE_FULL_WINDOW` — on hosts with the NAX verify
     /// hand-off, dense targets verify the drafter's whole block every round
     /// instead of the adaptive window. **Default: ON**; `0` restores the
