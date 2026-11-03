@@ -156,7 +156,16 @@ A five-layer drafter conditions on the target's hidden states at layers 5, 19, 3
 of them in one forward with the same fused multi-row matmul and the same rollback
 as MTP. The verify window (3 to 8 rows) follows the request: drafts that keep
 being accepted earn the full window and prose settles at four rows
-(`AX_MLX_DFLASH2_WINDOW=N` pins it). On an M5 Max with the 27B MXFP4 pack (17 real
+(`AX_MLX_DFLASH2_WINDOW=N` pins it). On M5 and later, where the NAX verify hand-off
+makes a dense round cost about the same at any window, dense targets verify all
+eight rows every round (`AX_MLX_DFLASH2_DENSE_FULL_WINDOW=0` restores the adaptive
+window; 2.6% faster over the 17-prompt suite on the M5 Max). When several requests take a
+DFlash2 round in the same engine step, their rounds verify together in one
+row-packed target forward (`AX_MLX_DFLASH2_COHORT=0` runs them one after another).
+On the M5 Max four concurrent code requests decode 240-263 tok/s in aggregate
+instead of 142-148, and four prose requests 128 instead of 61; on the M4 Pro four
+code requests reach 54 instead of 41. GSM8K and HumanEval accuracy at four-way
+concurrency match serial decoding. On an M5 Max with the 27B MXFP4 pack (17 real
 prompts, 256 tokens, greedy) it decodes 1.28x faster than fused depth-3 MTP on the
 11 code prompts (1.08x to 1.40x, up to 127 tok/s) and 1.02x on the 6 prose and chat
 prompts (0.99x to 1.07x), 90.8 against 79.0 tok/s over the suite. Outputs are

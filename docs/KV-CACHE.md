@@ -288,6 +288,20 @@ and byte gauges retain the latest observation. Steps that already own request
 KV do not emit another restore/value-decision event. These retained route
 observations are not sums of batch-level deltas attributed to one request.
 
+## Exact Replay on Linear-Attention Models
+
+A cold prefill on a linear-attention model (Qwen 3.5/3.8 hybrids) splits the
+prompt at its last block boundary, stores the cache captured there, and runs
+the partial block after it as its final step. A later request with the same
+prompt claims exactly that boundary. The runner restores the boundary snapshot
+and runs only those last tokens, which repeats the cold final step at the same
+position and shape, so the first token matches the cold run. Other warm
+restores still floor onto the prefill-chunk grid and replay the claimed tokens
+above the rung. On the M5 Max with Qwen 3.8 27B, replay TTFT of a 12K-token
+prompt fell from about 1.6 s to about 0.2 s, and of a 25K-token prompt from
+about 1.3 s to about 0.3 s, with replies identical to the cold run.
+`AX_MLX_PREFIX_BOUNDARY_REPLAY=0` restores the grid floor for these replays.
+
 ## Value-Priced Restore and Semantic Cuts (Opt-In)
 
 Two further prefix features are opt-in and both default off. They are resolved

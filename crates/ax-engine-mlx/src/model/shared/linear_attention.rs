@@ -307,6 +307,74 @@ fn linear_attention_forward_inner(
         profile_started,
         &[&qkv, &z, &a, &b],
     );
+    let out = linear_attention_core(
+        cfg,
+        linear_cfg,
+        linear_w,
+        &qkv,
+        &a,
+        &b,
+        cache,
+        layer_idx,
+        profile_enabled,
+    );
+    qwen_prefill_maybe_async_gd(&out, seq);
+    qwen_prefill_maybe_eval_gd(&out, seq);
+    let out = qwen_prefill_maybe_contiguous_gd(out, seq);
+    if let Some(skipped) = qwen_prefill_maybe_skip_unused_la_out(x, skip_out_proj) {
+        return skipped;
+    }
+
+    let profile_started = Instant::now();
+    let value_dim = linear_cfg.value_dim() as i32;
+    let (out, z, seq) = match qwen_prefill_maybe_last_token_la_out(&out, &z, last_token_out_proj) {
+        Some((out, z, seq)) => (out, z, seq),
+        None => (out, z, seq),
+    };
+    if stop_before_gate {
+        LA_PRE_GATE_Z.with(|slot| {
+            *slot.borrow_mut() = Some(z);
+        });
+        return out;
+    }
+    let out = linear_attention_gate_out(
+        cfg,
+        linear_w,
+        &out,
+        &z,
+        seq,
+        value_dim,
+        layer_idx,
+        stop_before_out_proj,
+    );
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::Output,
+        profile_started,
+        &[&out],
+    );
+    out
+}
+
+/// Gated-delta conv and recurrence of one sequence from its projected inputs
+/// (`qkv`, `a`, `b` of shape `[1, seq, ...]`), reading and writing `cache`'s
+/// linear state for `layer_idx`, with the verify prefix checkpoint / tape /
+/// processed stash when the cache records a linear prefix capture. Returns the
+/// recurrent output before the gated norm and the output projection.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn linear_attention_core(
+    cfg: &ModelConfig,
+    linear_cfg: &LinearAttentionConfig,
+    linear_w: &crate::weights::LinearAttentionWeights,
+    qkv: &MlxArray,
+    a: &MlxArray,
+    b: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    profile_enabled: bool,
+) -> MlxArray {
+    let (qkv, a, b) = (qkv.clone(), a.clone(), b.clone());
+    let seq = qkv.shape()[1];
 
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
     let prefix_capture_after = cache
@@ -481,33 +549,32 @@ fn linear_attention_forward_inner(
     if let (Some(conv_state), Some(recurrent_state)) = (prefix_conv_state, prefix_recurrent_state) {
         cache.set_linear_prefix_checkpoint(layer_idx, conv_state, recurrent_state);
     }
-    qwen_prefill_maybe_async_gd(&out, seq);
-    qwen_prefill_maybe_eval_gd(&out, seq);
-    let out = qwen_prefill_maybe_contiguous_gd(out, seq);
-    if let Some(skipped) = qwen_prefill_maybe_skip_unused_la_out(x, skip_out_proj) {
-        return skipped;
-    }
+    let _ = seq;
+    out
+}
 
-    let profile_started = Instant::now();
-    let value_dim = linear_cfg.value_dim() as i32;
-    let (out, z, seq) = match qwen_prefill_maybe_last_token_la_out(&out, &z, last_token_out_proj) {
-        Some((out, z, seq)) => (out, z, seq),
-        None => (out, z, seq),
-    };
-    if stop_before_gate {
-        LA_PRE_GATE_Z.with(|slot| {
-            *slot.borrow_mut() = Some(z);
-        });
-        return out;
-    }
-    let out = if let Some(fused) =
-        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim, layer_idx)
+/// Gated RMS norm of the recurrent output with `z`, then the output
+/// projection (skipped when `stop_before_out_proj`). Position-wise, so it can
+/// run once over several sequences' rows.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn linear_attention_gate_out(
+    cfg: &ModelConfig,
+    linear_w: &crate::weights::LinearAttentionWeights,
+    out: &MlxArray,
+    z: &MlxArray,
+    seq: i32,
+    value_dim: i32,
+    layer_idx: usize,
+    stop_before_out_proj: bool,
+) -> MlxArray {
+    if let Some(fused) =
+        try_qwen_la_out_proj_silu_mul_qmm(cfg, out, z, linear_w, seq, value_dim, layer_idx)
     {
         fused
     } else {
         let out = rms_norm_gated_with_full_gate_policy(
-            &out,
-            &z,
+            out,
+            z,
             &linear_w.norm,
             cfg.rms_norm_eps,
             if fastpath::qwen_linear_mtp_exact_enabled() {
@@ -528,14 +595,7 @@ fn linear_attention_forward_inner(
         } else {
             qw(&flat, &linear_w.out_proj)
         }
-    };
-    linear_attention_profile_eval_elapsed(
-        profile_enabled,
-        LinearAttentionProfileStage::Output,
-        profile_started,
-        &[&out],
-    );
-    out
+    }
 }
 
 fn mtp_projection_prefix(projected: &MlxArray, keep: i32) -> Option<MlxArray> {

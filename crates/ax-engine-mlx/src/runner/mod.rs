@@ -624,6 +624,8 @@ struct RequestState {
     /// Set when the linear DFlash2 verify fence fails after rebind. The cache
     /// is not restored; `run_item` fails this request and drops the state.
     dflash2_verify_fence_error: Option<String>,
+    /// A DFlash2 round verified by this step's cohort pre-pass.
+    dflash2_staged: Option<dflash2_decode::Dflash2StagedVerify>,
 }
 
 /// Draft history for the Flash Next candidate plus its route counters.
@@ -1343,6 +1345,7 @@ impl RequestState {
             semantic_checkpoint_cut: None,
             dflash2_prefix_snapshots: Default::default(),
             dflash2_verify_fence_error: None,
+            dflash2_staged: None,
         }
     }
 
@@ -5751,6 +5754,7 @@ impl ExecutionRunner for MlxRunner {
         // here; each row's result is consumed inside its own run_item call
         // below, so per-request bookkeeping and ordering are unchanged.
         let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
+        self.stage_dflash2_cohort(&input, &batched_idx, &mut route_metadata);
         let adaptive_decisions = &input.execution_batch.route_metadata.crossover_decisions;
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
@@ -6958,6 +6962,173 @@ impl MlxRunner {
     /// staged row whose preconditions no longer hold there (e.g. a runner
     /// prefix probe restored KV first) is simply dropped in favor of the
     /// sequential path.
+    /// The request's sampling parameters and whether it decodes greedily.
+    fn request_sampling(&self, ctx: Option<&RunnerRequestContext>) -> (MlxSamplingParams, bool) {
+        let sampling = ctx
+            .map(|c| {
+                MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
+                    .with_min_p(c.min_p)
+                    .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
+                    .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
+                    .with_logit_bias_active(c.logit_bias_active)
+                    .with_json_grammar_active(c.json_grammar_active)
+                    .with_page_guard_active(self.unlimited_ocr_page_guard_applies(Some(c)))
+                    .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
+                    // Non-zero seeds are explicit for backward compatibility;
+                    // `seed_explicit` additionally makes seed 0 reproducible.
+                    .with_seed((c.seed != 0 || c.seed_explicit).then_some(c.seed))
+            })
+            .unwrap_or_default();
+        // Prefer the engine's deterministic-argmax bit, but also treat
+        // temperature-0 / default-greedy shaped contexts as greedy so pure
+        // direct sessions never miss the double-buffer pipeline when a session
+        // flag omitted `deterministic` for temperature-0 requests.
+        let is_greedy = ctx
+            .map(|c| {
+                c.deterministic_argmax_sampling
+                    || (c.temperature <= 0.0
+                        && c.top_k == 0
+                        && c.top_p >= 1.0
+                        && !sampling.uses_logits_processors())
+            })
+            .unwrap_or(sampling == MlxSamplingParams::greedy());
+        (sampling, is_greedy)
+    }
+
+    /// Cohort pre-pass for batched DFlash2 (`AX_MLX_DFLASH2_COHORT`, default
+    /// on): when two or more decode items of this step can take a DFlash2
+    /// round, verify all their rounds in one row-packed target forward and one
+    /// evaluation (`model::packed_verify`). Each request's verified round is
+    /// staged on its state; its own `run_item` then commits it exactly where
+    /// the solo round would have (`try_dflash2_decode`). A request whose plan
+    /// changed by then restores its drafter cursor and runs solo.
+    fn stage_dflash2_cohort(
+        &self,
+        input: &RunnerInput,
+        skip: &std::collections::HashSet<usize>,
+        route_metadata: &mut ax_engine_core::RouteMetadata,
+    ) {
+        if self.dflash2.is_none()
+            || !crate::fastpath::dflash2_cohort_enabled()
+            || crate::fastpath::tree_verify_enabled()
+            || self.flash_next_mtp_session()
+            || self.cfg.diffusion.is_some()
+        {
+            return;
+        }
+        let candidates: Vec<&ax_engine_core::ExecutionItem> = input
+            .execution_batch
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(idx, item)| !skip.contains(idx) && matches!(item.mode, ExecutionMode::Decode))
+            .map(|(_, item)| item)
+            .collect();
+        if candidates.len() < 2 || !crate::model::packed_verify::supported(&self.cfg, &self.weights)
+        {
+            return;
+        }
+        let mut taken: Vec<(RequestId, RequestState)> = {
+            let mut states = self.states.lock();
+            candidates
+                .iter()
+                .filter_map(|item| {
+                    states
+                        .remove(&item.request_id)
+                        .map(|state| (item.request_id, state))
+                })
+                .collect()
+        };
+        let mut lanes: Vec<(&mut RequestState, dflash2_decode::Dflash2RoundPlan)> = Vec::new();
+        for (request_id, state) in taken.iter_mut() {
+            let Some(item) = candidates
+                .iter()
+                .find(|item| item.request_id == *request_id)
+            else {
+                continue;
+            };
+            let Some(ctx) = input
+                .request_contexts
+                .iter()
+                .find(|c| c.request_id == *request_id)
+            else {
+                continue;
+            };
+            if ctx.generated_len == 0
+                || state.cached_prefill_output_token.is_some()
+                || !state.bonus_queue.is_empty()
+                || !state.diffusion_block_queue.is_empty()
+                || state.dflash2_verify_fence_error.is_some()
+                || crate::model::qwen_visual_rope_offset(
+                    &self.weights,
+                    &state.cache,
+                    state.cache.seq_len(),
+                ) != state.cache.seq_len()
+            {
+                continue;
+            }
+            let (sampling, is_greedy) = self.request_sampling(Some(ctx));
+            let terminal_token_ids: &[u32] = if ctx.ignore_eos {
+                &[]
+            } else {
+                &self.terminal_token_ids
+            };
+            let options = DecodeOneOptions {
+                terminal_token_ids,
+                final_by_max_output: ctx.generated_len.saturating_add(1) >= ctx.max_output_tokens,
+                request_context: Some(ctx),
+            };
+            // The same soft-close decision decode_one makes before the round.
+            state.think_soft_close_armed = think_soft_close_armed(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            );
+            if let Ok(plan) = self.dflash2_plan_round(
+                state,
+                &item.input_token_slice,
+                sampling,
+                is_greedy,
+                &options,
+            ) {
+                lanes.push((state, plan));
+            }
+        }
+        let planned = lanes.len();
+        let mut verified_lanes = 0;
+        if lanes.len() >= 2 {
+            let (verified, rows) = self.dflash2_cohort_verify(&mut lanes);
+            verified_lanes = verified;
+            if verified >= 2 {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    "ax_mlx_dflash2_cohort_lanes",
+                    verified as u32,
+                );
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    "ax_mlx_dflash2_cohort_rows",
+                    rows as u32,
+                );
+            }
+        }
+        drop(lanes);
+        tracing::debug!(
+            target: "ax_engine_mlx::dflash2",
+            candidates = candidates.len(),
+            planned,
+            verified = verified_lanes,
+            "DFlash2 cohort pre-pass"
+        );
+        let mut states = self.states.lock();
+        for (request_id, state) in taken {
+            states.insert(request_id, state);
+        }
+    }
+
     fn stage_batched_prefill(
         &self,
         input: &RunnerInput,
@@ -7297,34 +7468,7 @@ impl MlxRunner {
         if has_gemma4_unified_multimodal_prefill && let Some(inputs) = gemma4_unified_inputs {
             gemma4_unified_multimodal_telemetry.record_prefill(inputs, self.has_mtp());
         }
-        let sampling = ctx
-            .map(|c| {
-                MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
-                    .with_min_p(c.min_p)
-                    .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
-                    .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
-                    .with_logit_bias_active(c.logit_bias_active)
-                    .with_json_grammar_active(c.json_grammar_active)
-                    .with_page_guard_active(self.unlimited_ocr_page_guard_applies(Some(c)))
-                    .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
-                    // Non-zero seeds are explicit for backward compatibility;
-                    // `seed_explicit` additionally makes seed 0 reproducible.
-                    .with_seed((c.seed != 0 || c.seed_explicit).then_some(c.seed))
-            })
-            .unwrap_or_default();
-        // Prefer the engine's deterministic-argmax bit, but also treat
-        // temperature-0 / default-greedy shaped contexts as greedy so pure
-        // direct sessions never miss the double-buffer pipeline when a session
-        // flag omitted `deterministic` for temperature-0 requests.
-        let is_greedy = ctx
-            .map(|c| {
-                c.deterministic_argmax_sampling
-                    || (c.temperature <= 0.0
-                        && c.top_k == 0
-                        && c.top_p >= 1.0
-                        && !sampling.uses_logits_processors())
-            })
-            .unwrap_or(sampling == MlxSamplingParams::greedy());
+        let (sampling, is_greedy) = self.request_sampling(ctx);
 
         // Extract per-request state from the map and release the lock before GPU
         // work.  This ensures a long prefill for one request does not block state
@@ -9843,7 +9987,20 @@ impl MlxRunner {
         // restored, not only the priced choice: the terminal anchor is
         // block-aligned by construction, so the unpriced probe can land on a
         // planned cut too.
-        let planned_restore_len = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len());
+        let planned_restore_len = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len())
+            .or_else(|| {
+                (self.cfg.linear_attention.is_some()
+                    && crate::fastpath::prefix_boundary_replay_enabled())
+                .then(|| {
+                    exact_boundary_replay_restore_len(
+                        item,
+                        reused_tokens.len(),
+                        block_size_tokens as usize,
+                        ctx.map(|ctx| ctx.prompt_len as usize),
+                    )
+                })
+                .flatten()
+            });
         let Some(restore_len) = planned_restore_len.or_else(|| {
             grid_aligned_prefix_restore_len(
                 item,
@@ -18865,6 +19022,35 @@ fn grid_aligned_prefix_restore_len(
     } else {
         Some(restore_len)
     }
+}
+
+/// The restore length of an exact prompt replay on a linear-attention model,
+/// bypassing the cold-grid floor.
+///
+/// A cold linear prefill splits its prompt at the last block boundary
+/// (`linear_boundary_capture_head_len`), stores the cache captured there,
+/// and runs the remaining partial block as its final step. When a later
+/// request claims exactly that boundary and its item is exactly that
+/// remainder, restoring at the boundary replays the cold final step
+/// shape-for-shape at the same position on the same state, so the prefill
+/// output matches the cold run without the gap replay a grid floor would
+/// cost (`AX_MLX_PREFIX_BOUNDARY_REPLAY`, default on).
+fn exact_boundary_replay_restore_len(
+    item: &ax_engine_core::ExecutionItem,
+    candidate_len: usize,
+    block_size: usize,
+    prompt_len: Option<usize>,
+) -> Option<usize> {
+    let tail = item.input_token_slice.len();
+    (item.mode == ExecutionMode::Prefill
+        && block_size > 0
+        && candidate_len > 0
+        && candidate_len.is_multiple_of(block_size)
+        && item.reused_prefix_token_slice.len() == candidate_len
+        && tail > 0
+        && tail < block_size
+        && prompt_len == Some(candidate_len + tail))
+    .then_some(candidate_len)
 }
 
 /// Walk grid rungs down from `floored_len` (itself floored onto `grid`) and

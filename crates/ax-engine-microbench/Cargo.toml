@@ -66,3 +66,7 @@ path = "src/bin/axquant_kernel_latency_probe.rs"
 [[bin]]
 name = "mlx-gated-delta-prefill-probe"
 path = "src/bin/mlx_gated_delta_prefill_probe.rs"
+
+[[bin]]
+name = "dflash2-cohort-probe"
+path = "src/bin/dflash2_cohort_probe.rs"

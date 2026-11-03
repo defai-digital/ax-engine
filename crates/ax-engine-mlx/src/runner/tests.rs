@@ -10395,3 +10395,35 @@ fn batched_mean_pool_divides_by_the_exact_length() {
     mlx_sys::eval(&[&pooled]);
     assert_eq!(pooled.data_f32(), &[2.0, 2.0]);
 }
+
+#[test]
+fn exact_boundary_replay_keeps_the_boundary_restore() {
+    // A 1930-token linear prompt, block 32: the cold run stored the boundary
+    // at 1920 and ran the last 10 tokens as its final step. A replay claiming
+    // 1920 with those 10 tokens restores 1920 instead of the 1024 rung.
+    let item = prefill_item_with_claim(1920, 10);
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, Some(1930)),
+        Some(1920)
+    );
+    // Not the prompt's own remainder (an extension of a longer prompt).
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, Some(2400)),
+        None
+    );
+    // A restore shorter than the claim is not the cold boundary.
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1888, 32, Some(1930)),
+        None
+    );
+    // A whole block or more after the claim is a multi-chunk extension.
+    let item = prefill_item_with_claim(1920, 32);
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, Some(1952)),
+        None
+    );
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, None),
+        None
+    );
+}

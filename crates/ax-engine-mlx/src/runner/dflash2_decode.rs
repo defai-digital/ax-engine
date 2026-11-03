@@ -302,6 +302,21 @@ fn round_cost_ms_nax(window: usize) -> f64 {
     39.2 + 0.95 * window.saturating_sub(4) as f64
 }
 
+/// Whether a dense target verifies the whole drafter block every round.
+///
+/// With the NAX verify hand-off a dense target's round costs about the same at
+/// any window: on the M5 Max, 27B MXFP4, MLX 0.32.5, the adaptive policy's
+/// 4-5 row prose rounds took 43.6-47.5 ms against 45.1 ms for eight rows (the
+/// 2-5 row routes are slower than stock NAX at 6-8), so narrowing only lost
+/// accepted tokens. Pinning eight rows decoded the 17-prompt suite 2.6%
+/// faster (prose 70.7 -> 73.1 tok/s, code 155.2 -> 158.9). MoE targets route
+/// experts per row and keep the adaptive window.
+fn dense_full_window(moe_expert_count: usize) -> bool {
+    moe_expert_count == 0
+        && crate::fastpath::dflash2_dense_full_window_enabled()
+        && crate::model::shared::verify_qmm::nax_stock_handoff_active()
+}
+
 /// Round cost on this host: the NAX fit where the hand-off is active.
 fn round_cost_ms(window: usize) -> f64 {
     if crate::model::shared::verify_qmm::nax_stock_handoff_active() {
@@ -382,6 +397,97 @@ impl WindowStats {
         }
         best
     }
+}
+
+/// Milliseconds of one cohort round of `lanes` lanes verifying `total_rows`
+/// rows in one row-packed forward. Fixed fit, never wall time: M5 Max, 27B
+/// MXFP4, MLX 0.32.5 NAX, target verify at 512-4K context
+/// (`dflash2-cohort-probe` sweep, 2026-11-03): 44.9 ms for 4 lanes x 4
+/// rows, 67.1 for 4 x 5, 45.7 for 3 x 5, 64.9 for 3 x 6, 43.8 for 2 x 8.
+/// Past 16 rows the projections leave the cheap NAX tile and the round
+/// costs about 21 ms more; below that each lane adds about 3.5 ms and each
+/// row about 0.4 ms. Only hosts with the NAX hand-off use it.
+fn cohort_round_cost(lanes: usize, total_rows: usize) -> f64 {
+    let step = if total_rows > 16 { 21.0 } else { 0.0 };
+    31.0 + 3.5 * lanes.saturating_sub(1) as f64 + 0.4 * total_rows as f64 + step
+}
+
+/// Per-lane windows for one cohort round: the windows that maximize the
+/// expected tokens all lanes commit per millisecond of `cost(lanes,
+/// total_rows)`. Searched exhaustively for up to four lanes (the cost has a
+/// step that one lane at a time cannot cross), by coordinate ascent from the
+/// full window beyond that. A lane without statistics keeps the full window.
+/// Deterministic for the same statistics; wider windows win ties.
+fn cohort_windows(
+    stats: &[Option<&WindowStats>],
+    block: usize,
+    cost: impl Fn(usize, usize) -> f64,
+) -> Vec<usize> {
+    let min = MIN_WINDOW.min(block);
+    let lanes = stats.len();
+    let expected: Vec<Vec<f64>> = stats
+        .iter()
+        .map(|s| {
+            (0..=block)
+                .map(|w| s.map_or(w as f64, |s| s.expected_tokens(w)))
+                .collect()
+        })
+        .collect();
+    let rate = |windows: &[usize]| {
+        let tokens: f64 = windows
+            .iter()
+            .enumerate()
+            .map(|(l, &w)| expected[l][w])
+            .sum();
+        tokens / cost(lanes, windows.iter().sum())
+    };
+    let choices = |lane: usize| if stats[lane].is_some() { min } else { block };
+    let mut best = vec![block; lanes];
+    let mut best_rate = rate(&best);
+    if lanes <= 4 {
+        let mut windows = vec![block; lanes];
+        loop {
+            let r = rate(&windows);
+            if r > best_rate * 1.005 {
+                best.clone_from(&windows);
+                best_rate = r;
+            }
+            // Odometer from the full window down.
+            let mut lane = 0;
+            loop {
+                if lane == lanes {
+                    return best;
+                }
+                if windows[lane] > choices(lane) {
+                    windows[lane] -= 1;
+                    break;
+                }
+                windows[lane] = block;
+                lane += 1;
+            }
+        }
+    }
+    for _ in 0..4 {
+        let mut changed = false;
+        for lane in 0..lanes {
+            let current = best[lane];
+            let mut pick = current;
+            for window in choices(lane)..=block {
+                best[lane] = window;
+                let r = rate(&best);
+                if r > best_rate * 1.005 {
+                    pick = window;
+                    best_rate = r;
+                }
+            }
+            best[lane] = pick;
+            changed |= pick != current;
+        }
+        if !changed {
+            break;
+        }
+    }
+    best
 }
 
 /// Rounds a request runs before it may leave DFlash2: the acceptance estimate
@@ -600,6 +706,31 @@ impl ParkedRows {
 
 /// A committed round moves past the MTP head's pending draft and skip state.
 /// The head's KV cache is kept: the round's rows wait in [`MtpGap`].
+/// What one DFlash2 round verifies: the anchor, its position and the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Dflash2RoundPlan {
+    pub(super) primary: u32,
+    pub(super) token_offset: usize,
+    pub(super) window: usize,
+}
+
+/// A verified round waiting for its commit: the verify clone, the evaluated
+/// row argmax, the drafts and the captured hidden rows. A cohort pre-pass
+/// stages one per request; `try_dflash2_decode` commits it when the request's
+/// plan for the step still matches.
+pub(super) struct Dflash2StagedVerify {
+    plan: Dflash2RoundPlan,
+    cursor: crate::dflash2::DrafterCursor,
+    draft_wall_us: u32,
+    clone_wall_us: u32,
+    verify_wall_us: u32,
+    verify_cache: MlxKVCache,
+    predicted: Vec<u32>,
+    drafts: Vec<u32>,
+    hidden_all: MlxArray,
+    post_norm: Option<MlxArray>,
+}
+
 fn clear_mtp_proposal_after_dflash2_round(state: &mut RequestState) {
     clear_pending_mtp_proposal(state);
 }
@@ -963,81 +1094,35 @@ impl MlxRunner {
         is_greedy: bool,
         options: &DecodeOneOptions<'_>,
     ) -> Option<Vec<u32>> {
-        let weights = self.dflash2.as_ref()?;
-        let Some(ctx) = options.request_context else {
-            return decline("no request context");
-        };
-        if !self.dflash2_request_eligible(sampling, is_greedy, false) {
-            return decline("request not eligible");
+        // A failed cohort fence left this cache untrustworthy; decode_one
+        // fails the request.
+        if state.dflash2_verify_fence_error.is_some() {
+            return None;
         }
-        if state.think_soft_close_armed || state.pending_direct.is_some() {
-            return decline("think close armed or direct token pending");
-        }
-        if !(crate::fastpath::mtp_relaxed_target_verify_enabled()
-            && crate::fastpath::mtp_linear_projected_replay_enabled())
+        let plan = match self.dflash2_plan_round(state, input_tokens, sampling, is_greedy, options)
         {
-            return decline("relaxed projected-replay verify is off");
-        }
-        let cfg = weights.config();
-        let block = cfg.block_size as usize;
-        let remaining = ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize;
-        // The last tokens of the budget decode directly: a round commits several.
-        if remaining < 2 {
-            return decline("output budget exhausted");
-        }
-        let think_budget_close_due = think_budget_close_decision(
-            state.ngram_in_think,
-            self.cfg.think_end_token_id,
-            remaining as u32,
-            state.think_emitted_tokens,
-            ctx.max_think_tokens,
-            ctx.answer_reserve_tokens,
-            false,
-        );
-        if think_budget_close_due {
-            return decline("think budget close due");
-        }
-        let Some(primary) = state
-            .next_model_last_token
-            .or_else(|| input_tokens.last().copied())
-        else {
-            return decline("no anchor token");
-        };
-        let token_offset = state.cache.seq_len();
-        if state
-            .dflash2
-            .as_ref()
-            .is_some_and(|dflash| dflash.handed_off.is_some())
-            && !self.resume_dflash2(state)
-        {
-            return decline("parked on the handoff route");
-        }
-        match state.dflash2.as_ref() {
-            None => return decline("no captured prompt state"),
-            Some(dflash) if dflash.disabled => return decline("disabled for this request"),
-            Some(dflash) if dflash.pending_hidden.is_none() => {
-                return decline("no pending hidden rows");
+            Ok(plan) => plan,
+            Err(declined) => {
+                self.drop_dflash2_staged(state);
+                return declined;
             }
-            Some(dflash) if dflash.captured_rows != token_offset => {
-                tracing::debug!(
-                    target: "ax_engine_mlx::dflash2",
-                    captured = dflash.captured_rows,
-                    cache = token_offset,
-                    "DFlash2 captured rows disagree with the cache"
-                );
-                return decline("captured rows disagree with the cache");
-            }
-            Some(_) => {}
-        }
-
-        // How many rows to verify: pinned, or the policy's pick for this request.
-        let window = match crate::fastpath::dflash2_window_override() {
-            Some(rows) => pinned_window(rows, block),
-            None => state.dflash2.as_ref().map_or(block, |dflash| {
-                dflash.window_stats.best_window(block, round_cost_ms)
-            }),
         };
-        let verify_len = window;
+        // A cohort pre-pass already verified this round with other requests.
+        if let Some(staged) = state.dflash2_staged.take() {
+            // The cohort may have picked another window for this round.
+            if staged.plan.primary == plan.primary && staged.plan.token_offset == plan.token_offset
+            {
+                return self.commit_dflash2_round(state, staged, options);
+            }
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.drafter.restore_cursor(staged.cursor);
+            }
+        }
+        let verify_len = plan.window;
+        let primary = plan.primary;
+        let token_offset = plan.token_offset;
+        let window = plan.window;
+        let cfg = self.dflash2.as_ref().map(|weights| weights.config())?;
 
         // --- Draft (lazy) ---------------------------------------------------
         // `pending_hidden` is cloned, not taken. A failed capture or verify
@@ -1168,6 +1253,153 @@ impl MlxRunner {
         let verify_wall_us = elapsed_us(verify_started);
         let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
         let drafts_owned: Vec<u32> = draft_arr.data_u32().to_vec();
+
+        let staged = Dflash2StagedVerify {
+            plan,
+            cursor,
+            draft_wall_us,
+            clone_wall_us,
+            verify_wall_us,
+            verify_cache,
+            predicted,
+            drafts: drafts_owned,
+            hidden_all,
+            post_norm: keep_post_norm.then_some(post_norm),
+        };
+        self.commit_dflash2_round(state, staged, options)
+    }
+
+    /// The checks, window and anchor of the next DFlash2 round. `Err` carries
+    /// what `try_dflash2_decode` returns when the step takes another route.
+    pub(super) fn dflash2_plan_round(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        is_greedy: bool,
+        options: &DecodeOneOptions<'_>,
+    ) -> Result<Dflash2RoundPlan, Option<Vec<u32>>> {
+        let Some(weights) = self.dflash2.as_ref() else {
+            return Err(None);
+        };
+        let Some(ctx) = options.request_context else {
+            return Err(decline("no request context"));
+        };
+        if !self.dflash2_request_eligible(sampling, is_greedy, false) {
+            return Err(decline("request not eligible"));
+        }
+        if state.think_soft_close_armed || state.pending_direct.is_some() {
+            return Err(decline("think close armed or direct token pending"));
+        }
+        if !(crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled())
+        {
+            return Err(decline("relaxed projected-replay verify is off"));
+        }
+        let cfg = weights.config();
+        let block = cfg.block_size as usize;
+        let remaining = ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize;
+        // The last tokens of the budget decode directly: a round commits several.
+        if remaining < 2 {
+            return Err(decline("output budget exhausted"));
+        }
+        let think_budget_close_due = think_budget_close_decision(
+            state.ngram_in_think,
+            self.cfg.think_end_token_id,
+            remaining as u32,
+            state.think_emitted_tokens,
+            ctx.max_think_tokens,
+            ctx.answer_reserve_tokens,
+            false,
+        );
+        if think_budget_close_due {
+            return Err(decline("think budget close due"));
+        }
+        let Some(primary) = state
+            .next_model_last_token
+            .or_else(|| input_tokens.last().copied())
+        else {
+            return Err(decline("no anchor token"));
+        };
+        let token_offset = state.cache.seq_len();
+        if state
+            .dflash2
+            .as_ref()
+            .is_some_and(|dflash| dflash.handed_off.is_some())
+            && !self.resume_dflash2(state)
+        {
+            return Err(decline("parked on the handoff route"));
+        }
+        match state.dflash2.as_ref() {
+            None => return Err(decline("no captured prompt state")),
+            Some(dflash) if dflash.disabled => return Err(decline("disabled for this request")),
+            Some(dflash) if dflash.pending_hidden.is_none() => {
+                return Err(decline("no pending hidden rows"));
+            }
+            Some(dflash) if dflash.captured_rows != token_offset => {
+                tracing::debug!(
+                    target: "ax_engine_mlx::dflash2",
+                    captured = dflash.captured_rows,
+                    cache = token_offset,
+                    "DFlash2 captured rows disagree with the cache"
+                );
+                return Err(decline("captured rows disagree with the cache"));
+            }
+            Some(_) => {}
+        }
+
+        // How many rows to verify: pinned, or the policy's pick for this request.
+        let window = match crate::fastpath::dflash2_window_override() {
+            Some(rows) => pinned_window(rows, block),
+            None if dense_full_window(self.cfg.moe_expert_count) => block,
+            None => state.dflash2.as_ref().map_or(block, |dflash| {
+                dflash.window_stats.best_window(block, round_cost_ms)
+            }),
+        };
+        Ok(Dflash2RoundPlan {
+            primary,
+            token_offset,
+            window,
+        })
+    }
+
+    /// Restores the drafter cursor of a cohort-verified round that is not used.
+    pub(super) fn drop_dflash2_staged(&self, state: &mut RequestState) {
+        if let Some(staged) = state.dflash2_staged.take()
+            && let Some(dflash) = state.dflash2.as_mut()
+        {
+            dflash.drafter.restore_cursor(staged.cursor);
+        }
+    }
+
+    /// Accepts and commits one verified round (solo or cohort).
+    fn commit_dflash2_round(
+        &self,
+        state: &mut RequestState,
+        staged: Dflash2StagedVerify,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
+        let Dflash2StagedVerify {
+            plan,
+            cursor,
+            draft_wall_us,
+            clone_wall_us,
+            verify_wall_us,
+            mut verify_cache,
+            predicted,
+            drafts: drafts_owned,
+            hidden_all,
+            post_norm,
+        } = staged;
+        let Dflash2RoundPlan {
+            primary,
+            token_offset,
+            window,
+        } = plan;
+        let verify_len = window;
+        let remaining = options.request_context.map_or(0, |ctx| {
+            ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize
+        });
         let drafts: &[u32] = &drafts_owned;
         if predicted.len() != verify_len || drafts.len() + 1 != verify_len {
             // Cannot happen for a well-formed verify. Rewind the drafter and
@@ -1261,9 +1493,9 @@ impl MlxRunner {
         if let Some(dflash) = state.dflash2.as_mut() {
             // Row `j` processed `ids[j]`; the token after it is `emitted[j]`.
             let rows = keep.min(emitted.len());
-            if keep_post_norm && rows > 0 {
+            if let Some(post_norm) = post_norm.as_ref().filter(|_| rows > 0) {
                 let hidden = slice(
-                    &post_norm,
+                    post_norm,
                     &[0, 0, 0],
                     &[1, rows as i32, self.cfg.hidden_size as i32],
                     &[1, 1, 1],
@@ -1302,6 +1534,191 @@ impl MlxRunner {
         let tokens = apply_decode_result(state, &emitted, options.terminal_token_ids);
         self.finish_dflash2_round(state, window);
         Some(tokens)
+    }
+
+    /// Drafts and verifies one DFlash2 round for every lane in one row-packed
+    /// target forward and one evaluation, and stages each verified round on
+    /// its request (see `MlxRunner::stage_dflash2_cohort`). A lane whose
+    /// draft declines is left for its solo path. Returns the lanes staged and
+    /// their total verify rows; nothing is staged when fewer than two remain.
+    pub(super) fn dflash2_cohort_verify(
+        &self,
+        lanes: &mut [(&mut RequestState, Dflash2RoundPlan)],
+    ) -> (usize, usize) {
+        let Some(weights) = self.dflash2.as_ref() else {
+            return (0, 0);
+        };
+        let cfg = weights.config();
+        let block = cfg.block_size as usize;
+        if crate::fastpath::dflash2_window_override().is_none()
+            && crate::fastpath::dflash2_cohort_window_enabled()
+            && crate::model::shared::verify_qmm::nax_stock_handoff_active()
+        {
+            let stats: Vec<Option<&WindowStats>> = lanes
+                .iter()
+                .map(|(state, _)| state.dflash2.as_ref().map(|d| &d.window_stats))
+                .collect();
+            let windows = cohort_windows(&stats, block, cohort_round_cost);
+            for ((_, plan), window) in lanes.iter_mut().zip(windows) {
+                plan.window = window;
+            }
+        }
+        let draft_started = Instant::now();
+        let mut drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> = Vec::new();
+        for (idx, (state, plan)) in lanes.iter_mut().enumerate() {
+            let Some(dflash) = state.dflash2.as_mut() else {
+                continue;
+            };
+            if !dflash.started {
+                dflash.drafter.seed_offset(dflash.skipped_rows as i32);
+                dflash.started = true;
+            }
+            if let Ok((draft_arr, cursor)) = dflash2_draft_window(
+                dflash,
+                plan.primary,
+                &self.weights,
+                cfg.block_size,
+                plan.window,
+                Dflash2DraftRead::Lazy,
+            ) {
+                drafted.push((idx, draft_arr, cursor));
+            }
+        }
+        let restore =
+            |lanes: &mut [(&mut RequestState, Dflash2RoundPlan)],
+             drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)>| {
+                for (idx, _, cursor) in drafted {
+                    if let Some(dflash) = lanes[idx].0.dflash2.as_mut() {
+                        dflash.drafter.restore_cursor(cursor);
+                    }
+                }
+            };
+        if drafted.len() < 2 {
+            restore(lanes, drafted);
+            return (0, 0);
+        }
+        let draft_wall_us = elapsed_us(draft_started);
+
+        let mut id_parts: Vec<MlxArray> = Vec::with_capacity(drafted.len() * 2);
+        for (idx, draft_arr, _) in &drafted {
+            let anchor = [lanes[*idx].1.primary];
+            id_parts.push(MlxArray::from_raw_data(
+                anchor.as_ptr() as *const u8,
+                4,
+                &[1_i32],
+                MlxDtype::Uint32,
+            ));
+            id_parts.push(draft_arr.clone());
+        }
+        let id_refs: Vec<&MlxArray> = id_parts.iter().collect();
+        let ids = concatenate(&id_refs, 0, None);
+
+        let _target_verify_fast_scope = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+        let _target_verify_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _verify_qmm_scope = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true);
+
+        let clone_started = Instant::now();
+        let mut verify_caches: Vec<MlxKVCache> = drafted
+            .iter()
+            .map(|(idx, _, _)| {
+                let mut cache = lanes[*idx].0.cache.clone();
+                cache.begin_linear_prefix_capture(1);
+                cache
+            })
+            .collect();
+        let clone_wall_us = elapsed_us(clone_started);
+
+        let verify_started = Instant::now();
+        let keep_post_norm = self.dflash2_handoff_target() == HandoffTarget::Mtp;
+        let capture = layer_capture::capture_layers(&cfg.target_layer_ids);
+        let mut packed: Vec<crate::model::packed_verify::PackedLane<'_>> = verify_caches
+            .iter_mut()
+            .zip(&drafted)
+            .map(
+                |(cache, (idx, _, _))| crate::model::packed_verify::PackedLane {
+                    token_offset: lanes[*idx].1.token_offset,
+                    rows: lanes[*idx].1.window,
+                    cache,
+                },
+            )
+            .collect();
+        let (logits_all, post_norm) = crate::model::packed_verify::packed_verify_forward(
+            &self.cfg,
+            &self.weights,
+            &ids,
+            &mut packed,
+        );
+        drop(packed);
+        let captured = layer_capture::take();
+        drop(capture);
+        let Some(captured) = captured.filter(|c| !c.is_empty()) else {
+            restore(lanes, drafted);
+            return (0, 0);
+        };
+        for (cache, (idx, _, _)) in verify_caches.iter_mut().zip(&drafted) {
+            cache.advance(lanes[*idx].1.window);
+        }
+        if crate::fastpath::mtp_rebind_verify_fa_enabled() {
+            for (cache, (idx, _, _)) in verify_caches.iter().zip(&drafted) {
+                let _ = lanes[*idx]
+                    .0
+                    .cache
+                    .rebind_contiguous_attention_storage_from(cache);
+            }
+        }
+        let predicted_arr = argmax(&logits_all, None);
+        let refs: Vec<&MlxArray> = captured.iter().collect();
+        let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
+        let fence_error = crate::dflash2::take_dflash2_capture_verify_eval_error().or_else(|| {
+            let mut eval_refs: Vec<&MlxArray> = vec![&predicted_arr, &hidden_all];
+            eval_refs.extend(drafted.iter().map(|(_, draft_arr, _)| draft_arr));
+            if keep_post_norm {
+                eval_refs.push(&post_norm);
+            }
+            mlx_sys::try_eval(&eval_refs).err()
+        });
+        if let Some(error) = fence_error {
+            // Rebind may already have published verifier K/V into the request
+            // caches: fail every lane, as the solo fence does.
+            for (idx, _, _) in &drafted {
+                let _ = fail_linear_verify_fence(lanes[*idx].0, error.clone());
+            }
+            return (0, 0);
+        }
+        let verify_wall_us = elapsed_us(verify_started);
+        let predicted_all: Vec<u32> = predicted_arr.data_u32().to_vec();
+        let width = hidden_all.shape()[2];
+        let hidden_size = self.cfg.hidden_size as i32;
+        let mut start = 0usize;
+        let lanes_staged = drafted.len();
+        for ((idx, draft_arr, cursor), verify_cache) in drafted.into_iter().zip(verify_caches) {
+            let (state, plan) = &mut lanes[idx];
+            let rows = plan.window;
+            let end = start + rows;
+            let row_slice = |x: &MlxArray, w: i32| {
+                slice(
+                    x,
+                    &[0, start as i32, 0],
+                    &[1, end as i32, w],
+                    &[1, 1, 1],
+                    None,
+                )
+            };
+            state.dflash2_staged = Some(Dflash2StagedVerify {
+                plan: *plan,
+                cursor,
+                draft_wall_us,
+                clone_wall_us,
+                verify_wall_us,
+                verify_cache,
+                predicted: predicted_all[start..end].to_vec(),
+                drafts: draft_arr.data_u32().to_vec(),
+                hidden_all: row_slice(&hidden_all, width),
+                post_norm: keep_post_norm.then(|| row_slice(&post_norm, hidden_size)),
+            });
+            start = end;
+        }
+        (lanes_staged, start)
     }
 
     /// Brings the MTP head up to date before a non-DFlash2 step: appends the
@@ -2100,6 +2517,33 @@ mod tests {
             prose.record(window - 1, window - 1);
         }
         assert_eq!(prose.best_window(8, round_cost_ms_classic), 8);
+    }
+
+    #[test]
+    fn cohort_windows_stay_under_the_nax_row_step_only_for_low_acceptance() {
+        let nax_cost = |lanes: usize, rows: usize| {
+            31.0 + 3.5 * (lanes - 1) as f64 + 0.4 * rows as f64 + if rows > 16 { 21.0 } else { 0.0 }
+        };
+        let observed = |accept: usize| {
+            let mut stats = WindowStats::new();
+            for _ in 0..40 {
+                stats.record(7, accept);
+            }
+            stats
+        };
+        // Code-like lanes accept nearly everything: keep the full window.
+        let code = observed(7);
+        let lanes = [Some(&code); 4];
+        assert_eq!(cohort_windows(&lanes, 8, nax_cost), vec![8; 4]);
+        // Prose-like lanes accept two drafts: fit the cohort under 16 rows.
+        let prose = observed(2);
+        let lanes = [Some(&prose); 4];
+        let windows = cohort_windows(&lanes, 8, nax_cost);
+        assert!(windows.iter().sum::<usize>() <= 16, "{windows:?}");
+        // Two code lanes fit 16 rows at the full window.
+        assert_eq!(cohort_windows(&[Some(&code); 2], 8, nax_cost), vec![8; 2]);
+        // No statistics: full window.
+        assert_eq!(cohort_windows(&[None, None, None], 8, nax_cost), vec![8; 3]);
     }
 
     #[test]

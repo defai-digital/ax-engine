@@ -1791,6 +1791,50 @@ pub(crate) fn hf_hub_cache_roots() -> &'static [std::path::PathBuf] {
     })
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_PREFIX_BOUNDARY_REPLAY` — on linear-attention models, an exact
+    /// prompt replay restores the snapshot captured at the prompt's last block
+    /// boundary and runs only the partial block after it (the cold run's own
+    /// final step), instead of flooring the restore onto the prefill-chunk
+    /// grid and replaying up to a chunk of claimed tokens. **Default: ON**;
+    /// `0` restores the grid floor.
+    prefix_boundary_replay_enabled,
+    "AX_MLX_PREFIX_BOUNDARY_REPLAY"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_COHORT_WINDOW` — in a batched DFlash2 round on a host
+    /// with the NAX verify hand-off (M5+), picks each lane's window to
+    /// maximize the cohort's expected tokens per millisecond of a fixed
+    /// packed-round cost curve, which keeps low-acceptance cohorts under the
+    /// 16-row projection step (4-way prose +20% on the M5 Max). **Default:
+    /// ON**; `0` keeps every lane on its own window.
+    dflash2_cohort_window_enabled,
+    "AX_MLX_DFLASH2_COHORT_WINDOW"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
+    /// requests of one engine step take a DFlash2 round, verify them in one
+    /// row-packed target forward and one evaluation (`model::packed_verify`)
+    /// instead of one round after another. Qwen 3.5/3.8 dense hybrid only.
+    /// A lane's verify logits can differ in the last bits from a solo verify
+    /// (kernels pick tiles by total rows), so greedy text may depend on how
+    /// many requests run together. **Default: ON**; `0` restores per-request
+    /// rounds.
+    dflash2_cohort_enabled,
+    "AX_MLX_DFLASH2_COHORT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_DENSE_FULL_WINDOW` — on hosts with the NAX verify
+    /// hand-off, dense targets verify the drafter's whole block every round
+    /// instead of the adaptive window. **Default: ON**; `0` restores the
+    /// adaptive window. `AX_MLX_DFLASH2_WINDOW` still takes precedence.
+    dflash2_dense_full_window_enabled,
+    "AX_MLX_DFLASH2_DENSE_FULL_WINDOW"
+);
+
 /// `AX_MLX_DFLASH2_WINDOW`: pin the DFlash2 verify window to this many rows
 /// (anchor plus drafts, 3 to the drafter's block size). Unset or `0` lets the
 /// per-request policy choose it from the observed acceptance. Read once per
