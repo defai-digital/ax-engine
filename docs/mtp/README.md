@@ -165,7 +165,11 @@ row-packed target forward (`AX_MLX_DFLASH2_COHORT=0` runs them one after another
 The drafters of a cohort also run as one packed forward
 (`AX_MLX_DFLASH2_COHORT_PACKED_DRAFT=0` drafts each lane alone), and the drafter's
 candidate selector re-ranks each block's top-16 tokens
-(`AX_MLX_DFLASH2_SELECTOR=0` takes the plain argmax). On the M5 Max four concurrent
+(`AX_MLX_DFLASH2_SELECTOR=0` takes the plain argmax). The drafter graph is handed to the
+GPU before the verify graph is built, and each round's commit drafts the next round
+before the step's bookkeeping runs (`AX_MLX_DFLASH2_ASYNC_DRAFT=0`,
+`AX_MLX_DFLASH2_PREDRAFT=0` restore the single evaluation per round), so the host
+work between rounds overlaps the drafter instead of idling the GPU. On the M5 Max four concurrent
 code requests decode 269-292 tok/s in aggregate instead of 142-148, and four prose
 requests 144-157 instead of 61; on the M4 Pro four code requests reach 57 instead
 of 41 and four prose requests 35 instead of 31. GSM8K and HumanEval accuracy at four-way

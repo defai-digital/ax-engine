@@ -1158,31 +1158,21 @@ impl Dflash2Drafter {
             logits
         };
         if use_selector {
-            let vocab = logits.shape()[2];
-            let lane_slice = |x: &MlxArray, lane: i32, width: i32| {
-                slice(
-                    x,
-                    &[0, lane * (block - 1), 0],
-                    &[1, (lane + 1) * (block - 1), width],
-                    &[1, 1, 1],
-                    None,
-                )
-            };
-            let mut drafts = Vec::with_capacity(lanes.len());
-            for (lane, (drafter, anchor, _)) in lanes.iter_mut().enumerate() {
-                let lane_idx = lane as i32;
-                // Without runner-up capture the selector cannot fail.
-                let (tokens, _) = drafter.select(
-                    &weights.selector,
-                    cfg,
-                    &lane_slice(&head_input, lane_idx, hidden),
-                    &lane_slice(&logits, lane_idx, vocab),
-                    *anchor,
-                    false,
-                );
-                drafts.push(tokens);
-            }
-            return Some(drafts);
+            // One selector over every lane: one top-k partition of all lanes'
+            // logits, one gather per codebook, and a chain that walks the
+            // positions with the lanes side by side. Per-lane selectors left
+            // the drafter graph ending in a dozen small command buffers (one
+            // partition per lane), which kept an asynchronous submission of
+            // the draft from holding any real GPU work.
+            let anchors: Vec<u32> = lanes.iter().map(|(_, anchor, _)| *anchor).collect();
+            return Some(Self::select_packed(
+                &weights.selector,
+                cfg,
+                &head_input,
+                &logits,
+                &anchors,
+                block - 1,
+            ));
         }
         let tokens = astype(&argmax(&logits, None), MlxDtype::Uint32, None);
         Some(
@@ -1521,6 +1511,113 @@ impl Dflash2Drafter {
         )
     }
 
+    /// [`Self::select`] for a packed draft: `draft_hidden` is `[1, L·P, hidden]`
+    /// and `logits` `[1, L·P, vocab]` for `L` lanes of `P` proposals, `anchors`
+    /// one token per lane. Returns each lane's `[1, P]` draft ids. Same
+    /// candidates, scores and picks as the per-lane selector, computed with
+    /// the lanes stacked on a leading axis.
+    fn select_packed(
+        selector: &Selector,
+        cfg: &Dflash2Config,
+        draft_hidden: &MlxArray,
+        logits: &MlxArray,
+        anchors: &[u32],
+        proposals: i32,
+    ) -> Vec<MlxArray> {
+        let lanes = anchors.len() as i32;
+        let vocab = logits.shape()[2];
+        let hidden = draft_hidden.shape()[2];
+        let top_k = cfg.selector_top_k;
+        let rank = cfg.selector_rank;
+        let logits = reshape(logits, &[lanes, proposals, vocab], None);
+        let partitioned = argpartition_axis(&logits, vocab - top_k, 2, None);
+        let candidates = slice(
+            &partitioned,
+            &[0, 0, vocab - top_k],
+            &[lanes, proposals, vocab],
+            &[1, 1, 1],
+            None,
+        );
+        let unary = take_along_axis(&logits, &candidates, 2, None);
+        let projected = matmul(
+            &reshape(draft_hidden, &[lanes, proposals, hidden], None),
+            &selector.hidden_projection_t,
+            None,
+        );
+        let anchor_arr = MlxArray::from_raw_data(
+            anchors.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(anchors),
+            &[lanes],
+            MlxDtype::Uint32,
+        );
+        let successor_all = take(&selector.successor_codebook, &candidates, 0, None);
+        let predecessor_all = take(&selector.predecessor_codebook, &candidates, 0, None);
+        let mut predecessor_row = take(&selector.predecessor_codebook, &anchor_arr, 0, None);
+        let mut path = Vec::with_capacity(proposals as usize);
+        for position in 0..proposals {
+            let slot = |array: &MlxArray, width: i32| {
+                reshape(
+                    &slice(
+                        array,
+                        &[0, position, 0],
+                        &[lanes, position + 1, width],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                    &[lanes, width],
+                    None,
+                )
+            };
+            let rows = |array: &MlxArray| {
+                reshape(
+                    &slice(
+                        array,
+                        &[0, position, 0, 0],
+                        &[lanes, position + 1, top_k, rank],
+                        &[1, 1, 1, 1],
+                        None,
+                    ),
+                    &[lanes, top_k, rank],
+                    None,
+                )
+            };
+            let position_candidates = slot(&candidates, top_k);
+            let position_hidden = slot(&projected, rank);
+            let edges = sum_axis(
+                &multiply(
+                    &multiply(
+                        &reshape(&predecessor_row, &[lanes, 1, rank], None),
+                        &reshape(&position_hidden, &[lanes, 1, rank], None),
+                        None,
+                    ),
+                    &rows(&successor_all),
+                    None,
+                ),
+                2,
+                false,
+                None,
+            );
+            let scores = add(&slot(&unary, top_k), &edges, None);
+            let chosen = reshape(&argmax(&scores, None), &[lanes, 1], None);
+            path.push(take_along_axis(&position_candidates, &chosen, 1, None));
+            predecessor_row = reshape(
+                &take_along_axis(
+                    &rows(&predecessor_all),
+                    &reshape(&chosen, &[lanes, 1, 1], None),
+                    1,
+                    None,
+                ),
+                &[lanes, rank],
+                None,
+            );
+        }
+        let refs: Vec<&MlxArray> = path.iter().collect();
+        let tokens = astype(&concatenate(&refs, 1, None), MlxDtype::Uint32, None);
+        (0..lanes)
+            .map(|lane| slice(&tokens, &[lane, 0], &[lane + 1, proposals], &[1, 1], None))
+            .collect()
+    }
+
     /// Chain-aware rescoring of each position's top-k logits: the score of a
     /// candidate is its logit plus a low-rank edge score against the previously
     /// chosen token, and the best candidate is taken position by position.
@@ -1547,12 +1644,25 @@ impl Dflash2Drafter {
         );
         let unary = take_along_axis(logits, &candidates, 2, None);
         let projected = matmul(draft_hidden, &selector.hidden_projection_t, None);
-        let mut predecessor = MlxArray::from_raw_data(
+        let anchor_arr = MlxArray::from_raw_data(
             (&anchor as *const u32).cast::<u8>(),
             std::mem::size_of::<u32>(),
             &[1],
             MlxDtype::Uint32,
         );
+        let rank = cfg.selector_rank;
+        // Gather every codebook row the chain can need up front: the successor
+        // rows of all candidates, and the predecessor rows of all candidates
+        // (position `p`'s predecessor is the token chosen at `p - 1`, one of
+        // its candidates). The per-position chain then only indexes these
+        // small tensors. Each codebook is 63M elements, and MLX starts a new
+        // command buffer whenever a buffer's distinct inputs exceed its byte
+        // cap, so touching a codebook per position used to leave the drafter
+        // graph ending in a dozen tiny command buffers; those buffers kept an
+        // asynchronous draft submission from holding any real GPU work.
+        let successor_all = take(&selector.successor_codebook, &candidates, 0, None);
+        let predecessor_all = take(&selector.predecessor_codebook, &candidates, 0, None);
+        let mut predecessor_row = take(&selector.predecessor_codebook, &anchor_arr, 0, None);
         let mut path = Vec::with_capacity(proposals as usize);
         let mut alt_slots = capture_alternatives.then(Vec::new);
         for position in 0..proposals {
@@ -1569,15 +1679,27 @@ impl Dflash2Drafter {
                     None,
                 )
             };
+            let rows = |array: &MlxArray| {
+                reshape(
+                    &slice(
+                        array,
+                        &[0, position, 0, 0],
+                        &[1, position + 1, top_k, rank],
+                        &[1, 1, 1, 1],
+                        None,
+                    ),
+                    &[1, top_k, rank],
+                    None,
+                )
+            };
             let position_candidates = slot(&candidates, top_k);
-            let position_hidden = slot(&projected, cfg.selector_rank);
-            let predecessor_row = take(&selector.predecessor_codebook, &predecessor, 0, None);
-            let successor_rows = take(&selector.successor_codebook, &position_candidates, 0, None);
+            let position_hidden = slot(&projected, rank);
+            let successor_rows = rows(&successor_all);
             let edges = sum_axis(
                 &multiply(
                     &multiply(
-                        &reshape(&predecessor_row, &[1, 1, cfg.selector_rank], None),
-                        &reshape(&position_hidden, &[1, 1, cfg.selector_rank], None),
+                        &reshape(&predecessor_row, &[1, 1, rank], None),
+                        &reshape(&position_hidden, &[1, 1, rank], None),
                         None,
                     ),
                     &successor_rows,
@@ -1594,17 +1716,24 @@ impl Dflash2Drafter {
                 slots.push((position_candidates.clone(), scores.clone()));
             }
             let chosen = argmax(&scores, None);
-            predecessor = reshape(
-                &take_along_axis(
-                    &position_candidates,
-                    &reshape(&chosen, &[1, 1], None),
-                    1,
-                    None,
-                ),
+            let chosen_index = reshape(&chosen, &[1, 1], None);
+            let predecessor = reshape(
+                &take_along_axis(&position_candidates, &chosen_index, 1, None),
                 &[1],
                 None,
             );
-            path.push(predecessor.clone());
+            // The chosen candidate's predecessor row for the next position.
+            predecessor_row = reshape(
+                &take_along_axis(
+                    &rows(&predecessor_all),
+                    &reshape(&chosen, &[1, 1, 1], None),
+                    1,
+                    None,
+                ),
+                &[1, rank],
+                None,
+            );
+            path.push(predecessor);
         }
         let capture_error = if let Some(slots) = alt_slots.as_ref() {
             match selector_runner_up(slots, &path) {

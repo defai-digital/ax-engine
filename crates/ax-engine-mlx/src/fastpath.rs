@@ -1873,6 +1873,31 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_ASYNC_DRAFT` — submit the DFlash2 drafter graph to the
+    /// GPU as soon as it is built, before the target verify graph is built.
+    /// The drafter then runs while the host builds and MLX encodes the verify
+    /// forward, instead of the GPU idling until the round's single eval
+    /// (M5 Max: ~1 ms per solo round, several ms per cohort round).
+    /// Token-identical: the same graph runs, only the submission point moves.
+    /// **Default: ON**; `0` restores the single-eval round.
+    dflash2_async_draft_enabled,
+    "AX_MLX_DFLASH2_ASYNC_DRAFT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_PREDRAFT` — draft the next DFlash2 round as soon as a
+    /// round's accepted tokens are known and submit that drafter graph to the
+    /// GPU before the round's commit bookkeeping, telemetry, engine step and
+    /// server delivery run. The next step then only builds the verify graph
+    /// while the drafter is already running. A pre-draft that the next plan
+    /// does not use (hand-off, budget, a different anchor) is rolled back to
+    /// the drafter cursor it started from. Token-identical. **Default: ON**;
+    /// `0` drafts at the start of each round.
+    dflash2_predraft_enabled,
+    "AX_MLX_DFLASH2_PREDRAFT"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DFLASH2_DENSE_FULL_WINDOW` — on hosts with the NAX verify
     /// hand-off, dense targets verify the drafter's whole block every round
     /// instead of the adaptive window. **Default: ON**; `0` restores the

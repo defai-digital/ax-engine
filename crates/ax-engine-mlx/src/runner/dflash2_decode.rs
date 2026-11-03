@@ -149,6 +149,12 @@ pub(super) struct Dflash2RequestState {
     probed: bool,
     parked_rows: ParkedRows,
     mtp_gap: MtpGap,
+    /// The next round's draft, submitted before this round's bookkeeping.
+    predraft: Option<Dflash2PreDraft>,
+    /// Round trace: when this round's plan was made and when the previous
+    /// round's commit returned.
+    trace_entry: Option<Instant>,
+    trace_last_end: Option<Instant>,
     pub(super) rounds: u32,
     pub(super) drafted: u32,
     pub(super) accepted: u32,
@@ -180,6 +186,9 @@ impl Dflash2RequestState {
             probed: false,
             parked_rows: ParkedRows::default(),
             mtp_gap: MtpGap::default(),
+            predraft: None,
+            trace_entry: None,
+            trace_last_end: None,
             rounds: 0,
             drafted: 0,
             accepted: 0,
@@ -230,6 +239,9 @@ impl Dflash2RequestState {
         self.probed = false;
         self.parked_rows = ParkedRows::default();
         self.mtp_gap = MtpGap::default();
+        self.predraft = None;
+        self.trace_entry = None;
+        self.trace_last_end = None;
         self.tree_nodes_verified = 0;
         self.tree_accepted_length = 0;
         self.tree_branch_chosen = 0;
@@ -708,6 +720,39 @@ pub(super) struct Dflash2RoundPlan {
     pub(super) primary: u32,
     pub(super) token_offset: usize,
     pub(super) window: usize,
+    /// Output tokens the request may still emit when the round starts.
+    pub(super) remaining: usize,
+}
+
+/// A round drafted ahead of its plan (`AX_MLX_DFLASH2_PREDRAFT`): the whole
+/// lazy draft block for `primary` at `token_offset`, already submitted to the
+/// GPU, and the drafter cursor to put back if the plan does not use it. The
+/// verify window is cut from the block when the round runs.
+pub(super) struct Dflash2PreDraft {
+    primary: u32,
+    token_offset: usize,
+    drafted: MlxArray,
+    cursor: crate::dflash2::DrafterCursor,
+    draft_wall_us: u32,
+}
+
+/// `AX_MLX_DFLASH2_ROUND_TRACE=1`: one stderr line per DFlash2 round with the
+/// host-side split of the round (gap since the previous round's commit, draft
+/// build, verify build, eval wait, commit), for the host-overlap work.
+fn round_trace_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_ROUND_TRACE").is_ok_and(|v| v == "1" || v == "true")
+    })
+}
+
+/// Cuts a drafted block to the round's verify window (lazy slice).
+fn dflash2_window_ids(drafted: &MlxArray, window: usize) -> MlxArray {
+    reshape(
+        &slice(drafted, &[0, 0], &[1, window as i32 - 1], &[1, 1], None),
+        &[window as i32 - 1],
+        None,
+    )
 }
 
 /// A verified round waiting for its commit: the verify clone, the evaluated
@@ -720,6 +765,10 @@ pub(super) struct Dflash2StagedVerify {
     draft_wall_us: u32,
     clone_wall_us: u32,
     verify_wall_us: u32,
+    /// Round trace only: verify graph build and eval wait inside `verify_wall_us`.
+    verify_build_us: u32,
+    eval_wall_us: u32,
+    predrafted: bool,
     verify_cache: MlxKVCache,
     predicted: Vec<u32>,
     drafts: Vec<u32>,
@@ -899,6 +948,34 @@ fn dflash2_draft_window(
         }
     }
     Ok((draft_arr, cursor))
+}
+
+/// Drafts one full block lazily from explicit context rows (the committed rows
+/// of the round that just ended), for a pre-draft. Returns the block and the
+/// pre-draft cursor; a failure leaves the drafter where it was.
+fn dflash2_draft_block_from(
+    dflash: &mut Dflash2RequestState,
+    hidden: &MlxArray,
+    primary: u32,
+    target: &ModelWeights,
+    block: i32,
+) -> Option<(MlxArray, crate::dflash2::DrafterCursor)> {
+    let cursor = dflash.drafter.snapshot_cursor();
+    match dflash.drafter.draft_block(primary, hidden, target, block) {
+        Ok(drafted) => Some((drafted, cursor)),
+        Err(_) => {
+            dflash.drafter.restore_cursor(cursor);
+            None
+        }
+    }
+}
+
+/// Rolls a pre-draft back: the drafter cursor returns to where the round that
+/// made it left off, and `pending_hidden` still holds the rows it consumed.
+fn drop_dflash2_predraft(dflash: &mut Dflash2RequestState) {
+    if let Some(predraft) = dflash.predraft.take() {
+        dflash.drafter.restore_cursor(predraft.cursor);
+    }
 }
 
 /// Drafts every cohort lane in one packed drafter graph
@@ -1169,9 +1246,17 @@ impl MlxRunner {
             Ok(plan) => plan,
             Err(declined) => {
                 self.drop_dflash2_staged(state);
+                if let Some(dflash) = state.dflash2.as_mut() {
+                    drop_dflash2_predraft(dflash);
+                }
                 return declined;
             }
         };
+        if round_trace_enabled()
+            && let Some(dflash) = state.dflash2.as_mut()
+        {
+            dflash.trace_entry = Some(Instant::now());
+        }
         // A cohort pre-pass already verified this round with other requests.
         if let Some(staged) = state.dflash2_staged.take() {
             // The cohort may have picked another window for this round.
@@ -1195,28 +1280,65 @@ impl MlxRunner {
         // round. Only a committed prefix replaces them.
         let draft_started = Instant::now();
         let tree = crate::fastpath::tree_verify_enabled();
-        let (draft_arr, cursor) = {
-            let dflash = state.dflash2.as_mut()?;
-            if !dflash.started {
-                dflash.drafter.seed_offset(dflash.skipped_rows as i32);
-                dflash.started = true;
+        // The previous round may have drafted this one already (and submitted
+        // it); a pre-draft for another anchor or position is rolled back.
+        let predrafted = if tree {
+            if let Some(dflash) = state.dflash2.as_mut() {
+                drop_dflash2_predraft(dflash);
             }
-            let read = if tree {
-                Dflash2DraftRead::Tree
-            } else {
-                Dflash2DraftRead::Lazy
-            };
-            match dflash2_draft_window(dflash, primary, &self.weights, cfg.block_size, window, read)
-            {
-                Ok(drafted) => drafted,
-                Err(reason) => return decline(reason),
+            None
+        } else {
+            Self::take_dflash2_predraft(state, &plan)
+        };
+        let was_predrafted = predrafted.is_some();
+        let (draft_arr, cursor, draft_wall_us) = match predrafted {
+            Some(predrafted) => predrafted,
+            None => {
+                let dflash = state.dflash2.as_mut()?;
+                if !dflash.started {
+                    dflash.drafter.seed_offset(dflash.skipped_rows as i32);
+                    dflash.started = true;
+                }
+                let read = if tree {
+                    Dflash2DraftRead::Tree
+                } else {
+                    Dflash2DraftRead::Lazy
+                };
+                let (draft_arr, cursor) = match dflash2_draft_window(
+                    dflash,
+                    primary,
+                    &self.weights,
+                    cfg.block_size,
+                    window,
+                    read,
+                ) {
+                    Ok(drafted) => drafted,
+                    Err(reason) => return decline(reason),
+                };
+                // Hand the drafter to the GPU now: the verify graph below
+                // chains on the lazy draft tokens, so the GPU drafts while the
+                // host builds and MLX encodes the 64-layer verify forward. The
+                // round's eval then only waits for the verify. Off the fast
+                // path (tree verify) the draft is read eagerly anyway. A
+                // submission error surfaces at that eval.
+                if !tree
+                    && crate::fastpath::dflash2_async_draft_enabled()
+                    && let Err(error) = mlx_sys::try_async_eval(&[&draft_arr])
+                {
+                    // Nothing of this round reached the request cache yet.
+                    tracing::warn!(
+                        target: "ax_engine_mlx::dflash2",
+                        %error,
+                        "DFlash2 draft submission failed; declining speculation"
+                    );
+                    dflash.drafter.restore_cursor(cursor);
+                    return decline("draft submission failed");
+                }
+                (draft_arr, cursor, elapsed_us(draft_started))
             }
         };
-        let draft_wall_us = elapsed_us(draft_started);
 
         // --- Verify (one target forward over [anchor, drafts] with hidden capture)
-        // The verify graph chains on the lazy draft tokens, so building it
-        // overlaps the drafter's GPU work and one eval batch runs both.
         let anchor_data = [primary];
         let anchor_arr = MlxArray::from_raw_data(
             anchor_data.as_ptr() as *const u8,
@@ -1307,6 +1429,8 @@ impl MlxRunner {
         }
         // The logits come from `post_norm`, so evaluating it costs nothing and
         // keeps no part of the verify graph alive.
+        let verify_build_us = elapsed_us(verify_started);
+        let eval_started = Instant::now();
         let eval_result = if keep_post_norm {
             mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr, &post_norm])
         } else {
@@ -1315,6 +1439,7 @@ impl MlxRunner {
         if let Err(error) = eval_result {
             return fail_linear_verify_fence(state, error);
         }
+        let eval_wall_us = elapsed_us(eval_started);
         let verify_wall_us = elapsed_us(verify_started);
         let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
         let drafts_owned: Vec<u32> = draft_arr.data_u32().to_vec();
@@ -1325,6 +1450,9 @@ impl MlxRunner {
             draft_wall_us,
             clone_wall_us,
             verify_wall_us,
+            verify_build_us,
+            eval_wall_us,
+            predrafted: was_predrafted,
             verify_cache,
             predicted,
             drafts: drafts_owned,
@@ -1414,18 +1542,93 @@ impl MlxRunner {
         }
 
         // How many rows to verify: pinned, or the policy's pick for this request.
-        let window = match crate::fastpath::dflash2_window_override() {
-            Some(rows) => pinned_window(rows, block),
-            None if dense_full_window(self.cfg.moe_expert_count) => block,
-            None => state.dflash2.as_ref().map_or(block, |dflash| {
-                dflash.window_stats.best_window(block, round_cost_ms)
-            }),
-        };
+        let window = state
+            .dflash2
+            .as_ref()
+            .map_or(block, |dflash| self.dflash2_next_window(dflash, block));
         Ok(Dflash2RoundPlan {
             primary,
             token_offset,
             window,
+            remaining,
         })
+    }
+
+    /// Verify window a round at this point would take: pinned, the dense full
+    /// block, or the policy's pick for the request's acceptance so far.
+    fn dflash2_next_window(&self, dflash: &Dflash2RequestState, block: usize) -> usize {
+        match crate::fastpath::dflash2_window_override() {
+            Some(rows) => pinned_window(rows, block),
+            None if dense_full_window(self.cfg.moe_expert_count) => block,
+            None => dflash.window_stats.best_window(block, round_cost_ms),
+        }
+    }
+
+    /// Drafts the next round from the rows this round committed and submits
+    /// the drafter graph now, so it runs while the commit, the engine step and
+    /// the next step's planning happen on the host (`AX_MLX_DFLASH2_PREDRAFT`).
+    /// Nothing is pre-drafted when the request is leaving DFlash2, its budget
+    /// ends, or a cohort pre-pass already drafted it.
+    fn predraft_dflash2_round(
+        &self,
+        state: &mut RequestState,
+        hidden: &MlxArray,
+        next_primary: u32,
+        next_offset: usize,
+        remaining_after: usize,
+    ) {
+        if !crate::fastpath::dflash2_predraft_enabled()
+            || crate::fastpath::tree_verify_enabled()
+            || remaining_after < 2
+            || state.think_soft_close_armed
+            || state.pending_direct.is_some()
+        {
+            return;
+        }
+        let Some(cfg) = self.dflash2.as_ref().map(|weights| weights.config()) else {
+            return;
+        };
+        let Some(dflash) = state.dflash2.as_mut() else {
+            return;
+        };
+        if dflash.disabled || dflash.handed_off.is_some() || dflash.predraft.is_some() {
+            return;
+        }
+        let started = Instant::now();
+        let Some((drafted, cursor)) =
+            dflash2_draft_block_from(dflash, hidden, next_primary, &self.weights, cfg.block_size)
+        else {
+            return;
+        };
+        if mlx_sys::try_async_eval(&[&drafted]).is_err() {
+            dflash.drafter.restore_cursor(cursor);
+            return;
+        }
+        dflash.predraft = Some(Dflash2PreDraft {
+            primary: next_primary,
+            token_offset: next_offset,
+            drafted,
+            cursor,
+            draft_wall_us: elapsed_us(started),
+        });
+    }
+
+    /// Takes the pre-draft that matches `plan`, cut to its window; any other
+    /// pre-draft is rolled back. Returns the window ids, the pre-draft cursor
+    /// and its build time.
+    fn take_dflash2_predraft(
+        state: &mut RequestState,
+        plan: &Dflash2RoundPlan,
+    ) -> Option<(MlxArray, crate::dflash2::DrafterCursor, u32)> {
+        let dflash = state.dflash2.as_mut()?;
+        let predraft = dflash.predraft.take()?;
+        if predraft.primary == plan.primary && predraft.token_offset == plan.token_offset {
+            let ids = dflash2_window_ids(&predraft.drafted, plan.window);
+            Some((ids, predraft.cursor, predraft.draft_wall_us))
+        } else {
+            dflash.drafter.restore_cursor(predraft.cursor);
+            None
+        }
     }
 
     /// Restores the drafter cursor of a cohort-verified round that is not used.
@@ -1450,6 +1653,9 @@ impl MlxRunner {
             draft_wall_us,
             clone_wall_us,
             verify_wall_us,
+            verify_build_us,
+            eval_wall_us,
+            predrafted,
             mut verify_cache,
             predicted,
             drafts: drafts_owned,
@@ -1460,6 +1666,7 @@ impl MlxRunner {
             primary,
             token_offset,
             window,
+            ..
         } = plan;
         let verify_len = window;
         let remaining = options.request_context.map_or(0, |ctx| {
@@ -1570,7 +1777,7 @@ impl MlxRunner {
                     .mtp_gap
                     .push(token_offset, hidden, emitted[..rows].to_vec());
             }
-            dflash.pending_hidden = Some(committed_hidden);
+            dflash.pending_hidden = Some(committed_hidden.clone());
             dflash.captured_rows = token_offset + keep;
             dflash.rounds += 1;
             dflash.stint_rounds += 1;
@@ -1598,6 +1805,45 @@ impl MlxRunner {
         // last emitted token for the next step.
         let tokens = apply_decode_result(state, &emitted, options.terminal_token_ids);
         self.finish_dflash2_round(state, window);
+        // Draft the next round now, while the GPU is idle and before this
+        // step's bookkeeping. The anchor is the last token emitted; the
+        // context rows are the ones committed above.
+        let ended = emitted
+            .iter()
+            .any(|token| options.terminal_token_ids.contains(token));
+        if !ended && let Some(next_primary) = state.next_model_last_token {
+            self.predraft_dflash2_round(
+                state,
+                &committed_hidden,
+                next_primary,
+                token_offset + keep,
+                remaining.saturating_sub(emitted.len()),
+            );
+        }
+        if round_trace_enabled()
+            && let Some(dflash) = state.dflash2.as_mut()
+        {
+            let now = Instant::now();
+            let gap_us = match (dflash.trace_last_end, dflash.trace_entry) {
+                (Some(last_end), Some(entry)) => {
+                    entry.saturating_duration_since(last_end).as_micros()
+                }
+                _ => 0,
+            };
+            let commit_us = dflash
+                .trace_entry
+                .map_or(0, |entry| now.saturating_duration_since(entry).as_micros())
+                .saturating_sub(u128::from(draft_wall_us + clone_wall_us + verify_wall_us));
+            eprintln!(
+                "dflash2_round gap_us={gap_us} draft_us={draft_wall_us} clone_us={clone_wall_us} \
+                 vbuild_us={verify_build_us} eval_us={eval_wall_us} commit_us={commit_us} \
+                 rollback_us={rollback_wall_us} keep={keep} window={window} predrafted={} \
+                 predraft_next={}",
+                predrafted as u8,
+                dflash.predraft.is_some() as u8
+            );
+            dflash.trace_last_end = Some(now);
+        }
         Some(tokens)
     }
 
@@ -1629,12 +1875,47 @@ impl MlxRunner {
             }
         }
         let draft_started = Instant::now();
-        let mut drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> =
-            if crate::fastpath::dflash2_cohort_packed_draft_enabled() {
-                dflash2_cohort_packed_drafts(lanes, &self.weights, cfg.block_size)
-            } else {
-                Vec::new()
-            };
+        // Every lane pre-drafted by the previous cohort round: those drafts
+        // are already on the GPU. Otherwise roll back whatever was pre-drafted
+        // and draft the cohort together.
+        let mut predrafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> = Vec::new();
+        let mut predraft_wall_us = 0u32;
+        if lanes.iter().all(|(state, plan)| {
+            state.dflash2.as_ref().is_some_and(|dflash| {
+                dflash.predraft.as_ref().is_some_and(|predraft| {
+                    predraft.primary == plan.primary && predraft.token_offset == plan.token_offset
+                })
+            })
+        }) {
+            for (idx, (state, plan)) in lanes.iter_mut().enumerate() {
+                if let Some((ids, cursor, wall_us)) = Self::take_dflash2_predraft(state, plan) {
+                    predrafted.push((idx, ids, cursor));
+                    predraft_wall_us = predraft_wall_us.max(wall_us);
+                }
+            }
+        } else {
+            for (state, _) in lanes.iter_mut() {
+                if let Some(dflash) = state.dflash2.as_mut() {
+                    drop_dflash2_predraft(dflash);
+                }
+            }
+        }
+        let used_predraft = predrafted.len() == lanes.len();
+        if !used_predraft && !predrafted.is_empty() {
+            // Cannot happen (every lane matched above); keep the drafter sane.
+            for (idx, _, cursor) in predrafted.drain(..) {
+                if let Some(dflash) = lanes[idx].0.dflash2.as_mut() {
+                    dflash.drafter.restore_cursor(cursor);
+                }
+            }
+        }
+        let mut drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> = if used_predraft {
+            predrafted
+        } else if crate::fastpath::dflash2_cohort_packed_draft_enabled() {
+            dflash2_cohort_packed_drafts(lanes, &self.weights, cfg.block_size)
+        } else {
+            Vec::new()
+        };
         let packed_drafted = !drafted.is_empty();
         for (idx, (state, plan)) in lanes.iter_mut().enumerate().filter(|_| !packed_drafted) {
             let Some(dflash) = state.dflash2.as_mut() else {
@@ -1668,7 +1949,25 @@ impl MlxRunner {
             restore(lanes, drafted);
             return (0, 0);
         }
-        let draft_wall_us = elapsed_us(draft_started);
+        // Same as the solo round: the packed drafter runs on the GPU while the
+        // host builds the packed verify forward for every lane.
+        if !used_predraft && crate::fastpath::dflash2_async_draft_enabled() {
+            let draft_refs: Vec<&MlxArray> = drafted.iter().map(|(_, arr, _)| arr).collect();
+            if let Err(error) = mlx_sys::try_async_eval(&draft_refs) {
+                tracing::warn!(
+                    target: "ax_engine_mlx::dflash2",
+                    %error,
+                    "DFlash2 cohort draft submission failed; lanes draft alone"
+                );
+                restore(lanes, drafted);
+                return (0, 0);
+            }
+        }
+        let draft_wall_us = if used_predraft {
+            predraft_wall_us
+        } else {
+            elapsed_us(draft_started)
+        };
 
         let mut id_parts: Vec<MlxArray> = Vec::with_capacity(drafted.len() * 2);
         for (idx, draft_arr, _) in &drafted {
@@ -1740,6 +2039,8 @@ impl MlxRunner {
         let predicted_arr = argmax(&logits_all, None);
         let refs: Vec<&MlxArray> = captured.iter().collect();
         let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
+        let verify_build_us = elapsed_us(verify_started);
+        let eval_started = Instant::now();
         let fence_error = crate::dflash2::take_dflash2_capture_verify_eval_error().or_else(|| {
             let mut eval_refs: Vec<&MlxArray> = vec![&predicted_arr, &hidden_all];
             eval_refs.extend(drafted.iter().map(|(_, draft_arr, _)| draft_arr));
@@ -1756,12 +2057,25 @@ impl MlxRunner {
             }
             return (0, 0);
         }
+        let eval_wall_us = elapsed_us(eval_started);
         let verify_wall_us = elapsed_us(verify_started);
+        if round_trace_enabled() {
+            eprintln!(
+                "dflash2_cohort lanes={} rows={} predrafted={} draft_us={} vbuild_us={} eval_us={}",
+                drafted.len(),
+                lanes.iter().map(|(_, plan)| plan.window).sum::<usize>(),
+                used_predraft as u8,
+                draft_wall_us,
+                verify_build_us,
+                eval_wall_us
+            );
+        }
         let predicted_all: Vec<u32> = predicted_arr.data_u32().to_vec();
         let width = hidden_all.shape()[2];
         let hidden_size = self.cfg.hidden_size as i32;
         let mut start = 0usize;
         let lanes_staged = drafted.len();
+        let mut next_rounds: Vec<(usize, u32, usize, MlxArray)> = Vec::with_capacity(lanes_staged);
         for ((idx, draft_arr, cursor), verify_cache) in drafted.into_iter().zip(verify_caches) {
             let (state, plan) = &mut lanes[idx];
             let rows = plan.window;
@@ -1775,21 +2089,159 @@ impl MlxRunner {
                     None,
                 )
             };
+            let drafts = draft_arr.data_u32().to_vec();
+            // What this lane's commit will keep, so its next round can be
+            // drafted now (the commit itself runs in the lane's own step).
+            let (accepted, new_tokens) = greedy_walk(&drafts, &predicted_all[start..end]);
+            let (emitted, keep) = linear_window_commit(
+                &new_tokens,
+                accepted,
+                plan.remaining,
+                &self.terminal_token_ids,
+            );
+            let ended = emitted
+                .iter()
+                .any(|token| self.terminal_token_ids.contains(token));
+            if !ended
+                && plan.remaining.saturating_sub(emitted.len()) >= 2
+                && let Some(&next_primary) = emitted.last()
+            {
+                next_rounds.push((
+                    idx,
+                    next_primary,
+                    plan.token_offset + keep,
+                    slice(
+                        &hidden_all,
+                        &[0, start as i32, 0],
+                        &[1, (start + keep) as i32, width],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                ));
+            }
             state.dflash2_staged = Some(Dflash2StagedVerify {
                 plan: *plan,
                 cursor,
                 draft_wall_us,
                 clone_wall_us,
                 verify_wall_us,
+                verify_build_us,
+                eval_wall_us,
+                predrafted: used_predraft,
                 verify_cache,
                 predicted: predicted_all[start..end].to_vec(),
-                drafts: draft_arr.data_u32().to_vec(),
+                drafts,
                 hidden_all: row_slice(&hidden_all, width),
                 post_norm: keep_post_norm.then(|| row_slice(&post_norm, hidden_size)),
             });
             start = end;
         }
+        self.predraft_dflash2_cohort(lanes, next_rounds, cfg.block_size);
         (lanes_staged, start)
+    }
+
+    /// Drafts the next round of every lane that continues, in one packed
+    /// drafter graph, and submits it before the lanes commit
+    /// (`AX_MLX_DFLASH2_PREDRAFT`). One lane drafts alone; a failed packing
+    /// or submission leaves every drafter where it was.
+    fn predraft_dflash2_cohort(
+        &self,
+        lanes: &mut [(&mut RequestState, Dflash2RoundPlan)],
+        next_rounds: Vec<(usize, u32, usize, MlxArray)>,
+        block: i32,
+    ) {
+        if !crate::fastpath::dflash2_predraft_enabled() || crate::fastpath::tree_verify_enabled() {
+            return;
+        }
+        let mut next_rounds: Vec<_> = next_rounds
+            .into_iter()
+            .filter(|(idx, ..)| {
+                let state = &lanes[*idx].0;
+                !state.think_soft_close_armed
+                    && state.pending_direct.is_none()
+                    && state.dflash2.as_ref().is_some_and(|dflash| {
+                        !dflash.disabled && dflash.handed_off.is_none() && dflash.predraft.is_none()
+                    })
+            })
+            .collect();
+        next_rounds.sort_by_key(|(idx, ..)| *idx);
+        if next_rounds.len() == 1 {
+            if let Some((idx, primary, offset, hidden)) = next_rounds.pop() {
+                self.predraft_dflash2_round(lanes[idx].0, &hidden, primary, offset, 2);
+            }
+            return;
+        }
+        if next_rounds.len() < 2 {
+            return;
+        }
+        let started = Instant::now();
+        let chosen: Vec<usize> = next_rounds.iter().map(|(idx, ..)| *idx).collect();
+        let mut rounds = next_rounds.into_iter();
+        let mut pending = rounds.next();
+        let mut cursors = Vec::with_capacity(chosen.len());
+        let mut meta: Vec<(u32, usize)> = Vec::with_capacity(chosen.len());
+        let mut packed: Vec<(&mut crate::dflash2::Dflash2Drafter, u32, MlxArray)> =
+            Vec::with_capacity(chosen.len());
+        for (idx, (state, _)) in lanes.iter_mut().enumerate() {
+            let Some((next_idx, ..)) = pending.as_ref() else {
+                break;
+            };
+            if *next_idx != idx {
+                continue;
+            }
+            let Some((_, primary, offset, hidden)) = pending.take() else {
+                break;
+            };
+            pending = rounds.next();
+            let Some(dflash) = state.dflash2.as_mut() else {
+                continue;
+            };
+            cursors.push(dflash.drafter.snapshot_cursor());
+            meta.push((primary, offset));
+            packed.push((&mut dflash.drafter, primary, hidden));
+        }
+        if packed.len() != chosen.len() {
+            // A lane lost its drafter between staging and here: nothing drafted.
+            return;
+        }
+        let drafts =
+            crate::dflash2::Dflash2Drafter::draft_blocks_packed(&mut packed, &self.weights, block);
+        drop(packed);
+        let submitted = drafts.as_ref().is_some_and(|drafts| {
+            let refs: Vec<&MlxArray> = drafts.iter().collect();
+            mlx_sys::try_async_eval(&refs).is_ok()
+        });
+        let draft_wall_us = elapsed_us(started);
+        let mut drafts = drafts.filter(|_| submitted).map(Vec::into_iter);
+        let mut cursors = cursors.into_iter();
+        let mut meta = meta.into_iter();
+        let mut chosen = chosen.into_iter().peekable();
+        for (idx, (state, _)) in lanes.iter_mut().enumerate() {
+            if chosen.peek() != Some(&idx) {
+                continue;
+            }
+            chosen.next();
+            let (Some(cursor), Some((primary, token_offset))) = (cursors.next(), meta.next())
+            else {
+                break;
+            };
+            let Some(dflash) = state.dflash2.as_mut() else {
+                continue;
+            };
+            match drafts.as_mut().and_then(Iterator::next) {
+                Some(drafted) => {
+                    dflash.predraft = Some(Dflash2PreDraft {
+                        primary,
+                        token_offset,
+                        drafted,
+                        cursor,
+                        draft_wall_us,
+                    });
+                }
+                // Packing or submission failed: the lane drafts in its own round.
+                None => dflash.drafter.restore_cursor(cursor),
+            }
+        }
     }
 
     /// Brings the MTP head up to date before a non-DFlash2 step: appends the
@@ -1901,6 +2353,7 @@ impl MlxRunner {
         ) {
             return;
         }
+        drop_dflash2_predraft(dflash);
         dflash.handed_off = Some(target);
         dflash.handoff_votes = 0;
         dflash.cooldown = next_cooldown(dflash.cooldown, dflash.probed, dflash.stint_rounds);

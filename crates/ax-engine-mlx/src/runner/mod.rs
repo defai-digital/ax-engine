@@ -8881,10 +8881,15 @@ impl MlxRunner {
         if stop_reason.is_none() {
             let mut states = self.states.lock();
             states.insert(item.request_id, state);
-        } else {
-            // Free MLX's intermediate graph and compute cache after each completed
-            // request.  Mirrors mlx_lm's mx.metal.clear_cache() at end of generation;
-            // reclaims GPU memory that would otherwise persist until the next request.
+        } else if self.states.lock().is_empty() {
+            // Free MLX's intermediate graph and compute cache once the last
+            // active request completes. Mirrors mlx_lm's mx.metal.clear_cache()
+            // at end of generation; reclaims GPU memory that would otherwise
+            // persist until the next request. While other requests decode, the
+            // cached buffers are their next round's working set: releasing them
+            // costs ~10 ms of Metal frees and a residency-set insert per
+            // re-allocation, stalling every live lane (M5 Max trace, 2026-11-03).
+            // Memory pressure still reclaims through `reclaim_idle_cache`.
             clear_cache();
         }
 
