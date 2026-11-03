@@ -8517,12 +8517,20 @@ impl MlxRunner {
                         // Retain prompt rows for decode, but detach a RAM tail
                         // only if the final boundary can actually be stored.
                         self.dflash2_finish_prefill_capture(&mut state);
+                        let end_state_capture = prefill_completes_prompt
+                            && effective_prefill_token_count > 0
+                            && media_key.as_deref().is_some_and(str::is_empty)
+                            && prefill_output_token
+                                .filter(|_| prefill_output_token_cacheable(ctx, sampling))
+                                .is_some()
+                            && self.prompt_end_state_eligible(&state, block_size_tokens);
                         if !semantic_capture
                             && block_size_tokens > 0
-                            && state
+                            && (state
                                 .cache
                                 .seq_len()
                                 .is_multiple_of(block_size_tokens as usize)
+                                || end_state_capture)
                         {
                             self.capture_dflash2_prefix(&mut state);
                         }
@@ -8987,6 +8995,146 @@ impl MlxRunner {
     /// Restore portable dense snapshots back under the runner-wide physical
     /// budget. The wire representation remains dense, but an opted-in pure-FA
     /// runner must not escape its pool merely because native L1 missed.
+    /// Exact replay of an unaligned linear-attention prompt: restores the
+    /// live end-of-prompt state [`Self::store_prompt_end_state`] kept (the
+    /// cold run's own cache and DFlash2 prompt rows) with its greedy prefill
+    /// token, so the prefill skips the partial-block tail the boundary
+    /// restore would recompute. Returns whether it restored.
+    #[allow(clippy::too_many_arguments)]
+    fn restore_prompt_end_state(
+        &self,
+        state: &mut RequestState,
+        item: &ax_engine_core::ExecutionItem,
+        reused_tokens: &[u32],
+        model_id: &str,
+        block_size_tokens: u32,
+        sampling: MlxSamplingParams,
+        semantic_starts: &[u32],
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) -> bool {
+        if !crate::fastpath::prefix_live_snapshot_enabled() {
+            return false;
+        }
+        let full: Vec<u32> = reused_tokens
+            .iter()
+            .chain(&item.input_token_slice)
+            .copied()
+            .collect();
+        let mut key = self.prefix_cache_key_with_media(model_id, block_size_tokens, &full, "");
+        self.bind_semantic_partition(&mut key, full.len(), semantic_starts);
+        let Some(snapshot) = self.prefix_cache.lock().get(&key, &full) else {
+            return false;
+        };
+        let Some(token) = snapshot.greedy_prefill_output_token else {
+            return false;
+        };
+        if snapshot.live_cache.is_none() || snapshot.token_count != full.len() {
+            return false;
+        }
+        let dflash2_eligible =
+            self.dflash2_request_eligible(sampling, sampling.temperature <= 0.0, false);
+        // The cold run decoded with DFlash2 from its prompt rows; without
+        // them this request would take another decode route.
+        if dflash2_eligible && self.dflash2.is_some() && snapshot.dflash2.is_none() {
+            return false;
+        }
+        let Ok(mut cache) = snapshot.rehydrate_cache() else {
+            return false;
+        };
+        if self
+            .verify_restored_prefix_snapshot(&mut cache, full.len())
+            .is_err()
+        {
+            telemetry.record_blocked_snapshot_incomplete();
+            return false;
+        }
+        state.cache = cache;
+        if dflash2_eligible {
+            self.restore_dflash2_prefix(state, snapshot.dflash2.as_deref());
+        }
+        state.prompt_prefix_tokens = full;
+        state.cached_prefill_output_token = Some(token);
+        telemetry.hits = telemetry.hits.saturating_add(1);
+        telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+        telemetry.reused_tokens = telemetry
+            .reused_tokens
+            .saturating_add(saturating_u32(snapshot.token_count));
+        true
+    }
+
+    /// Whether the end of this prompt should be kept for an exact replay
+    /// (see [`Self::restore_prompt_end_state`]).
+    fn prompt_end_state_eligible(&self, state: &RequestState, block_size_tokens: u32) -> bool {
+        let len = state.cache.seq_len();
+        crate::fastpath::prefix_boundary_replay_enabled()
+            && block_size_tokens > 0
+            && len > 0
+            && !len.is_multiple_of(block_size_tokens as usize)
+            && self.live_prefix_snapshot_eligible(&state.cache)
+    }
+
+    /// Keeps the live end-of-prompt state of an unaligned linear-attention
+    /// prompt, keyed by the whole prompt, with its greedy prefill token and
+    /// DFlash2 prompt rows. Only a byte-for-byte identical prompt with the
+    /// same partition can hit it.
+    fn store_prompt_end_state(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        state: &RequestState,
+        greedy_prefill_output_token: u32,
+    ) -> MlxPrefixCacheTelemetry {
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let len = state.cache.seq_len();
+        if !self.prompt_end_state_eligible(state, block_size_tokens)
+            || len != state.prompt_prefix_tokens.len()
+        {
+            return telemetry;
+        }
+        let tokens = &state.prompt_prefix_tokens[..];
+        let mut key = self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, "");
+        self.bind_semantic_partition(&mut key, len, &state.semantic_cut_tokens);
+        let logical_kv_bytes = state.cache.usage_snapshot().logical_bytes;
+        let mut cache = self.prefix_cache.lock();
+        if cache
+            .get(&key, tokens)
+            .is_some_and(|resident| resident.greedy_prefill_output_token.is_some())
+        {
+            return telemetry;
+        }
+        let outcome = cache.insert(
+            key,
+            MlxPrefixSnapshot::from_live_cache(
+                state.cache.clone(),
+                logical_kv_bytes,
+                tokens.to_vec(),
+                len,
+                Some(greedy_prefill_output_token),
+                None,
+            )
+            .with_dflash2(state.dflash2_prefix_snapshots.get(&len).cloned()),
+        );
+        telemetry.record_stats(cache.stats());
+        if outcome.stored {
+            telemetry.stores = telemetry.stores.saturating_add(1);
+        }
+        telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
+        telemetry
+    }
+
+    /// Whether the in-memory prefix store may keep `cache` live instead of
+    /// serialized (`AX_MLX_PREFIX_LIVE_SNAPSHOT`): linear-attention models
+    /// whose full-attention layers are dense (not in the shared paged pool,
+    /// whose blocks the native tier owns) and fully serializable, so a later
+    /// disk mirror or demotion is still possible.
+    fn live_prefix_snapshot_eligible(&self, cache: &MlxKVCache) -> bool {
+        crate::fastpath::prefix_live_snapshot_enabled()
+            && self.cfg.linear_attention.is_some()
+            && self.cfg.model_family != "qwen4_exp"
+            && !cache.has_fa_pool()
+            && !cache.has_unserializable_layers()
+    }
+
     fn prepare_portable_prefix_restore(
         &self,
         restored: MlxKVCache,
@@ -9987,20 +10135,38 @@ impl MlxRunner {
         // restored, not only the priced choice: the terminal anchor is
         // block-aligned by construction, so the unpriced probe can land on a
         // planned cut too.
-        let planned_restore_len = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len())
-            .or_else(|| {
-                (self.cfg.linear_attention.is_some()
-                    && crate::fastpath::prefix_boundary_replay_enabled())
-                .then(|| {
-                    exact_boundary_replay_restore_len(
-                        item,
-                        reused_tokens.len(),
-                        block_size_tokens as usize,
-                        ctx.map(|ctx| ctx.prompt_len as usize),
-                    )
-                })
-                .flatten()
-            });
+        let boundary_replay_len = (self.cfg.linear_attention.is_some()
+            && crate::fastpath::prefix_boundary_replay_enabled())
+        .then(|| {
+            exact_boundary_replay_restore_len(
+                item,
+                reused_tokens.len(),
+                block_size_tokens as usize,
+                ctx.map(|ctx| ctx.prompt_len as usize),
+            )
+        })
+        .flatten();
+        let planned_cut_len = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len());
+        if planned_cut_len.is_none()
+            && boundary_replay_len == Some(reused_tokens.len())
+            && media_key.is_empty()
+            && prefill_output_token_cacheable(ctx, sampling)
+            && self.restore_prompt_end_state(
+                state,
+                item,
+                reused_tokens,
+                model_id,
+                block_size_tokens,
+                sampling,
+                prefill_hints
+                    .map(|hints| hints.semantic_cut_tokens.as_slice())
+                    .unwrap_or(&[]),
+                &mut telemetry,
+            )
+        {
+            return telemetry;
+        }
+        let planned_restore_len = planned_cut_len.or(boundary_replay_len);
         let Some(restore_len) = planned_restore_len.or_else(|| {
             grid_aligned_prefix_restore_len(
                 item,
@@ -10711,6 +10877,30 @@ impl MlxRunner {
             // snapshot would claim tokens and restore as empty.
             return telemetry;
         }
+        if disk_key_bytes.is_none() && self.live_prefix_snapshot_eligible(snapshot_cache) {
+            let logical_kv_bytes = snapshot_cache.usage_snapshot().logical_bytes;
+            let outcome = {
+                let mut cache = self.prefix_cache.lock();
+                let outcome = cache.insert(
+                    key,
+                    MlxPrefixSnapshot::from_live_cache(
+                        snapshot_cache.clone(),
+                        logical_kv_bytes,
+                        tokens.to_vec(),
+                        prefix_len,
+                        None,
+                        None,
+                    )
+                    .with_dflash2(state.dflash2_prefix_snapshots.get(&prefix_len).cloned()),
+                );
+                telemetry.record_stats(cache.stats());
+                outcome
+            };
+            if outcome.stored {
+                telemetry.stores = telemetry.stores.saturating_add(1);
+            }
+            return telemetry;
+        }
         let serialize_started = Instant::now();
         let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
         let serialize_us = u64::from(elapsed_us(serialize_started));
@@ -10867,6 +11057,17 @@ impl MlxRunner {
         let alignment_restricted = linear_attention || sliding_window || mla_attention;
         let exact_alignment_required = linear_attention;
         if exact_alignment_required && full_block_tokens != available_tokens {
+            if prefill_completes_prompt
+                && media_key.is_empty()
+                && let Some(token) = greedy_prefill_output_token
+            {
+                telemetry.merge_from(self.store_prompt_end_state(
+                    model_id,
+                    block_size_tokens,
+                    state,
+                    token,
+                ));
+            }
             // Unaligned linear prompts can still store the snapshot captured
             // mid-prefill at the largest block-aligned boundary (see
             // `linear_boundary_capture_head_len`); the capture's cache state
@@ -11122,10 +11323,35 @@ impl MlxRunner {
             if snapshot_cache.has_unserializable_layers() {
                 continue;
             }
+            let disk_open = self.disk_prefix_cache.is_some();
+            if !(is_largest && disk_open) && self.live_prefix_snapshot_eligible(&snapshot_cache) {
+                let logical_kv_bytes = snapshot_cache.usage_snapshot().logical_bytes;
+                let outcome = {
+                    let mut cache = self.prefix_cache.lock();
+                    let outcome = cache.insert(
+                        store_key.clone(),
+                        MlxPrefixSnapshot::from_live_cache(
+                            snapshot_cache,
+                            logical_kv_bytes,
+                            tokens.to_vec(),
+                            prefix_len,
+                            snapshot_prefill_output_token,
+                            mtp_cursor_payload,
+                        )
+                        .with_dflash2(state.dflash2_prefix_snapshots.get(&prefix_len).cloned()),
+                    );
+                    telemetry.record_stats(cache.stats());
+                    outcome
+                };
+                if outcome.stored {
+                    telemetry.stores = telemetry.stores.saturating_add(1);
+                }
+                telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
+                continue;
+            }
             let serialize_started = Instant::now();
             let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
             let serialize_us = u64::from(elapsed_us(serialize_started));
-            let disk_open = self.disk_prefix_cache.is_some();
             if is_largest && disk_open {
                 self.record_disk_artifact_identity_if_unavailable(&mut telemetry);
             }

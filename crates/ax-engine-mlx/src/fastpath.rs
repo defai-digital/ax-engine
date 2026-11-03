@@ -1803,6 +1803,52 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_PREFIX_LIVE_SNAPSHOT` — on linear-attention models whose
+    /// full-attention layers are not in the shared paged pool, the in-memory
+    /// prefix store keeps a clone of the live cache (shared, immutable MLX
+    /// buffers) instead of serializing it to bytes, and a hit clones it back
+    /// instead of deserializing. The restored state is the same arrays the
+    /// cold run produced, so the replay is unchanged; it only drops the
+    /// O(prefix) serialize on store and copy on restore (~1.6 GB at 25K
+    /// tokens on the 27B). The disk mirror still serializes. **Default: ON**;
+    /// `0` restores the byte payload.
+    prefix_live_snapshot_enabled,
+    "AX_MLX_PREFIX_LIVE_SNAPSHOT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_COHORT_PACKED_DRAFT` — in a batched DFlash2 round,
+    /// drafts every lane in one drafter graph: projections, convolutions,
+    /// MLP and LM head run once over all lanes' rows and only each lane's
+    /// context attention runs per lane, so the drafter weights are read once
+    /// per round instead of once per lane. Drafts only steer which rows the
+    /// target verifies. **Default: ON**; `0` drafts each lane alone.
+    dflash2_cohort_packed_draft_enabled,
+    "AX_MLX_DFLASH2_COHORT_PACKED_DRAFT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_SELECTOR` — picks each DFlash2 draft token with the
+    /// checkpoint's trained candidate selector (the top-k logits rescored by
+    /// a low-rank pair score against the previous pick) instead of the plain
+    /// argmax, as the drafter's reference runtime does. On the M5 Max 27B
+    /// suite it accepts 2.9% more tokens per round for 0.3 ms more per round
+    /// (decode +2.4%; prose +3.7%). Drafts only choose which rows the target
+    /// verifies. **Default: ON**; `0` restores the argmax.
+    dflash2_selector_enabled,
+    "AX_MLX_DFLASH2_SELECTOR"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_FUSED_CONV` — runs each DFlash2 drafter grouped
+    /// convolution as one Metal kernel instead of a chain of about twenty MLX
+    /// ops; it rounds every step like the chain, so drafts are unchanged.
+    /// **Default: ON**; `0` restores the op chain.
+    dflash2_fused_conv_enabled,
+    "AX_MLX_DFLASH2_FUSED_CONV"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT_WINDOW` — in a batched DFlash2 round on a host
     /// with the NAX verify hand-off (M5+), picks each lane's window to
     /// maximize the cohort's expected tokens per millisecond of a fixed

@@ -161,3 +161,75 @@ pub fn dflash2_solo_verify_logits_probe(
     cache.advance(ids.len());
     logits
 }
+
+/// Median milliseconds of one DFlash2 drafter block per lane, drafted alone
+/// (`packed == false`, one eval per lane) or in one packed graph, after the
+/// drafter has absorbed `context_rows` rows. `None` when the drafter does not
+/// load. Measurement only.
+#[doc(hidden)]
+pub fn dflash2_draft_probe(
+    drafter_dir: &std::path::Path,
+    target: &ModelWeights,
+    lanes: usize,
+    context_rows: i32,
+    selector: bool,
+    packed: bool,
+    reps: usize,
+) -> Option<f64> {
+    use crate::dflash2::{Dflash2Drafter, Dflash2Weights, DrafterPrecision};
+    let weights =
+        std::sync::Arc::new(Dflash2Weights::load(drafter_dir, DrafterPrecision::Mxfp4).ok()?);
+    weights.materialize();
+    let width = weights.config().target_hidden_width();
+    let block = weights.config().block_size;
+    let hidden = |rows: i32| mlx_sys::zeros(&[1, rows, width], MlxDtype::Bfloat16, None);
+    let mut drafters: Vec<Dflash2Drafter> = (0..lanes)
+        .map(|_| Dflash2Drafter::new(weights.clone()).with_selector(selector))
+        .collect();
+    for drafter in &mut drafters {
+        let ids = drafter
+            .draft_block(1, &hidden(context_rows), target, block)
+            .ok()?;
+        mlx_sys::eval(&[&ids]);
+    }
+    if std::env::var_os("AX_COHORT_PROBE_DRAFT_STAGES").is_some() && lanes == 1 && !packed {
+        let drafter = &mut drafters[0];
+        drafter.set_stage_timing(true);
+        let mut totals: Vec<(&'static str, f64)> = Vec::new();
+        for _ in 0..reps {
+            let ids = drafter.draft_block(7, &hidden(8), target, block).ok()?;
+            mlx_sys::eval(&[&ids]);
+            for (stage, ms) in drafter.take_stage_times() {
+                match totals.iter_mut().find(|(name, _)| *name == stage) {
+                    Some((_, total)) => *total += ms,
+                    None => totals.push((stage, ms)),
+                }
+            }
+        }
+        drafter.set_stage_timing(false);
+        for (stage, total) in totals {
+            eprintln!("draft stage {stage}: {:.3} ms", total / reps as f64);
+        }
+    }
+    let mut times = Vec::with_capacity(reps);
+    for rep in 0..reps + 3 {
+        let started = std::time::Instant::now();
+        if packed && lanes > 1 {
+            let mut lane_refs: Vec<(&mut Dflash2Drafter, u32, MlxArray)> =
+                drafters.iter_mut().map(|d| (d, 7, hidden(8))).collect();
+            let ids = Dflash2Drafter::draft_blocks_packed(&mut lane_refs, target, block)?;
+            let refs: Vec<&MlxArray> = ids.iter().collect();
+            mlx_sys::eval(&refs);
+        } else {
+            for drafter in &mut drafters {
+                let ids = drafter.draft_block(7, &hidden(8), target, block).ok()?;
+                mlx_sys::eval(&[&ids]);
+            }
+        }
+        if rep >= 3 {
+            times.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    times.sort_by(f64::total_cmp);
+    Some(times[times.len() / 2])
+}

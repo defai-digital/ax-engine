@@ -302,6 +302,22 @@ prompt fell from about 1.6 s to about 0.2 s, and of a 25K-token prompt from
 about 1.3 s to about 0.3 s, with replies identical to the cold run.
 `AX_MLX_PREFIX_BOUNDARY_REPLAY=0` restores the grid floor for these replays.
 
+The cold run also keeps its end-of-prompt state, keyed by the whole prompt,
+with its greedy first token and the DFlash2 prompt rows. A greedy request with
+the byte-identical prompt restores that state and emits the stored token
+without running the partial block at all; any other request still takes the
+boundary path above.
+
+On these models the in-memory store keeps both snapshots live: a clone of the
+cache whose MLX buffers are shared and immutable, instead of a serialized
+copy. A store no longer serializes the cache and a hit no longer deserializes
+it, which was about 1.6 GB at 25K tokens on the 27B. The byte budget charges a
+live entry the same as its serialized form, and the disk mirror still
+serializes. Together, on the M5 Max with Qwen 3.8 27B, exact-replay TTFT is
+22 ms at 1K tokens, 29 ms at 12K and 39 ms at 25K, with replies identical to
+the cold run. `AX_MLX_PREFIX_LIVE_SNAPSHOT=0` restores serialized snapshots and
+the partial-block replay.
+
 ## Value-Priced Restore and Semantic Cuts (Opt-In)
 
 Two further prefix features are opt-in and both default off. They are resolved

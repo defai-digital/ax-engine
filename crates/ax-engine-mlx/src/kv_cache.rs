@@ -1729,6 +1729,11 @@ impl MlxKVCache {
         }
     }
 
+    /// Whether any full-attention layer lives in a shared paged pool.
+    pub(crate) fn has_fa_pool(&self) -> bool {
+        self.fa_pool.is_some()
+    }
+
     pub(crate) fn uses_fa_block_pool(&self, pool: &SharedFaBlockPool) -> bool {
         self.fa_pool
             .as_ref()

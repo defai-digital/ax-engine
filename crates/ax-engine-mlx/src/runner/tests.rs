@@ -3431,6 +3431,7 @@ fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefix
     MlxPrefixSnapshot {
         dflash2: None,
         kv_cache_payload: Arc::from(payload.into_boxed_slice()),
+        live_cache: None,
         tokens: vec![token; token_count],
         token_count,
         bytes,
@@ -3599,6 +3600,7 @@ fn portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder() {
                 let snapshot = MlxPrefixSnapshot {
                     dflash2: None,
                     kv_cache_payload: Arc::from(Vec::<u8>::new().into_boxed_slice()),
+                    live_cache: None,
                     tokens: vec![1; len],
                     token_count: len,
                     bytes: snapshot_charge_bytes(per_token * len as u64 + header, len),
@@ -10426,4 +10428,30 @@ fn exact_boundary_replay_keeps_the_boundary_restore() {
         exact_boundary_replay_restore_len(&item, 1920, 32, None),
         None
     );
+}
+
+#[test]
+fn live_prefix_snapshot_restores_an_independent_clone_without_a_payload() {
+    let mut cache = MlxKVCache::new(1);
+    let k = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+    let v = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+    let _ = cache.append(0, k, v);
+    cache.advance(3);
+    let logical = cache.usage_snapshot().logical_bytes;
+    let snapshot = MlxPrefixSnapshot::from_live_cache(cache, logical, vec![5; 3], 3, Some(9), None);
+    assert!(snapshot.kv_cache_payload.is_empty());
+    assert_eq!(snapshot.payload_bytes(), logical);
+    assert_eq!(snapshot.bytes, snapshot_charge_bytes(logical, 3));
+
+    // A restore grows its own copy; the stored snapshot keeps its boundary.
+    let mut restored = snapshot.rehydrate_cache().expect("live restore");
+    assert_eq!(restored.seq_len(), 3);
+    let k = mlx_sys::zeros(&[1, 1, 2, 2], mlx_sys::MlxDtype::Float32, None);
+    let v = mlx_sys::zeros(&[1, 1, 2, 2], mlx_sys::MlxDtype::Float32, None);
+    let _ = restored.append(0, k, v);
+    restored.advance(2);
+    assert_eq!(restored.seq_len(), 5);
+    let again = snapshot.rehydrate_cache().expect("second live restore");
+    assert_eq!(again.seq_len(), 3);
+    assert_eq!(again.usage_snapshot().logical_bytes, logical);
 }

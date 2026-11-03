@@ -26,6 +26,11 @@ pub(crate) struct MlxPrefixCacheKey {
 pub(crate) struct MlxPrefixSnapshot {
     pub(crate) dflash2: Option<Arc<dflash2_decode::Dflash2PrefixSnapshot>>,
     pub(crate) kv_cache_payload: Arc<[u8]>,
+    /// Live-cache form of the payload (`AX_MLX_PREFIX_LIVE_SNAPSHOT`): a
+    /// clone of the cache at the stored boundary, whose MLX buffers are
+    /// shared and immutable. When set, `kv_cache_payload` is empty and a
+    /// restore clones this instead of deserializing.
+    pub(crate) live_cache: Option<MlxKVCache>,
     pub(crate) tokens: Vec<u32>,
     pub(crate) token_count: usize,
     pub(crate) bytes: u64,
@@ -66,11 +71,48 @@ impl MlxPrefixSnapshot {
         Self {
             dflash2: None,
             kv_cache_payload: payload,
+            live_cache: None,
             tokens,
             token_count,
             bytes,
             greedy_prefill_output_token,
             mtp_cursor_payload,
+        }
+    }
+
+    /// Build a snapshot that keeps `cache` live instead of serialized.
+    /// `logical_kv_bytes` is what the serialized payload would have been, so
+    /// the byte budget charges the entry the same either way.
+    pub(crate) fn from_live_cache(
+        cache: MlxKVCache,
+        logical_kv_bytes: u64,
+        tokens: Vec<u32>,
+        token_count: usize,
+        greedy_prefill_output_token: Option<u32>,
+        mtp_cursor_payload: Option<Arc<[u8]>>,
+    ) -> Self {
+        let mtp_cursor_bytes = mtp_cursor_payload
+            .as_ref()
+            .map_or(0, |payload| payload.len() as u64);
+        let bytes =
+            snapshot_charge_bytes(logical_kv_bytes, tokens.len()).saturating_add(mtp_cursor_bytes);
+        Self {
+            dflash2: None,
+            kv_cache_payload: Arc::from([0u8; 0]),
+            live_cache: Some(cache),
+            tokens,
+            token_count,
+            bytes,
+            greedy_prefill_output_token,
+            mtp_cursor_payload,
+        }
+    }
+
+    /// KV payload bytes, whether serialized or live.
+    pub(crate) fn payload_bytes(&self) -> u64 {
+        match &self.live_cache {
+            Some(cache) => cache.usage_snapshot().logical_bytes,
+            None => self.kv_cache_payload.len() as u64,
         }
     }
 
@@ -88,6 +130,9 @@ impl MlxPrefixSnapshot {
     pub(crate) fn rehydrate_cache(
         &self,
     ) -> Result<MlxKVCache, crate::kv_cache::MlxKVCacheSerializeError> {
+        if let Some(cache) = &self.live_cache {
+            return Ok(cache.clone());
+        }
         MlxKVCache::try_deserialize_from_bytes(&self.kv_cache_payload)
     }
 }
@@ -388,7 +433,7 @@ impl MlxPrefixCache {
             return None;
         }
         let entry = self.entries.get(key)?;
-        (entry.snapshot.tokens == tokens).then(|| entry.snapshot.kv_cache_payload.len() as u64)
+        (entry.snapshot.tokens == tokens).then(|| entry.snapshot.payload_bytes())
     }
 
     /// True when an entry for `key` already holds exactly `tokens` and would

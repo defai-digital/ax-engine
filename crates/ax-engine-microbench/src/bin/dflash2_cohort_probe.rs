@@ -23,8 +23,9 @@ use ax_engine_mlx::{
     kv_cache::MlxKVCache,
     model::ModelConfig,
     probes::{
-        ProbeLane, dflash2_packed_verify_probe, dflash2_packed_verify_supported,
-        dflash2_solo_verify_logits_probe, dflash2_verify_forward_probe,
+        ProbeLane, dflash2_draft_probe, dflash2_packed_verify_probe,
+        dflash2_packed_verify_supported, dflash2_solo_verify_logits_probe,
+        dflash2_verify_forward_probe,
     },
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::{ModelWeights, load_weights},
@@ -234,6 +235,33 @@ fn run() -> Result<(), String> {
             layers: &layers,
         };
         let supported = dflash2_packed_verify_supported(&cfg, &weights);
+        if env::var_os("AX_COHORT_PROBE_DRAFT").is_some() {
+            // Drafter cost per round: lanes alone vs packed, selector off/on.
+            for lanes in 1..=4usize {
+                for selector in [false, true] {
+                    for packed in [false, true] {
+                        if packed && lanes == 1 {
+                            continue;
+                        }
+                        let ms = dflash2_draft_probe(
+                            Path::new(&drafter_dir),
+                            &weights,
+                            lanes,
+                            context.min(2047) as i32,
+                            selector,
+                            packed,
+                            reps,
+                        );
+                        println!(
+                            "{}",
+                            serde_json::json!({"context": context, "draft_lanes": lanes,
+                                "selector": selector, "packed": packed, "ms": ms})
+                        );
+                    }
+                }
+            }
+            continue;
+        }
         if env::var_os("AX_COHORT_PROBE_SWEEP").is_some() {
             // Cost curve for the cohort window policy: B lanes x W rows.
             for lanes in 1..=4usize {

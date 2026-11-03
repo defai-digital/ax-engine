@@ -29,6 +29,8 @@ use mlx_sys::{
     slice, split, stack, sum_axis, take, take_along_axis, transpose,
 };
 
+use mlx_sys::{KernelOutputSpec, KernelTemplateArg, LazyKernel};
+
 use crate::model::shared::qw;
 use crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard;
 use crate::weights::{ModelWeights, QuantizedWeight};
@@ -283,48 +285,165 @@ struct GroupedConv {
     projection_t: MlxArray,
 }
 
+/// One thread per output element of [`GroupedConv::convolve`]. Each step is
+/// rounded to `T` in the op chain's order (tap + base, times the shifted
+/// input, then the running sum), so the result matches it value for value.
+const DFLASH2_GROUPED_CONV_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    uint row = idx / uint(Width);
+    if (row >= uint(Rows)) {
+        return;
+    }
+    uint col = idx - row * uint(Width);
+    uint t = row % uint(Length);
+    uint group = col / uint(GroupSize);
+    uint dyn_row = row * uint(2 * Taps * Groups) + uint(Half * Taps * Groups) + group;
+    T acc = T(0.0f);
+    for (int offset = 0; offset < Taps; ++offset) {
+        float base_tap = float(base[uint(Half * Taps + offset) * uint(Width) + col]);
+        float tap = float(dynamic[dyn_row + uint(offset * Groups)]);
+        T weight = static_cast<T>(base_tap + tap);
+        float value = (int(t) >= offset) ? float(hidden[idx - uint(offset) * uint(Width)]) : 0.0f;
+        T term = static_cast<T>(float(weight) * value);
+        acc = (offset == 0) ? term : static_cast<T>(float(acc) + float(term));
+    }
+    out[idx] = acc;
+"#;
+
+static DFLASH2_GROUPED_CONV: LazyKernel = LazyKernel::new(
+    "ax_dflash2_grouped_conv_v1",
+    &["hidden", "dynamic", "base"],
+    &["out"],
+    DFLASH2_GROUPED_CONV_SOURCE,
+    "",
+    true,
+);
+
 impl GroupedConv {
-    /// `hidden`: `[1, L, hidden]` -> (prepared hidden, dynamic taps for finish).
+    /// `hidden`: `[B, L, hidden]` -> (prepared hidden, dynamic taps `[B, L,
+    /// 2 * kernel * groups]` for both halves; `finish` reads the second).
     fn prepare(&self, cfg: &Dflash2Config, hidden: &MlxArray) -> (MlxArray, MlxArray) {
-        let shape = hidden.shape();
-        let (length, groups) = (shape[1], cfg.hidden_size / cfg.conv_group_size);
-        let dynamic = reshape(
-            &matmul(hidden, &self.projection_t, None),
-            &[1, length, 2, cfg.conv_kernel_size, groups],
-            None,
-        );
-        let prepare_taps = reshape(
-            &slice(
-                &dynamic,
-                &[0, 0, 0, 0, 0],
-                &[1, length, 1, cfg.conv_kernel_size, groups],
-                &[1, 1, 1, 1, 1],
-                None,
-            ),
-            &[1, length, cfg.conv_kernel_size, groups],
-            None,
-        );
-        let finish_taps = reshape(
-            &slice(
-                &dynamic,
-                &[0, 0, 1, 0, 0],
-                &[1, length, 2, cfg.conv_kernel_size, groups],
-                &[1, 1, 1, 1, 1],
-                None,
-            ),
-            &[1, length, cfg.conv_kernel_size, groups],
-            None,
-        );
-        (self.convolve(cfg, hidden, &prepare_taps, 0), finish_taps)
+        let dynamic = matmul(hidden, &self.projection_t, None);
+        (self.convolve(cfg, hidden, &dynamic, 0), dynamic)
     }
 
-    fn finish(&self, cfg: &Dflash2Config, hidden: &MlxArray, taps: &MlxArray) -> MlxArray {
-        self.convolve(cfg, hidden, taps, 1)
+    fn finish(&self, cfg: &Dflash2Config, hidden: &MlxArray, dynamic: &MlxArray) -> MlxArray {
+        self.convolve(cfg, hidden, dynamic, 1)
     }
 
     /// `output = sum_offset (base[half, offset] + taps[.., offset]) * shift(hidden, offset)`
-    /// where `shift` delays the sequence axis by `offset` with zero fill.
+    /// where `shift` delays the sequence axis by `offset` with zero fill and
+    /// `taps` is half `half` of `dynamic`. One fused kernel when available;
+    /// it rounds each step to the activation dtype like the op chain below,
+    /// so both give the same values.
     fn convolve(
+        &self,
+        cfg: &Dflash2Config,
+        hidden: &MlxArray,
+        dynamic: &MlxArray,
+        half: i32,
+    ) -> MlxArray {
+        if let Some(out) = self.convolve_fused(cfg, hidden, dynamic, half) {
+            return out;
+        }
+        let shape = hidden.shape();
+        let (batch, length) = (shape[0], shape[1]);
+        let groups = cfg.hidden_size / cfg.conv_group_size;
+        let taps = reshape(
+            &slice(
+                &reshape(
+                    dynamic,
+                    &[batch, length, 2, cfg.conv_kernel_size, groups],
+                    None,
+                ),
+                &[0, 0, half, 0, 0],
+                &[batch, length, half + 1, cfg.conv_kernel_size, groups],
+                &[1, 1, 1, 1, 1],
+                None,
+            ),
+            &[batch, length, cfg.conv_kernel_size, groups],
+            None,
+        );
+        self.convolve_ops(cfg, hidden, &taps, half)
+    }
+
+    fn convolve_fused(
+        &self,
+        cfg: &Dflash2Config,
+        hidden: &MlxArray,
+        dynamic: &MlxArray,
+        half: i32,
+    ) -> Option<MlxArray> {
+        if !crate::fastpath::dflash2_fused_conv_enabled() {
+            return None;
+        }
+        let shape = hidden.shape();
+        let dtype = hidden.dtype();
+        let groups = cfg.hidden_size / cfg.conv_group_size;
+        if shape.len() != 3
+            || shape[2] != cfg.hidden_size
+            || !matches!(dtype, MlxDtype::Bfloat16 | MlxDtype::Float16)
+            || dynamic.dtype() != dtype
+            || dynamic.shape() != [shape[0], shape[1], 2 * cfg.conv_kernel_size * groups]
+            || self.base.shape() != [2, cfg.conv_kernel_size, cfg.hidden_size]
+        {
+            return None;
+        }
+        let base = if self.base.dtype() == dtype {
+            self.base.clone()
+        } else {
+            astype(&self.base, dtype, None)
+        };
+        let total = shape[0] * shape[1] * shape[2];
+        let mut outputs = DFLASH2_GROUPED_CONV
+            .get()?
+            .try_apply_with_template(
+                &[hidden, dynamic, &base],
+                &[KernelOutputSpec {
+                    shape: shape.clone(),
+                    dtype,
+                }],
+                &[
+                    KernelTemplateArg::Dtype { name: "T", dtype },
+                    KernelTemplateArg::Int {
+                        name: "Rows",
+                        value: shape[0] * shape[1],
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Length",
+                        value: shape[1],
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Width",
+                        value: shape[2],
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Taps",
+                        value: cfg.conv_kernel_size,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Groups",
+                        value: groups,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "GroupSize",
+                        value: cfg.conv_group_size,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Half",
+                        value: half,
+                    },
+                ],
+                (total, 1, 1),
+                (256, 1, 1),
+                None,
+            )
+            .ok()?;
+        outputs.pop()
+    }
+
+    /// The op-chain form of [`Self::convolve`]; `taps` is `[B, L, kernel, groups]`.
+    fn convolve_ops(
         &self,
         cfg: &Dflash2Config,
         hidden: &MlxArray,
@@ -332,18 +451,22 @@ impl GroupedConv {
         half: i32,
     ) -> MlxArray {
         let shape = hidden.shape();
-        let (length, width) = (shape[1], shape[2]);
+        let (batch, length, width) = (shape[0], shape[1], shape[2]);
         let groups = width / cfg.conv_group_size;
         let group = cfg.conv_group_size;
-        let blocks = reshape(hidden, &[1, length, groups, group], None);
-        let taps = reshape(taps, &[1, length, cfg.conv_kernel_size, groups, 1], None);
+        let blocks = reshape(hidden, &[batch, length, groups, group], None);
+        let taps = reshape(
+            taps,
+            &[batch, length, cfg.conv_kernel_size, groups, 1],
+            None,
+        );
         let mut output: Option<MlxArray> = None;
         for offset in 0..cfg.conv_kernel_size {
             let values = if offset == 0 {
                 blocks.clone()
             } else {
                 let pad = mlx_sys::zeros(
-                    &[1, offset.min(length), groups, group],
+                    &[batch, offset.min(length), groups, group],
                     hidden.dtype(),
                     None,
                 );
@@ -353,7 +476,7 @@ impl GroupedConv {
                     let kept = slice(
                         &blocks,
                         &[0, 0, 0, 0],
-                        &[1, length - offset, groups, group],
+                        &[batch, length - offset, groups, group],
                         &[1, 1, 1, 1],
                         None,
                     );
@@ -375,11 +498,11 @@ impl GroupedConv {
                 &slice(
                     &taps,
                     &[0, 0, offset, 0, 0],
-                    &[1, length, offset + 1, groups, 1],
+                    &[batch, length, offset + 1, groups, 1],
                     &[1, 1, 1, 1, 1],
                     None,
                 ),
-                &[1, length, groups, 1],
+                &[batch, length, groups, 1],
                 None,
             );
             let term = multiply(
@@ -394,7 +517,7 @@ impl GroupedConv {
         }
         reshape(
             &output.expect("convolution kernel size is positive"),
-            &[1, length, width],
+            &[batch, length, width],
             None,
         )
     }
@@ -610,9 +733,9 @@ pub(crate) struct DrafterCursor {
 /// The drafter and its cache state for one request.
 pub(crate) struct Dflash2Drafter {
     weights: std::sync::Arc<Dflash2Weights>,
-    /// Apply the candidate selector (the sampling path of the reference). Greedy
-    /// decoding takes the plain argmax of the target LM head: the selector adds
-    /// about 1.5% tokens per round for about 20% more drafter time.
+    /// Pick each draft token with the candidate selector, as the reference
+    /// runtime does for greedy decoding too (`AX_MLX_DFLASH2_SELECTOR`,
+    /// default on). Off, drafts take the plain argmax of the target LM head.
     use_selector: bool,
     /// When set, every stage is evaluated and timed (diagnostic; breaks overlap).
     stage_times: Option<Vec<(&'static str, f64)>>,
@@ -833,6 +956,250 @@ impl Dflash2Drafter {
         }
     }
 
+    /// Drafts one block per lane in a single graph: the embedding, context
+    /// and every projection, the grouped convolutions, the MLP and the LM
+    /// head run once over all lanes' rows (each weight read once), and only
+    /// each lane's context-cache attention runs on its own drafter. Each
+    /// lane's cursor advances exactly as [`Self::draft_block`] would advance
+    /// it, and each returned `[1, block - 1]` id array is lazy.
+    ///
+    /// `None` when the lanes cannot share a graph (fewer than two, the
+    /// candidate selector or stage timing on, different drafter weights or
+    /// hidden widths); nothing is changed then and the caller drafts each
+    /// lane alone.
+    pub(crate) fn draft_blocks_packed(
+        lanes: &mut [(&mut Dflash2Drafter, u32, MlxArray)],
+        target: &ModelWeights,
+        block: i32,
+    ) -> Option<Vec<MlxArray>> {
+        let weights = lanes.first()?.0.weights.clone();
+        let use_selector = lanes.first()?.0.use_selector;
+        let cfg = &weights.cfg;
+        let hidden = cfg.hidden_size;
+        let width = lanes.first()?.2.shape().get(2).copied()?;
+        if lanes.len() < 2
+            || block < 2
+            || lanes.iter().any(|(drafter, _, new_hidden)| {
+                drafter.use_selector != use_selector
+                    || drafter.stage_times.is_some()
+                    || !std::sync::Arc::ptr_eq(&drafter.weights, &weights)
+                    || new_hidden.shape().len() != 3
+                    || new_hidden.shape()[0] != 1
+                    || new_hidden.shape()[2] != width
+                    || new_hidden.shape()[1] < 1
+            })
+        {
+            return None;
+        }
+        let batch = lanes.len() as i32;
+        let _fused_rows = QwenMtpVerifyQmmGuard::arm(true);
+        // `[B, L, in]` -> `[B, L, out]` through one `[1, B·L, in]` matmul.
+        let project_rows = |projection: &Projection, x: &MlxArray| {
+            let shape = x.shape();
+            let rows = shape[0] * shape[1];
+            let out = projection.project(&reshape(x, &[1, rows, shape[2]], None));
+            let out_width = out.shape()[2];
+            reshape(&out, &[shape[0], shape[1], out_width], None)
+        };
+        let lane_rows = |x: &MlxArray, lane: i32| {
+            let shape = x.shape();
+            slice(
+                x,
+                &[lane, 0, 0],
+                &[lane + 1, shape[1], shape[2]],
+                &[1, 1, 1],
+                None,
+            )
+        };
+
+        let mut ids = Vec::with_capacity(lanes.len() * block as usize);
+        for (drafter, anchor, _) in lanes.iter_mut() {
+            drafter.tree_alternatives = [None, None];
+            ids.push(*anchor);
+            ids.extend(std::iter::repeat_n(cfg.mask_token_id, block as usize - 1));
+        }
+        let mut x = reshape(
+            &crate::model::embed_tokens(&ids, &target.token_embedding, hidden as usize),
+            &[batch, block, hidden],
+            None,
+        );
+        if cfg.input_embedding_scale != 1.0 {
+            x = multiply(&x, &scalar(cfg.input_embedding_scale, x.dtype()), None);
+        }
+
+        // Context rows of every lane through one fc + norm, cut to the window.
+        let hidden_refs: Vec<&MlxArray> = lanes.iter().map(|(_, _, h)| h).collect();
+        let context_all = rms_norm(
+            &weights.fc.project(&concatenate(&hidden_refs, 1, None)),
+            Some(&weights.hidden_norm),
+            cfg.rms_norm_eps,
+            None,
+        );
+        let keep = cfg.sliding_window - 1;
+        let mut contexts = Vec::with_capacity(lanes.len());
+        let mut lane_context_rows = Vec::with_capacity(lanes.len());
+        let mut start = 0;
+        for (drafter, _, new_hidden) in lanes.iter_mut() {
+            let rows = new_hidden.shape()[1];
+            let skip = (rows - keep).max(0);
+            contexts.push(slice(
+                &context_all,
+                &[0, start + skip, 0],
+                &[1, start + rows, hidden],
+                &[1, 1, 1],
+                None,
+            ));
+            drafter.offset += skip;
+            lane_context_rows.push(rows - skip);
+            start += rows;
+        }
+        let context_refs: Vec<&MlxArray> = contexts.iter().collect();
+        let projected = weights
+            .context_kv
+            .project(&concatenate(&context_refs, 1, None));
+        let projected_width = projected.shape()[2];
+        let mut chunks = Vec::with_capacity(lanes.len());
+        let mut start = 0;
+        for &rows in &lane_context_rows {
+            let lane = slice(
+                &projected,
+                &[0, start, 0],
+                &[1, start + rows, projected_width],
+                &[1, 1, 1],
+                None,
+            );
+            chunks.push(split(&lane, (cfg.num_layers * 2) as i32, 2, None));
+            start += rows;
+        }
+        let offsets: Vec<(i32, i32)> = lanes
+            .iter()
+            .zip(&lane_context_rows)
+            .map(|((drafter, _, _), &rows)| (drafter.offset, drafter.offset + rows))
+            .collect();
+
+        for (index, layer) in weights.layers.iter().enumerate() {
+            let residual = x.clone();
+            let normed = rms_norm(&x, Some(&layer.input_norm), cfg.rms_norm_eps, None);
+            let (prepared, taps) = layer.attention_conv.prepare(cfg, &normed);
+            let (q, k, v) = (
+                project_rows(&layer.q, &prepared),
+                project_rows(&layer.k, &prepared),
+                project_rows(&layer.v, &prepared),
+            );
+            let mut attended = Vec::with_capacity(lanes.len());
+            for (lane, (drafter, _, _)) in lanes.iter_mut().enumerate() {
+                let (context_offset, block_offset) = offsets[lane];
+                let lane_idx = lane as i32;
+                attended.push(drafter.attention_core(
+                    index,
+                    layer,
+                    &lane_rows(&q, lane_idx),
+                    &lane_rows(&k, lane_idx),
+                    &lane_rows(&v, lane_idx),
+                    &chunks[lane][index * 2],
+                    &chunks[lane][index * 2 + 1],
+                    lane_context_rows[lane],
+                    context_offset,
+                    block_offset,
+                ));
+            }
+            let attended_refs: Vec<&MlxArray> = attended.iter().collect();
+            let attention = project_rows(&layer.o, &concatenate(&attended_refs, 0, None));
+            x = add(
+                &residual,
+                &layer.attention_conv.finish(cfg, &attention, &taps),
+                None,
+            );
+            let residual = x.clone();
+            let normed = rms_norm(&x, Some(&layer.post_norm), cfg.rms_norm_eps, None);
+            let (prepared, taps) = layer.mlp_conv.prepare(cfg, &normed);
+            let activated = silu_mul(
+                &project_rows(&layer.gate, &prepared),
+                &project_rows(&layer.up, &prepared),
+                None,
+            );
+            let mlp = project_rows(&layer.down, &activated);
+            x = add(&residual, &layer.mlp_conv.finish(cfg, &mlp, &taps), None);
+        }
+        for ((drafter, _, _), &rows) in lanes.iter_mut().zip(&lane_context_rows) {
+            drafter.offset += rows;
+        }
+        let normed = rms_norm(&x, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let draft_rows = batch * (block - 1);
+        let draft_hidden = reshape(
+            &slice(
+                &normed,
+                &[0, 1, 0],
+                &[batch, block, hidden],
+                &[1, 1, 1],
+                None,
+            ),
+            &[1, draft_rows, hidden],
+            None,
+        );
+        let head_dtype = target
+            .lm_head
+            .scales
+            .as_ref()
+            .map(|scales| scales.dtype())
+            .filter(|dtype| matches!(dtype, MlxDtype::Float16 | MlxDtype::Bfloat16));
+        let head_input = match head_dtype {
+            Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
+            _ => draft_hidden,
+        };
+        let logits = qw(&head_input, &target.lm_head);
+        let logits = if cfg.output_multiplier != 1.0 {
+            multiply(
+                &logits,
+                &scalar(cfg.output_multiplier, logits.dtype()),
+                None,
+            )
+        } else {
+            logits
+        };
+        if use_selector {
+            let vocab = logits.shape()[2];
+            let lane_slice = |x: &MlxArray, lane: i32, width: i32| {
+                slice(
+                    x,
+                    &[0, lane * (block - 1), 0],
+                    &[1, (lane + 1) * (block - 1), width],
+                    &[1, 1, 1],
+                    None,
+                )
+            };
+            let mut drafts = Vec::with_capacity(lanes.len());
+            for (lane, (drafter, anchor, _)) in lanes.iter_mut().enumerate() {
+                let lane_idx = lane as i32;
+                // Without runner-up capture the selector cannot fail.
+                let (tokens, _) = drafter.select(
+                    &weights.selector,
+                    cfg,
+                    &lane_slice(&head_input, lane_idx, hidden),
+                    &lane_slice(&logits, lane_idx, vocab),
+                    *anchor,
+                    false,
+                );
+                drafts.push(tokens);
+            }
+            return Some(drafts);
+        }
+        let tokens = astype(&argmax(&logits, None), MlxDtype::Uint32, None);
+        Some(
+            (0..batch)
+                .map(|lane| {
+                    slice(
+                        &tokens,
+                        &[0, lane * (block - 1)],
+                        &[1, (lane + 1) * (block - 1)],
+                        &[1, 1],
+                        None,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn draft_block_inner(
         &mut self,
         anchor: u32,
@@ -1018,8 +1385,41 @@ impl Dflash2Drafter {
         context_offset: i32,
         block_offset: i32,
     ) -> MlxArray {
+        let _ = kv_width;
+        let attended = self.attention_core(
+            index,
+            layer,
+            &layer.q.project(x),
+            &layer.k.project(x),
+            &layer.v.project(x),
+            context_k,
+            context_v,
+            rows,
+            context_offset,
+            block_offset,
+        );
+        layer.o.project(&attended)
+    }
+
+    /// Attention of one lane after the Q/K/V projections: `q_proj`, `k_proj`,
+    /// `v_proj` are `[1, L, ·]` block rows. Appends the new context to this
+    /// layer's cache and returns `[1, L, heads * head_dim]` before `o`.
+    #[allow(clippy::too_many_arguments)]
+    fn attention_core(
+        &mut self,
+        index: usize,
+        layer: &Layer,
+        q_proj: &MlxArray,
+        k_proj: &MlxArray,
+        v_proj: &MlxArray,
+        context_k: &MlxArray,
+        context_v: &MlxArray,
+        rows: i32,
+        context_offset: i32,
+        block_offset: i32,
+    ) -> MlxArray {
         let cfg = &self.weights.cfg;
-        let length = x.shape()[1];
+        let length = q_proj.shape()[1];
         let (heads, kv_heads, head_dim) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
         let to_heads = |array: &MlxArray, count: i32, len: i32| {
             transpose(
@@ -1047,7 +1447,7 @@ impl Dflash2Drafter {
         let queries = apply_rope(
             &to_heads(
                 &norm(
-                    &reshape(&layer.q.project(x), &[1, length, heads, head_dim], None),
+                    &reshape(q_proj, &[1, length, heads, head_dim], None),
                     &layer.q_norm,
                 ),
                 heads,
@@ -1058,7 +1458,7 @@ impl Dflash2Drafter {
         let block_keys = apply_rope(
             &to_heads(
                 &norm(
-                    &reshape(&layer.k.project(x), &[1, length, kv_heads, head_dim], None),
+                    &reshape(k_proj, &[1, length, kv_heads, head_dim], None),
                     &layer.k_norm,
                 ),
                 kv_heads,
@@ -1066,7 +1466,7 @@ impl Dflash2Drafter {
             ),
             block_offset,
         );
-        let block_values = to_heads(&layer.v.project(x), kv_heads, length);
+        let block_values = to_heads(v_proj, kv_heads, length);
         let context_keys = apply_rope(
             &to_heads(
                 &norm(
@@ -1079,7 +1479,6 @@ impl Dflash2Drafter {
             context_offset,
         );
         let context_values = to_heads(context_v, kv_heads, rows);
-        let _ = kv_width;
 
         // Append the new context to this layer's cache, trimming the oldest rows.
         let cache = &mut self.caches[index];
@@ -1115,11 +1514,11 @@ impl Dflash2Drafter {
         let scale = (head_dim as f32).powf(-0.5);
         let attended =
             scaled_dot_product_attention(&queries, &all_keys, &all_values, scale, false, None);
-        layer.o.project(&reshape(
+        reshape(
             &transpose(&attended, &[0, 2, 1, 3], None),
             &[1, length, heads * head_dim],
             None,
-        ))
+        )
     }
 
     /// Chain-aware rescoring of each position's top-k logits: the score of a
@@ -1564,6 +1963,14 @@ pub(crate) fn fail_next_dflash2_capture_verify_eval_for_test(message: &'static s
 /// round test. Shapes satisfy the drafter's block graph; the weights are zeros.
 #[cfg(test)]
 pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWeights) {
+    dflash2_fixture_with(&|shape| mlx_sys::zeros(shape, MlxDtype::Bfloat16, None))
+}
+
+/// [`dflash2_tiny_fixture`] with every tensor drawn from `fill`.
+#[cfg(test)]
+pub(crate) fn dflash2_fixture_with(
+    fill: &dyn Fn(&[i32]) -> MlxArray,
+) -> (std::sync::Arc<Dflash2Weights>, ModelWeights) {
     let hidden = 8i32;
     let head_dim = 4i32;
     let kv = 4i32;
@@ -1572,8 +1979,7 @@ pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWe
     let kernel = 2i32;
     let groups = 2i32;
     let rank = 4i32;
-    let bf16 = MlxDtype::Bfloat16;
-    let z = |shape: &[i32]| mlx_sys::zeros(shape, bf16, None);
+    let z = |shape: &[i32]| fill(shape);
     let proj = |out: i32, inn: i32| Projection::new(&z(&[out, inn]), DrafterPrecision::Bf16);
     let conv = || GroupedConv {
         base: z(&[2, kernel, hidden]),
@@ -1699,6 +2105,148 @@ mod tests {
         assert_eq!(drafts.shape()[1], block - 1);
         assert!(drafter.cache_offset() > 0);
         assert!(drafter.cache_rows() > 0);
+    }
+
+    #[test]
+    fn packed_drafts_match_each_lane_drafted_alone() {
+        let seed = std::cell::Cell::new(0x9e37_79b9_u32);
+        let fill = |shape: &[i32]| {
+            let n: i32 = shape.iter().product();
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    let mut x = seed.get();
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    seed.set(x);
+                    (x % 2001) as f32 / 1000.0 - 1.0
+                })
+                .collect();
+            astype(
+                &reshape(&MlxArray::from_f32_slice(&values), shape, None),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let (weights, target) = dflash2_fixture_with(&fill);
+        let width = weights.config().target_hidden_width();
+        let block = weights.config().block_size;
+        // Context rows per round, one entry per lane (9 > the window cap).
+        let rows = [[2, 5, 1], [3, 1, 9]];
+        let rounds: Vec<Vec<MlxArray>> = rows
+            .iter()
+            .map(|round| round.iter().map(|&r| fill(&[1, r, width])).collect())
+            .collect();
+        let anchors = [3_u32, 7, 11];
+        for use_selector in [false, true] {
+            let mut solo: Vec<Dflash2Drafter> = (0..3)
+                .map(|_| Dflash2Drafter::new(weights.clone()).with_selector(use_selector))
+                .collect();
+            let mut packed: Vec<Dflash2Drafter> = (0..3)
+                .map(|_| Dflash2Drafter::new(weights.clone()).with_selector(use_selector))
+                .collect();
+            for (round, hiddens) in rounds.iter().enumerate() {
+                let expected: Vec<Vec<u32>> = solo
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(lane, drafter)| {
+                        let ids = drafter
+                            .draft_block(anchors[lane], &hiddens[lane], &target, block)
+                            .expect("solo draft");
+                        mlx_sys::eval(&[&ids]);
+                        ids.data_u32().to_vec()
+                    })
+                    .collect();
+                let mut lanes: Vec<(&mut Dflash2Drafter, u32, MlxArray)> = packed
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(lane, drafter)| (drafter, anchors[lane], hiddens[lane].clone()))
+                    .collect();
+                let drafted = Dflash2Drafter::draft_blocks_packed(&mut lanes, &target, block)
+                    .expect("packed");
+                for (lane, ids) in drafted.iter().enumerate() {
+                    mlx_sys::eval(&[ids]);
+                    assert_eq!(ids.shape(), vec![1, block - 1]);
+                    assert_eq!(
+                        ids.data_u32(),
+                        expected[lane].as_slice(),
+                        "round {round} lane {lane}"
+                    );
+                }
+                for (a, b) in solo.iter().zip(&packed) {
+                    assert_eq!(a.cache_offset(), b.cache_offset());
+                    assert_eq!(a.cache_rows(), b.cache_rows());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_grouped_conv_matches_the_op_chain() {
+        let seed = std::cell::Cell::new(0x2545_f491_u32);
+        let fill = |shape: &[i32], dtype: MlxDtype| {
+            let n: i32 = shape.iter().product();
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    let mut x = seed.get();
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    seed.set(x);
+                    (x % 4001) as f32 / 1000.0 - 2.0
+                })
+                .collect();
+            astype(
+                &reshape(&MlxArray::from_f32_slice(&values), shape, None),
+                dtype,
+                None,
+            )
+        };
+        let (weights, _) = dflash2_tiny_fixture();
+        let mut cfg = weights.config().clone();
+        cfg.hidden_size = 64;
+        cfg.conv_group_size = 16;
+        for kernel in [1, 2, 3] {
+            cfg.conv_kernel_size = kernel;
+            let groups = cfg.hidden_size / cfg.conv_group_size;
+            for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+                let conv = GroupedConv {
+                    base: fill(&[2, kernel, cfg.hidden_size], MlxDtype::Bfloat16),
+                    projection_t: fill(&[cfg.hidden_size, 2 * kernel * groups], dtype),
+                };
+                for (batch, length) in [(1, 8), (3, 5), (2, 1)] {
+                    let hidden = fill(&[batch, length, cfg.hidden_size], dtype);
+                    let dynamic = matmul(&hidden, &conv.projection_t, None);
+                    for half in [0, 1] {
+                        let fused = conv
+                            .convolve_fused(&cfg, &hidden, &dynamic, half)
+                            .expect("fused kernel");
+                        let taps = reshape(
+                            &slice(
+                                &reshape(&dynamic, &[batch, length, 2, kernel, groups], None),
+                                &[0, 0, half, 0, 0],
+                                &[batch, length, half + 1, kernel, groups],
+                                &[1, 1, 1, 1, 1],
+                                None,
+                            ),
+                            &[batch, length, kernel, groups],
+                            None,
+                        );
+                        let ops = conv.convolve_ops(&cfg, &hidden, &taps, half);
+                        let (fused, ops) = (
+                            astype(&fused, MlxDtype::Float32, None),
+                            astype(&ops, MlxDtype::Float32, None),
+                        );
+                        mlx_sys::eval(&[&fused, &ops]);
+                        assert_eq!(
+                            fused.data_f32(),
+                            ops.data_f32(),
+                            "kernel {kernel} {dtype:?} batch {batch} length {length} half {half}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1952,8 +2500,10 @@ mod tests {
                         } else {
                             0.0
                         };
+                        // `taps` is the full dynamic projection; finish reads
+                        // its second half.
                         (base[(kernel_u + offset) * width_u + c]
-                            + tap_values[(l * kernel_u + offset) * groups + g])
+                            + tap_values[((l * 2 + 1) * kernel_u + offset) * groups + g])
                             * shifted
                     })
                     .sum();

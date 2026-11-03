@@ -29,10 +29,12 @@ use super::*;
 use crate::dflash2::{Dflash2Drafter, Dflash2Weights, HandoffCosts};
 use crate::model::layer_capture;
 
-/// RAM-only, detached BF16 prompt tail. Never retains a live model or MLX graph.
+/// RAM-only BF16 prompt tail: an evaluated, contiguous array (no pending
+/// graph, immutable). Capture and restore share the buffer instead of copying
+/// it through host memory (about 100 MB at the 2047-row window on the 27B).
 #[derive(Clone)]
 pub(crate) struct Dflash2PrefixSnapshot {
-    words: Arc<[u32]>,
+    hidden: MlxArray,
     offset: usize,
     rows: usize,
     width: usize,
@@ -47,8 +49,7 @@ impl Dflash2PrefixSnapshot {
             && self.drafter_identity == other.drafter_identity
     }
     pub(crate) fn bytes(&self) -> u64 {
-        (self.words.len() as u64)
-            .saturating_mul(4)
+        (self.hidden.nbytes() as u64)
             .saturating_add(self.drafter_identity.len() as u64)
             .saturating_add(std::mem::size_of::<Self>() as u64)
     }
@@ -74,10 +75,10 @@ impl Dflash2PrefixSnapshot {
         {
             return None;
         }
-        let packed = mlx_sys::view(&contiguous(hidden, None), MlxDtype::Uint32, None);
-        mlx_sys::try_eval(&[&packed]).ok()?;
+        let hidden = contiguous(hidden, None);
+        mlx_sys::try_eval(&[&hidden]).ok()?;
         Some(Self {
-            words: packed.data_u32().to_vec().into(),
+            hidden,
             offset: state.captured_rows,
             rows,
             width,
@@ -99,19 +100,13 @@ impl Dflash2PrefixSnapshot {
             || self.rows == 0
             || self.rows != offset.min((cfg.sliding_window - 1) as usize)
             || self.width != cfg.target_hidden_width() as usize
-            || self.words.len().checked_mul(2)? != self.rows.checked_mul(self.width)?
+            || self.hidden.shape() != [1, self.rows as i32, self.width as i32]
+            || self.hidden.dtype() != MlxDtype::Bfloat16
             || offset > i32::MAX as usize
         {
             return None;
         }
-        let packed = MlxArray::from_raw_data(
-            self.words.as_ptr().cast(),
-            self.words.len() * 4,
-            &[1, self.rows as i32, (self.width / 2) as i32],
-            MlxDtype::Uint32,
-        );
-        let hidden = mlx_sys::view(&packed, MlxDtype::Bfloat16, None);
-        mlx_sys::try_eval(&[&hidden]).ok()?;
+        let hidden = self.hidden.clone();
         let mut state = Dflash2RequestState::new(weights);
         state.pending_hidden = Some(hidden);
         state.captured_rows = offset;
@@ -168,7 +163,8 @@ pub(super) struct Dflash2RequestState {
 impl Dflash2RequestState {
     pub(super) fn new(weights: Arc<Dflash2Weights>) -> Self {
         Self {
-            drafter: Dflash2Drafter::new(weights),
+            drafter: Dflash2Drafter::new(weights)
+                .with_selector(crate::fastpath::dflash2_selector_enabled()),
             pending_hidden: None,
             captured_rows: 0,
             skipped_rows: 0,
@@ -905,6 +901,75 @@ fn dflash2_draft_window(
     Ok((draft_arr, cursor))
 }
 
+/// Drafts every cohort lane in one packed drafter graph
+/// ([`crate::dflash2::Dflash2Drafter::draft_blocks_packed`]). Returns each
+/// lane's lazy window ids with its pre-round cursor, or nothing (and no
+/// change) when the lanes cannot share a graph; the caller then drafts each
+/// lane alone.
+fn dflash2_cohort_packed_drafts(
+    lanes: &mut [(&mut RequestState, Dflash2RoundPlan)],
+    target: &ModelWeights,
+    block: i32,
+) -> Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> {
+    let eligible = lanes.len() >= 2
+        && lanes.iter().all(|(state, _)| {
+            state
+                .dflash2
+                .as_ref()
+                .is_some_and(|dflash| dflash.pending_hidden.is_some())
+        });
+    if !eligible {
+        return Vec::new();
+    }
+    let mut cursors = Vec::with_capacity(lanes.len());
+    let mut started = Vec::with_capacity(lanes.len());
+    let mut packed: Vec<(&mut crate::dflash2::Dflash2Drafter, u32, MlxArray)> =
+        Vec::with_capacity(lanes.len());
+    let mut windows = Vec::with_capacity(lanes.len());
+    for (state, plan) in lanes.iter_mut() {
+        let Some(dflash) = state.dflash2.as_mut() else {
+            return Vec::new();
+        };
+        let Some(hidden) = dflash.pending_hidden.clone() else {
+            return Vec::new();
+        };
+        cursors.push(dflash.drafter.snapshot_cursor());
+        started.push(dflash.started);
+        if !dflash.started {
+            dflash.drafter.seed_offset(dflash.skipped_rows as i32);
+            dflash.started = true;
+        }
+        windows.push(plan.window);
+        packed.push((&mut dflash.drafter, plan.primary, hidden));
+    }
+    let Some(drafts) =
+        crate::dflash2::Dflash2Drafter::draft_blocks_packed(&mut packed, target, block)
+    else {
+        drop(packed);
+        for (((state, _), cursor), was_started) in lanes.iter_mut().zip(cursors).zip(started) {
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.drafter.restore_cursor(cursor);
+                dflash.started = was_started;
+            }
+        }
+        return Vec::new();
+    };
+    drafts
+        .into_iter()
+        .zip(windows)
+        .zip(cursors)
+        .enumerate()
+        .map(|(idx, ((drafted, window), cursor))| {
+            let draft_arr = reshape(
+                &slice(&drafted, &[0, 0], &[1, window as i32 - 1], &[1, 1], None),
+                &[window as i32 - 1],
+                None,
+            );
+            (idx, draft_arr, cursor)
+        })
+        .collect()
+}
+
 /// Materialize a linear-verify cache clone. The request cache is not this clone.
 fn try_linear_cache_eval(refs: &[&MlxArray]) -> Result<(), String> {
     if let Some(error) = crate::dflash2::take_dflash2_capture_verify_eval_error() {
@@ -1564,8 +1629,14 @@ impl MlxRunner {
             }
         }
         let draft_started = Instant::now();
-        let mut drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> = Vec::new();
-        for (idx, (state, plan)) in lanes.iter_mut().enumerate() {
+        let mut drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)> =
+            if crate::fastpath::dflash2_cohort_packed_draft_enabled() {
+                dflash2_cohort_packed_drafts(lanes, &self.weights, cfg.block_size)
+            } else {
+                Vec::new()
+            };
+        let packed_drafted = !drafted.is_empty();
+        for (idx, (state, plan)) in lanes.iter_mut().enumerate().filter(|_| !packed_drafted) {
             let Some(dflash) = state.dflash2.as_mut() else {
                 continue;
             };
@@ -2390,7 +2461,7 @@ mod tests {
         cold.append_prompt_rows(hidden.clone(), 19, rows);
         assert_eq!(cold.skipped_rows, 19 - rows as usize);
         let sidecar = Dflash2PrefixSnapshot::capture(&cold, &weights, 42).unwrap();
-        assert_eq!(sidecar.words.len() * 4, hidden.nbytes());
+        assert_eq!(sidecar.hidden.nbytes(), hidden.nbytes());
         let mut warm = sidecar.restore(weights.clone(), 42, 19).unwrap();
         assert_eq!(warm.skipped_rows, cold.skipped_rows);
         let restored = astype(
@@ -2406,7 +2477,12 @@ mod tests {
         warm.append_prompt_rows(suffix, 3, rows);
         let a = Dflash2PrefixSnapshot::capture(&cold, &weights, 42).unwrap();
         let b = Dflash2PrefixSnapshot::capture(&warm, &weights, 42).unwrap();
-        assert_eq!(a.words, b.words);
+        let (a, b) = (
+            astype(&a.hidden, MlxDtype::Float32, None),
+            astype(&b.hidden, MlxDtype::Float32, None),
+        );
+        mlx_sys::eval(&[&a, &b]);
+        assert_eq!(a.data_f32(), b.data_f32());
         assert_eq!(warm.captured_rows, 22);
         assert!(sidecar.restore(weights.clone(), 43, 19).is_none());
         assert!(sidecar.restore(weights.clone(), 42, 18).is_none());
@@ -2414,7 +2490,7 @@ mod tests {
         invalid.drafter_identity.push_str("-changed");
         assert!(invalid.restore(weights.clone(), 42, 19).is_none());
         invalid = sidecar.clone();
-        invalid.words = Arc::from(&invalid.words[..invalid.words.len() - 1]);
+        invalid.hidden = mlx_sys::zeros(&[1, rows - 1, width], MlxDtype::Bfloat16, None);
         assert!(invalid.restore(weights.clone(), 42, 19).is_none());
         cold.started = true;
         assert!(Dflash2PrefixSnapshot::capture(&cold, &weights, 42).is_none());
