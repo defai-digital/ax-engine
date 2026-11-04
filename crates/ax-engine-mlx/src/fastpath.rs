@@ -1982,6 +1982,16 @@ pub(crate) fn dflash2_window_override() -> Option<usize> {
     })
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_FUSED_QKV` - stack each drafter layer's `q_proj`,
+    /// `k_proj` and `v_proj` at load so the block rows take one matmul instead
+    /// of three (read at load). Bit-identical for the default MXFP4 drafter;
+    /// the bf16 drafter can differ by one ulp where the wider GEMM picks
+    /// another tile. **Default: ON**; `0` keeps three projections.
+    dflash2_fused_qkv_enabled,
+    "AX_MLX_DFLASH2_FUSED_QKV"
+);
+
 env_flag!(
     /// `AX_MLX_DFLASH2_BF16` - keep the DFlash2 drafter in bf16 instead of
     /// quantizing its large matrices to MXFP4 at load (0.3% more tokens per

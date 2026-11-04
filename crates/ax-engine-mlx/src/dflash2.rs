@@ -202,6 +202,27 @@ impl Dflash2Config {
     pub(crate) fn target_hidden_width(&self) -> i32 {
         self.hidden_size * self.target_layer_ids.len() as i32
     }
+
+    /// Splits a stacked `[.., L, q + 2 * kv]` Q/K/V projection on its last
+    /// axis into the `q_proj`, `k_proj` and `v_proj` outputs.
+    fn split_qkv(&self, projected: &MlxArray) -> (MlxArray, MlxArray, MlxArray) {
+        let shape = projected.shape();
+        let last = shape.len() - 1;
+        let q_width = self.num_heads * self.head_dim;
+        let kv_width = self.num_kv_heads * self.head_dim;
+        let part = |start: i32, end: i32| {
+            let mut starts = vec![0; shape.len()];
+            let mut ends = shape.clone();
+            starts[last] = start;
+            ends[last] = end;
+            slice(projected, &starts, &ends, &vec![1; shape.len()], None)
+        };
+        (
+            part(0, q_width),
+            part(q_width, q_width + kv_width),
+            part(q_width + kv_width, q_width + 2 * kv_width),
+        )
+    }
 }
 
 /// Grouped, causal, input-dependent convolution along the block's sequence
@@ -692,10 +713,57 @@ impl GroupedConv {
     }
 }
 
+/// The block rows' Q/K/V projections.
+enum QkvProjection {
+    /// `q_proj`, `k_proj` and `v_proj` stacked on the output axis: one matmul
+    /// reads the block rows once; [`Dflash2Config::split_qkv`] slices it.
+    Stacked(Projection),
+    /// Three matmuls (`AX_MLX_DFLASH2_FUSED_QKV=0`).
+    Separate(Box<[Projection; 3]>),
+}
+
+impl QkvProjection {
+    fn new(q: &MlxArray, k: &MlxArray, v: &MlxArray, precision: DrafterPrecision) -> Self {
+        if crate::fastpath::dflash2_fused_qkv_enabled() {
+            Self::Stacked(Projection::new(
+                &concatenate(&[q, k, v], 0, None),
+                precision,
+            ))
+        } else {
+            Self::Separate(Box::new([
+                Projection::new(q, precision),
+                Projection::new(k, precision),
+                Projection::new(v, precision),
+            ]))
+        }
+    }
+
+    /// `(q, k, v)` for `x`; `project` maps one projection over `x`.
+    fn apply(
+        &self,
+        cfg: &Dflash2Config,
+        x: &MlxArray,
+        project: impl Fn(&Projection, &MlxArray) -> MlxArray,
+    ) -> (MlxArray, MlxArray, MlxArray) {
+        match self {
+            Self::Stacked(qkv) => cfg.split_qkv(&project(qkv, x)),
+            Self::Separate(parts) => {
+                let [q, k, v] = parts.as_ref();
+                (project(q, x), project(k, x), project(v, x))
+            }
+        }
+    }
+
+    fn arrays(&self) -> Vec<&MlxArray> {
+        match self {
+            Self::Stacked(qkv) => qkv.arrays(),
+            Self::Separate(parts) => parts.iter().flat_map(Projection::arrays).collect(),
+        }
+    }
+}
+
 struct Layer {
-    q: Projection,
-    k: Projection,
-    v: Projection,
+    qkv: QkvProjection,
     o: Projection,
     q_norm: MlxArray,
     k_norm: MlxArray,
@@ -773,10 +841,9 @@ impl Dflash2Weights {
                     )?,
                 })
             };
+            let q_weight = take_tensor(&mut tensors, &name("self_attn.q_proj.weight"))?;
             layers.push(Layer {
-                q: projection(&mut tensors, &name("self_attn.q_proj.weight"))?,
-                k: Projection::new(&k_weight, precision),
-                v: Projection::new(&v_weight, precision),
+                qkv: QkvProjection::new(&q_weight, &k_weight, &v_weight, precision),
                 o: projection(&mut tensors, &name("self_attn.o_proj.weight"))?,
                 q_norm: take_tensor(&mut tensors, &name("self_attn.q_norm.weight"))?,
                 k_norm: take_tensor(&mut tensors, &name("self_attn.k_norm.weight"))?,
@@ -858,14 +925,8 @@ impl Dflash2Weights {
         arrays.extend(self.fc.arrays());
         arrays.extend(self.context_kv.arrays());
         for layer in &self.layers {
-            for projection in [
-                &layer.q,
-                &layer.k,
-                &layer.v,
-                &layer.o,
-                &layer.gate_up,
-                &layer.down,
-            ] {
+            arrays.extend(layer.qkv.arrays());
+            for projection in [&layer.o, &layer.gate_up, &layer.down] {
                 arrays.extend(projection.arrays());
             }
             arrays.extend([
@@ -1259,11 +1320,7 @@ impl Dflash2Drafter {
             let residual = x.clone();
             let normed = rms_norm(&x, Some(&layer.input_norm), cfg.rms_norm_eps, None);
             let (prepared, taps) = layer.attention_conv.prepare(cfg, &normed);
-            let (q, k, v) = (
-                project_rows(&layer.q, &prepared),
-                project_rows(&layer.k, &prepared),
-                project_rows(&layer.v, &prepared),
-            );
+            let (q, k, v) = layer.qkv.apply(cfg, &prepared, project_rows);
             let mut attended = Vec::with_capacity(lanes.len());
             for (lane, (drafter, _, _)) in lanes.iter_mut().enumerate() {
                 let (context_offset, block_offset) = offsets[lane];
@@ -1550,12 +1607,15 @@ impl Dflash2Drafter {
         block_offset: i32,
     ) -> MlxArray {
         let _ = kv_width;
+        let (q, k, v) = layer
+            .qkv
+            .apply(&self.weights.cfg, x, |projection, x| projection.project(x));
         let attended = self.attention_core(
             index,
             layer,
-            &layer.q.project(x),
-            &layer.k.project(x),
-            &layer.v.project(x),
+            &q,
+            &k,
+            &v,
             context_k,
             context_v,
             rows,
@@ -2318,9 +2378,12 @@ pub(crate) fn dflash2_fixture_with(
         DrafterPrecision::Bf16,
     );
     let layer = Layer {
-        q: proj(hidden, hidden),
-        k: Projection::new(&k_weight, DrafterPrecision::Bf16),
-        v: Projection::new(&v_weight, DrafterPrecision::Bf16),
+        qkv: QkvProjection::new(
+            &z(&[hidden, hidden]),
+            &k_weight,
+            &v_weight,
+            DrafterPrecision::Bf16,
+        ),
         o: proj(hidden, hidden),
         q_norm: z(&[head_dim]),
         k_norm: z(&[head_dim]),
@@ -2480,6 +2543,87 @@ mod tests {
                 for (a, b) in solo.iter().zip(&packed) {
                     assert_eq!(a.cache_offset(), b.cache_offset());
                     assert_eq!(a.cache_rows(), b.cache_rows());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stacked_qkv_projection_matches_separate_projections() {
+        // MXFP4 (the default drafter precision) must be bit-identical; dense
+        // bf16 within one ulp. Drafter-like widths: hidden 2048, 16 query heads and 4 KV heads of
+        // 128. Rows 8 (one lane's block) and 32 (four packed lanes), with
+        // and without the fused multi-row QMM guard the packed path arms.
+        let (hidden, head_dim, heads, kv_heads) = (2048, 128, 16, 4);
+        let (q_width, kv_width) = (heads * head_dim, kv_heads * head_dim);
+        let mut seed = 0x9e37_79b9_u32;
+        let mut noise = |n: i32, scale: f32| {
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    ((seed % 2001) as f32 / 1000.0 - 1.0) * scale
+                })
+                .collect();
+            MlxArray::from_f32_slice(&values)
+        };
+        let weight = |noise: &mut dyn FnMut(i32, f32) -> MlxArray, out: i32| {
+            astype(
+                &reshape(&noise(out * hidden, 0.05), &[out, hidden], None),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let wq = weight(&mut noise, q_width);
+        let wk = weight(&mut noise, kv_width);
+        let wv = weight(&mut noise, kv_width);
+        let cfg = Dflash2Config {
+            hidden_size: hidden,
+            num_heads: heads,
+            num_kv_heads: kv_heads,
+            head_dim,
+            ..dflash2_tiny_fixture().0.config().clone()
+        };
+        for precision in [DrafterPrecision::Bf16, DrafterPrecision::Mxfp4] {
+            let stacked = Projection::new(&concatenate(&[&wq, &wk, &wv], 0, None), precision);
+            let separate = [
+                Projection::new(&wq, precision),
+                Projection::new(&wk, precision),
+                Projection::new(&wv, precision),
+            ];
+            for rows in [8, 32] {
+                let x = astype(
+                    &reshape(&noise(rows * hidden, 1.0), &[1, rows, hidden], None),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                for guard in [false, true] {
+                    let _rows_guard = QwenMtpVerifyQmmGuard::arm(guard);
+                    let (q, k, v) = cfg.split_qkv(&stacked.project(&x));
+                    for (label, fused, alone) in [
+                        ("q", &q, separate[0].project(&x)),
+                        ("k", &k, separate[1].project(&x)),
+                        ("v", &v, separate[2].project(&x)),
+                    ] {
+                        let fused = astype(&contiguous(fused, None), MlxDtype::Float32, None);
+                        let alone = astype(&alone, MlxDtype::Float32, None);
+                        mlx_sys::eval(&[&fused, &alone]);
+                        assert_eq!(fused.shape(), alone.shape(), "{label}");
+                        let case = format!("{precision:?} rows {rows} guard {guard} {label}");
+                        let (a, b) = (fused.data_f32(), alone.data_f32());
+                        if precision == DrafterPrecision::Mxfp4 {
+                            // The shipped drafter: the stacked QMM is exact.
+                            assert_eq!(a, b, "{case}");
+                        } else {
+                            // Dense bf16 GEMM may pick another tile for the wider
+                            // N; a few outputs then differ by one bf16 ulp.
+                            for (x, y) in a.iter().zip(b) {
+                                let ulp = f32::from_bits(y.abs().to_bits() & 0x7f80_0000) / 128.0;
+                                assert!((x - y).abs() <= ulp, "{case}: {x} vs {y}");
+                            }
+                        }
+                    }
                 }
             }
         }
