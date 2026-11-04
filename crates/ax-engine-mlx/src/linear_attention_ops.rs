@@ -423,7 +423,7 @@ pub fn linear_attention_decode_post_input_metal(
 /// Short Qwen target-verifier kernel that keeps conv/QK intermediates inside
 /// one Metal dispatch and returns both final and row-0 rollback state.
 ///
-/// The verifier is deliberately narrow: B=1-style `Seq=2..=4`, equal
+/// The verifier is deliberately narrow: B=1-style `Seq=2..=8`, equal
 /// power-of-two Q/K/V head dimensions, and value rows evenly tiled by eight
 /// SIMD groups. Unsupported inputs return `None` and retain the established
 /// post-input + gated-delta composition.
@@ -445,7 +445,7 @@ pub(crate) fn gated_delta_fused_verify_from_qkv(
     const TGY: i32 = 8;
     let qkv_shape = qkv.shape();
     if qkv_shape.len() != 3
-        || !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(qkv_shape[1]))
+        || !fastpath::qwen_linear_fused_gdn_verify_seq_contains(i64::from(qkv_shape[1]))
     {
         return None;
     }
@@ -639,7 +639,7 @@ pub(crate) fn gated_delta_fused_verify_no_checkpoint_from_qkv(
     const TGY: i32 = 8;
     let qkv_shape = qkv.shape();
     if qkv_shape.len() != 3
-        || !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(qkv_shape[1]))
+        || !fastpath::qwen_linear_fused_gdn_verify_seq_contains(i64::from(qkv_shape[1]))
     {
         return None;
     }

@@ -104,6 +104,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_DFLASH2_PREDRAFT", shipped: "on", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_DFLASH2_TOPK_KERNEL", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_ROUND_TRACE", shipped: "off", class: SwitchClass::NonNumeric("telemetry") },
+    SwitchRow { env: "AX_MLX_DFLASH2_FUSED_GDN_VERIFY", shipped: "on", class: SwitchClass::ProvenExact("fused_gated_delta_verify_bf16_128d_matches_portable_prework") },
     SwitchRow { env: "AX_MLX_TREE_VERIFY", shipped: "off", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_MTP_QUANTIZED_HEAD_DRAFT", shipped: "on", class: SwitchClass::NonNumeric("draft") },

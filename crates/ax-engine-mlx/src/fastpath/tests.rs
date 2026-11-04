@@ -4015,3 +4015,23 @@ fn mla_and_dequant_deviations_keep_the_shipped_policy_untokenized() {
 }
 
 include!("numerics_switch_table.rs");
+
+#[test]
+fn fused_gdn_verify_width_admits_the_dflash2_block_independently_of_mtp_depth() {
+    // Default MTP depth 3 caps the verify window at 4 rows; the fused GDN
+    // kernels still take the 8-row DFlash2 block when the wide switch is on.
+    for seq in 2..=8 {
+        assert!(
+            qwen_linear_fused_gdn_verify_seq_contains_for(seq, 4, true),
+            "seq {seq}"
+        );
+    }
+    assert!(!qwen_linear_fused_gdn_verify_seq_contains_for(1, 4, true));
+    assert!(!qwen_linear_fused_gdn_verify_seq_contains_for(9, 4, true));
+    // Kill switch restores the MTP-depth ceiling.
+    assert!(qwen_linear_fused_gdn_verify_seq_contains_for(4, 4, false));
+    assert!(!qwen_linear_fused_gdn_verify_seq_contains_for(5, 4, false));
+    // A wider MTP depth is never narrowed.
+    assert!(!qwen_linear_fused_gdn_verify_seq_contains_for(9, 8, false));
+    assert!(qwen_linear_fused_gdn_verify_seq_contains_for(8, 8, false));
+}

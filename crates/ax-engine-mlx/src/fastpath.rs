@@ -1319,6 +1319,48 @@ pub(crate) fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
     (2..=i64::from(qwen_linear_mtp_max_verify_seq())).contains(&seq)
 }
 
+/// Widest verify window the fused gated-delta verify kernels serve. The
+/// kernels take the row count as a template argument and keep only
+/// `2 * SeqLen * Dk` activation values in threadgroup memory (4 KiB at eight
+/// bf16 rows of 128 dims), so the width is not tied to the MTP draft depth.
+/// Eight rows is the DFlash2 verify block.
+pub(crate) const QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ: i32 = 8;
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_FUSED_GDN_VERIFY` — admit verify windows wider than the
+    /// MTP depth (up to [`QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ`] rows) to the
+    /// fused gated-delta verify kernels. Without it DFlash2's 8-row block falls
+    /// back to the separate conv/QK-norm and recurrence kernels. The fused
+    /// kernels are bit-identical to that composition
+    /// (`fused_gated_delta_verify_bf16_128d_matches_portable_prework`).
+    /// **Default: ON**; `0` restores the MTP-depth ceiling.
+    dflash2_fused_gdn_verify_enabled,
+    "AX_MLX_DFLASH2_FUSED_GDN_VERIFY"
+);
+
+/// Whether the fused gated-delta verify kernels admit a `seq`-row window.
+pub(crate) fn qwen_linear_fused_gdn_verify_seq_contains(seq: i64) -> bool {
+    qwen_linear_fused_gdn_verify_seq_contains_for(
+        seq,
+        qwen_linear_mtp_max_verify_seq(),
+        dflash2_fused_gdn_verify_enabled(),
+    )
+}
+
+/// Pure helper for [`qwen_linear_fused_gdn_verify_seq_contains`].
+pub(crate) fn qwen_linear_fused_gdn_verify_seq_contains_for(
+    seq: i64,
+    mtp_max_verify_seq: i32,
+    wide: bool,
+) -> bool {
+    let max = if wide {
+        mtp_max_verify_seq.max(QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ)
+    } else {
+        mtp_max_verify_seq
+    };
+    (2..=i64::from(max)).contains(&seq)
+}
+
 /// Families the Qwen linear throughput profile is measured on (the same
 /// predicate `qwen_linear_attention_direct_cpp_default_family` uses). The
 /// widened verify window under `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH` only
