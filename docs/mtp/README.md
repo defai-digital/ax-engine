@@ -156,7 +156,24 @@ A five-layer drafter conditions on the target's hidden states at layers 5, 19, 3
 of them in one forward with the same fused multi-row matmul and the same rollback
 as MTP. The verify window (3 to 8 rows) follows the request: drafts that keep
 being accepted earn the full window and prose settles at four rows
-(`AX_MLX_DFLASH2_WINDOW=N` pins it). On an M5 Max with the 27B MXFP4 pack (17 real
+(`AX_MLX_DFLASH2_WINDOW=N` pins it). On M5 and later, where the NAX verify hand-off
+makes a dense round cost about the same at any window, dense targets verify all
+eight rows every round (`AX_MLX_DFLASH2_DENSE_FULL_WINDOW=0` restores the adaptive
+window; 2.6% faster over the 17-prompt suite on the M5 Max). When several requests take a
+DFlash2 round in the same engine step, their rounds verify together in one
+row-packed target forward (`AX_MLX_DFLASH2_COHORT=0` runs them one after another).
+The drafters of a cohort also run as one packed forward
+(`AX_MLX_DFLASH2_COHORT_PACKED_DRAFT=0` drafts each lane alone), and the drafter's
+candidate selector re-ranks each block's top-16 tokens
+(`AX_MLX_DFLASH2_SELECTOR=0` takes the plain argmax). The drafter graph is handed to the
+GPU before the verify graph is built, and each round's commit drafts the next round
+before the step's bookkeeping runs (`AX_MLX_DFLASH2_ASYNC_DRAFT=0`,
+`AX_MLX_DFLASH2_PREDRAFT=0` restore the single evaluation per round), so the host
+work between rounds overlaps the drafter instead of idling the GPU. On the M5 Max four concurrent
+code requests decode 269-292 tok/s in aggregate instead of 142-148, and four prose
+requests 144-157 instead of 61; on the M4 Pro four code requests reach 57 instead
+of 41 and four prose requests 35 instead of 31. GSM8K and HumanEval accuracy at four-way
+concurrency match serial decoding. On an M5 Max with the 27B MXFP4 pack (17 real
 prompts, 256 tokens, greedy) it decodes 1.28x faster than fused depth-3 MTP on the
 11 code prompts (1.08x to 1.40x, up to 127 tok/s) and 1.02x on the 6 prose and chat
 prompts (0.99x to 1.07x), 90.8 against 79.0 tok/s over the suite. Outputs are

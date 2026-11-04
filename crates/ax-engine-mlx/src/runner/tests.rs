@@ -3431,6 +3431,7 @@ fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefix
     MlxPrefixSnapshot {
         dflash2: None,
         kv_cache_payload: Arc::from(payload.into_boxed_slice()),
+        live_cache: None,
         tokens: vec![token; token_count],
         token_count,
         bytes,
@@ -3599,6 +3600,7 @@ fn portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder() {
                 let snapshot = MlxPrefixSnapshot {
                     dflash2: None,
                     kv_cache_payload: Arc::from(Vec::<u8>::new().into_boxed_slice()),
+                    live_cache: None,
                     tokens: vec![1; len],
                     token_count: len,
                     bytes: snapshot_charge_bytes(per_token * len as u64 + header, len),
@@ -10394,4 +10396,62 @@ fn batched_mean_pool_divides_by_the_exact_length() {
     );
     mlx_sys::eval(&[&pooled]);
     assert_eq!(pooled.data_f32(), &[2.0, 2.0]);
+}
+
+#[test]
+fn exact_boundary_replay_keeps_the_boundary_restore() {
+    // A 1930-token linear prompt, block 32: the cold run stored the boundary
+    // at 1920 and ran the last 10 tokens as its final step. A replay claiming
+    // 1920 with those 10 tokens restores 1920 instead of the 1024 rung.
+    let item = prefill_item_with_claim(1920, 10);
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, Some(1930)),
+        Some(1920)
+    );
+    // Not the prompt's own remainder (an extension of a longer prompt).
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, Some(2400)),
+        None
+    );
+    // A restore shorter than the claim is not the cold boundary.
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1888, 32, Some(1930)),
+        None
+    );
+    // A whole block or more after the claim is a multi-chunk extension.
+    let item = prefill_item_with_claim(1920, 32);
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, Some(1952)),
+        None
+    );
+    assert_eq!(
+        exact_boundary_replay_restore_len(&item, 1920, 32, None),
+        None
+    );
+}
+
+#[test]
+fn live_prefix_snapshot_restores_an_independent_clone_without_a_payload() {
+    let mut cache = MlxKVCache::new(1);
+    let k = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+    let v = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+    let _ = cache.append(0, k, v);
+    cache.advance(3);
+    let logical = cache.usage_snapshot().logical_bytes;
+    let snapshot = MlxPrefixSnapshot::from_live_cache(cache, logical, vec![5; 3], 3, Some(9), None);
+    assert!(snapshot.kv_cache_payload.is_empty());
+    assert_eq!(snapshot.payload_bytes(), logical);
+    assert_eq!(snapshot.bytes, snapshot_charge_bytes(logical, 3));
+
+    // A restore grows its own copy; the stored snapshot keeps its boundary.
+    let mut restored = snapshot.rehydrate_cache().expect("live restore");
+    assert_eq!(restored.seq_len(), 3);
+    let k = mlx_sys::zeros(&[1, 1, 2, 2], mlx_sys::MlxDtype::Float32, None);
+    let v = mlx_sys::zeros(&[1, 1, 2, 2], mlx_sys::MlxDtype::Float32, None);
+    let _ = restored.append(0, k, v);
+    restored.advance(2);
+    assert_eq!(restored.seq_len(), 5);
+    let again = snapshot.rehydrate_cache().expect("second live restore");
+    assert_eq!(again.seq_len(), 3);
+    assert_eq!(again.usage_snapshot().logical_bytes, logical);
 }

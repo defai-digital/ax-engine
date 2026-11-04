@@ -134,6 +134,7 @@ use shared::*;
 pub(crate) use shared::{replay_linear_attention_mtp_prefix, scale_hidden_pub};
 
 mod families;
+pub(crate) mod packed_verify;
 mod whole_verify;
 
 pub(crate) use whole_verify::{
@@ -2260,7 +2261,7 @@ fn is_gemma4_text_target_family(model_family: &str) -> bool {
     matches!(model_family, "gemma4" | "gemma4_unified")
 }
 
-fn lm_head_verify_window_projection(
+pub(crate) fn lm_head_verify_window_projection(
     normed: &MlxArray,
     lm_head: &crate::weights::QuantizedWeight,
     model_family: &str,

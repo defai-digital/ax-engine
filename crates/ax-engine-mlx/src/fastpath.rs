@@ -1319,6 +1319,48 @@ pub(crate) fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
     (2..=i64::from(qwen_linear_mtp_max_verify_seq())).contains(&seq)
 }
 
+/// Widest verify window the fused gated-delta verify kernels serve. The
+/// kernels take the row count as a template argument and keep only
+/// `2 * SeqLen * Dk` activation values in threadgroup memory (4 KiB at eight
+/// bf16 rows of 128 dims), so the width is not tied to the MTP draft depth.
+/// Eight rows is the DFlash2 verify block.
+pub(crate) const QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ: i32 = 8;
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_FUSED_GDN_VERIFY` — admit verify windows wider than the
+    /// MTP depth (up to [`QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ`] rows) to the
+    /// fused gated-delta verify kernels. Without it DFlash2's 8-row block falls
+    /// back to the separate conv/QK-norm and recurrence kernels. The fused
+    /// kernels are bit-identical to that composition
+    /// (`fused_gated_delta_verify_bf16_128d_matches_portable_prework`).
+    /// **Default: ON**; `0` restores the MTP-depth ceiling.
+    dflash2_fused_gdn_verify_enabled,
+    "AX_MLX_DFLASH2_FUSED_GDN_VERIFY"
+);
+
+/// Whether the fused gated-delta verify kernels admit a `seq`-row window.
+pub(crate) fn qwen_linear_fused_gdn_verify_seq_contains(seq: i64) -> bool {
+    qwen_linear_fused_gdn_verify_seq_contains_for(
+        seq,
+        qwen_linear_mtp_max_verify_seq(),
+        dflash2_fused_gdn_verify_enabled(),
+    )
+}
+
+/// Pure helper for [`qwen_linear_fused_gdn_verify_seq_contains`].
+pub(crate) fn qwen_linear_fused_gdn_verify_seq_contains_for(
+    seq: i64,
+    mtp_max_verify_seq: i32,
+    wide: bool,
+) -> bool {
+    let max = if wide {
+        mtp_max_verify_seq.max(QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ)
+    } else {
+        mtp_max_verify_seq
+    };
+    (2..=i64::from(max)).contains(&seq)
+}
+
 /// Families the Qwen linear throughput profile is measured on (the same
 /// predicate `qwen_linear_attention_direct_cpp_default_family` uses). The
 /// widened verify window under `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH` only
@@ -1791,6 +1833,141 @@ pub(crate) fn hf_hub_cache_roots() -> &'static [std::path::PathBuf] {
     })
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_PREFIX_BOUNDARY_REPLAY` — on linear-attention models, an exact
+    /// prompt replay restores the snapshot captured at the prompt's last block
+    /// boundary and runs only the partial block after it (the cold run's own
+    /// final step), instead of flooring the restore onto the prefill-chunk
+    /// grid and replaying up to a chunk of claimed tokens. **Default: ON**;
+    /// `0` restores the grid floor.
+    prefix_boundary_replay_enabled,
+    "AX_MLX_PREFIX_BOUNDARY_REPLAY"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_PREFIX_LIVE_SNAPSHOT` — on linear-attention models whose
+    /// full-attention layers are not in the shared paged pool, the in-memory
+    /// prefix store keeps a clone of the live cache (shared, immutable MLX
+    /// buffers) instead of serializing it to bytes, and a hit clones it back
+    /// instead of deserializing. The restored state is the same arrays the
+    /// cold run produced, so the replay is unchanged; it only drops the
+    /// O(prefix) serialize on store and copy on restore (~1.6 GB at 25K
+    /// tokens on the 27B). The disk mirror still serializes. **Default: ON**;
+    /// `0` restores the byte payload.
+    prefix_live_snapshot_enabled,
+    "AX_MLX_PREFIX_LIVE_SNAPSHOT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_COHORT_PACKED_DRAFT` — in a batched DFlash2 round,
+    /// drafts every lane in one drafter graph: projections, convolutions,
+    /// MLP and LM head run once over all lanes' rows and only each lane's
+    /// context attention runs per lane, so the drafter weights are read once
+    /// per round instead of once per lane. Drafts only steer which rows the
+    /// target verifies. **Default: ON**; `0` drafts each lane alone.
+    dflash2_cohort_packed_draft_enabled,
+    "AX_MLX_DFLASH2_COHORT_PACKED_DRAFT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_SELECTOR` — picks each DFlash2 draft token with the
+    /// checkpoint's trained candidate selector (the top-k logits rescored by
+    /// a low-rank pair score against the previous pick) instead of the plain
+    /// argmax, as the drafter's reference runtime does. On the M5 Max 27B
+    /// suite it accepts 2.9% more tokens per round for 0.3 ms more per round
+    /// (decode +2.4%; prose +3.7%). Drafts only choose which rows the target
+    /// verifies. **Default: ON**; `0` restores the argmax.
+    dflash2_selector_enabled,
+    "AX_MLX_DFLASH2_SELECTOR"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_FUSED_CONV` — runs each DFlash2 drafter grouped
+    /// convolution as one Metal kernel instead of a chain of about twenty MLX
+    /// ops; it rounds every step like the chain, so drafts are unchanged.
+    /// **Default: ON**; `0` restores the op chain.
+    dflash2_fused_conv_enabled,
+    "AX_MLX_DFLASH2_FUSED_CONV"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_COHORT_WINDOW` — in a batched DFlash2 round on a host
+    /// with the NAX verify hand-off (M5+), picks each lane's window to
+    /// maximize the cohort's expected tokens per millisecond of a fixed
+    /// packed-round cost curve, which keeps low-acceptance cohorts under the
+    /// 16-row projection step (4-way prose +20% on the M5 Max). **Default:
+    /// ON**; `0` keeps every lane on its own window.
+    dflash2_cohort_window_enabled,
+    "AX_MLX_DFLASH2_COHORT_WINDOW"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
+    /// requests of one engine step take a DFlash2 round, verify them in one
+    /// row-packed target forward and one evaluation (`model::packed_verify`)
+    /// instead of one round after another. Qwen 3.5/3.8 dense hybrid only.
+    /// A lane's verify logits can differ in the last bits from a solo verify
+    /// (kernels pick tiles by total rows), so greedy text may depend on how
+    /// many requests run together. **Default: ON**; `0` restores per-request
+    /// rounds.
+    dflash2_cohort_enabled,
+    "AX_MLX_DFLASH2_COHORT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_ASYNC_DRAFT` — submit the DFlash2 drafter graph to the
+    /// GPU as soon as it is built, before the target verify graph is built.
+    /// The drafter then runs while the host builds and MLX encodes the verify
+    /// forward, instead of the GPU idling until the round's single eval
+    /// (M5 Max: ~1 ms per solo round, several ms per cohort round).
+    /// Token-identical: the same graph runs, only the submission point moves.
+    /// **Default: ON**; `0` restores the single-eval round.
+    dflash2_async_draft_enabled,
+    "AX_MLX_DFLASH2_ASYNC_DRAFT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_PREDRAFT` — draft the next DFlash2 round as soon as a
+    /// round's accepted tokens are known and submit that drafter graph to the
+    /// GPU before the round's commit bookkeeping, telemetry, engine step and
+    /// server delivery run. The next step then only builds the verify graph
+    /// while the drafter is already running. A pre-draft that the next plan
+    /// does not use (hand-off, budget, a different anchor) is rolled back to
+    /// the drafter cursor it started from. Token-identical. **Default: ON**;
+    /// `0` drafts at the start of each round.
+    dflash2_predraft_enabled,
+    "AX_MLX_DFLASH2_PREDRAFT"
+);
+
+env_flag!(
+    /// `AX_MLX_DFLASH2_ROUND_TRACE` — one stderr line per DFlash2 round with
+    /// the host-side split of the round (gap since the previous commit, draft
+    /// build, cache clone, verify build, eval wait, commit), for host-overlap
+    /// work. **Default: OFF.**
+    dflash2_round_trace_enabled,
+    "AX_MLX_DFLASH2_ROUND_TRACE"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_TOPK_KERNEL` — the DFlash2 candidate selector finds each
+    /// position's top-k logits with one Metal kernel (a per-row selection)
+    /// instead of `argpartition`, which sorts the whole 248K-entry row
+    /// (0.45 ms per round at one lane, 2 ms at four on the M5 Max). Same
+    /// candidate set; ties at the boundary take the lower token id.
+    /// **Default: ON**; `0` restores `argpartition`.
+    dflash2_topk_kernel_enabled,
+    "AX_MLX_DFLASH2_TOPK_KERNEL"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_DENSE_FULL_WINDOW` — on hosts with the NAX verify
+    /// hand-off, dense targets verify the drafter's whole block every round
+    /// instead of the adaptive window. **Default: ON**; `0` restores the
+    /// adaptive window. `AX_MLX_DFLASH2_WINDOW` still takes precedence.
+    dflash2_dense_full_window_enabled,
+    "AX_MLX_DFLASH2_DENSE_FULL_WINDOW"
+);
+
 /// `AX_MLX_DFLASH2_WINDOW`: pin the DFlash2 verify window to this many rows
 /// (anchor plus drafts, 3 to the drafter's block size). Unset or `0` lets the
 /// per-request policy choose it from the observed acceptance. Read once per
@@ -1804,6 +1981,16 @@ pub(crate) fn dflash2_window_override() -> Option<usize> {
             .filter(|rows| *rows >= 3)
     })
 }
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_FUSED_QKV` - stack each drafter layer's `q_proj`,
+    /// `k_proj` and `v_proj` at load so the block rows take one matmul instead
+    /// of three (read at load). Bit-identical for the default MXFP4 drafter;
+    /// the bf16 drafter can differ by one ulp where the wider GEMM picks
+    /// another tile. **Default: ON**; `0` keeps three projections.
+    dflash2_fused_qkv_enabled,
+    "AX_MLX_DFLASH2_FUSED_QKV"
+);
 
 env_flag!(
     /// `AX_MLX_DFLASH2_BF16` - keep the DFlash2 drafter in bf16 instead of

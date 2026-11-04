@@ -5055,3 +5055,168 @@ fn gpt_oss_sliding_layers_keep_the_model_yarn_rope() {
     assert!(freqs.is_none());
     assert!(!mscale);
 }
+
+/// A two-layer Qwen 3.5 hybrid (gated delta, then gated full attention) with
+/// patterned weights, for the packed-verify oracle.
+fn patterned_qwen35_hybrid() -> (ModelConfig, ModelWeights) {
+    let mut manifest = qwen35_linear_manifest();
+    manifest.layer_count = 2;
+    manifest.linear_attention.full_attention_interval = Some(2);
+    // The gated-delta kernel needs key_head_dim % 32 == 0.
+    manifest.linear_attention.key_head_dim = Some(32);
+    manifest.rms_norm_eps = Some(1e-6);
+    let cfg = ModelConfig::from_manifest(&manifest);
+    assert!(cfg.is_linear_attention_layer(0) && !cfg.is_linear_attention_layer(1));
+    let h = cfg.hidden_size as i32;
+    let inter = cfg.intermediate_size as i32;
+    let dense = |rows: i32, cols: i32, seed: u64| {
+        dense_weight_from_data(&pat((rows * cols) as usize, seed, -0.4, 0.4), &[rows, cols])
+    };
+    let norm = |n: i32, seed: u64| array_f32(&pat(n as usize, seed, 0.6, 1.4), &[n]);
+    let with_ffn = |mut w: LayerWeights, seed: u64| {
+        w.attn_norm = norm(h, seed);
+        w.ffn_norm = norm(h, seed + 1);
+        w.gate_proj = Some(dense(inter, h, seed + 2));
+        w.up_proj = Some(dense(inter, h, seed + 3));
+        w.down_proj = Some(dense(h, inter, seed + 4));
+        w
+    };
+    let linear_cfg = cfg.linear_attention.clone().expect("hybrid config");
+    let linear = with_ffn(
+        patterned_linear_layer_weights(&linear_cfg, cfg.hidden_size),
+        20,
+    );
+    let head_dim = cfg.head_dim as i32;
+    let q_out = cfg.n_heads as i32 * head_dim * 2; // query plus output gate
+    let kv_out = cfg.n_kv_heads as i32 * head_dim;
+    let mut attn = qwen35_linear_layer_weights(&linear_cfg, cfg.hidden_size);
+    attn.linear_attn = None;
+    attn.q_proj = Some(dense(q_out, h, 40));
+    attn.k_proj = Some(dense(kv_out, h, 41));
+    attn.v_proj = Some(dense(kv_out, h, 42));
+    attn.o_proj = Some(dense(h, cfg.n_heads as i32 * head_dim, 43));
+    attn.q_norm = Some(norm(head_dim, 44));
+    attn.k_norm = Some(norm(head_dim, 45));
+    let attn = with_ffn(attn, 50);
+    let mut weights = empty_model_weights(None);
+    weights.token_embedding = dense(cfg.vocab_size as i32, h, 60);
+    weights.lm_head = dense(cfg.vocab_size as i32, h, 61);
+    weights.final_norm = Some(norm(h, 62));
+    weights.layers = vec![linear, attn];
+    (cfg, weights)
+}
+
+/// Batched DFlash2 oracle: verifying several lanes in one row-packed forward
+/// must leave each lane's logits, K/V and gated-delta state where a solo
+/// verify of that lane leaves them (lanes at different positions).
+#[test]
+fn packed_verify_lanes_match_solo_verify_forwards() {
+    let (cfg, weights) = patterned_qwen35_hybrid();
+    assert!(packed_verify::supported(&cfg, &weights));
+    let prompts: [&[u32]; 3] = [&[1, 2, 3], &[4, 5, 6, 7, 8], &[9, 10, 11, 12]];
+    let verify: [&[u32]; 3] = [&[13, 14, 15, 16], &[17, 18, 19, 20], &[21, 22, 23, 24]];
+    let bases: Vec<MlxKVCache> = prompts
+        .iter()
+        .map(|prompt| {
+            let mut cache = MlxKVCache::new(cfg.layer_count);
+            let logits = forward_all_positions(&cfg, &weights, prompt, &mut cache, 0);
+            cache.advance(prompt.len());
+            let mut refs = cache.collect_eval_refs();
+            refs.push(&logits);
+            eval(&refs);
+            cache
+        })
+        .collect();
+    let ids_arr = |ids: &[u32]| {
+        MlxArray::from_raw_data(
+            ids.as_ptr() as *const u8,
+            std::mem::size_of_val(ids),
+            &[ids.len() as i32],
+            MlxDtype::Uint32,
+        )
+    };
+
+    let mut solo_logits = Vec::new();
+    let mut solo_caches = Vec::new();
+    for (base, ids) in bases.iter().zip(verify) {
+        let mut cache = base.clone();
+        cache.begin_linear_prefix_capture(1);
+        let offset = cache.seq_len();
+        let (logits, _) = forward_all_positions_with_post_norm_ids(
+            &cfg,
+            &weights,
+            &ids_arr(ids),
+            ids.len(),
+            &mut cache,
+            offset,
+            false,
+        );
+        cache.advance(ids.len());
+        let logits = astype(&logits, MlxDtype::Float32, None);
+        let mut refs = cache.collect_eval_refs();
+        refs.push(&logits);
+        eval(&refs);
+        let values = logits.data_f32().to_vec();
+        assert!(
+            values.iter().any(|v| (v - values[0]).abs() > 1e-3),
+            "the oracle needs non-trivial logits"
+        );
+        solo_logits.push(values);
+        solo_caches.push(cache);
+    }
+
+    let mut caches: Vec<MlxKVCache> = bases.to_vec();
+    for cache in &mut caches {
+        cache.begin_linear_prefix_capture(1);
+    }
+    let all: Vec<u32> = verify.iter().flat_map(|ids| ids.iter().copied()).collect();
+    let mut lanes: Vec<packed_verify::PackedLane<'_>> = caches
+        .iter_mut()
+        .zip(verify)
+        .map(|(cache, ids)| packed_verify::PackedLane {
+            token_offset: cache.seq_len(),
+            rows: ids.len(),
+            cache,
+        })
+        .collect();
+    let (logits, _) =
+        packed_verify::packed_verify_forward(&cfg, &weights, &ids_arr(&all), &mut lanes);
+    drop(lanes);
+    let logits = astype(&logits, MlxDtype::Float32, None);
+    eval(&[&logits]);
+    let packed = logits.data_f32();
+    let vocab = cfg.vocab_size;
+    for (lane, (cache, ids)) in caches.iter_mut().zip(verify).enumerate() {
+        cache.advance(ids.len());
+        let start = lane * 4 * vocab;
+        for (index, (p, s)) in packed[start..start + 4 * vocab]
+            .iter()
+            .zip(&solo_logits[lane])
+            .enumerate()
+        {
+            assert!(
+                (p - s).abs() <= 1e-4,
+                "lane {lane} logit {index}: {p} vs {s}"
+            );
+        }
+        assert_eq!(cache.seq_len(), solo_caches[lane].seq_len());
+        let refs = cache.collect_eval_refs();
+        let solo_refs = solo_caches[lane].collect_eval_refs();
+        eval(&refs);
+        assert_eq!(refs.len(), solo_refs.len(), "lane {lane} state arrays");
+        for (state_idx, (p, s)) in refs.iter().zip(&solo_refs).enumerate() {
+            assert_eq!(p.shape(), s.shape(), "lane {lane} state {state_idx} shape");
+            let (p, s) = (
+                astype(p, MlxDtype::Float32, None),
+                astype(s, MlxDtype::Float32, None),
+            );
+            eval(&[&p, &s]);
+            for (a, b) in p.data_f32().iter().zip(s.data_f32()) {
+                assert!(
+                    (a - b).abs() <= 1e-4,
+                    "lane {lane} state {state_idx}: {a} vs {b}"
+                );
+            }
+        }
+    }
+}

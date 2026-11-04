@@ -29,6 +29,8 @@ use mlx_sys::{
     slice, split, stack, sum_axis, take, take_along_axis, transpose,
 };
 
+use mlx_sys::{KernelOutputSpec, KernelTemplateArg, LazyKernel};
+
 use crate::model::shared::qw;
 use crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard;
 use crate::weights::{ModelWeights, QuantizedWeight};
@@ -200,6 +202,27 @@ impl Dflash2Config {
     pub(crate) fn target_hidden_width(&self) -> i32 {
         self.hidden_size * self.target_layer_ids.len() as i32
     }
+
+    /// Splits a stacked `[.., L, q + 2 * kv]` Q/K/V projection on its last
+    /// axis into the `q_proj`, `k_proj` and `v_proj` outputs.
+    fn split_qkv(&self, projected: &MlxArray) -> (MlxArray, MlxArray, MlxArray) {
+        let shape = projected.shape();
+        let last = shape.len() - 1;
+        let q_width = self.num_heads * self.head_dim;
+        let kv_width = self.num_kv_heads * self.head_dim;
+        let part = |start: i32, end: i32| {
+            let mut starts = vec![0; shape.len()];
+            let mut ends = shape.clone();
+            starts[last] = start;
+            ends[last] = end;
+            slice(projected, &starts, &ends, &vec![1; shape.len()], None)
+        };
+        (
+            part(0, q_width),
+            part(q_width, q_width + kv_width),
+            part(q_width + kv_width, q_width + 2 * kv_width),
+        )
+    }
 }
 
 /// Grouped, causal, input-dependent convolution along the block's sequence
@@ -283,48 +306,334 @@ struct GroupedConv {
     projection_t: MlxArray,
 }
 
+/// One thread per output element of [`GroupedConv::convolve`]. Each step is
+/// rounded to `T` in the op chain's order (tap + base, times the shifted
+/// input, then the running sum), so the result matches it value for value.
+const DFLASH2_GROUPED_CONV_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    uint row = idx / uint(Width);
+    if (row >= uint(Rows)) {
+        return;
+    }
+    uint col = idx - row * uint(Width);
+    uint t = row % uint(Length);
+    uint group = col / uint(GroupSize);
+    uint dyn_row = row * uint(2 * Taps * Groups) + uint(Half * Taps * Groups) + group;
+    T acc = T(0.0f);
+    for (int offset = 0; offset < Taps; ++offset) {
+        float base_tap = float(base[uint(Half * Taps + offset) * uint(Width) + col]);
+        float tap = float(dynamic[dyn_row + uint(offset * Groups)]);
+        T weight = static_cast<T>(base_tap + tap);
+        float value = (int(t) >= offset) ? float(hidden[idx - uint(offset) * uint(Width)]) : 0.0f;
+        T term = static_cast<T>(float(weight) * value);
+        acc = (offset == 0) ? term : static_cast<T>(float(acc) + float(term));
+    }
+    out[idx] = acc;
+"#;
+
+/// Per-row top-K of `logits` (`[rows, V]`, `Threads` threads per row): each
+/// thread keeps a sorted top-K of its strided slice, sixteen threads merge
+/// `Threads / 16` lists each, and thread 0 merges those. Order is value
+/// descending, then token id ascending, so the result does not depend on the
+/// thread partition.
+/// Register-resident insertion into a descending (value, then ascending id)
+/// top-K list: every index is a compile-time constant after unrolling, so the
+/// lists stay in registers instead of thread memory.
+const DFLASH2_TOPK_HEADER: &str = r#"
+    template <int K>
+    inline void ax_topk_insert(thread float (&bv)[K], thread uint (&bi)[K], float v, uint id) {
+        int p = 0;
+        #pragma unroll
+        for (int k = 0; k < K; k++) {
+            p += (bv[k] > v || (bv[k] == v && bi[k] < id)) ? 1 : 0;
+        }
+        #pragma unroll
+        for (int k = K - 1; k > 0; k--) {
+            const bool shift = k > p;
+            const bool here = k == p;
+            bv[k] = shift ? bv[k - 1] : (here ? v : bv[k]);
+            bi[k] = shift ? bi[k - 1] : (here ? id : bi[k]);
+        }
+        if (p == 0) { bv[0] = v; bi[0] = id; }
+    }
+"#;
+
+/// Per-row top-K of `logits` (`[rows, V]`, `Threads` threads per row): each
+/// thread keeps a top-K of its strided slice in registers, sixteen threads
+/// merge `Threads / 16` lists each through threadgroup memory, and thread 0
+/// merges those. Order is value descending, then token id ascending, so the
+/// result does not depend on the thread partition.
+const DFLASH2_TOPK_SOURCE: &str = r#"
+    const uint row = threadgroup_position_in_grid.x;
+    const uint tid = thread_position_in_threadgroup.x;
+    const device T* x = logits + static_cast<size_t>(row) * static_cast<size_t>(V);
+    float bv[K];
+    uint bi[K];
+    #pragma unroll
+    for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
+    float thr = -INFINITY;
+    uint thr_id = 0xffffffffu;
+    for (uint i = tid; i < static_cast<uint>(V); i += static_cast<uint>(Threads)) {
+        const float v = static_cast<float>(x[i]);
+        if (v > thr || (v == thr && i < thr_id)) {
+            ax_topk_insert<K>(bv, bi, v, i);
+            thr = bv[K - 1];
+            thr_id = bi[K - 1];
+        }
+    }
+    threadgroup float sv[Threads * K];
+    threadgroup uint si[Threads * K];
+    #pragma unroll
+    for (int k = 0; k < K; k++) { sv[tid * K + k] = bv[k]; si[tid * K + k] = bi[k]; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int Groups = 16;
+    const int Per = Threads / Groups;
+    if (tid < static_cast<uint>(Groups)) {
+        #pragma unroll
+        for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
+        thr = -INFINITY;
+        thr_id = 0xffffffffu;
+        for (int t = static_cast<int>(tid) * Per; t < (static_cast<int>(tid) + 1) * Per; t++) {
+            for (int k = 0; k < K; k++) {
+                const float v = sv[t * K + k];
+                const uint id = si[t * K + k];
+                if (id == 0xffffffffu || v < thr || (v == thr && id > thr_id)) { break; }
+                ax_topk_insert<K>(bv, bi, v, id);
+                thr = bv[K - 1];
+                thr_id = bi[K - 1];
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < static_cast<uint>(Groups)) {
+        #pragma unroll
+        for (int k = 0; k < K; k++) { sv[tid * K + k] = bv[k]; si[tid * K + k] = bi[k]; }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        #pragma unroll
+        for (int k = 0; k < K; k++) { bv[k] = -INFINITY; bi[k] = 0xffffffffu; }
+        thr = -INFINITY;
+        thr_id = 0xffffffffu;
+        for (int t = 0; t < Groups; t++) {
+            for (int k = 0; k < K; k++) {
+                const float v = sv[t * K + k];
+                const uint id = si[t * K + k];
+                if (id == 0xffffffffu || v < thr || (v == thr && id > thr_id)) { break; }
+                ax_topk_insert<K>(bv, bi, v, id);
+                thr = bv[K - 1];
+                thr_id = bi[K - 1];
+            }
+        }
+        #pragma unroll
+        for (int k = 0; k < K; k++) { out[row * K + k] = bi[k]; }
+    }
+"#;
+
+static DFLASH2_TOPK: LazyKernel = LazyKernel::new(
+    "ax_dflash2_topk_v3",
+    &["logits"],
+    &["out"],
+    DFLASH2_TOPK_SOURCE,
+    DFLASH2_TOPK_HEADER,
+    true,
+);
+
+const DFLASH2_TOPK_THREADS: i32 = 192;
+
+/// Indices of the `k` largest entries along the last axis of `logits`
+/// (`[..., V]` -> `[..., k]`, uint32, value descending then id ascending) with
+/// one Metal kernel, or `None` when the kernel does not apply (then the
+/// caller partitions). `V` must hold at least `k` entries and `k` at most 32.
+fn top_k_indices(logits: &MlxArray, k: i32) -> Option<MlxArray> {
+    if !crate::fastpath::dflash2_topk_kernel_enabled() {
+        return None;
+    }
+    let shape = logits.shape();
+    let vocab = *shape.last()?;
+    if !(1..=32).contains(&k) || vocab < k || shape.len() < 2 {
+        return None;
+    }
+    let dtype = logits.dtype();
+    if !matches!(
+        dtype,
+        MlxDtype::Float32 | MlxDtype::Bfloat16 | MlxDtype::Float16
+    ) {
+        return None;
+    }
+    let rows: i32 = shape[..shape.len() - 1].iter().product();
+    if rows < 1 {
+        return None;
+    }
+    let flat = reshape(logits, &[rows, vocab], None);
+    let mut outputs = DFLASH2_TOPK
+        .get()?
+        .try_apply_with_template(
+            &[&flat],
+            &[KernelOutputSpec {
+                shape: vec![rows, k],
+                dtype: MlxDtype::Uint32,
+            }],
+            &[
+                KernelTemplateArg::Dtype { name: "T", dtype },
+                KernelTemplateArg::Int {
+                    name: "V",
+                    value: vocab,
+                },
+                KernelTemplateArg::Int {
+                    name: "K",
+                    value: k,
+                },
+                KernelTemplateArg::Int {
+                    name: "Threads",
+                    value: DFLASH2_TOPK_THREADS,
+                },
+            ],
+            (rows * DFLASH2_TOPK_THREADS, 1, 1),
+            (DFLASH2_TOPK_THREADS, 1, 1),
+            None,
+        )
+        .ok()?;
+    let out = outputs.pop()?;
+    let mut out_shape = shape.clone();
+    *out_shape.last_mut()? = k;
+    Some(reshape(&out, &out_shape, None))
+}
+
+static DFLASH2_GROUPED_CONV: LazyKernel = LazyKernel::new(
+    "ax_dflash2_grouped_conv_v1",
+    &["hidden", "dynamic", "base"],
+    &["out"],
+    DFLASH2_GROUPED_CONV_SOURCE,
+    "",
+    true,
+);
+
 impl GroupedConv {
-    /// `hidden`: `[1, L, hidden]` -> (prepared hidden, dynamic taps for finish).
+    /// `hidden`: `[B, L, hidden]` -> (prepared hidden, dynamic taps `[B, L,
+    /// 2 * kernel * groups]` for both halves; `finish` reads the second).
     fn prepare(&self, cfg: &Dflash2Config, hidden: &MlxArray) -> (MlxArray, MlxArray) {
-        let shape = hidden.shape();
-        let (length, groups) = (shape[1], cfg.hidden_size / cfg.conv_group_size);
-        let dynamic = reshape(
-            &matmul(hidden, &self.projection_t, None),
-            &[1, length, 2, cfg.conv_kernel_size, groups],
-            None,
-        );
-        let prepare_taps = reshape(
-            &slice(
-                &dynamic,
-                &[0, 0, 0, 0, 0],
-                &[1, length, 1, cfg.conv_kernel_size, groups],
-                &[1, 1, 1, 1, 1],
-                None,
-            ),
-            &[1, length, cfg.conv_kernel_size, groups],
-            None,
-        );
-        let finish_taps = reshape(
-            &slice(
-                &dynamic,
-                &[0, 0, 1, 0, 0],
-                &[1, length, 2, cfg.conv_kernel_size, groups],
-                &[1, 1, 1, 1, 1],
-                None,
-            ),
-            &[1, length, cfg.conv_kernel_size, groups],
-            None,
-        );
-        (self.convolve(cfg, hidden, &prepare_taps, 0), finish_taps)
+        let dynamic = matmul(hidden, &self.projection_t, None);
+        (self.convolve(cfg, hidden, &dynamic, 0), dynamic)
     }
 
-    fn finish(&self, cfg: &Dflash2Config, hidden: &MlxArray, taps: &MlxArray) -> MlxArray {
-        self.convolve(cfg, hidden, taps, 1)
+    fn finish(&self, cfg: &Dflash2Config, hidden: &MlxArray, dynamic: &MlxArray) -> MlxArray {
+        self.convolve(cfg, hidden, dynamic, 1)
     }
 
     /// `output = sum_offset (base[half, offset] + taps[.., offset]) * shift(hidden, offset)`
-    /// where `shift` delays the sequence axis by `offset` with zero fill.
+    /// where `shift` delays the sequence axis by `offset` with zero fill and
+    /// `taps` is half `half` of `dynamic`. One fused kernel when available;
+    /// it rounds each step to the activation dtype like the op chain below,
+    /// so both give the same values.
     fn convolve(
+        &self,
+        cfg: &Dflash2Config,
+        hidden: &MlxArray,
+        dynamic: &MlxArray,
+        half: i32,
+    ) -> MlxArray {
+        if let Some(out) = self.convolve_fused(cfg, hidden, dynamic, half) {
+            return out;
+        }
+        let shape = hidden.shape();
+        let (batch, length) = (shape[0], shape[1]);
+        let groups = cfg.hidden_size / cfg.conv_group_size;
+        let taps = reshape(
+            &slice(
+                &reshape(
+                    dynamic,
+                    &[batch, length, 2, cfg.conv_kernel_size, groups],
+                    None,
+                ),
+                &[0, 0, half, 0, 0],
+                &[batch, length, half + 1, cfg.conv_kernel_size, groups],
+                &[1, 1, 1, 1, 1],
+                None,
+            ),
+            &[batch, length, cfg.conv_kernel_size, groups],
+            None,
+        );
+        self.convolve_ops(cfg, hidden, &taps, half)
+    }
+
+    fn convolve_fused(
+        &self,
+        cfg: &Dflash2Config,
+        hidden: &MlxArray,
+        dynamic: &MlxArray,
+        half: i32,
+    ) -> Option<MlxArray> {
+        if !crate::fastpath::dflash2_fused_conv_enabled() {
+            return None;
+        }
+        let shape = hidden.shape();
+        let dtype = hidden.dtype();
+        let groups = cfg.hidden_size / cfg.conv_group_size;
+        if shape.len() != 3
+            || shape[2] != cfg.hidden_size
+            || !matches!(dtype, MlxDtype::Bfloat16 | MlxDtype::Float16)
+            || dynamic.dtype() != dtype
+            || dynamic.shape() != [shape[0], shape[1], 2 * cfg.conv_kernel_size * groups]
+            || self.base.shape() != [2, cfg.conv_kernel_size, cfg.hidden_size]
+        {
+            return None;
+        }
+        let base = if self.base.dtype() == dtype {
+            self.base.clone()
+        } else {
+            astype(&self.base, dtype, None)
+        };
+        let total = shape[0] * shape[1] * shape[2];
+        let mut outputs = DFLASH2_GROUPED_CONV
+            .get()?
+            .try_apply_with_template(
+                &[hidden, dynamic, &base],
+                &[KernelOutputSpec {
+                    shape: shape.clone(),
+                    dtype,
+                }],
+                &[
+                    KernelTemplateArg::Dtype { name: "T", dtype },
+                    KernelTemplateArg::Int {
+                        name: "Rows",
+                        value: shape[0] * shape[1],
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Length",
+                        value: shape[1],
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Width",
+                        value: shape[2],
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Taps",
+                        value: cfg.conv_kernel_size,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Groups",
+                        value: groups,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "GroupSize",
+                        value: cfg.conv_group_size,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Half",
+                        value: half,
+                    },
+                ],
+                (total, 1, 1),
+                (256, 1, 1),
+                None,
+            )
+            .ok()?;
+        outputs.pop()
+    }
+
+    /// The op-chain form of [`Self::convolve`]; `taps` is `[B, L, kernel, groups]`.
+    fn convolve_ops(
         &self,
         cfg: &Dflash2Config,
         hidden: &MlxArray,
@@ -332,18 +641,22 @@ impl GroupedConv {
         half: i32,
     ) -> MlxArray {
         let shape = hidden.shape();
-        let (length, width) = (shape[1], shape[2]);
+        let (batch, length, width) = (shape[0], shape[1], shape[2]);
         let groups = width / cfg.conv_group_size;
         let group = cfg.conv_group_size;
-        let blocks = reshape(hidden, &[1, length, groups, group], None);
-        let taps = reshape(taps, &[1, length, cfg.conv_kernel_size, groups, 1], None);
+        let blocks = reshape(hidden, &[batch, length, groups, group], None);
+        let taps = reshape(
+            taps,
+            &[batch, length, cfg.conv_kernel_size, groups, 1],
+            None,
+        );
         let mut output: Option<MlxArray> = None;
         for offset in 0..cfg.conv_kernel_size {
             let values = if offset == 0 {
                 blocks.clone()
             } else {
                 let pad = mlx_sys::zeros(
-                    &[1, offset.min(length), groups, group],
+                    &[batch, offset.min(length), groups, group],
                     hidden.dtype(),
                     None,
                 );
@@ -353,7 +666,7 @@ impl GroupedConv {
                     let kept = slice(
                         &blocks,
                         &[0, 0, 0, 0],
-                        &[1, length - offset, groups, group],
+                        &[batch, length - offset, groups, group],
                         &[1, 1, 1, 1],
                         None,
                     );
@@ -375,11 +688,11 @@ impl GroupedConv {
                 &slice(
                     &taps,
                     &[0, 0, offset, 0, 0],
-                    &[1, length, offset + 1, groups, 1],
+                    &[batch, length, offset + 1, groups, 1],
                     &[1, 1, 1, 1, 1],
                     None,
                 ),
-                &[1, length, groups, 1],
+                &[batch, length, groups, 1],
                 None,
             );
             let term = multiply(
@@ -394,21 +707,69 @@ impl GroupedConv {
         }
         reshape(
             &output.expect("convolution kernel size is positive"),
-            &[1, length, width],
+            &[batch, length, width],
             None,
         )
     }
 }
 
+/// The block rows' Q/K/V projections.
+enum QkvProjection {
+    /// `q_proj`, `k_proj` and `v_proj` stacked on the output axis: one matmul
+    /// reads the block rows once; [`Dflash2Config::split_qkv`] slices it.
+    Stacked(Projection),
+    /// Three matmuls (`AX_MLX_DFLASH2_FUSED_QKV=0`).
+    Separate(Box<[Projection; 3]>),
+}
+
+impl QkvProjection {
+    fn new(q: &MlxArray, k: &MlxArray, v: &MlxArray, precision: DrafterPrecision) -> Self {
+        if crate::fastpath::dflash2_fused_qkv_enabled() {
+            Self::Stacked(Projection::new(
+                &concatenate(&[q, k, v], 0, None),
+                precision,
+            ))
+        } else {
+            Self::Separate(Box::new([
+                Projection::new(q, precision),
+                Projection::new(k, precision),
+                Projection::new(v, precision),
+            ]))
+        }
+    }
+
+    /// `(q, k, v)` for `x`; `project` maps one projection over `x`.
+    fn apply(
+        &self,
+        cfg: &Dflash2Config,
+        x: &MlxArray,
+        project: impl Fn(&Projection, &MlxArray) -> MlxArray,
+    ) -> (MlxArray, MlxArray, MlxArray) {
+        match self {
+            Self::Stacked(qkv) => cfg.split_qkv(&project(qkv, x)),
+            Self::Separate(parts) => {
+                let [q, k, v] = parts.as_ref();
+                (project(q, x), project(k, x), project(v, x))
+            }
+        }
+    }
+
+    fn arrays(&self) -> Vec<&MlxArray> {
+        match self {
+            Self::Stacked(qkv) => qkv.arrays(),
+            Self::Separate(parts) => parts.iter().flat_map(Projection::arrays).collect(),
+        }
+    }
+}
+
 struct Layer {
-    q: Projection,
-    k: Projection,
-    v: Projection,
+    qkv: QkvProjection,
     o: Projection,
     q_norm: MlxArray,
     k_norm: MlxArray,
-    gate: Projection,
-    up: Projection,
+    /// `gate_proj` and `up_proj` stacked on the output axis: one matmul reads
+    /// the activation once and yields both halves (`split` on the last axis).
+    gate_up: Projection,
     down: Projection,
     input_norm: MlxArray,
     post_norm: MlxArray,
@@ -480,15 +841,23 @@ impl Dflash2Weights {
                     )?,
                 })
             };
+            let q_weight = take_tensor(&mut tensors, &name("self_attn.q_proj.weight"))?;
             layers.push(Layer {
-                q: projection(&mut tensors, &name("self_attn.q_proj.weight"))?,
-                k: Projection::new(&k_weight, precision),
-                v: Projection::new(&v_weight, precision),
+                qkv: QkvProjection::new(&q_weight, &k_weight, &v_weight, precision),
                 o: projection(&mut tensors, &name("self_attn.o_proj.weight"))?,
                 q_norm: take_tensor(&mut tensors, &name("self_attn.q_norm.weight"))?,
                 k_norm: take_tensor(&mut tensors, &name("self_attn.k_norm.weight"))?,
-                gate: projection(&mut tensors, &name("mlp.gate_proj.weight"))?,
-                up: projection(&mut tensors, &name("mlp.up_proj.weight"))?,
+                gate_up: Projection::new(
+                    &concatenate(
+                        &[
+                            &take_tensor(&mut tensors, &name("mlp.gate_proj.weight"))?,
+                            &take_tensor(&mut tensors, &name("mlp.up_proj.weight"))?,
+                        ],
+                        0,
+                        None,
+                    ),
+                    precision,
+                ),
                 down: projection(&mut tensors, &name("mlp.down_proj.weight"))?,
                 input_norm: take_tensor(&mut tensors, &name("input_layernorm.weight"))?,
                 post_norm: take_tensor(&mut tensors, &name("post_attention_layernorm.weight"))?,
@@ -556,15 +925,8 @@ impl Dflash2Weights {
         arrays.extend(self.fc.arrays());
         arrays.extend(self.context_kv.arrays());
         for layer in &self.layers {
-            for projection in [
-                &layer.q,
-                &layer.k,
-                &layer.v,
-                &layer.o,
-                &layer.gate,
-                &layer.up,
-                &layer.down,
-            ] {
+            arrays.extend(layer.qkv.arrays());
+            for projection in [&layer.o, &layer.gate_up, &layer.down] {
                 arrays.extend(projection.arrays());
             }
             arrays.extend([
@@ -610,9 +972,9 @@ pub(crate) struct DrafterCursor {
 /// The drafter and its cache state for one request.
 pub(crate) struct Dflash2Drafter {
     weights: std::sync::Arc<Dflash2Weights>,
-    /// Apply the candidate selector (the sampling path of the reference). Greedy
-    /// decoding takes the plain argmax of the target LM head: the selector adds
-    /// about 1.5% tokens per round for about 20% more drafter time.
+    /// Pick each draft token with the candidate selector, as the reference
+    /// runtime does for greedy decoding too (`AX_MLX_DFLASH2_SELECTOR`,
+    /// default on). Off, drafts take the plain argmax of the target LM head.
     use_selector: bool,
     /// When set, every stage is evaluated and timed (diagnostic; breaks overlap).
     stage_times: Option<Vec<(&'static str, f64)>>,
@@ -833,6 +1195,234 @@ impl Dflash2Drafter {
         }
     }
 
+    /// Drafts one block per lane in a single graph: the embedding, context
+    /// and every projection, the grouped convolutions, the MLP and the LM
+    /// head run once over all lanes' rows (each weight read once), and only
+    /// each lane's context-cache attention runs on its own drafter. Each
+    /// lane's cursor advances exactly as [`Self::draft_block`] would advance
+    /// it, and each returned `[1, block - 1]` id array is lazy.
+    ///
+    /// `None` when the lanes cannot share a graph (fewer than two, the
+    /// candidate selector or stage timing on, different drafter weights or
+    /// hidden widths); nothing is changed then and the caller drafts each
+    /// lane alone.
+    pub(crate) fn draft_blocks_packed(
+        lanes: &mut [(&mut Dflash2Drafter, u32, MlxArray)],
+        target: &ModelWeights,
+        block: i32,
+    ) -> Option<Vec<MlxArray>> {
+        let weights = lanes.first()?.0.weights.clone();
+        let use_selector = lanes.first()?.0.use_selector;
+        let cfg = &weights.cfg;
+        let hidden = cfg.hidden_size;
+        let width = lanes.first()?.2.shape().get(2).copied()?;
+        if lanes.len() < 2
+            || block < 2
+            || lanes.iter().any(|(drafter, _, new_hidden)| {
+                drafter.use_selector != use_selector
+                    || drafter.stage_times.is_some()
+                    || !std::sync::Arc::ptr_eq(&drafter.weights, &weights)
+                    || new_hidden.shape().len() != 3
+                    || new_hidden.shape()[0] != 1
+                    || new_hidden.shape()[2] != width
+                    || new_hidden.shape()[1] < 1
+            })
+        {
+            return None;
+        }
+        let batch = lanes.len() as i32;
+        let _fused_rows = QwenMtpVerifyQmmGuard::arm(true);
+        // `[B, L, in]` -> `[B, L, out]` through one `[1, B·L, in]` matmul.
+        let project_rows = |projection: &Projection, x: &MlxArray| {
+            let shape = x.shape();
+            let rows = shape[0] * shape[1];
+            let out = projection.project(&reshape(x, &[1, rows, shape[2]], None));
+            let out_width = out.shape()[2];
+            reshape(&out, &[shape[0], shape[1], out_width], None)
+        };
+        let lane_rows = |x: &MlxArray, lane: i32| {
+            let shape = x.shape();
+            slice(
+                x,
+                &[lane, 0, 0],
+                &[lane + 1, shape[1], shape[2]],
+                &[1, 1, 1],
+                None,
+            )
+        };
+
+        let mut ids = Vec::with_capacity(lanes.len() * block as usize);
+        for (drafter, anchor, _) in lanes.iter_mut() {
+            drafter.tree_alternatives = [None, None];
+            ids.push(*anchor);
+            ids.extend(std::iter::repeat_n(cfg.mask_token_id, block as usize - 1));
+        }
+        let mut x = reshape(
+            &crate::model::embed_tokens(&ids, &target.token_embedding, hidden as usize),
+            &[batch, block, hidden],
+            None,
+        );
+        if cfg.input_embedding_scale != 1.0 {
+            x = multiply(&x, &scalar(cfg.input_embedding_scale, x.dtype()), None);
+        }
+
+        // Context rows of every lane through one fc + norm, cut to the window.
+        let hidden_refs: Vec<&MlxArray> = lanes.iter().map(|(_, _, h)| h).collect();
+        let context_all = rms_norm(
+            &weights.fc.project(&concatenate(&hidden_refs, 1, None)),
+            Some(&weights.hidden_norm),
+            cfg.rms_norm_eps,
+            None,
+        );
+        let keep = cfg.sliding_window - 1;
+        let mut contexts = Vec::with_capacity(lanes.len());
+        let mut lane_context_rows = Vec::with_capacity(lanes.len());
+        let mut start = 0;
+        for (drafter, _, new_hidden) in lanes.iter_mut() {
+            let rows = new_hidden.shape()[1];
+            let skip = (rows - keep).max(0);
+            contexts.push(slice(
+                &context_all,
+                &[0, start + skip, 0],
+                &[1, start + rows, hidden],
+                &[1, 1, 1],
+                None,
+            ));
+            drafter.offset += skip;
+            lane_context_rows.push(rows - skip);
+            start += rows;
+        }
+        let context_refs: Vec<&MlxArray> = contexts.iter().collect();
+        let projected = weights
+            .context_kv
+            .project(&concatenate(&context_refs, 1, None));
+        let projected_width = projected.shape()[2];
+        let mut chunks = Vec::with_capacity(lanes.len());
+        let mut start = 0;
+        for &rows in &lane_context_rows {
+            let lane = slice(
+                &projected,
+                &[0, start, 0],
+                &[1, start + rows, projected_width],
+                &[1, 1, 1],
+                None,
+            );
+            chunks.push(split(&lane, (cfg.num_layers * 2) as i32, 2, None));
+            start += rows;
+        }
+        let offsets: Vec<(i32, i32)> = lanes
+            .iter()
+            .zip(&lane_context_rows)
+            .map(|((drafter, _, _), &rows)| (drafter.offset, drafter.offset + rows))
+            .collect();
+
+        for (index, layer) in weights.layers.iter().enumerate() {
+            let residual = x.clone();
+            let normed = rms_norm(&x, Some(&layer.input_norm), cfg.rms_norm_eps, None);
+            let (prepared, taps) = layer.attention_conv.prepare(cfg, &normed);
+            let (q, k, v) = layer.qkv.apply(cfg, &prepared, project_rows);
+            let mut attended = Vec::with_capacity(lanes.len());
+            for (lane, (drafter, _, _)) in lanes.iter_mut().enumerate() {
+                let (context_offset, block_offset) = offsets[lane];
+                let lane_idx = lane as i32;
+                attended.push(drafter.attention_core(
+                    index,
+                    layer,
+                    &lane_rows(&q, lane_idx),
+                    &lane_rows(&k, lane_idx),
+                    &lane_rows(&v, lane_idx),
+                    &chunks[lane][index * 2],
+                    &chunks[lane][index * 2 + 1],
+                    lane_context_rows[lane],
+                    context_offset,
+                    block_offset,
+                ));
+            }
+            let attended_refs: Vec<&MlxArray> = attended.iter().collect();
+            let attention = project_rows(&layer.o, &concatenate(&attended_refs, 0, None));
+            x = add(
+                &residual,
+                &layer.attention_conv.finish(cfg, &attention, &taps),
+                None,
+            );
+            let residual = x.clone();
+            let normed = rms_norm(&x, Some(&layer.post_norm), cfg.rms_norm_eps, None);
+            let (prepared, taps) = layer.mlp_conv.prepare(cfg, &normed);
+            let gate_up = project_rows(&layer.gate_up, &prepared);
+            let halves = split(&gate_up, 2, 2, None);
+            let activated = silu_mul(&halves[0], &halves[1], None);
+            let mlp = project_rows(&layer.down, &activated);
+            x = add(&residual, &layer.mlp_conv.finish(cfg, &mlp, &taps), None);
+        }
+        for ((drafter, _, _), &rows) in lanes.iter_mut().zip(&lane_context_rows) {
+            drafter.offset += rows;
+        }
+        let normed = rms_norm(&x, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let draft_rows = batch * (block - 1);
+        let draft_hidden = reshape(
+            &slice(
+                &normed,
+                &[0, 1, 0],
+                &[batch, block, hidden],
+                &[1, 1, 1],
+                None,
+            ),
+            &[1, draft_rows, hidden],
+            None,
+        );
+        let head_dtype = target
+            .lm_head
+            .scales
+            .as_ref()
+            .map(|scales| scales.dtype())
+            .filter(|dtype| matches!(dtype, MlxDtype::Float16 | MlxDtype::Bfloat16));
+        let head_input = match head_dtype {
+            Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
+            _ => draft_hidden,
+        };
+        let logits = qw(&head_input, &target.lm_head);
+        let logits = if cfg.output_multiplier != 1.0 {
+            multiply(
+                &logits,
+                &scalar(cfg.output_multiplier, logits.dtype()),
+                None,
+            )
+        } else {
+            logits
+        };
+        if use_selector {
+            // One selector over every lane: one top-k partition of all lanes'
+            // logits, one gather per codebook, and a chain that walks the
+            // positions with the lanes side by side. Per-lane selectors left
+            // the drafter graph ending in a dozen small command buffers (one
+            // partition per lane), which kept an asynchronous submission of
+            // the draft from holding any real GPU work.
+            let anchors: Vec<u32> = lanes.iter().map(|(_, anchor, _)| *anchor).collect();
+            return Some(Self::select_packed(
+                &weights.selector,
+                cfg,
+                &head_input,
+                &logits,
+                &anchors,
+                block - 1,
+            ));
+        }
+        let tokens = astype(&argmax(&logits, None), MlxDtype::Uint32, None);
+        Some(
+            (0..batch)
+                .map(|lane| {
+                    slice(
+                        &tokens,
+                        &[0, lane * (block - 1)],
+                        &[1, (lane + 1) * (block - 1)],
+                        &[1, 1],
+                        None,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn draft_block_inner(
         &mut self,
         anchor: u32,
@@ -932,11 +1522,9 @@ impl Dflash2Drafter {
             let residual = x.clone();
             let normed = rms_norm(&x, Some(&layer.post_norm), cfg.rms_norm_eps, None);
             let (prepared, taps) = layer.mlp_conv.prepare(cfg, &normed);
-            let activated = silu_mul(
-                &layer.gate.project(&prepared),
-                &layer.up.project(&prepared),
-                None,
-            );
+            let gate_up = layer.gate_up.project(&prepared);
+            let halves = split(&gate_up, 2, 2, None);
+            let activated = silu_mul(&halves[0], &halves[1], None);
             let mlp = layer.down.project(&activated);
             x = add(&residual, &layer.mlp_conv.finish(cfg, &mlp, &taps), None);
             drafted_mark!("mlp block", &x);
@@ -1018,8 +1606,44 @@ impl Dflash2Drafter {
         context_offset: i32,
         block_offset: i32,
     ) -> MlxArray {
+        let _ = kv_width;
+        let (q, k, v) = layer
+            .qkv
+            .apply(&self.weights.cfg, x, |projection, x| projection.project(x));
+        let attended = self.attention_core(
+            index,
+            layer,
+            &q,
+            &k,
+            &v,
+            context_k,
+            context_v,
+            rows,
+            context_offset,
+            block_offset,
+        );
+        layer.o.project(&attended)
+    }
+
+    /// Attention of one lane after the Q/K/V projections: `q_proj`, `k_proj`,
+    /// `v_proj` are `[1, L, ·]` block rows. Appends the new context to this
+    /// layer's cache and returns `[1, L, heads * head_dim]` before `o`.
+    #[allow(clippy::too_many_arguments)]
+    fn attention_core(
+        &mut self,
+        index: usize,
+        layer: &Layer,
+        q_proj: &MlxArray,
+        k_proj: &MlxArray,
+        v_proj: &MlxArray,
+        context_k: &MlxArray,
+        context_v: &MlxArray,
+        rows: i32,
+        context_offset: i32,
+        block_offset: i32,
+    ) -> MlxArray {
         let cfg = &self.weights.cfg;
-        let length = x.shape()[1];
+        let length = q_proj.shape()[1];
         let (heads, kv_heads, head_dim) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
         let to_heads = |array: &MlxArray, count: i32, len: i32| {
             transpose(
@@ -1047,7 +1671,7 @@ impl Dflash2Drafter {
         let queries = apply_rope(
             &to_heads(
                 &norm(
-                    &reshape(&layer.q.project(x), &[1, length, heads, head_dim], None),
+                    &reshape(q_proj, &[1, length, heads, head_dim], None),
                     &layer.q_norm,
                 ),
                 heads,
@@ -1058,7 +1682,7 @@ impl Dflash2Drafter {
         let block_keys = apply_rope(
             &to_heads(
                 &norm(
-                    &reshape(&layer.k.project(x), &[1, length, kv_heads, head_dim], None),
+                    &reshape(k_proj, &[1, length, kv_heads, head_dim], None),
                     &layer.k_norm,
                 ),
                 kv_heads,
@@ -1066,7 +1690,7 @@ impl Dflash2Drafter {
             ),
             block_offset,
         );
-        let block_values = to_heads(&layer.v.project(x), kv_heads, length);
+        let block_values = to_heads(v_proj, kv_heads, length);
         let context_keys = apply_rope(
             &to_heads(
                 &norm(
@@ -1079,7 +1703,6 @@ impl Dflash2Drafter {
             context_offset,
         );
         let context_values = to_heads(context_v, kv_heads, rows);
-        let _ = kv_width;
 
         // Append the new context to this layer's cache, trimming the oldest rows.
         let cache = &mut self.caches[index];
@@ -1115,11 +1738,119 @@ impl Dflash2Drafter {
         let scale = (head_dim as f32).powf(-0.5);
         let attended =
             scaled_dot_product_attention(&queries, &all_keys, &all_values, scale, false, None);
-        layer.o.project(&reshape(
+        reshape(
             &transpose(&attended, &[0, 2, 1, 3], None),
             &[1, length, heads * head_dim],
             None,
-        ))
+        )
+    }
+
+    /// [`Self::select`] for a packed draft: `draft_hidden` is `[1, L·P, hidden]`
+    /// and `logits` `[1, L·P, vocab]` for `L` lanes of `P` proposals, `anchors`
+    /// one token per lane. Returns each lane's `[1, P]` draft ids. Same
+    /// candidates, scores and picks as the per-lane selector, computed with
+    /// the lanes stacked on a leading axis.
+    fn select_packed(
+        selector: &Selector,
+        cfg: &Dflash2Config,
+        draft_hidden: &MlxArray,
+        logits: &MlxArray,
+        anchors: &[u32],
+        proposals: i32,
+    ) -> Vec<MlxArray> {
+        let lanes = anchors.len() as i32;
+        let vocab = logits.shape()[2];
+        let hidden = draft_hidden.shape()[2];
+        let top_k = cfg.selector_top_k;
+        let rank = cfg.selector_rank;
+        let logits = reshape(logits, &[lanes, proposals, vocab], None);
+        let candidates = top_k_indices(&logits, top_k).unwrap_or_else(|| {
+            slice(
+                &argpartition_axis(&logits, vocab - top_k, 2, None),
+                &[0, 0, vocab - top_k],
+                &[lanes, proposals, vocab],
+                &[1, 1, 1],
+                None,
+            )
+        });
+        let unary = take_along_axis(&logits, &candidates, 2, None);
+        let projected = matmul(
+            &reshape(draft_hidden, &[lanes, proposals, hidden], None),
+            &selector.hidden_projection_t,
+            None,
+        );
+        let anchor_arr = MlxArray::from_raw_data(
+            anchors.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(anchors),
+            &[lanes],
+            MlxDtype::Uint32,
+        );
+        let successor_all = take(&selector.successor_codebook, &candidates, 0, None);
+        let predecessor_all = take(&selector.predecessor_codebook, &candidates, 0, None);
+        let mut predecessor_row = take(&selector.predecessor_codebook, &anchor_arr, 0, None);
+        let mut path = Vec::with_capacity(proposals as usize);
+        for position in 0..proposals {
+            let slot = |array: &MlxArray, width: i32| {
+                reshape(
+                    &slice(
+                        array,
+                        &[0, position, 0],
+                        &[lanes, position + 1, width],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                    &[lanes, width],
+                    None,
+                )
+            };
+            let rows = |array: &MlxArray| {
+                reshape(
+                    &slice(
+                        array,
+                        &[0, position, 0, 0],
+                        &[lanes, position + 1, top_k, rank],
+                        &[1, 1, 1, 1],
+                        None,
+                    ),
+                    &[lanes, top_k, rank],
+                    None,
+                )
+            };
+            let position_candidates = slot(&candidates, top_k);
+            let position_hidden = slot(&projected, rank);
+            let edges = sum_axis(
+                &multiply(
+                    &multiply(
+                        &reshape(&predecessor_row, &[lanes, 1, rank], None),
+                        &reshape(&position_hidden, &[lanes, 1, rank], None),
+                        None,
+                    ),
+                    &rows(&successor_all),
+                    None,
+                ),
+                2,
+                false,
+                None,
+            );
+            let scores = add(&slot(&unary, top_k), &edges, None);
+            let chosen = reshape(&argmax(&scores, None), &[lanes, 1], None);
+            path.push(take_along_axis(&position_candidates, &chosen, 1, None));
+            predecessor_row = reshape(
+                &take_along_axis(
+                    &rows(&predecessor_all),
+                    &reshape(&chosen, &[lanes, 1, 1], None),
+                    1,
+                    None,
+                ),
+                &[lanes, rank],
+                None,
+            );
+        }
+        let refs: Vec<&MlxArray> = path.iter().collect();
+        let tokens = astype(&concatenate(&refs, 1, None), MlxDtype::Uint32, None);
+        (0..lanes)
+            .map(|lane| slice(&tokens, &[lane, 0], &[lane + 1, proposals], &[1, 1], None))
+            .collect()
     }
 
     /// Chain-aware rescoring of each position's top-k logits: the score of a
@@ -1138,22 +1869,36 @@ impl Dflash2Drafter {
         let proposals = shape[1];
         let vocab = shape[2];
         let top_k = cfg.selector_top_k;
-        let partitioned = argpartition_axis(logits, vocab - top_k, 2, None);
-        let candidates = slice(
-            &partitioned,
-            &[0, 0, vocab - top_k],
-            &[1, proposals, vocab],
-            &[1, 1, 1],
-            None,
-        );
+        let candidates = top_k_indices(logits, top_k).unwrap_or_else(|| {
+            slice(
+                &argpartition_axis(logits, vocab - top_k, 2, None),
+                &[0, 0, vocab - top_k],
+                &[1, proposals, vocab],
+                &[1, 1, 1],
+                None,
+            )
+        });
         let unary = take_along_axis(logits, &candidates, 2, None);
         let projected = matmul(draft_hidden, &selector.hidden_projection_t, None);
-        let mut predecessor = MlxArray::from_raw_data(
+        let anchor_arr = MlxArray::from_raw_data(
             (&anchor as *const u32).cast::<u8>(),
             std::mem::size_of::<u32>(),
             &[1],
             MlxDtype::Uint32,
         );
+        let rank = cfg.selector_rank;
+        // Gather every codebook row the chain can need up front: the successor
+        // rows of all candidates, and the predecessor rows of all candidates
+        // (position `p`'s predecessor is the token chosen at `p - 1`, one of
+        // its candidates). The per-position chain then only indexes these
+        // small tensors. Each codebook is 63M elements, and MLX starts a new
+        // command buffer whenever a buffer's distinct inputs exceed its byte
+        // cap, so touching a codebook per position used to leave the drafter
+        // graph ending in a dozen tiny command buffers; those buffers kept an
+        // asynchronous draft submission from holding any real GPU work.
+        let successor_all = take(&selector.successor_codebook, &candidates, 0, None);
+        let predecessor_all = take(&selector.predecessor_codebook, &candidates, 0, None);
+        let mut predecessor_row = take(&selector.predecessor_codebook, &anchor_arr, 0, None);
         let mut path = Vec::with_capacity(proposals as usize);
         let mut alt_slots = capture_alternatives.then(Vec::new);
         for position in 0..proposals {
@@ -1170,15 +1915,27 @@ impl Dflash2Drafter {
                     None,
                 )
             };
+            let rows = |array: &MlxArray| {
+                reshape(
+                    &slice(
+                        array,
+                        &[0, position, 0, 0],
+                        &[1, position + 1, top_k, rank],
+                        &[1, 1, 1, 1],
+                        None,
+                    ),
+                    &[1, top_k, rank],
+                    None,
+                )
+            };
             let position_candidates = slot(&candidates, top_k);
-            let position_hidden = slot(&projected, cfg.selector_rank);
-            let predecessor_row = take(&selector.predecessor_codebook, &predecessor, 0, None);
-            let successor_rows = take(&selector.successor_codebook, &position_candidates, 0, None);
+            let position_hidden = slot(&projected, rank);
+            let successor_rows = rows(&successor_all);
             let edges = sum_axis(
                 &multiply(
                     &multiply(
-                        &reshape(&predecessor_row, &[1, 1, cfg.selector_rank], None),
-                        &reshape(&position_hidden, &[1, 1, cfg.selector_rank], None),
+                        &reshape(&predecessor_row, &[1, 1, rank], None),
+                        &reshape(&position_hidden, &[1, 1, rank], None),
                         None,
                     ),
                     &successor_rows,
@@ -1195,17 +1952,24 @@ impl Dflash2Drafter {
                 slots.push((position_candidates.clone(), scores.clone()));
             }
             let chosen = argmax(&scores, None);
-            predecessor = reshape(
-                &take_along_axis(
-                    &position_candidates,
-                    &reshape(&chosen, &[1, 1], None),
-                    1,
-                    None,
-                ),
+            let chosen_index = reshape(&chosen, &[1, 1], None);
+            let predecessor = reshape(
+                &take_along_axis(&position_candidates, &chosen_index, 1, None),
                 &[1],
                 None,
             );
-            path.push(predecessor.clone());
+            // The chosen candidate's predecessor row for the next position.
+            predecessor_row = reshape(
+                &take_along_axis(
+                    &rows(&predecessor_all),
+                    &reshape(&chosen, &[1, 1, 1], None),
+                    1,
+                    None,
+                ),
+                &[1, rank],
+                None,
+            );
+            path.push(predecessor);
         }
         let capture_error = if let Some(slots) = alt_slots.as_ref() {
             match selector_runner_up(slots, &path) {
@@ -1564,6 +2328,14 @@ pub(crate) fn fail_next_dflash2_capture_verify_eval_for_test(message: &'static s
 /// round test. Shapes satisfy the drafter's block graph; the weights are zeros.
 #[cfg(test)]
 pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWeights) {
+    dflash2_fixture_with(&|shape| mlx_sys::zeros(shape, MlxDtype::Bfloat16, None))
+}
+
+/// [`dflash2_tiny_fixture`] with every tensor drawn from `fill`.
+#[cfg(test)]
+pub(crate) fn dflash2_fixture_with(
+    fill: &dyn Fn(&[i32]) -> MlxArray,
+) -> (std::sync::Arc<Dflash2Weights>, ModelWeights) {
     let hidden = 8i32;
     let head_dim = 4i32;
     let kv = 4i32;
@@ -1572,8 +2344,7 @@ pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWe
     let kernel = 2i32;
     let groups = 2i32;
     let rank = 4i32;
-    let bf16 = MlxDtype::Bfloat16;
-    let z = |shape: &[i32]| mlx_sys::zeros(shape, bf16, None);
+    let z = |shape: &[i32]| fill(shape);
     let proj = |out: i32, inn: i32| Projection::new(&z(&[out, inn]), DrafterPrecision::Bf16);
     let conv = || GroupedConv {
         base: z(&[2, kernel, hidden]),
@@ -1607,14 +2378,16 @@ pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWe
         DrafterPrecision::Bf16,
     );
     let layer = Layer {
-        q: proj(hidden, hidden),
-        k: Projection::new(&k_weight, DrafterPrecision::Bf16),
-        v: Projection::new(&v_weight, DrafterPrecision::Bf16),
+        qkv: QkvProjection::new(
+            &z(&[hidden, hidden]),
+            &k_weight,
+            &v_weight,
+            DrafterPrecision::Bf16,
+        ),
         o: proj(hidden, hidden),
         q_norm: z(&[head_dim]),
         k_norm: z(&[head_dim]),
-        gate: proj(inter, hidden),
-        up: proj(inter, hidden),
+        gate_up: proj(2 * inter, hidden),
         down: proj(hidden, inter),
         input_norm: z(&[hidden]),
         post_norm: z(&[hidden]),
@@ -1699,6 +2472,301 @@ mod tests {
         assert_eq!(drafts.shape()[1], block - 1);
         assert!(drafter.cache_offset() > 0);
         assert!(drafter.cache_rows() > 0);
+    }
+
+    #[test]
+    fn packed_drafts_match_each_lane_drafted_alone() {
+        let seed = std::cell::Cell::new(0x9e37_79b9_u32);
+        let fill = |shape: &[i32]| {
+            let n: i32 = shape.iter().product();
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    let mut x = seed.get();
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    seed.set(x);
+                    (x % 2001) as f32 / 1000.0 - 1.0
+                })
+                .collect();
+            astype(
+                &reshape(&MlxArray::from_f32_slice(&values), shape, None),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let (weights, target) = dflash2_fixture_with(&fill);
+        let width = weights.config().target_hidden_width();
+        let block = weights.config().block_size;
+        // Context rows per round, one entry per lane (9 > the window cap).
+        let rows = [[2, 5, 1], [3, 1, 9]];
+        let rounds: Vec<Vec<MlxArray>> = rows
+            .iter()
+            .map(|round| round.iter().map(|&r| fill(&[1, r, width])).collect())
+            .collect();
+        let anchors = [3_u32, 7, 11];
+        for use_selector in [false, true] {
+            let mut solo: Vec<Dflash2Drafter> = (0..3)
+                .map(|_| Dflash2Drafter::new(weights.clone()).with_selector(use_selector))
+                .collect();
+            let mut packed: Vec<Dflash2Drafter> = (0..3)
+                .map(|_| Dflash2Drafter::new(weights.clone()).with_selector(use_selector))
+                .collect();
+            for (round, hiddens) in rounds.iter().enumerate() {
+                let expected: Vec<Vec<u32>> = solo
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(lane, drafter)| {
+                        let ids = drafter
+                            .draft_block(anchors[lane], &hiddens[lane], &target, block)
+                            .expect("solo draft");
+                        mlx_sys::eval(&[&ids]);
+                        ids.data_u32().to_vec()
+                    })
+                    .collect();
+                let mut lanes: Vec<(&mut Dflash2Drafter, u32, MlxArray)> = packed
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(lane, drafter)| (drafter, anchors[lane], hiddens[lane].clone()))
+                    .collect();
+                let drafted = Dflash2Drafter::draft_blocks_packed(&mut lanes, &target, block)
+                    .expect("packed");
+                for (lane, ids) in drafted.iter().enumerate() {
+                    mlx_sys::eval(&[ids]);
+                    assert_eq!(ids.shape(), vec![1, block - 1]);
+                    assert_eq!(
+                        ids.data_u32(),
+                        expected[lane].as_slice(),
+                        "round {round} lane {lane}"
+                    );
+                }
+                for (a, b) in solo.iter().zip(&packed) {
+                    assert_eq!(a.cache_offset(), b.cache_offset());
+                    assert_eq!(a.cache_rows(), b.cache_rows());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stacked_qkv_projection_matches_separate_projections() {
+        // MXFP4 (the default drafter precision) must be bit-identical; dense
+        // bf16 within one ulp. Drafter-like widths: hidden 2048, 16 query heads and 4 KV heads of
+        // 128. Rows 8 (one lane's block) and 32 (four packed lanes), with
+        // and without the fused multi-row QMM guard the packed path arms.
+        let (hidden, head_dim, heads, kv_heads) = (2048, 128, 16, 4);
+        let (q_width, kv_width) = (heads * head_dim, kv_heads * head_dim);
+        let mut seed = 0x9e37_79b9_u32;
+        let mut noise = |n: i32, scale: f32| {
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    ((seed % 2001) as f32 / 1000.0 - 1.0) * scale
+                })
+                .collect();
+            MlxArray::from_f32_slice(&values)
+        };
+        let weight = |noise: &mut dyn FnMut(i32, f32) -> MlxArray, out: i32| {
+            astype(
+                &reshape(&noise(out * hidden, 0.05), &[out, hidden], None),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let wq = weight(&mut noise, q_width);
+        let wk = weight(&mut noise, kv_width);
+        let wv = weight(&mut noise, kv_width);
+        let cfg = Dflash2Config {
+            hidden_size: hidden,
+            num_heads: heads,
+            num_kv_heads: kv_heads,
+            head_dim,
+            ..dflash2_tiny_fixture().0.config().clone()
+        };
+        for precision in [DrafterPrecision::Bf16, DrafterPrecision::Mxfp4] {
+            let stacked = Projection::new(&concatenate(&[&wq, &wk, &wv], 0, None), precision);
+            let separate = [
+                Projection::new(&wq, precision),
+                Projection::new(&wk, precision),
+                Projection::new(&wv, precision),
+            ];
+            for rows in [8, 32] {
+                let x = astype(
+                    &reshape(&noise(rows * hidden, 1.0), &[1, rows, hidden], None),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                for guard in [false, true] {
+                    let _rows_guard = QwenMtpVerifyQmmGuard::arm(guard);
+                    let (q, k, v) = cfg.split_qkv(&stacked.project(&x));
+                    for (label, fused, alone) in [
+                        ("q", &q, separate[0].project(&x)),
+                        ("k", &k, separate[1].project(&x)),
+                        ("v", &v, separate[2].project(&x)),
+                    ] {
+                        let fused = astype(&contiguous(fused, None), MlxDtype::Float32, None);
+                        let alone = astype(&alone, MlxDtype::Float32, None);
+                        mlx_sys::eval(&[&fused, &alone]);
+                        assert_eq!(fused.shape(), alone.shape(), "{label}");
+                        let case = format!("{precision:?} rows {rows} guard {guard} {label}");
+                        let (a, b) = (fused.data_f32(), alone.data_f32());
+                        if precision == DrafterPrecision::Mxfp4 {
+                            // The shipped drafter: the stacked QMM is exact.
+                            assert_eq!(a, b, "{case}");
+                        } else {
+                            // Dense bf16 GEMM may pick another tile for the wider
+                            // N; a few outputs then differ by one bf16 ulp.
+                            for (x, y) in a.iter().zip(b) {
+                                let ulp = f32::from_bits(y.abs().to_bits() & 0x7f80_0000) / 128.0;
+                                assert!((x - y).abs() <= ulp, "{case}: {x} vs {y}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn top_k_kernel_matches_argpartition_sets() {
+        for (dtype, vocab) in [
+            (MlxDtype::Float32, 1000),
+            (MlxDtype::Bfloat16, 4099),
+            (MlxDtype::Float32, 248_000),
+        ] {
+            let mut seed = 0x2545_f491_u32;
+            let n = 3 * 7 * vocab;
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    // Coarse values so exact ties occur.
+                    ((seed % 4001) as f32 / 100.0) - 20.0
+                })
+                .collect();
+            let logits = astype(
+                &reshape(&MlxArray::from_f32_slice(&values), &[3, 7, vocab], None),
+                dtype,
+                None,
+            );
+            let k = 16;
+            let ours = top_k_indices(&logits, k).expect("kernel applies");
+            let reference = contiguous(
+                &slice(
+                    &argpartition_axis(&logits, vocab - k, 2, None),
+                    &[0, 0, vocab - k],
+                    &[3, 7, vocab],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            mlx_sys::eval(&[&ours, &reference]);
+            assert_eq!(ours.shape(), vec![3, 7, k]);
+            let ours_ids = ours.data_u32().to_vec();
+            let reference_ids = reference.data_u32().to_vec();
+            let logit_values = astype(&logits, MlxDtype::Float32, None);
+            mlx_sys::eval(&[&logit_values]);
+            let flat = logit_values.data_f32().to_vec();
+            for row in 0..21usize {
+                let base = row * vocab as usize;
+                let mut a: Vec<f32> = ours_ids[row * 16..row * 16 + 16]
+                    .iter()
+                    .map(|&id| flat[base + id as usize])
+                    .collect();
+                let mut b: Vec<f32> = reference_ids[row * 16..row * 16 + 16]
+                    .iter()
+                    .map(|&id| flat[base + id as usize])
+                    .collect();
+                a.sort_by(|x, y| y.total_cmp(x));
+                b.sort_by(|x, y| y.total_cmp(x));
+                // Same top-k values (ties at the boundary may pick other ids).
+                assert_eq!(a, b, "row {row} dtype {dtype:?} vocab {vocab}");
+                // Sorted descending, ids ascending within equal values.
+                let ids = &ours_ids[row * 16..row * 16 + 16];
+                for w in 0..15 {
+                    let (v0, v1) = (
+                        flat[base + ids[w] as usize],
+                        flat[base + ids[w + 1] as usize],
+                    );
+                    assert!(
+                        v0 > v1 || (v0 == v1 && ids[w] < ids[w + 1]),
+                        "row {row} order"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_grouped_conv_matches_the_op_chain() {
+        let seed = std::cell::Cell::new(0x2545_f491_u32);
+        let fill = |shape: &[i32], dtype: MlxDtype| {
+            let n: i32 = shape.iter().product();
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    let mut x = seed.get();
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    seed.set(x);
+                    (x % 4001) as f32 / 1000.0 - 2.0
+                })
+                .collect();
+            astype(
+                &reshape(&MlxArray::from_f32_slice(&values), shape, None),
+                dtype,
+                None,
+            )
+        };
+        let (weights, _) = dflash2_tiny_fixture();
+        let mut cfg = weights.config().clone();
+        cfg.hidden_size = 64;
+        cfg.conv_group_size = 16;
+        for kernel in [1, 2, 3] {
+            cfg.conv_kernel_size = kernel;
+            let groups = cfg.hidden_size / cfg.conv_group_size;
+            for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+                let conv = GroupedConv {
+                    base: fill(&[2, kernel, cfg.hidden_size], MlxDtype::Bfloat16),
+                    projection_t: fill(&[cfg.hidden_size, 2 * kernel * groups], dtype),
+                };
+                for (batch, length) in [(1, 8), (3, 5), (2, 1)] {
+                    let hidden = fill(&[batch, length, cfg.hidden_size], dtype);
+                    let dynamic = matmul(&hidden, &conv.projection_t, None);
+                    for half in [0, 1] {
+                        let fused = conv
+                            .convolve_fused(&cfg, &hidden, &dynamic, half)
+                            .expect("fused kernel");
+                        let taps = reshape(
+                            &slice(
+                                &reshape(&dynamic, &[batch, length, 2, kernel, groups], None),
+                                &[0, 0, half, 0, 0],
+                                &[batch, length, half + 1, kernel, groups],
+                                &[1, 1, 1, 1, 1],
+                                None,
+                            ),
+                            &[batch, length, kernel, groups],
+                            None,
+                        );
+                        let ops = conv.convolve_ops(&cfg, &hidden, &taps, half);
+                        let (fused, ops) = (
+                            astype(&fused, MlxDtype::Float32, None),
+                            astype(&ops, MlxDtype::Float32, None),
+                        );
+                        mlx_sys::eval(&[&fused, &ops]);
+                        assert_eq!(
+                            fused.data_f32(),
+                            ops.data_f32(),
+                            "kernel {kernel} {dtype:?} batch {batch} length {length} half {half}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1952,8 +3020,10 @@ mod tests {
                         } else {
                             0.0
                         };
+                        // `taps` is the full dynamic projection; finish reads
+                        // its second half.
                         (base[(kernel_u + offset) * width_u + c]
-                            + tap_values[(l * kernel_u + offset) * groups + g])
+                            + tap_values[((l * 2 + 1) * kernel_u + offset) * groups + g])
                             * shifted
                     })
                     .sum();

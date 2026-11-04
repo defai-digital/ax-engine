@@ -1254,7 +1254,7 @@ fn decode_post_input_metal_preserves_fp16_rounding_boundaries() {
 
 #[test]
 fn fused_gated_delta_verify_bf16_128d_matches_portable_prework() {
-    for seq in [2, 4] {
+    for seq in [2, 4, 5, 8] {
         let (cfg, qkv, weight, conv_state) = post_input_rounding_fixture(seq, MlxDtype::Bfloat16);
         let heads = cfg.num_value_heads;
         let a_log = f32_array(&[-0.25, -0.125, 0.0], &[heads as i32]);
@@ -1394,7 +1394,7 @@ fn fused_gated_delta_verify_matches_two_kernel_composition() {
     let a_log = f32_array(&[-0.2, -0.15], &[2]);
     let dt_bias = f32_array(&[0.05, -0.02], &[2]);
 
-    for seq in 2..=4 {
+    for seq in 2..=8 {
         let qkv_data: Vec<f32> = (0..seq * conv_dim)
             .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)
             .collect();
@@ -1640,7 +1640,7 @@ fn fused_gated_delta_verify_no_checkpoint_matches_checkpoint_kernel() {
     );
     let a_log = f32_array(&[-0.2, -0.15], &[2]);
     let dt_bias = f32_array(&[0.05, -0.02], &[2]);
-    for seq in 2..=4 {
+    for seq in 2..=8 {
         let qkv = f32_array(
             &(0..seq * conv_dim)
                 .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)

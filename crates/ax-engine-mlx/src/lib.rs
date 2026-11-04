@@ -52,6 +52,8 @@ pub mod ngram_accel;
 pub(crate) mod paged_attention;
 pub(crate) mod per_layer_compile;
 pub mod pipeline;
+#[doc(hidden)]
+pub mod probes;
 pub mod runner;
 pub mod sampling;
 pub mod speculation_profile;
