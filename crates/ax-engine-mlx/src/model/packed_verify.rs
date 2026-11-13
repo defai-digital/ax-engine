@@ -28,7 +28,8 @@ use crate::model::shared::attention::{
     prepare_value_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
 };
 use crate::model::shared::linear_attention::{
-    linear_attention_core, linear_attention_gate_out, linear_attention_inputs,
+    LINEAR_ATTENTION_CORE_MAX_LANES, linear_attention_core, linear_attention_core_lanes,
+    linear_attention_gate_out, linear_attention_inputs,
 };
 use crate::model::shared::mlp::{
     attention_output_projection_with_post_norm_policy, ffn_swiglu_plus_residual, qkv_project,
@@ -145,22 +146,68 @@ pub(crate) fn packed_verify_forward(
             let normed = rms_norm(&hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
             let (qkv, z, a, b) =
                 linear_attention_inputs(cfg, linear_cfg, linear_w, &normed, total as i32, false);
-            let mut outs = Vec::with_capacity(lanes.len());
             for (lane, &start) in lanes.iter_mut().zip(&starts) {
-                let qkv_l = rows_of(&qkv, start, lane.rows);
-                let a_l = rows_of(&a, start, lane.rows);
-                let b_l = rows_of(&b, start, lane.rows);
                 if lane.cache.linear_prefix_capture_after().is_some() {
                     lane.cache.set_linear_mtp_projection_stash(
                         layer_idx,
-                        qkv_l.clone(),
-                        a_l.clone(),
-                        b_l.clone(),
+                        rows_of(&qkv, start, lane.rows),
+                        rows_of(&a, start, lane.rows),
+                        rows_of(&b, start, lane.rows),
                     );
                 }
-                outs.push(linear_attention_core(
-                    cfg, linear_cfg, linear_w, &qkv_l, &a_l, &b_l, lane.cache, layer_idx, false,
-                ));
+            }
+            // Consecutive lanes with the same row count share one fused
+            // gated-delta dispatch; the rest run one core per lane.
+            let mut outs = Vec::with_capacity(lanes.len());
+            let mut first = 0;
+            while first < lanes.len() {
+                let rows = lanes[first].rows;
+                let mut end = first + 1;
+                while end < lanes.len()
+                    && end - first < LINEAR_ATTENTION_CORE_MAX_LANES
+                    && lanes[end].rows == rows
+                {
+                    end += 1;
+                }
+                let start = starts[first];
+                let span = (end - first) * rows;
+                let batched = if end - first >= 2 {
+                    let mut caches: Vec<&mut MlxKVCache> = lanes[first..end]
+                        .iter_mut()
+                        .map(|lane| &mut *lane.cache)
+                        .collect();
+                    linear_attention_core_lanes(
+                        linear_cfg,
+                        linear_w,
+                        cfg.rms_norm_eps,
+                        &rows_of(&qkv, start, span),
+                        &rows_of(&a, start, span),
+                        &rows_of(&b, start, span),
+                        &mut caches,
+                        layer_idx,
+                        rows,
+                    )
+                } else {
+                    None
+                };
+                if let Some(out) = batched {
+                    outs.push(out);
+                } else {
+                    for (lane, &start) in lanes[first..end].iter_mut().zip(&starts[first..end]) {
+                        outs.push(linear_attention_core(
+                            cfg,
+                            linear_cfg,
+                            linear_w,
+                            &rows_of(&qkv, start, lane.rows),
+                            &rows_of(&a, start, lane.rows),
+                            &rows_of(&b, start, lane.rows),
+                            lane.cache,
+                            layer_idx,
+                            false,
+                        ));
+                    }
+                }
+                first = end;
             }
             let out = join_rows(&outs);
             linear_attention_gate_out(

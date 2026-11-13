@@ -2504,3 +2504,117 @@ fn worker_cleanup_removes_only_retired_gated_delta_graphs() {
         "sibling graph must survive"
     );
 }
+
+#[test]
+fn lane_batched_fused_verify_matches_one_call_per_lane() {
+    let (q_scale, k_scale) = linear_attention_qk_scale(128);
+    // Two value heads per key head, like the Qwen 3.5 / 3.8 hybrids.
+    let cfg = LinearAttentionConfig {
+        full_attention_interval: 4,
+        num_value_heads: 4,
+        num_key_heads: 2,
+        key_head_dim: 128,
+        value_head_dim: 128,
+        conv_kernel_dim: 4,
+        q_scale,
+        k_scale,
+    };
+    let conv_dim = cfg.conv_dim() as i32;
+    let heads = cfg.num_value_heads as i32;
+    let mut seed = 0x1234_5678_u32;
+    let mut noise = |n: i32, scale: f32| -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                ((seed % 2001) as f32 / 1000.0 - 1.0) * scale
+            })
+            .collect()
+    };
+    let bf16 =
+        |data: Vec<f32>, shape: &[i32]| astype(&f32_array(&data, shape), MlxDtype::Bfloat16, None);
+    let weight = bf16(noise(conv_dim * 4, 0.5), &[conv_dim, 4, 1]);
+    let a_log = f32_array(&noise(heads, 0.5), &[heads]);
+    let dt_bias = f32_array(&noise(heads, 0.1), &[heads]);
+    for lanes in 2..=GATED_DELTA_FUSED_VERIFY_MAX_LANES as i32 {
+        for seq in [2, 4, 8] {
+            let total = lanes * seq;
+            let qkv = bf16(noise(total * conv_dim, 1.0), &[1, total, conv_dim]);
+            let a_raw = bf16(noise(total * heads, 2.0), &[1, total, heads]);
+            let b_raw = bf16(noise(total * heads, 2.0), &[1, total, heads]);
+            let convs: Vec<MlxArray> = (0..lanes)
+                .map(|_| bf16(noise(3 * conv_dim, 1.0), &[1, 3, conv_dim]))
+                .collect();
+            let states: Vec<MlxArray> = (0..lanes)
+                .map(|_| f32_array(&noise(heads * 128 * 128, 0.05), &[1, heads, 128, 128]))
+                .collect();
+            let rows = |x: &MlxArray, lane: i32| {
+                let shape = x.shape();
+                let mut end = shape.clone();
+                end[1] = (lane + 1) * seq;
+                let mut begin = vec![0; shape.len()];
+                begin[1] = lane * seq;
+                contiguous(&slice(x, &begin, &end, &vec![1; shape.len()], None), None)
+            };
+            let mut expected_y = Vec::new();
+            let mut expected_states = Vec::new();
+            let mut expected_convs = Vec::new();
+            for lane in 0..lanes {
+                let (y, state, conv) = gated_delta_fused_verify_no_checkpoint_from_qkv(
+                    &cfg,
+                    &rows(&qkv, lane),
+                    &weight,
+                    Some(&convs[lane as usize]),
+                    &a_log,
+                    &rows(&a_raw, lane),
+                    &dt_bias,
+                    &rows(&b_raw, lane),
+                    &states[lane as usize],
+                    q_scale,
+                    k_scale,
+                    1e-6,
+                )
+                .expect("single-lane fused verifier");
+                expected_y.push(y);
+                expected_states.push(state);
+                expected_convs.push(conv);
+            }
+            let conv_refs: Vec<&MlxArray> = convs.iter().collect();
+            let state_refs: Vec<&MlxArray> = states.iter().collect();
+            let (y, out_states, out_convs) = gated_delta_fused_verify_no_checkpoint_lanes(
+                &cfg,
+                &qkv,
+                &weight,
+                &conv_refs,
+                &a_log,
+                &a_raw,
+                &dt_bias,
+                &b_raw,
+                &state_refs,
+                q_scale,
+                k_scale,
+                1e-6,
+            )
+            .expect("lane-batched fused verifier");
+            let expected_refs: Vec<&MlxArray> = expected_y.iter().collect();
+            let expected_y = concatenate(&expected_refs, 1, None);
+            let mut pairs = vec![("y".to_owned(), y, expected_y)];
+            for (lane, (state, conv)) in out_states.into_iter().zip(out_convs).enumerate() {
+                pairs.push((format!("state{lane}"), state, expected_states[lane].clone()));
+                pairs.push((format!("conv{lane}"), conv, expected_convs[lane].clone()));
+            }
+            for (label, actual, expected) in pairs {
+                assert_eq!(actual.shape(), expected.shape(), "{label}");
+                let actual = astype(&actual, MlxDtype::Float32, None);
+                let expected = astype(&expected, MlxDtype::Float32, None);
+                mlx_sys::eval(&[&actual, &expected]);
+                assert_eq!(
+                    actual.data_f32(),
+                    expected.data_f32(),
+                    "lanes {lanes} seq {seq} {label}"
+                );
+            }
+        }
+    }
+}

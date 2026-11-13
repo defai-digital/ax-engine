@@ -797,6 +797,235 @@ pub(crate) fn gated_delta_fused_verify_no_checkpoint_from_qkv(
     Some((y, state_out, new_conv_state))
 }
 
+/// Most lanes one [`gated_delta_fused_verify_no_checkpoint_lanes`] dispatch
+/// serves. Each lane binds four buffers (conv and recurrent state in and out)
+/// next to ten shared ones, and Metal allows 31 per kernel.
+pub(crate) const GATED_DELTA_FUSED_VERIFY_MAX_LANES: usize = 4;
+
+static GATED_DELTA_FUSED_VERIFY_LANES_KERNELS: [OnceLock<Option<MlxMetalKernel>>;
+    GATED_DELTA_FUSED_VERIFY_MAX_LANES - 1] = [const { OnceLock::new() }; 3];
+
+/// The no-checkpoint fused verifier with each batch entry's conv and
+/// recurrent state bound as its own buffer, so per-lane states are read and
+/// written in place instead of being concatenated into a `[lanes, ...]` copy.
+/// Every other buffer keeps the batched layout.
+fn gated_delta_fused_verify_lanes_source(lanes: usize) -> Option<String> {
+    let pick = |prefix: &str| {
+        let mut expr = format!("{prefix}{}", lanes - 1);
+        for lane in (0..lanes - 1).rev() {
+            expr = format!("(batch_idx == {lane} ? {prefix}{lane} : {expr})");
+        }
+        expr
+    };
+    let mut source = GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL_SOURCE.to_owned();
+    for (old, new) in [
+        (
+            "auto conv_state_b = conv_state + batch_idx * TailLen * ConvDim;".to_owned(),
+            format!("auto conv_state_b = {};", pick("conv_state")),
+        ),
+        (
+            "auto new_conv_b = new_conv_state + batch_idx * TailLen * ConvDim;".to_owned(),
+            format!("auto new_conv_b = {};", pick("new_conv_state")),
+        ),
+        (
+            "auto i_state = state_in + (n * Dv + dv_idx) * Dk;".to_owned(),
+            format!(
+                "auto i_state = {} + (hv_idx * Dv + dv_idx) * Dk;",
+                pick("state_in")
+            ),
+        ),
+        (
+            "auto o_state = state_out + (n * Dv + dv_idx) * Dk;".to_owned(),
+            format!(
+                "auto o_state = {} + (hv_idx * Dv + dv_idx) * Dk;",
+                pick("state_out")
+            ),
+        ),
+    ] {
+        if source.matches(old.as_str()).count() != 1 {
+            return None;
+        }
+        source = source.replace(old.as_str(), &new);
+    }
+    Some(source)
+}
+
+/// [`gated_delta_fused_verify_no_checkpoint_from_qkv`] for `lanes` sequences
+/// of `seq` rows each in one dispatch. `qkv`, `a_raw` and `b_raw` hold the
+/// lanes' rows back to back (`[1, lanes * seq, ·]`, as a row-packed verify
+/// lays them out); `conv_states` and `recurrent_states` are each lane's own
+/// `[1, ...]` state. Returns `y` as `[1, lanes * seq, Hv, Dv]` in the same row
+/// order, then each lane's new recurrent and conv state. Each (lane, head)
+/// threadgroup runs the single-lane arithmetic on its own state, so the
+/// result matches one call per lane value for value.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gated_delta_fused_verify_no_checkpoint_lanes(
+    cfg: &LinearAttentionConfig,
+    qkv: &MlxArray,
+    conv_weight: &MlxArray,
+    conv_states: &[&MlxArray],
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    recurrent_states: &[&MlxArray],
+    q_scale: f32,
+    k_scale: f32,
+    eps: f32,
+) -> Option<(MlxArray, Vec<MlxArray>, Vec<MlxArray>)> {
+    const TGY: i32 = 8;
+    let lanes = conv_states.len();
+    if !(2..=GATED_DELTA_FUSED_VERIFY_MAX_LANES).contains(&lanes) || recurrent_states.len() != lanes
+    {
+        return None;
+    }
+    let qkv_shape = qkv.shape();
+    if qkv_shape.len() != 3 || qkv_shape[0] != 1 || qkv_shape[1] % lanes as i32 != 0 {
+        return None;
+    }
+    let seq = qkv_shape[1] / lanes as i32;
+    if !fastpath::qwen_linear_fused_gdn_verify_seq_contains(i64::from(seq)) {
+        return None;
+    }
+    let key_heads = cfg.num_key_heads as i32;
+    let value_heads = cfg.num_value_heads as i32;
+    let key_dim = cfg.key_head_dim as i32;
+    let value_dim = cfg.value_head_dim as i32;
+    if key_heads <= 0
+        || value_heads <= 0
+        || value_heads % key_heads != 0
+        || key_dim != value_dim
+        || !(32..=256).contains(&key_dim)
+        || !(key_dim as u32).is_power_of_two()
+        || key_dim % 32 != 0
+        || value_dim % TGY != 0
+        || cfg.conv_kernel_dim < 2
+    {
+        return None;
+    }
+    let conv_dim = cfg.conv_dim() as i32;
+    let tail_len = cfg.conv_kernel_dim as i32 - 1;
+    let total = lanes as i32 * seq;
+    let state_shape = vec![1, value_heads, value_dim, key_dim];
+    let state_dtype = recurrent_states[0].dtype();
+    if qkv_shape[2] != conv_dim
+        || conv_weight.shape() != vec![conv_dim, cfg.conv_kernel_dim as i32, 1]
+        || a_log.shape() != vec![value_heads]
+        || dt_bias.shape() != vec![value_heads]
+        || a_raw.shape() != vec![1, total, value_heads]
+        || b_raw.shape() != vec![1, total, value_heads]
+        || recurrent_states
+            .iter()
+            .any(|state| state.shape() != state_shape || state.dtype() != state_dtype)
+        || conv_states.iter().any(|state| {
+            state.shape() != vec![1, tail_len, conv_dim] || state.dtype() != qkv.dtype()
+        })
+    {
+        return None;
+    }
+    let kernel = GATED_DELTA_FUSED_VERIFY_LANES_KERNELS[lanes - 2]
+        .get_or_init(|| {
+            let source = gated_delta_fused_verify_lanes_source(lanes)?;
+            let mut inputs: Vec<String> = vec!["qkv".into(), "conv_weight".into()];
+            inputs.extend((0..lanes).map(|lane| format!("conv_state{lane}")));
+            inputs.extend(["a_log", "a_raw", "dt_bias", "b_raw"].map(String::from));
+            inputs.extend((0..lanes).map(|lane| format!("state_in{lane}")));
+            inputs.extend(["q_scale", "k_scale", "eps"].map(String::from));
+            let mut outputs: Vec<String> = vec!["y".into()];
+            outputs.extend((0..lanes).map(|lane| format!("state_out{lane}")));
+            outputs.extend((0..lanes).map(|lane| format!("new_conv_state{lane}")));
+            let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+            let outputs: Vec<&str> = outputs.iter().map(String::as_str).collect();
+            MlxMetalKernel::try_new(
+                &format!("ax_qwen_gated_delta_fused_verify_lanes{lanes}_v1"),
+                &inputs,
+                &outputs,
+                &source,
+                POST_INPUT_ROUNDING_HEADER,
+                true,
+            )
+            .ok()
+        })
+        .as_ref()?;
+    let qkv_lanes = reshape(qkv, &[lanes as i32, seq, conv_dim], None);
+    let a_lanes = reshape(a_raw, &[lanes as i32, seq, value_heads], None);
+    let b_lanes = reshape(b_raw, &[lanes as i32, seq, value_heads], None);
+    let q_scale_arr = scalar_f32_as(q_scale, MlxDtype::Float32);
+    let k_scale_arr = scalar_f32_as(k_scale, MlxDtype::Float32);
+    let eps_arr = scalar_f32_as(eps, MlxDtype::Float32);
+    let mut inputs: Vec<&MlxArray> = vec![&qkv_lanes, conv_weight];
+    inputs.extend(conv_states.iter().copied());
+    inputs.extend([a_log, &a_lanes, dt_bias, &b_lanes]);
+    inputs.extend(recurrent_states.iter().copied());
+    inputs.extend([&q_scale_arr, &k_scale_arr, &eps_arr]);
+    let mut output_specs = vec![KernelOutputSpec {
+        shape: vec![lanes as i32, seq, value_heads, value_dim],
+        dtype: qkv.dtype(),
+    }];
+    output_specs.extend((0..lanes).map(|_| KernelOutputSpec {
+        shape: state_shape.clone(),
+        dtype: state_dtype,
+    }));
+    output_specs.extend((0..lanes).map(|_| KernelOutputSpec {
+        shape: vec![1, tail_len, conv_dim],
+        dtype: qkv.dtype(),
+    }));
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &inputs,
+            &output_specs,
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "InT",
+                    dtype: qkv.dtype(),
+                },
+                KernelTemplateArg::Dtype {
+                    name: "StT",
+                    dtype: state_dtype,
+                },
+                KernelTemplateArg::Int {
+                    name: "Dk",
+                    value: key_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Dv",
+                    value: value_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Hk",
+                    value: key_heads,
+                },
+                KernelTemplateArg::Int {
+                    name: "Hv",
+                    value: value_heads,
+                },
+                KernelTemplateArg::Int {
+                    name: "SeqLen",
+                    value: seq,
+                },
+                KernelTemplateArg::Int {
+                    name: "ConvKernelDim",
+                    value: cfg.conv_kernel_dim as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "Tgy",
+                    value: TGY,
+                },
+            ],
+            (32, value_dim, lanes as i32 * value_heads),
+            (32, TGY, 1),
+            None,
+        )
+        .ok()?;
+    if outputs.len() != 1 + 2 * lanes {
+        return None;
+    }
+    let convs = outputs.split_off(1 + lanes);
+    let states = outputs.split_off(1);
+    let y = reshape(&outputs[0], &[1, total, value_heads, value_dim], None);
+    Some((y, states, convs))
+}
+
 pub(crate) fn split_linear_attention_qkv(
     cfg: &LinearAttentionConfig,
     conv_out: &MlxArray,

@@ -1983,6 +1983,17 @@ pub(crate) fn dflash2_window_override() -> Option<usize> {
 }
 
 env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_LANE_BATCHED_GDN` - in a row-packed DFlash2 cohort
+    /// verify, consecutive lanes with the same row count run their gated-delta
+    /// conv and recurrence in one fused dispatch per layer (each lane's state
+    /// bound in place) instead of one dispatch per lane. Bit-identical
+    /// (`lane_batched_fused_verify_matches_one_call_per_lane`).
+    /// **Default: ON**; `0` restores one core per lane.
+    dflash2_lane_batched_gdn_enabled,
+    "AX_MLX_DFLASH2_LANE_BATCHED_GDN"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DFLASH2_FUSED_QKV` - stack each drafter layer's `q_proj`,
     /// `k_proj` and `v_proj` at load so the block rows take one matmul instead
     /// of three (read at load). Bit-identical for the default MXFP4 drafter;

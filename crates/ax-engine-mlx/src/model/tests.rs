@@ -5059,11 +5059,22 @@ fn gpt_oss_sliding_layers_keep_the_model_yarn_rope() {
 /// A two-layer Qwen 3.5 hybrid (gated delta, then gated full attention) with
 /// patterned weights, for the packed-verify oracle.
 fn patterned_qwen35_hybrid() -> (ModelConfig, ModelWeights) {
+    patterned_qwen35_hybrid_with_value_head_dim(None)
+}
+
+/// [`patterned_qwen35_hybrid`] with another `value_head_dim`; 32 (equal to the
+/// key head dim) makes the gated-delta layer eligible for the fused verifier.
+fn patterned_qwen35_hybrid_with_value_head_dim(
+    value_head_dim: Option<u32>,
+) -> (ModelConfig, ModelWeights) {
     let mut manifest = qwen35_linear_manifest();
     manifest.layer_count = 2;
     manifest.linear_attention.full_attention_interval = Some(2);
     // The gated-delta kernel needs key_head_dim % 32 == 0.
     manifest.linear_attention.key_head_dim = Some(32);
+    if value_head_dim.is_some() {
+        manifest.linear_attention.value_head_dim = value_head_dim;
+    }
     manifest.rms_norm_eps = Some(1e-6);
     let cfg = ModelConfig::from_manifest(&manifest);
     assert!(cfg.is_linear_attention_layer(0) && !cfg.is_linear_attention_layer(1));
@@ -5112,14 +5123,33 @@ fn patterned_qwen35_hybrid() -> (ModelConfig, ModelWeights) {
 #[test]
 fn packed_verify_lanes_match_solo_verify_forwards() {
     let (cfg, weights) = patterned_qwen35_hybrid();
-    assert!(packed_verify::supported(&cfg, &weights));
+    assert_packed_verify_lanes_match_solo(&cfg, &weights);
+}
+
+/// The relaxed target verify DFlash2 runs under: equal-row lanes take the
+/// lane-batched fused gated-delta dispatch, which must still leave every
+/// lane where its solo fused verify does.
+#[test]
+fn packed_verify_lane_batched_gdn_matches_solo_fused_verify() {
+    let (cfg, weights) = patterned_qwen35_hybrid_with_value_head_dim(Some(32));
+    let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+    let before = crate::model::shared::linear_attention::lane_batched_core_calls_for_test();
+    assert_packed_verify_lanes_match_solo(&cfg, &weights);
+    assert!(
+        crate::model::shared::linear_attention::lane_batched_core_calls_for_test() > before,
+        "the equal-row lanes must take the lane-batched gated-delta dispatch"
+    );
+}
+
+fn assert_packed_verify_lanes_match_solo(cfg: &ModelConfig, weights: &ModelWeights) {
+    assert!(packed_verify::supported(cfg, weights));
     let prompts: [&[u32]; 3] = [&[1, 2, 3], &[4, 5, 6, 7, 8], &[9, 10, 11, 12]];
     let verify: [&[u32]; 3] = [&[13, 14, 15, 16], &[17, 18, 19, 20], &[21, 22, 23, 24]];
     let bases: Vec<MlxKVCache> = prompts
         .iter()
         .map(|prompt| {
             let mut cache = MlxKVCache::new(cfg.layer_count);
-            let logits = forward_all_positions(&cfg, &weights, prompt, &mut cache, 0);
+            let logits = forward_all_positions(cfg, weights, prompt, &mut cache, 0);
             cache.advance(prompt.len());
             let mut refs = cache.collect_eval_refs();
             refs.push(&logits);
@@ -5143,8 +5173,8 @@ fn packed_verify_lanes_match_solo_verify_forwards() {
         cache.begin_linear_prefix_capture(1);
         let offset = cache.seq_len();
         let (logits, _) = forward_all_positions_with_post_norm_ids(
-            &cfg,
-            &weights,
+            cfg,
+            weights,
             &ids_arr(ids),
             ids.len(),
             &mut cache,
@@ -5180,7 +5210,7 @@ fn packed_verify_lanes_match_solo_verify_forwards() {
         })
         .collect();
     let (logits, _) =
-        packed_verify::packed_verify_forward(&cfg, &weights, &ids_arr(&all), &mut lanes);
+        packed_verify::packed_verify_forward(cfg, weights, &ids_arr(&all), &mut lanes);
     drop(lanes);
     let logits = astype(&logits, MlxDtype::Float32, None);
     eval(&[&logits]);

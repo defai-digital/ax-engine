@@ -28,7 +28,8 @@ use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
-    gated_delta_fused_verify_from_qkv, gated_delta_fused_verify_no_checkpoint_from_qkv,
+    GATED_DELTA_FUSED_VERIFY_MAX_LANES, gated_delta_fused_verify_from_qkv,
+    gated_delta_fused_verify_no_checkpoint_from_qkv, gated_delta_fused_verify_no_checkpoint_lanes,
     gated_delta_kernel, gated_delta_kernel_verify_no_checkpoint,
     gated_delta_kernel_with_prefix_checkpoint, gated_delta_kernel_with_tape,
     linear_attention_conv1d, linear_attention_decode_post_input_metal,
@@ -354,6 +355,96 @@ fn linear_attention_forward_inner(
         &[&out],
     );
     out
+}
+
+/// Most lanes [`linear_attention_core_lanes`] takes at once.
+pub(crate) const LINEAR_ATTENTION_CORE_MAX_LANES: usize = GATED_DELTA_FUSED_VERIFY_MAX_LANES;
+
+/// [`linear_attention_core`] for several verify lanes of `seq` rows each in
+/// one fused gated-delta dispatch. `qkv`, `a` and `b` hold the lanes' rows
+/// back to back (`[1, lanes * seq, ·]`); `caches` are the lanes' caches in the
+/// same order. Takes only the case the single-lane core would serve with the
+/// no-checkpoint fused verifier (relaxed target verify, prefix capture after
+/// row 1, no tape or profile) and returns `None` without touching any cache
+/// otherwise, so the caller falls back to one core per lane. On success every
+/// cache holds the state a single-lane call would have left and the result
+/// is the lanes' outputs in row order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn linear_attention_core_lanes(
+    linear_cfg: &LinearAttentionConfig,
+    linear_w: &crate::weights::LinearAttentionWeights,
+    eps: f32,
+    qkv: &MlxArray,
+    a: &MlxArray,
+    b: &MlxArray,
+    caches: &mut [&mut MlxKVCache],
+    layer_idx: usize,
+    seq: usize,
+) -> Option<MlxArray> {
+    if !fastpath::dflash2_lane_batched_gdn_enabled()
+        || !(2..=LINEAR_ATTENTION_CORE_MAX_LANES).contains(&caches.len())
+        || !fastpath::qwen_linear_mtp_target_verify_enabled()
+        || !fastpath::mtp_fused_gated_delta_verify_enabled()
+        || fastpath::mtp_linear_tape_capture_enabled()
+        || !fastpath::mtp_skip_prefix_checkpoint_enabled()
+        || caches.iter().any(|cache| {
+            cache
+                .linear_prefix_capture_after()
+                .filter(|after| *after < seq)
+                != Some(1)
+        })
+    {
+        return None;
+    }
+    let tail_len = linear_cfg.conv_kernel_dim as i32 - 1;
+    let conv_dim = linear_cfg.conv_dim() as i32;
+    let mut conv_states = Vec::with_capacity(caches.len());
+    let mut recurrent_states = Vec::with_capacity(caches.len());
+    for cache in caches.iter() {
+        let (conv, recurrent) = cache.linear_state(layer_idx);
+        conv_states.push(
+            conv.cloned()
+                .unwrap_or_else(|| mlx_sys::zeros(&[1, tail_len, conv_dim], qkv.dtype(), None)),
+        );
+        recurrent_states.push(
+            recurrent
+                .cloned()
+                .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg)),
+        );
+    }
+    let conv_refs: Vec<&MlxArray> = conv_states.iter().collect();
+    let state_refs: Vec<&MlxArray> = recurrent_states.iter().collect();
+    let (out, states, convs) = gated_delta_fused_verify_no_checkpoint_lanes(
+        linear_cfg,
+        qkv,
+        &linear_w.conv1d_dense,
+        &conv_refs,
+        &linear_w.a_log,
+        a,
+        &linear_w.dt_bias,
+        b,
+        &state_refs,
+        linear_cfg.q_scale,
+        linear_cfg.k_scale,
+        eps,
+    )?;
+    for ((cache, state), conv) in caches.iter_mut().zip(states).zip(convs) {
+        cache.set_linear_state(layer_idx, conv, state);
+    }
+    #[cfg(test)]
+    LANE_BATCHED_CORE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    Some(out)
+}
+
+#[cfg(test)]
+thread_local! {
+    static LANE_BATCHED_CORE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many [`linear_attention_core_lanes`] calls this thread has served.
+#[cfg(test)]
+pub(crate) fn lane_batched_core_calls_for_test() -> usize {
+    LANE_BATCHED_CORE_CALLS.with(std::cell::Cell::get)
 }
 
 /// Gated-delta conv and recurrence of one sequence from its projected inputs
