@@ -144,6 +144,7 @@ pub struct EngineCore {
     prefill_stall: crate::prefill_stall::PrefillStallPolicy,
     /// Default generation paradigm applied to new submissions (ADR-038).
     generation_kind: GenerationKind,
+    concept_request: Option<crate::ncm::ConceptRequest>,
     /// Live decode sequences the loaded model may run concurrently, resolved by
     /// the runner's load-time priced plan. `None` keeps the historical
     /// admit-every-waiting-request behaviour.
@@ -236,6 +237,7 @@ impl EngineCore {
             max_inflight_prefill_requests: 0,
             prefill_stall: crate::prefill_stall::PrefillStallPolicy::default(),
             generation_kind: GenerationKind::Autoregressive,
+            concept_request: None,
             live_sequence_cap,
             next_step_id: 0,
             consecutive_runner_panics: 0,
@@ -365,6 +367,9 @@ impl EngineCore {
 
     /// Set the generation paradigm applied to newly submitted requests (ADR-038).
     pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
+        if generation_kind != self.generation_kind {
+            self.cancel_ncm();
+        }
         self.generation_kind = generation_kind;
     }
 
@@ -442,7 +447,90 @@ impl EngineCore {
         self.runner.embed_batch_flat(batch, pooling, normalize)
     }
 
+    /// Experimental typed entry point. This path never registers or resolves KV.
+    pub fn submit_ncm(
+        &mut self,
+        id: RequestId,
+        config: crate::ncm::NcmRequestConfig,
+        timeout: std::time::Duration,
+    ) -> Result<crate::ncm::NcmCancellation, crate::ncm::NcmError> {
+        use crate::ncm::*;
+        if self.generation_kind != GenerationKind::NextConcept {
+            return Err(NcmError::Unsupported);
+        }
+        if self.concept_request.is_some() {
+            return Err(NcmError::Busy);
+        }
+        let request = ConceptRequest::new(id, config, timeout)?;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.runner.begin_ncm(id, config)
+        })) {
+            Ok(result) => result?,
+            Err(_) => {
+                self.runner.release_request_state(id);
+                return Err(NcmError::Runtime("runner admission panicked".into()));
+            }
+        }
+        let cancellation = request.cancellation.clone();
+        self.concept_request = Some(request);
+        Ok(cancellation)
+    }
+
+    pub fn cancel_ncm(&mut self) {
+        if let Some(request) = self.concept_request.take() {
+            request.cancellation.cancel();
+            self.runner.release_request_state(request.id);
+        }
+    }
+
+    /// Execute one bounded concept work unit with exact progress validation.
+    pub fn step_ncm(&mut self) -> Result<crate::ncm::ConceptUpdate, crate::ncm::NcmError> {
+        use crate::ncm::*;
+        let result = (|| {
+            let request = self.concept_request.as_ref().ok_or(NcmError::NoRequest)?;
+            request.check()?;
+            let work = ConceptWork {
+                request_id: request.id,
+                config: request.config,
+                before: request.progress,
+                cancellation: request.cancellation.clone(),
+            };
+            let update = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.runner.run_ncm(work)
+            }))
+            .map_err(|_| NcmError::Runtime("runner panicked".into()))??;
+            request.check()?;
+            request.validate(&update)?;
+            if update.progress.phase == ConceptPhase::Finished {
+                request.cancellation.commit()?;
+            }
+            Ok(update)
+        })();
+        match result {
+            Ok(update) => {
+                if update.progress.phase == crate::ncm::ConceptPhase::Finished {
+                    if let Some(request) = self.concept_request.take() {
+                        self.runner.release_request_state(request.id);
+                    }
+                } else if let Some(request) = self.concept_request.as_mut() {
+                    request.progress = update.progress;
+                }
+                Ok(update)
+            }
+            Err(error) => {
+                self.cancel_ncm();
+                Err(error)
+            }
+        }
+    }
+
     pub fn submit(&mut self, submission: RequestSubmission) -> Result<RequestId, EngineCoreError> {
+        if self.generation_kind == GenerationKind::NextConcept {
+            return Err(EngineCoreError::InvalidRequestSubmission {
+                request_id: submission.request_id,
+                message: "NextConcept requires submit_ncm",
+            });
+        }
         validate_submission(&submission)?;
         let request_id = submission.request_id;
         // One duplicate contract whether the id is live or only retained as a
@@ -494,6 +582,12 @@ impl EngineCore {
         global_token_budget: u32,
         deterministic_mode: bool,
     ) -> Result<EngineStepOutcome, EngineCoreError> {
+        if self.generation_kind == GenerationKind::NextConcept {
+            return Err(EngineCoreError::RunnerContractViolation {
+                step_id: StepId(self.next_step_id),
+                message: "NextConcept requires step_ncm",
+            });
+        }
         let step_started = Instant::now();
         let step_span = debug_span!(
             "engine.step",

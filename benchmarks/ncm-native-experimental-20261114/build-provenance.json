@@ -1,0 +1,38 @@
+{
+  "base_commit": "3650ffbe5799a61b76a18ac07e873f27be04ed83",
+  "source_sha256": {
+    "crates/ax-engine-core/src/ncm.rs": "1cada1e336a5818f5bd79dfd02607a097838a17d41c96975a95c990624f12c90",
+    "crates/ax-engine-core/src/generation.rs": "6638a98bb8224d92cbfa24ff0175d396b06eee6b5f2a143f4a95b3c41a37282b",
+    "crates/ax-engine-core/src/lib.rs": "2643905bfe548d7e894fc4f9b79aba4664a3a66c9db3063667a49753887a94f6",
+    "crates/ax-engine-core/src/runner.rs": "60c984dd0e0c98817ee1a43ab2913a594f4780e72ea78c0cf6dd6fb034f2e6e9",
+    "crates/ax-engine-core/src/engine.rs": "d99deffadb25a60f2b33185668ee06d330227a0b84afdddeae0f69a5e548ae0c",
+    "crates/ax-engine-mlx/src/lib.rs": "1c6aaeb1b43b479eae74b192b38eba4ad2de2c16873eaf69909428aa8c895db0",
+    "crates/ax-engine-mlx/src/ncm/artifact.rs": "ad108a57ab8ca754655f01c0d961f5dfeb444f8750f77b20b506beae32bce6e4",
+    "crates/ax-engine-mlx/src/ncm/runner.rs": "81e4a05d508810dd68b3b95b7ab923750f6b8476a57a34c3ac22ae10a1dcdfa6",
+    "crates/ax-engine-mlx/src/ncm/tinystories-lock.json": "a9c52df0d7afc6155c19644309a590cbdb27ff0d5fbbe4a0ad4c0096fdf1ee91",
+    "crates/ax-engine-mlx/src/ncm/mod.rs": "58a3de4a71f34e5102932ad64847ebcd65e38cab0797b3cec6e1db961cdc9030",
+    "crates/ax-engine-mlx/src/ncm/codec.rs": "6cc5b256b934ed65ee6afe76da5c34a50630335980035b7eee9746faf5054f47",
+    "crates/ax-engine-mlx/src/ncm/generator.rs": "db74b0144f1bb3c0fa72280882df33a0ca86d57f6a163908faa965866452aab0",
+    "crates/ax-engine-mlx/src/bin/ncm_codec_probe.rs": "5b2a43b3a7bd2e80f176d1e6c56e89cc515f59b6eaf3ce09855d5edd6d374cf6",
+    "crates/ax-engine-mlx/src/bin/ncm_generator_probe.rs": "f82a3787cf9392f078685fb22b4d33f3b305a8152858d9a78520b1b7fc8c62f2",
+    "crates/ax-engine-mlx/src/bin/ncm_probe/mod.rs": "e30d967371437c1d9639b8256e55d3cf19e48562d783d18bd59848851f466d6f",
+    "crates/ax-engine-sdk/src/ncm.rs": "c2edb1902e963ad7fc6047ef002a039342978ede73c01d8ecfe92422c7ece199",
+    "crates/ax-engine-sdk/src/lib.rs": "28e99b9a5c6b000b4e5d0162d8bdd33f370df3917f386a1cae120140217b6226",
+    "crates/ax-engine-sdk/src/bin/ncm-infer.rs": "00216cc183e5b96de54344b1b9eadea168f9733f7a6c97eccdb3fce72d38a2a9",
+    "crates/ax-engine-core/tests/ncm_lifecycle.rs": "3a1ebffbdbdb068a39dd5201eaec6ac20ae2841c690410fb0a47396d62df5846",
+    "crates/ax-engine-sdk/tests/ncm_native.rs": "16470e4c340687ee067f0c4836a420d96a881047f2973c4b2bc11391560edb34",
+    "scripts/probe_mlx_model_support.py": "2aa2b3233cfc7c876d08736d071c320ab9acb1f7eef6740033bbd4bee1ba4f50",
+    "scripts/test_probe_mlx_model_support.py": "eed6021760194690c9274b0a1fdcb923c902ba5a3092589dfc10a70085880a22",
+    "scripts/mlx_eval_site_baseline.json": "aa937806cb8b63abd5ebc161049e2666b284888c8bba305b9ff867526e1054ed"
+  },
+  "binaries": {
+    "ncm-infer": "67ef33be2cef7cf572a1d01113320d5c632994e98582468733c1352d953e659b",
+    "ncm_generator_probe": "52be3921158535145fcd57c7bff83fde8e0aa34468ed7e13e05d27fd1db7391a",
+    "ncm_codec_probe": "c34bfb6e80fd6b8dacf6b0bc3b2f3ecff81d4d64fada21d8faf3d61a4290dbc2",
+    "ncm_native-16c7db6d3a37606d": "aa243bf1b6e7b82416db73f99f3bafc73022607444b0eb67972bdc4b76798acb"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "build": "cargo build -p ax-engine-sdk --features mlx-native --bin ncm-infer -p ax-engine-mlx --bin ncm_generator_probe --bin ncm_codec_probe; cargo test -p ax-engine-sdk --features mlx-native --test ncm_native --no-run",
+  "profile": "dev/unwind; existing mlx-sys C++ opt-level 2",
+  "scope": "functional controls only; not performance qualification"
+}

@@ -1,0 +1,151 @@
+{
+  "fmt": {
+    "command": [
+      "rustup",
+      "run",
+      "1.99.1",
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 2.4
+  },
+  "clippy": {
+    "command": [
+      "rustup",
+      "run",
+      "1.99.1",
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 17.791
+  },
+  "rust-tests": {
+    "command": [
+      "rustup",
+      "run",
+      "1.99.1",
+      "cargo",
+      "test",
+      "--quiet",
+      "--no-fail-fast"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 265.791
+  },
+  "maturin": {
+    "command": [
+      "maturin",
+      "develop"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 56.073
+  },
+  "python-tests": {
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "pytest",
+      "python/tests",
+      "-q"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 10.889
+  },
+  "support-probe-tests": {
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "pytest",
+      "scripts/test_probe_mlx_model_support.py",
+      "-q"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.397
+  },
+  "ncm-sdk-final": {
+    "command": [
+      "rustup",
+      "run",
+      "1.99.1",
+      "cargo",
+      "test",
+      "-p",
+      "ax-engine-sdk",
+      "--features",
+      "mlx-native",
+      "--lib",
+      "ncm"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.221
+  },
+  "ncm-generator-final": {
+    "command": [
+      "rustup",
+      "run",
+      "1.99.1",
+      "cargo",
+      "test",
+      "-p",
+      "ax-engine-mlx",
+      "--bin",
+      "ncm_generator_probe"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 4.832
+  },
+  "ncm-library-final": {
+    "command": [
+      "rustup",
+      "run",
+      "1.99.1",
+      "cargo",
+      "test",
+      "-p",
+      "ax-engine-mlx",
+      "--lib",
+      "ncm"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 4.814
+  },
+  "scripts": {
+    "command": [
+      "bash",
+      "scripts/check-scripts.sh"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 53.615
+  },
+  "27b-dry-run": {
+    "command": [
+      "scripts/qualify_qwen38_27b.py",
+      "--dry-run"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.028
+  },
+  "flash-next-dry-run": {
+    "command": [
+      "scripts/qualify_qwen38_flash_next.py",
+      "--dry-run"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.029
+  },
+  "primary-claims": {
+    "command": [
+      "scripts/check_qwen38_primary_claims.py"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.11
+  }
+}

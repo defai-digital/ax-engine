@@ -1,0 +1,168 @@
+{
+  "passed": true,
+  "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+  "scope": "standalone native generator negative controls",
+  "cases": [
+    {
+      "case": "wrong-prefix",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: only the fixed unconditional prefix [[0]] is supported\n"
+    },
+    {
+      "case": "missing-prefix",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: only the fixed unconditional prefix [[0]] is supported\n"
+    },
+    {
+      "case": "invalid-code",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: level 0: code outside the latent vocabulary\n"
+    },
+    {
+      "case": "changed-trace-hash",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: reference trace hash mismatch\n"
+    },
+    {
+      "case": "oversized-json",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: JSON input exceeds 2 MiB\n"
+    },
+    {
+      "case": "existing-output",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: output path already exists\n"
+    },
+    {
+      "case": "wrong-case",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: reference trace hash mismatch\n"
+    },
+    {
+      "case": "missing-reference",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: unexpected generator reference tensor set\n"
+    },
+    {
+      "case": "extra-reference",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: unexpected generator reference tensor set\n"
+    },
+    {
+      "case": "nonfinite-reference",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: teacher.pool.1: non-finite value\n"
+    },
+    {
+      "case": "wrong-reference-dtype",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: teacher.pool.1: expected F32 [1, 8, 384]\n"
+    },
+    {
+      "case": "wrong-reference-shape",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: teacher.pool.1: expected F32 [1, 8, 384]\n"
+    },
+    {
+      "case": "fractional-code",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: reference IDs are not bounded integers\n"
+    },
+    {
+      "case": "inconsistent-greedy-codes",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: greedy reference logits and codes disagree at level 1\n"
+    },
+    {
+      "case": "inconsistent-decoder-tokens",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: greedy reference decoder and tokens disagree\n"
+    },
+    {
+      "case": "generator-size-mismatch",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: evaluation-root/native-inference/generator-negative-003/generator-size-mismatch/generator.safetensors: pinned byte length mismatch\n"
+    },
+    {
+      "case": "generator-hash-mismatch",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: evaluation-root/native-inference/generator-negative-003/generator-hash-mismatch/generator.safetensors: pinned SHA-256 mismatch\n"
+    },
+    {
+      "case": "wrong-causal-mask",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true,
+      "stderr": "",
+      "exact_match": true,
+      "numerical_match": false,
+      "failed_comparisons": [
+        "local.block.0",
+        "local.block.1",
+        "chain.block.0"
+      ]
+    },
+    {
+      "case": "all-blocks-approximate-gelu",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true,
+      "stderr": "",
+      "exact_match": true,
+      "numerical_match": false,
+      "failed_comparisons": [
+        "local.block.9",
+        "local.block.10",
+        "local.block.11",
+        "chain.block.11",
+        "teacher.logits.1"
+      ]
+    },
+    {
+      "case": "missing-head-energy",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true,
+      "stderr": "",
+      "exact_match": true,
+      "numerical_match": false,
+      "failed_comparisons": [
+        "teacher.logits.1"
+      ]
+    }
+  ]
+}

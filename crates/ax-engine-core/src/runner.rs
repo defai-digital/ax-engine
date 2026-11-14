@@ -331,6 +331,21 @@ impl EmbeddingMatrix {
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn run(&self, input: RunnerInput) -> RunnerOutput;
 
+    fn begin_ncm(
+        &self,
+        _request_id: RequestId,
+        _config: crate::ncm::NcmRequestConfig,
+    ) -> Result<(), crate::ncm::NcmError> {
+        Err(crate::ncm::NcmError::Unsupported)
+    }
+
+    fn run_ncm(
+        &self,
+        _work: crate::ncm::ConceptWork,
+    ) -> Result<crate::ncm::ConceptUpdate, crate::ncm::NcmError> {
+        Err(crate::ncm::NcmError::Unsupported)
+    }
+
     /// Admit a logical prefix before the scheduler skips its tokens. Runners
     /// with partition-sensitive state may reject it or retain the physical
     /// snapshot until `run`. Reservations must be released with request state.

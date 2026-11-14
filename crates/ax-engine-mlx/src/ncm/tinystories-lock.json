@@ -1,0 +1,41 @@
+{
+  "schema_version": "ax.ncm_research_model.v1",
+  "repo_id": "janmusic/NCM-TinyStories-89M-Upstream-MLX",
+  "revision": "2d5f137713fe047abb6fcffe780aad419486f3dd",
+  "source_repo_id": "hazyresearch/ncm-checkpoints",
+  "source_revision": "d342ce8aaea58830eef3b8ad473664673e41f692",
+  "status": "external_functional_evaluation_only",
+  "library": "ncm-mlx",
+  "library_version": "0.4.0",
+  "mlx_version": "0.32.4",
+  "files": {
+    "LICENSE": {
+      "sha256": "2b379bec6e8f7f362eef851d10a2afc4171b0e96a3525d50350e2cf783f2c441",
+      "size_bytes": 1072
+    },
+    "bpe.json": {
+      "sha256": "a849b62441d405a9b550d173f605fc906bebace393cef71a2347ce27550d1875",
+      "size_bytes": 296367
+    },
+    "codec.safetensors": {
+      "sha256": "b28e6c7dc804fcd056ca98ff8dc818484a8bb17d52169c88205eb3d27b74c593",
+      "size_bytes": 145745190
+    },
+    "config.json": {
+      "sha256": "ee23ec1132513adef9b07a9a28baff490b6e1f2e61ae24d42363571cc8f94570",
+      "size_bytes": 515
+    },
+    "generator.safetensors": {
+      "sha256": "e24e9ddde6b616add427420d7da97d86e92fbf1199a187dfc2e005fdeff5c49d",
+      "size_bytes": 354440547
+    },
+    "inference.safetensors": {
+      "sha256": "5fa49c2b71abe94319277d5aa020719ab9e781880e6d2e8347315c8914d74163",
+      "size_bytes": 16486
+    },
+    "spec.json": {
+      "sha256": "e9cf868d06141400d061a8bee2e8d95df541fb90548d0b3e0d43e314f1479b1f",
+      "size_bytes": 3067
+    }
+  }
+}

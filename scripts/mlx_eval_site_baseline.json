@@ -107,6 +107,12 @@
     "async_eval": 2,
     "eval": 14
   },
+  "crates/ax-engine-mlx/src/ncm/codec.rs": {
+    "try_eval": 3
+  },
+  "crates/ax-engine-mlx/src/ncm/generator.rs": {
+    "try_eval": 2
+  },
   "crates/ax-engine-mlx/src/ngram_accel.rs": {
     "eval": 12
   },

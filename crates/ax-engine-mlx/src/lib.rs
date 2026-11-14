@@ -23,6 +23,7 @@ pub mod idle_residency;
 pub mod kv_block_pool;
 pub mod kv_cache;
 pub(crate) mod minicpm_v;
+pub mod ncm;
 pub(crate) mod nemotron_omni;
 mod nemotron_omni_audio;
 pub mod ngram_table;

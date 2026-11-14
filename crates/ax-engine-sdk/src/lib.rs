@@ -56,6 +56,8 @@ pub mod generate;
 mod host;
 pub mod llama_cpp;
 pub mod mlx_lm;
+#[cfg(feature = "mlx-native")]
+pub mod ncm;
 pub mod request;
 pub mod session;
 #[cfg(feature = "tokenizer")]

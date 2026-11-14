@@ -1,0 +1,114 @@
+{
+  "schema_version": "ax.ncm_functional_evidence.v1",
+  "scope": "experimental native unconditional F32 greedy CLI/typed SDK only",
+  "model_repo": "janmusic/NCM-TinyStories-89M-Upstream-MLX",
+  "model_revision": "2d5f137713fe047abb6fcffe780aad419486f3dd",
+  "reference": "ncm-mlx 0.4.0 frozen same-GPU controls; not independent official PyTorch parity",
+  "hardware": {
+    "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+    "macos": "27.2.1",
+    "python": "3.12.13",
+    "mlx": "0.32.4",
+    "memory_bytes": 206158430208,
+    "scope": "functional evidence only; no performance or qualification claim"
+  },
+  "results": {
+    "inference_controls": 17,
+    "invalid_cli_artifact_controls": 14,
+    "cancel_boundaries": 14,
+    "generator_cases": 4,
+    "numeric_checks_per_generator_case": 64,
+    "codec_cases": 3,
+    "generator_negative_controls": 20,
+    "codec_negative_controls": 15,
+    "all_passed": true
+  },
+  "normal_serving_admitted": false,
+  "certification": "not_assessed",
+  "performance_claim": false,
+  "path_sanitization": "local evaluation/model-cache prefixes in negative stderr only; measured arrays, IDs, digests and numerical results preserved",
+  "text_log_normalization": "one terminal newline; original test log retained with raw private evidence",
+  "reproduce": "See docs/NCM-EXPERIMENTAL.md; real-weight test: AX_NCM_TEST_MODEL and AX_NCM_EXPECTED_TRACE=$PWD/benchmarks/ncm-native-experimental-20261114/reference/greedy-0.json, cargo test -p ax-engine-sdk --features mlx-native --test ncm_native -- --ignored",
+  "files": {
+    "build-provenance.json": {
+      "sha256": "72177f9144efb97817038e58cadf04113845a5e412b827122d8fe5943cfb099d",
+      "size_bytes": 3519
+    },
+    "codec-greedy-0.json": {
+      "sha256": "3dbc166059d3817a75e1783840fabbd509ab1061a746c5bbebe1e215d02f3125",
+      "size_bytes": 9459
+    },
+    "codec-negative-summary.json": {
+      "sha256": "e629adfa688d93b882727205f77054fa156c166463f3204cace18b4cb16d1661",
+      "size_bytes": 3252
+    },
+    "codec-seed17-0.json": {
+      "sha256": "5f81396346f068071e8fd82d6246345bd400faa8aadf9c610a49e96413197b34",
+      "size_bytes": 9468
+    },
+    "codec-seed29.json": {
+      "sha256": "da85bbecb878f686aaaa71ca27818c4205438b93a04637f49f7989d954901bc8",
+      "size_bytes": 9469
+    },
+    "environment.json": {
+      "sha256": "73f29526976e59adc6854ce75542f36d216d2cac8c2a6f60bd5bc00acf5c60f6",
+      "size_bytes": 234
+    },
+    "gates.json": {
+      "sha256": "4e02ef02bbce95071ee961836627ce95217279811a9797e85d688fb1125f6359",
+      "size_bytes": 2560
+    },
+    "generator-greedy-0.json": {
+      "sha256": "89803fbaa5b70ef2e94fdb15f293eab4cc1201a755a8425c0a47a33751b25252",
+      "size_bytes": 29247
+    },
+    "generator-negative-summary.json": {
+      "sha256": "9054cf7fd8cc6b6dd1fcbaed29778761481c9625160ffb2c38b124e892b1a3dc",
+      "size_bytes": 4482
+    },
+    "generator-seed17-0.json": {
+      "sha256": "30fd56bc17ddf880706ff492a64e9df27251fbca2911df37fccdb996b273f668",
+      "size_bytes": 29248
+    },
+    "generator-seed17-mixed.json": {
+      "sha256": "37911706efbde32ea14cd4cee3e4946c6f002cd0373482db260430cbb89baebf",
+      "size_bytes": 29255
+    },
+    "generator-seed29.json": {
+      "sha256": "6828ff6ebc25672b528b755d226477f40ea513b83af32ce88fe2efb2b6040137",
+      "size_bytes": 29271
+    },
+    "greedy-independence.json": {
+      "sha256": "58f56e978ee989459adbe202822fd58a153bf0a01d860bc9a237fd2885cad995",
+      "size_bytes": 122
+    },
+    "greedy-output.json": {
+      "sha256": "fa53677f45e4f4073ee6d686d26923004fe3c683cbe61f53cd4b582bd5e8f095",
+      "size_bytes": 3174
+    },
+    "inference-summary.json": {
+      "sha256": "3daa5a6ab51c5922e3dd17278a77c43dd04b9f5b18eafb9ad831dc29df22e9d4",
+      "size_bytes": 3127
+    },
+    "reference/greedy-0.json": {
+      "sha256": "c081f7a2f68a0eca958cac420dccd4652b27b7fdf02867f7cf264d5d6ba312e3",
+      "size_bytes": 2219
+    },
+    "reference/seed17-0.json": {
+      "sha256": "baf70eb8f3efbfabd76de03e5051fc919f7adbf1af019fd85aa70426e1278dec",
+      "size_bytes": 2176
+    },
+    "reference/seed29.json": {
+      "sha256": "0556b90c592b45ede62e4e08bd284e6bd37c265ac629985a138bc17ec344f90f",
+      "size_bytes": 2300
+    },
+    "regression-summary.json": {
+      "sha256": "17c1f7fc5a35276a1ae34095b04f195c038ed3e609f6c70171de3ee55d7bf660",
+      "size_bytes": 3205
+    },
+    "sdk-lifecycle.txt": {
+      "sha256": "0da4e9f2c8d83c3200f2d2ab2531af5a97a66603e2b4057b4384d789ed4124e3",
+      "size_bytes": 242
+    }
+  }
+}

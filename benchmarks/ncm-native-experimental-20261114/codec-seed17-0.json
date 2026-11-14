@@ -1,0 +1,474 @@
+{
+  "all_compared_values_finite": true,
+  "artifact_revision": "2d5f137713fe047abb6fcffe780aad419486f3dd",
+  "codec_sha256": "b28e6c7dc804fcd056ca98ff8dc818484a8bb17d52169c88205eb3d27b74c593",
+  "comparisons": [
+    {
+      "max_abs_bound": 2.6902184e-05,
+      "max_abs_error": 0.0,
+      "name": "contribution.0",
+      "reference_peak": 7.05224609375,
+      "rmse": 0.0,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6902184e-05,
+      "max_abs_error": 0.0,
+      "name": "accumulated.0",
+      "reference_peak": 7.05224609375,
+      "rmse": 0.0,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 3.8146973e-06,
+      "max_abs_error": 1.1920928955078125e-07,
+      "name": "contribution.1",
+      "reference_peak": 0.6886245608329773,
+      "rmse": 1.0050957671132088e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6914702e-05,
+      "max_abs_error": 4.76837158203125e-07,
+      "name": "accumulated.1",
+      "reference_peak": 7.055527687072754,
+      "rmse": 1.1415255416273909e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 3.8146973e-06,
+      "max_abs_error": 8.940696716308594e-08,
+      "name": "contribution.2",
+      "reference_peak": 0.46907296776771545,
+      "rmse": 1.129388412255329e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6590142e-05,
+      "max_abs_error": 4.76837158203125e-07,
+      "name": "accumulated.2",
+      "reference_peak": 6.9704461097717285,
+      "rmse": 1.7534793396564542e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 3.8146973e-06,
+      "max_abs_error": 1.1920928955078125e-07,
+      "name": "contribution.3",
+      "reference_peak": 0.8956709504127502,
+      "rmse": 1.699845253582639e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.5939662e-05,
+      "max_abs_error": 4.76837158203125e-07,
+      "name": "accumulated.3",
+      "reference_peak": 6.7999267578125,
+      "rmse": 2.6333798340475228e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 7.2535327e-06,
+      "max_abs_error": 2.980232238769531e-07,
+      "name": "contribution.4",
+      "reference_peak": 1.9014700651168823,
+      "rmse": 2.9680386625864445e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.5989906e-05,
+      "max_abs_error": 4.76837158203125e-07,
+      "name": "accumulated.4",
+      "reference_peak": 6.813097953796387,
+      "rmse": 4.2037996575826386e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 3.852276e-06,
+      "max_abs_error": 1.7881393432617188e-07,
+      "name": "contribution.5",
+      "reference_peak": 1.009851098060608,
+      "rmse": 1.822723489871781e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.5965583e-05,
+      "max_abs_error": 4.76837158203125e-07,
+      "name": "accumulated.5",
+      "reference_peak": 6.8067216873168945,
+      "rmse": 4.806018846537772e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 6.2758927e-06,
+      "max_abs_error": 2.384185791015625e-07,
+      "name": "contribution.6",
+      "reference_peak": 1.6451876163482666,
+      "rmse": 2.1779928021967942e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6306476e-05,
+      "max_abs_error": 4.76837158203125e-07,
+      "name": "accumulated.6",
+      "reference_peak": 6.896084785461426,
+      "rmse": 5.569265021511358e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 6.4693495e-06,
+      "max_abs_error": 4.172325134277344e-07,
+      "name": "contribution.7",
+      "reference_peak": 1.6959011554718018,
+      "rmse": 3.7276785748294956e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6819123e-05,
+      "max_abs_error": 9.5367431640625e-07,
+      "name": "accumulated.7",
+      "reference_peak": 7.030472278594971,
+      "rmse": 7.0863203715469e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 9.4836005e-06,
+      "max_abs_error": 2.384185791015625e-07,
+      "name": "contribution.8",
+      "reference_peak": 2.4860689640045166,
+      "rmse": 1.716172993082497e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6628039e-05,
+      "max_abs_error": 9.5367431640625e-07,
+      "name": "accumulated.8",
+      "reference_peak": 6.980380535125732,
+      "rmse": 7.593846613078313e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 1.9651301e-05,
+      "max_abs_error": 2.384185791015625e-07,
+      "name": "contribution.9",
+      "reference_peak": 5.15147066116333,
+      "rmse": 1.687085859153018e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.6969912e-05,
+      "max_abs_error": 9.5367431640625e-07,
+      "name": "accumulated.9",
+      "reference_peak": 7.070000648498535,
+      "rmse": 8.037927446807635e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 1.924183e-05,
+      "max_abs_error": 1.1920928955078125e-07,
+      "name": "contribution.10",
+      "reference_peak": 5.044130325317383,
+      "rmse": 1.2474094121941386e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.7412936e-05,
+      "max_abs_error": 9.5367431640625e-07,
+      "name": "accumulated.10",
+      "reference_peak": 7.186136722564697,
+      "rmse": 8.386495369067034e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 1.1289265e-05,
+      "max_abs_error": 0.0,
+      "name": "contribution.11",
+      "reference_peak": 2.9594130516052246,
+      "rmse": 0.0,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 2.9823103e-05,
+      "max_abs_error": 9.5367431640625e-07,
+      "name": "accumulated.11",
+      "reference_peak": 7.8179473876953125,
+      "rmse": 8.821846491038527e-08,
+      "shape": [
+        1,
+        128,
+        384
+      ],
+      "within_bound": true
+    },
+    {
+      "max_abs_bound": 0.00012602312,
+      "max_abs_error": 1.71661376953125e-05,
+      "name": "decoder.logits",
+      "reference_peak": 33.03620529174805,
+      "rmse": 2.385869213131943e-06,
+      "shape": [
+        1,
+        128,
+        8192
+      ],
+      "within_bound": true
+    }
+  ],
+  "exact_token_match": true,
+  "mlx_version": "0.32.4",
+  "numerical_match": true,
+  "passed": true,
+  "reference_sha256": "e331e84233ee603ad31a8a9e39a78dea2855a28945ba85b40c2bb00dbbe08a0f",
+  "schema_version": "ax.ncm_codec_probe.v1",
+  "scope": "native injected-code codec diagnostic only",
+  "spec_sha256": "e9cf868d06141400d061a8bee2e8d95df541fb90548d0b3e0d43e314f1479b1f",
+  "token_mismatches": 0,
+  "tokens": [
+    [
+      12,
+      12,
+      12,
+      1344,
+      268,
+      560,
+      492,
+      592,
+      316,
+      264,
+      530,
+      48,
+      315,
+      547,
+      260,
+      348,
+      1593,
+      331,
+      260,
+      3645,
+      268,
+      260,
+      2548,
+      48,
+      286,
+      2548,
+      439,
+      883,
+      268,
+      331,
+      260,
+      678,
+      2057,
+      48,
+      432,
+      439,
+      1212,
+      267,
+      264,
+      868,
+      48,
+      12,
+      36,
+      1115,
+      46,
+      560,
+      46,
+      634,
+      2548,
+      439,
+      407,
+      758,
+      48,
+      1200,
+      351,
+      525,
+      267,
+      1342,
+      312,
+      485,
+      897,
+      1823,
+      48,
+      12,
+      36,
+      744,
+      46,
+      897,
+      65,
+      1129,
+      312,
+      1119,
+      485,
+      560,
+      1823,
+      48,
+      12,
+      2977,
+      48,
+      319,
+      1561,
+      264,
+      2548,
+      430,
+      48,
+      432,
+      1652,
+      267,
+      1122,
+      260,
+      1296,
+      48,
+      12,
+      780,
+      642,
+      264,
+      868,
+      6208,
+      48,
+      286,
+      868,
+      6208,
+      439,
+      587,
+      264,
+      868,
+      373,
+      264,
+      2548,
+      48,
+      897,
+      268,
+      560,
+      492,
+      617,
+      48,
+      315,
+      745,
+      267,
+      572,
+      457,
+      264,
+      2548,
+      48,
+      12,
+      36,
+      1115,
+      46
+    ]
+  ],
+  "trace_sha256": "cb1efebb1044be826c13152d97ff9b0cbbdcc8ea9eadcb562b22ff162e640772"
+}

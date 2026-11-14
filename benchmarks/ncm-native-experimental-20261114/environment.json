@@ -1,0 +1,8 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+  "macos": "27.2.1",
+  "python": "3.12.13",
+  "mlx": "0.32.4",
+  "memory_bytes": 206158430208,
+  "scope": "functional evidence only; no performance or qualification claim"
+}

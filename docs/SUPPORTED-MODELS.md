@@ -769,6 +769,14 @@ table.
 For benchmark methodology and artifact contracts, see
 [`BENCHMARKS.md`](BENCHMARKS.md) and [`PERFORMANCE.md`](PERFORMANCE.md).
 
+## Experimental NCM inference
+
+The pinned F32 TinyStories NCM model has a separate native unconditional
+`ncm-infer` CLI and typed Rust SDK. This experimental path does not register a
+normal `ax-engine serve` model or enable chat. See
+[NCM-EXPERIMENTAL.md](NCM-EXPERIMENTAL.md) for the exact artifact, build command,
+request limits and functional evidence boundary.
+
 ## Future Models
 
 AX should not force an all-or-nothing answer for new model generations.

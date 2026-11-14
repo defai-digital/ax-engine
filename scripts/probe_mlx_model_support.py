@@ -463,6 +463,49 @@ def generic_probe(model_dir: Path, model_type: str, keys: list[str]) -> dict[str
     }
 
 
+def probe_ncm(model_dir: Path) -> dict[str, Any]:
+    """Report current AX implementation readiness, not NCM architectural feasibility."""
+    return {
+        "support_decision": "fail_closed_native_runtime_missing",
+        "can_implement_repo_owned_runtime": False,
+        "reference_support": "experimental_native_unconditional",
+        "experimental_entrypoints": {
+            "cli": "ncm-infer",
+            "sdk": "ax_engine_sdk::ncm::NcmSession",
+            "conditioning": "unconditional",
+            "sampling": ["greedy"],
+            "raw_output_positions": 128,
+            "normal_serve": False,
+        },
+        # This probe does not inspect or execute external package source.
+        "reference_files": [],
+        "checkpoint_features": {
+            "generation_paradigm": "coarse_to_fine_latent",
+            # Presence is diagnostic only; it does not validate tensor bytes or layout.
+            "core_component_files_present": {
+                name: (model_dir / name).is_file()
+                for name in ("spec.json", "generator.safetensors", "codec.safetensors")
+            },
+        },
+        "blocker_codes": [
+            "ncm_native_runner_not_admitted",
+            "ncm_official_source_parity_pending",
+            "ncm_m5_m4_admission_pending",
+        ],
+        "blockers": [
+            "NCM has no admitted normal AX serving route; experimental unconditional CLI/SDK only",
+            "independent official-source checkpoint and per-level parity remain pending",
+            "M5/M4 evidence is required before normal NCM artifact and endpoint admission",
+        ],
+        "next_steps": [
+            "use the pinned F32 unconditional ncm-infer/typed SDK path for experimental inference",
+            "obtain independent official-source conversion and per-level parity",
+            "validate M5/M4 behavior before normal artifact and endpoint admission",
+            "keep chat, prompted generation and unsupported controls rejected",
+        ],
+    }
+
+
 def probe_model(model_dir: Path) -> dict[str, Any]:
     config_path = model_dir / "config.json"
     config = _read_json(config_path)
@@ -475,6 +518,8 @@ def probe_model(model_dir: Path) -> dict[str, Any]:
         architecture = probe_gemma4_unified(model_dir, keys)
     elif model_type == "deepseek_v4":
         architecture = probe_deepseek_v4(model_dir, keys)
+    elif model_type == "ncm":
+        architecture = probe_ncm(model_dir)
     else:
         architecture = generic_probe(model_dir, model_type, keys)
 

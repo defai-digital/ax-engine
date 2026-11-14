@@ -1,0 +1,116 @@
+{
+  "scope": "native codec negative controls only",
+  "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+  "cases": [
+    {
+      "case": "invalid-code",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: level 0: code outside the latent vocabulary\n"
+    },
+    {
+      "case": "missing-level",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: expected exactly 12 latent levels\n"
+    },
+    {
+      "case": "wrong-token-count",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: expected one row of 128 BPE IDs in 0..8192\n"
+    },
+    {
+      "case": "oversized-json",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: JSON input exceeds 2 MiB\n"
+    },
+    {
+      "case": "existing-output",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: output path already exists\n",
+      "output_preserved": true
+    },
+    {
+      "case": "wrong-case-pair",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: reference logits and trace BPE IDs do not identify the same case\n"
+    },
+    {
+      "case": "missing-reference",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: unexpected reference tensor set\n"
+    },
+    {
+      "case": "extra-reference",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: unexpected reference tensor set\n"
+    },
+    {
+      "case": "wrong-reference-shape",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: decoder.logits: expected F32 [1, 128, 8192]\n"
+    },
+    {
+      "case": "wrong-reference-dtype",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: decoder.logits: expected F32 [1, 128, 8192]\n"
+    },
+    {
+      "case": "nonfinite-reference",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: contribution.0: non-finite value\n"
+    },
+    {
+      "case": "codec-size-mismatch",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: evaluation-root/native-inference/codec-negative-003/codec-size-mismatch/codec.safetensors: pinned byte length mismatch\n"
+    },
+    {
+      "case": "codec-hash-mismatch",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: evaluation-root/native-inference/codec-negative-003/codec-hash-mismatch/codec.safetensors: pinned SHA-256 mismatch\n"
+    },
+    {
+      "case": "spec-hash-mismatch",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "passed": true,
+      "stderr": "error: evaluation-root/native-inference/codec-negative-003/spec-hash-mismatch/spec.json: pinned SHA-256 mismatch\n"
+    },
+    {
+      "case": "approximate-gelu-with-loose-bounds",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "passed": true,
+      "stderr": "",
+      "exact_tokens": true,
+      "numeric_match": false,
+      "max_logit_error": 0.0096435546875
+    }
+  ],
+  "passed": true
+}

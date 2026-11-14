@@ -1,0 +1,170 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+  "scope": "standalone native generator and codec diagnostics only",
+  "cases": [
+    {
+      "kind": "generator",
+      "case": "greedy-0",
+      "exit_code": 0,
+      "binary_sha256": "52be3921158535145fcd57c7bff83fde8e0aa34468ed7e13e05d27fd1db7391a",
+      "passed": true,
+      "numeric_failures": [],
+      "teacher_argmax_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_code_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_token_mismatches": 0
+    },
+    {
+      "kind": "generator",
+      "case": "seed17-0",
+      "exit_code": 0,
+      "binary_sha256": "52be3921158535145fcd57c7bff83fde8e0aa34468ed7e13e05d27fd1db7391a",
+      "passed": true,
+      "numeric_failures": [],
+      "teacher_argmax_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_code_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_token_mismatches": 0
+    },
+    {
+      "kind": "generator",
+      "case": "seed29",
+      "exit_code": 0,
+      "binary_sha256": "52be3921158535145fcd57c7bff83fde8e0aa34468ed7e13e05d27fd1db7391a",
+      "passed": true,
+      "numeric_failures": [],
+      "teacher_argmax_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_code_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_token_mismatches": 0
+    },
+    {
+      "kind": "generator",
+      "case": "seed17-mixed",
+      "exit_code": 0,
+      "binary_sha256": "52be3921158535145fcd57c7bff83fde8e0aa34468ed7e13e05d27fd1db7391a",
+      "passed": true,
+      "numeric_failures": [],
+      "teacher_argmax_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_code_mismatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "greedy_token_mismatches": 0
+    },
+    {
+      "kind": "codec",
+      "case": "greedy-0",
+      "exit_code": 0,
+      "binary_sha256": "c34bfb6e80fd6b8dacf6b0bc3b2f3ecff81d4d64fada21d8faf3d61a4290dbc2",
+      "passed": true,
+      "numeric_failures": []
+    },
+    {
+      "kind": "codec",
+      "case": "seed17-0",
+      "exit_code": 0,
+      "binary_sha256": "c34bfb6e80fd6b8dacf6b0bc3b2f3ecff81d4d64fada21d8faf3d61a4290dbc2",
+      "passed": true,
+      "numeric_failures": []
+    },
+    {
+      "kind": "codec",
+      "case": "seed29",
+      "exit_code": 0,
+      "binary_sha256": "c34bfb6e80fd6b8dacf6b0bc3b2f3ecff81d4d64fada21d8faf3d61a4290dbc2",
+      "passed": true,
+      "numeric_failures": []
+    }
+  ]
+}

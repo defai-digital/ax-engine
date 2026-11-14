@@ -14,6 +14,8 @@ pub enum GenerationKind {
     BlockDiffusion,
     /// Bidirectional encoder + pooling (embedding models).
     EncoderEmbed,
+    /// Multiscale latent hierarchy followed by one final text commit.
+    NextConcept,
 }
 
 impl GenerationKind {
@@ -23,6 +25,9 @@ impl GenerationKind {
     /// product labels, while still recognizing well-known family labels so
     /// older manifests remain classified correctly.
     pub fn from_manifest(manifest: &NativeModelManifest) -> Self {
+        if manifest.model_family == "ncm" {
+            return Self::NextConcept;
+        }
         if is_encoder_embed_manifest(manifest) {
             return Self::EncoderEmbed;
         }
@@ -38,6 +43,7 @@ impl GenerationKind {
             Self::Autoregressive => 0,
             Self::BlockDiffusion => 1,
             Self::EncoderEmbed => 2,
+            Self::NextConcept => 3,
         }
     }
 }
@@ -50,6 +56,10 @@ pub enum WorkUnitKind {
     DenoiseStep,
     BlockCommit,
     EmbedForward,
+    ConceptInit,
+    ConceptLevel,
+    ConceptDecode,
+    ConceptCommit,
 }
 
 /// Metrics boundary for the first user-visible output event.
@@ -61,6 +71,7 @@ pub enum FirstVisibleEventKind {
     FirstBlock,
     /// Embedding path produces a vector, not a token stream.
     Embedding,
+    FinalSequence,
 }
 
 /// Lightweight request progress used for strategy planning (Phase 2).
@@ -112,6 +123,10 @@ impl WorkUnitKind {
             Self::DenoiseStep => 2,
             Self::BlockCommit => 3,
             Self::EmbedForward => 4,
+            Self::ConceptInit => 5,
+            Self::ConceptLevel => 6,
+            Self::ConceptDecode => 7,
+            Self::ConceptCommit => 8,
         }
     }
 }
@@ -129,6 +144,7 @@ impl GenerationStrategyDescriptor {
             GenerationKind::Autoregressive => FirstVisibleEventKind::FirstToken,
             GenerationKind::BlockDiffusion => FirstVisibleEventKind::FirstBlock,
             GenerationKind::EncoderEmbed => FirstVisibleEventKind::Embedding,
+            GenerationKind::NextConcept => FirstVisibleEventKind::FinalSequence,
         };
         Self {
             kind,
@@ -154,6 +170,12 @@ impl GenerationStrategyDescriptor {
                 WorkUnitKind::BlockCommit,
             ],
             GenerationKind::EncoderEmbed => &[WorkUnitKind::EmbedForward],
+            GenerationKind::NextConcept => &[
+                WorkUnitKind::ConceptInit,
+                WorkUnitKind::ConceptLevel,
+                WorkUnitKind::ConceptDecode,
+                WorkUnitKind::ConceptCommit,
+            ],
         }
     }
 
@@ -164,6 +186,8 @@ impl GenerationStrategyDescriptor {
     pub(crate) fn plan_next_work_unit(self, progress: GenerationProgress) -> WorkUnitKind {
         match self.kind {
             GenerationKind::EncoderEmbed => WorkUnitKind::EmbedForward,
+            // Subsequent work is planned from the typed ConceptProgress in EngineCore.
+            GenerationKind::NextConcept => WorkUnitKind::ConceptInit,
             GenerationKind::Autoregressive => {
                 if progress.processed_prompt_tokens < progress.prompt_len {
                     WorkUnitKind::PrefillChunk
@@ -189,7 +213,10 @@ impl GenerationStrategyDescriptor {
     #[cfg(test)]
     /// Whether this strategy emits a token stream (vs a single embedding).
     pub(crate) const fn emits_token_stream(self) -> bool {
-        !matches!(self.kind, GenerationKind::EncoderEmbed)
+        matches!(
+            self.kind,
+            GenerationKind::Autoregressive | GenerationKind::BlockDiffusion
+        )
     }
 
     #[cfg(test)]
@@ -199,6 +226,7 @@ impl GenerationStrategyDescriptor {
             FirstVisibleEventKind::FirstToken => "ttft_first_token",
             FirstVisibleEventKind::FirstBlock => "time_to_first_block",
             FirstVisibleEventKind::Embedding => "embedding_latency",
+            FirstVisibleEventKind::FinalSequence => "time_to_final_commit",
         }
     }
 }
@@ -390,5 +418,18 @@ mod tests {
         assert_eq!(WorkUnitKind::PrefillChunk.telemetry_code(), 0);
         assert_eq!(WorkUnitKind::TokenDecode.telemetry_code(), 1);
         assert_eq!(WorkUnitKind::DenoiseStep.telemetry_code(), 2);
+    }
+    #[test]
+    fn next_concept_is_a_distinct_final_sequence_strategy() {
+        let strategy = GenerationStrategyDescriptor::for_kind(GenerationKind::NextConcept);
+        assert_eq!(strategy.kind.telemetry_code(), 3);
+        assert_eq!(strategy.first_visible, FirstVisibleEventKind::FinalSequence);
+        assert_eq!(
+            strategy.first_visible_metric_label(),
+            "time_to_final_commit"
+        );
+        assert!(!strategy.emits_token_stream());
+        assert_eq!(WorkUnitKind::ConceptInit.telemetry_code(), 5);
+        assert_eq!(WorkUnitKind::ConceptCommit.telemetry_code(), 8);
     }
 }

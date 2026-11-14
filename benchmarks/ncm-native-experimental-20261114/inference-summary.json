@@ -1,0 +1,142 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+  "scope": "experimental unconditional F32 functional controls only",
+  "binaries": {
+    "ncm-infer": "67ef33be2cef7cf572a1d01113320d5c632994e98582468733c1352d953e659b",
+    "ncm-native-test": "aa243bf1b6e7b82416db73f99f3bafc73022607444b0eb67972bdc4b76798acb"
+  },
+  "cases": [
+    {
+      "case": "greedy",
+      "passed": true,
+      "exit_code": 0,
+      "expected_exit": 0,
+      "elapsed_seconds": 40.77,
+      "raw_id_mismatches": 0,
+      "text_matches": true
+    },
+    {
+      "case": "missing-mode",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.009
+    },
+    {
+      "case": "seed-zero",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.008
+    },
+    {
+      "case": "temperature-zero",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.007
+    },
+    {
+      "case": "prompt",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.008
+    },
+    {
+      "case": "short-budget",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.009
+    },
+    {
+      "case": "duplicate-mode",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.008
+    },
+    {
+      "case": "sample-mode",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.007
+    },
+    {
+      "case": "memory-overflow",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.007
+    },
+    {
+      "case": "zero-deadline",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.007
+    },
+    {
+      "case": "small-budget",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 19.951
+    },
+    {
+      "case": "readme",
+      "passed": true,
+      "exit_code": 0,
+      "expected_exit": 0,
+      "elapsed_seconds": 40.834,
+      "raw_id_mismatches": 0,
+      "text_matches": true
+    },
+    {
+      "case": "extra-weights",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.018
+    },
+    {
+      "case": "extra-config",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.018
+    },
+    {
+      "case": "extra-code",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 0.017
+    },
+    {
+      "case": "missing-unigram",
+      "passed": true,
+      "exit_code": 2,
+      "expected_exit": 2,
+      "elapsed_seconds": 20.213
+    },
+    {
+      "case": "sdk-lifecycle",
+      "passed": true,
+      "exit_code": 0,
+      "elapsed_seconds": 82.977,
+      "covers": [
+        "three native text decodes",
+        "three complete greedy identities",
+        "busy",
+        "cancel all 14 boundaries",
+        "dropped handle and reuse",
+        "close",
+        "deadline"
+      ]
+    }
+  ],
+  "passed": true
+}

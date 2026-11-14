@@ -61,6 +61,39 @@ def write_gemma4_unified_runtime(repo: Path) -> None:
 
 
 class MlxModelSupportProbeTests(unittest.TestCase):
+    def test_ncm_metadata_names_native_execution_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = write_model(Path(tmp), "ncm", [])
+            report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "fail_closed_native_runtime_missing")
+        self.assertFalse(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["reference_support"], "experimental_native_unconditional")
+        self.assertFalse(report["experimental_entrypoints"]["normal_serve"])
+        features = report["checkpoint_features"]
+        self.assertEqual(features["generation_paradigm"], "coarse_to_fine_latent")
+        self.assertFalse(any(features["core_component_files_present"].values()))
+        self.assertIn("ncm_native_runner_not_admitted", report["blocker_codes"])
+        self.assertIn("ncm_official_source_parity_pending", report["blocker_codes"])
+
+    def test_ncm_files_and_ready_manifest_do_not_admit_native_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = write_model(Path(tmp), "ncm", [])
+            for name in ("spec.json", "generator.safetensors", "codec.safetensors"):
+                (model_dir / name).write_bytes(b"unvalidated evaluation artifact")
+            (model_dir / "model-manifest.json").write_text(json.dumps({
+                "model_family": "ncm",
+                "runtime_status": {"ready": True},
+                "tensors": [{"name": "generator.weight"}],
+            }))
+            report = probe.probe_model(model_dir)
+
+        self.assertTrue(report["has_ax_manifest"])
+        self.assertTrue(all(report["checkpoint_features"]["core_component_files_present"].values()))
+        self.assertEqual(report["support_decision"], "fail_closed_native_runtime_missing")
+        self.assertFalse(report["can_implement_repo_owned_runtime"])
+        self.assertTrue(report["blockers"])
+
     def test_gemma4_unified_is_candidate_without_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
