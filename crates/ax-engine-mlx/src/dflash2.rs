@@ -146,7 +146,8 @@ impl Dflash2Config {
             rms_norm_eps: float(top, "rms_norm_eps", 1e-6) as f32,
             rope_theta: rope_theta as f32,
             sliding_window: int(top, "sliding_window")? as i32,
-            block_size: int(flash, "block_size")? as i32,
+            block_size: crate::fastpath::dflash2_block_override()
+                .unwrap_or(int(flash, "block_size")? as i32),
             mask_token_id: int(flash, "mask_token_id")? as u32,
             target_layer_ids,
             conv_group_size: int(flash, "conv_group_size")? as i32,
