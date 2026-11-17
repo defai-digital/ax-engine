@@ -1,0 +1,18 @@
+{
+  "schema_version": "ax.engine.speculation.v1",
+  "cases": [
+    {"name": "no_drafts", "drafts": [], "predicted": [9], "budget": 8, "eos": [], "accepted_drafts": 0, "emitted": [9], "retained_draft_rows": 0},
+    {"name": "all_accepted_with_bonus", "drafts": [1, 2], "predicted": [1, 2, 3], "budget": 8, "eos": [], "accepted_drafts": 2, "emitted": [1, 2, 3], "retained_draft_rows": 2},
+    {"name": "first_mismatch", "drafts": [1, 2], "predicted": [9, 2, 3], "budget": 8, "eos": [], "accepted_drafts": 0, "emitted": [9], "retained_draft_rows": 0},
+    {"name": "later_matches_do_not_resume_acceptance", "drafts": [1, 2, 3], "predicted": [1, 9, 3, 4], "budget": 8, "eos": [], "accepted_drafts": 1, "emitted": [1, 9], "retained_draft_rows": 1},
+    {"name": "zero_budget", "drafts": [1, 2], "predicted": [1, 2, 3], "budget": 0, "eos": [], "accepted_drafts": 2, "emitted": [], "retained_draft_rows": 0},
+    {"name": "budget_cuts_accepted_drafts", "drafts": [1, 2, 3], "predicted": [1, 2, 3, 4], "budget": 2, "eos": [], "accepted_drafts": 3, "emitted": [1, 2], "retained_draft_rows": 2},
+    {"name": "budget_removes_bonus", "drafts": [1, 2], "predicted": [1, 2, 3], "budget": 2, "eos": [], "accepted_drafts": 2, "emitted": [1, 2], "retained_draft_rows": 2},
+    {"name": "eos_in_accepted_prefix", "drafts": [1, 9, 3], "predicted": [1, 9, 3, 4], "budget": 8, "eos": [9], "accepted_drafts": 3, "emitted": [1, 9], "retained_draft_rows": 2},
+    {"name": "eos_is_target_bonus", "drafts": [1, 2], "predicted": [1, 9, 3], "budget": 8, "eos": [9], "accepted_drafts": 1, "emitted": [1, 9], "retained_draft_rows": 1},
+    {"name": "ignore_eos", "drafts": [1, 9, 3], "predicted": [1, 9, 3, 4], "budget": 8, "eos": [], "accepted_drafts": 3, "emitted": [1, 9, 3, 4], "retained_draft_rows": 3},
+    {"name": "first_of_multiple_eos", "drafts": [8, 9, 10], "predicted": [8, 9, 10, 11], "budget": 8, "eos": [8, 9], "accepted_drafts": 3, "emitted": [8], "retained_draft_rows": 1},
+    {"name": "missing_bonus_prediction", "drafts": [1, 2], "predicted": [1, 2], "budget": 8, "eos": [], "error": "prediction_count"},
+    {"name": "extra_prediction", "drafts": [1], "predicted": [1, 2, 3], "budget": 8, "eos": [], "error": "prediction_count"}
+  ]
+}

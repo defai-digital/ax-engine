@@ -259,25 +259,7 @@ pub(crate) enum TreeVerifyError {
 
 /// How many committed tokens survive the budget and EOS, and how many of those
 /// are draft rows the cache must retain.
-pub(crate) fn limit_commit(
-    tokens: &[u32],
-    accepted_drafts: usize,
-    budget: usize,
-    eos: &[u32],
-) -> (Vec<u32>, usize) {
-    let mut emitted = Vec::new();
-    for &token in tokens {
-        if emitted.len() >= budget {
-            break;
-        }
-        emitted.push(token);
-        if eos.contains(&token) {
-            break;
-        }
-    }
-    let cache_draft_rows = emitted.len().min(accepted_drafts);
-    (emitted, cache_draft_rows)
-}
+pub(crate) use ax_engine_core::speculation::limit_commit;
 
 fn accepted_prefix_ok(drafts: &[u32], accepted: usize, committed: &[u32]) -> bool {
     accepted <= drafts.len()

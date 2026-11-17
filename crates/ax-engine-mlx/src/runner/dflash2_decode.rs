@@ -814,11 +814,7 @@ fn note_mlx_eval_failure(slot: &RefCell<Option<String>>, error: &str) {
 /// by the target's own token at the first mismatch (or after the last draft).
 pub(crate) fn greedy_walk(drafts: &[u32], predicted: &[u32]) -> (usize, Vec<u32>) {
     debug_assert_eq!(predicted.len(), drafts.len() + 1);
-    let accepted = drafts
-        .iter()
-        .zip(predicted)
-        .take_while(|(draft, target)| draft == target)
-        .count();
+    let accepted = ax_engine_core::speculation::accepted_prefix_len(drafts, predicted);
     let mut tokens = drafts[..accepted].to_vec();
     tokens.push(predicted[accepted]);
     (accepted, tokens)
@@ -834,7 +830,7 @@ fn linear_window_commit(
     eos: &[u32],
 ) -> (Vec<u32>, usize) {
     let (emitted, emitted_drafts) =
-        super::tree_verify::limit_commit(new_tokens, accepted, budget, eos);
+        ax_engine_core::speculation::limit_commit(new_tokens, accepted, budget, eos);
     let keep = 1 + emitted_drafts.min(accepted);
     (emitted, keep)
 }

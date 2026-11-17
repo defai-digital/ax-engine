@@ -58,6 +58,15 @@ optional `mlx-swift-lm` secondary baseline adapter rows.
 Delegated `mlx_lm_delegated` and llama.cpp checks stay outside repo-owned MLX
 throughput claims.
 
+Speculative token commit rules live in `ax-engine-core::speculation`: accepted
+prefixes, EOS/output-budget cuts, and retained draft-row counts. MLX linear and
+tree verification use those rules while keeping tensor execution, cache replay,
+and rollback in `ax-engine-mlx`. The checked host oracle is also exercised against
+the versioned `tests/fixtures/speculation-v1.json` corpus shared with
+`ax-engine-sglang`; the fixture manifest pins the benchmark evidence schema and
+corpus by SHA-256. This shares correctness contracts across runtimes without
+adding CUDA or Python dependencies to the Rust core.
+
 ## Dependency Boundaries
 
 ### `ax-engine-core`

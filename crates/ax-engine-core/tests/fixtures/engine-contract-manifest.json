@@ -1,0 +1,8 @@
+{
+  "schema_version": "ax.engine.contract-assets.v1",
+  "source": "ax-engine-sglang/contracts",
+  "sha256": {
+    "speculation-v1.json": "2c6d014037bee911955b76f19ccfcef2d26769d9e5d09292dc09060544ae7cf2",
+    "benchmark-result-v1.schema.json": "f726b76f5aad2a699d3413312a2419236eacf052b6257d69857e46c7e094d593"
+  }
+}

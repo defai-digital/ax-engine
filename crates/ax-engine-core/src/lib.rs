@@ -35,6 +35,7 @@ pub mod request_manager;
 pub mod runner;
 pub mod sampling;
 pub mod scheduler;
+pub mod speculation;
 pub mod support_tier;
 pub mod unlimited_ocr;
 pub mod unlimited_ocr2;
