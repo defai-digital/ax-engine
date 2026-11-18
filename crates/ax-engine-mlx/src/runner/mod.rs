@@ -11481,6 +11481,20 @@ impl MlxRunner {
             )
         });
 
+        let think_single_token_required = think_hard_close_due
+            || options.request_context.is_some_and(|ctx| {
+                think_budget_single_token_required(
+                    state.ngram_in_think,
+                    ctx.max_think_tokens,
+                    ctx.answer_reserve_tokens,
+                )
+            });
+
+        // A hard close replaces this step's token, so a queued bonus from the
+        // reasoning branch must not escape before the singleton route.
+        if think_hard_close_due {
+            state.bonus_queue.clear();
+        }
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
@@ -11684,7 +11698,7 @@ impl MlxRunner {
                 sampling,
                 is_greedy,
                 options,
-                think_hard_close_due,
+                think_single_token_required,
             );
             let captured = crate::model::layer_capture::take_accumulated();
             drop(capture);
@@ -11697,7 +11711,7 @@ impl MlxRunner {
             sampling,
             is_greedy,
             options,
-            think_hard_close_due,
+            think_single_token_required,
         )
     }
 
@@ -11709,7 +11723,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         is_greedy: bool,
         options: DecodeOneOptions<'_>,
-        think_hard_close_due: bool,
+        think_single_token_required: bool,
     ) -> Vec<u32> {
         // A parked DFlash2 request about to probe again finishes the direct
         // double buffer's pending token instead of starting another.
@@ -11721,7 +11735,7 @@ impl MlxRunner {
                     .is_some_and(|dflash| dflash.resume_due(state.cache.seq_len())),
             ..options
         };
-        let pure_direct_pipeline = !think_hard_close_due
+        let pure_direct_pipeline = !think_single_token_required
             && v4_uncertified_uses_pure_direct_pipeline(
                 self.mtp_model_policy.is_deepseek_v4_direct_fallback(),
                 self.disable_ngram_acceleration,
@@ -11737,7 +11751,7 @@ impl MlxRunner {
         // step that blocked already takes this route; see
         // `FlashNextMtpRequestState::blocked_direct`.
         let flash_next_blocked_greedy = !state.think_soft_close_armed
-            && !think_hard_close_due
+            && !think_single_token_required
             && (is_greedy || sampling.temperature <= 0.0)
             && !sampling.uses_logits_processors()
             && state.flash_next_mtp.blocked_direct
@@ -11745,7 +11759,7 @@ impl MlxRunner {
         // A greedy request DFlash2 handed to plain decode takes the same double
         // buffer: the n-gram route finds no drafts on these targets.
         let dflash2_handed_to_direct = !state.think_soft_close_armed
-            && !think_hard_close_due
+            && !think_single_token_required
             && (is_greedy || sampling.temperature <= 0.0)
             && !sampling.uses_logits_processors()
             && state
@@ -11756,7 +11770,7 @@ impl MlxRunner {
             || flash_next_blocked_greedy
             || dflash2_handed_to_direct
             || (!state.think_soft_close_armed
-                && !think_hard_close_due
+                && !think_single_token_required
                 // The double buffer is argmax-only: repetition, presence /
                 // frequency penalties and logit_bias need the host sampler.
                 && !sampling.uses_logits_processors()
@@ -11800,7 +11814,7 @@ impl MlxRunner {
             .unwrap_or(0);
 
         if !state.think_soft_close_armed
-            && !think_hard_close_due
+            && !think_single_token_required
             && ngram_request_disabled_direct_fast_path(
                 is_greedy,
                 sampling.uses_logits_processors(),
@@ -11828,7 +11842,7 @@ impl MlxRunner {
             is_greedy,
             options.final_by_max_output,
             options.request_context,
-            think_hard_close_due,
+            think_single_token_required,
         );
         apply_decode_result(state, &result, options.terminal_token_ids)
     }
@@ -11898,6 +11912,14 @@ impl MlxRunner {
                 false,
             )
         });
+        let think_single_token_required = think_budget_close_due
+            || ctx.is_some_and(|ctx| {
+                think_budget_single_token_required(
+                    state.ngram_in_think,
+                    ctx.max_think_tokens,
+                    ctx.answer_reserve_tokens,
+                )
+            });
         let primary = state
             .next_model_last_token
             .or_else(|| input_tokens.last().copied());
@@ -11921,7 +11943,7 @@ impl MlxRunner {
             cost_route == FlashNextCostRoute::Direct,
             strict_greedy,
             state.think_soft_close_armed,
-            think_budget_close_due,
+            think_single_token_required,
             state.pending_direct.is_some(),
             remaining_budget as usize,
         );
@@ -11997,7 +12019,7 @@ impl MlxRunner {
         let mut block = flash_next_mtp_decode_block(
             strict_greedy,
             state.think_soft_close_armed,
-            think_budget_close_due,
+            think_single_token_required,
             state.pending_direct.is_some(),
             remaining_budget as usize,
             state.flash_next_mtp.paused.is_some(),
@@ -12028,7 +12050,7 @@ impl MlxRunner {
             block = flash_next_mtp_decode_block(
                 strict_greedy,
                 state.think_soft_close_armed,
-                think_budget_close_due,
+                think_single_token_required,
                 state.pending_direct.is_some(),
                 remaining_budget as usize,
                 false,
@@ -16723,18 +16745,16 @@ impl MlxRunner {
         is_greedy: bool,
         final_by_max_output: bool,
         ctx: Option<&RunnerRequestContext>,
-        think_hard_close_due: bool,
+        think_single_token_required: bool,
     ) -> Vec<u32> {
-        // Think soft-close window: bypass MTP / n-gram speculation so every
-        // step decides one token against materialized logits where the rank
-        // probe can fire. A due hard close takes the same route: the
-        // post-decode override swaps the sampled token for the close token,
-        // which is KV-exact only on this single-token path (the direct
-        // pipeline and speculative routes commit emitted tokens in-step).
+        // Think budgets use singleton decode inside the reasoning block so a
+        // multi-token speculative commit cannot cross either hard limit. The
+        // soft-close probe and a due hard close also require materialized logits
+        // and KV-exact replacement by the post-decode override.
         // MTP session state resets exactly like the
         // DirectFallback arm; a pending direct-pipeline token drains first
         // (already committed — the probe applies from the next step).
-        if state.think_soft_close_armed || think_hard_close_due {
+        if state.think_soft_close_armed || think_single_token_required {
             state.mtp_pending_draft.clear();
             state.mtp_pending_draft_lazy = None;
             state.mtp_pending_draft_log_probs.clear();
@@ -17005,6 +17025,14 @@ fn think_budget_controller_active(
     max_think_tokens.is_some() || answer_reserve_tokens.is_some()
 }
 
+fn think_budget_single_token_required(
+    in_think: bool,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> bool {
+    in_think && think_budget_controller_active(max_think_tokens, answer_reserve_tokens)
+}
+
 /// Decide whether the thinking-budget controller must force the think-close
 /// token at this step. Hard close: the answer reserve (or the per-request
 /// think budget) is exhausted. Soft close: the loop detector fired while
@@ -17132,7 +17160,7 @@ pub(crate) fn think_soft_close_armed(
 
 #[cfg(test)]
 mod think_budget_controller_active_tests {
-    use super::think_budget_controller_active;
+    use super::{think_budget_controller_active, think_budget_single_token_required};
 
     #[test]
     fn active_with_either_budget_knob() {
@@ -17142,6 +17170,10 @@ mod think_budget_controller_active_tests {
         assert!(think_budget_controller_active(Some(4096), Some(512)));
         // An explicit zero cap is still an active controller.
         assert!(think_budget_controller_active(Some(0), None));
+        assert!(think_budget_single_token_required(true, Some(1), None));
+        assert!(think_budget_single_token_required(true, None, Some(1)));
+        assert!(!think_budget_single_token_required(false, Some(1), None));
+        assert!(!think_budget_single_token_required(true, None, None));
     }
 }
 

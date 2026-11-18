@@ -138,7 +138,8 @@ impl Dflash2Config {
         }
         let config = Self {
             hidden_size: int(top, "hidden_size")? as i32,
-            num_layers: int(top, "num_hidden_layers")? as usize,
+            num_layers: usize::try_from(int(top, "num_hidden_layers")?)
+                .map_err(|_| "DFlash2 num_hidden_layers must be non-negative")?,
             num_heads: int(top, "num_attention_heads")? as i32,
             num_kv_heads: int(top, "num_key_value_heads")? as i32,
             head_dim: int(top, "head_dim")? as i32,
@@ -147,7 +148,8 @@ impl Dflash2Config {
             rope_theta: rope_theta as f32,
             sliding_window: int(top, "sliding_window")? as i32,
             block_size: int(flash, "block_size")? as i32,
-            mask_token_id: int(flash, "mask_token_id")? as u32,
+            mask_token_id: u32::try_from(int(flash, "mask_token_id")?)
+                .map_err(|_| "DFlash2 mask_token_id must be non-negative")?,
             target_layer_ids,
             conv_group_size: int(flash, "conv_group_size")? as i32,
             conv_kernel_size: int(flash, "conv_kernel_size")? as i32,
@@ -2891,6 +2893,11 @@ mod tests {
 
     #[test]
     fn config_rejects_what_it_cannot_serve() {
+        let negative_layers =
+            CONFIG.replace("\"num_hidden_layers\": 5", "\"num_hidden_layers\": -1");
+        assert!(Dflash2Config::from_json(&negative_layers).is_err());
+        let negative_mask = CONFIG.replace("\"mask_token_id\": 248070", "\"mask_token_id\": -1");
+        assert!(Dflash2Config::from_json(&negative_mask).is_err());
         let causal = CONFIG.replace("\"is_causal\": false", "\"is_causal\": true");
         assert!(Dflash2Config::from_json(&causal).is_err());
         let unordered = CONFIG.replace("[5, 19, 33, 47, 61]", "[19, 5]");

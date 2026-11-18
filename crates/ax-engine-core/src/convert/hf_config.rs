@@ -1129,6 +1129,9 @@ pub(crate) fn parse_rope_scaling(
 /// - **GPT-OSS:** use `layer_types` when present (openai ships the full list);
 ///   otherwise alternate `sliding_attention` / `full_attention` matching
 ///   mlx-lm `gpt_oss.GptOssMoeModel` defaults.
+/// - **Qwen gated-delta hybrids:** preserve explicit linear/full layer types.
+///   Qwen4 derives the interval pattern when the list is absent; earlier Qwen
+///   hybrids keep it empty and use interval dispatch directly.
 pub(crate) fn parse_layer_types(
     config: &serde_json::Value,
     model_type: &str,
@@ -1142,7 +1145,7 @@ pub(crate) fn parse_layer_types(
         && !is_muse_glimmer_model_type(model_type)
         && !is_gpt_oss
         && !is_nemotron
-        && !is_qwen4_exp_family(model_type)
+        && !is_qwen_gated_delta_family(model_type)
     {
         return Vec::new();
     }
@@ -1214,6 +1217,10 @@ pub(crate) fn parse_layer_types(
                 })
                 .collect()
         });
+    }
+
+    if is_qwen_gated_delta_family(model_type) {
+        return Vec::new();
     }
 
     let pattern = arch_u64(config, model_type, "sliding_window_pattern")

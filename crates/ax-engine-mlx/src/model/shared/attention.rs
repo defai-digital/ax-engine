@@ -2570,6 +2570,7 @@ mod tests {
 
     fn interleaved_mask_test_config() -> ModelConfig {
         let layer = |sliding_window: Option<usize>| LayerConfig {
+            is_linear_attention: false,
             head_dim: 1,
             rope_theta: 10000.0,
             rope_dims: 0,

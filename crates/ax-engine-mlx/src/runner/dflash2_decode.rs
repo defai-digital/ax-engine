@@ -198,6 +198,35 @@ impl Dflash2RequestState {
         }
     }
 
+    fn restore_drafter_cursor(&mut self, cursor: crate::dflash2::DrafterCursor) {
+        self.drafter.restore_cursor(cursor);
+        if self.drafter.cache_offset() == 0 && self.drafter.cache_rows() == 0 {
+            self.started = false;
+        }
+    }
+
+    fn discard_uncommitted_round(&mut self, staged: Option<crate::dflash2::DrafterCursor>) {
+        drop_dflash2_predraft(self);
+        if let Some(cursor) = staged {
+            self.restore_drafter_cursor(cursor);
+        }
+    }
+
+    fn park_for_retry(&mut self, target: HandoffTarget, cursor: crate::dflash2::DrafterCursor) {
+        self.restore_drafter_cursor(cursor);
+        self.handed_off = Some(target);
+        self.resume_at = Some(self.captured_rows.saturating_add(1));
+        self.parked_rows = ParkedRows::default();
+    }
+
+    fn skip_unseen_rows(&mut self, rows: i32) {
+        if !self.started {
+            self.drafter.seed_offset(self.skipped_rows as i32);
+            self.started = true;
+        }
+        self.drafter.skip_rows(rows);
+    }
+
     /// The request left DFlash2 for plain decode: it should take the direct
     /// double buffer, not the n-gram route, which finds no drafts here and
     /// costs more per token than direct decode.
@@ -882,6 +911,10 @@ fn dflash2_draft_window(
         return Err("no pending hidden rows");
     };
     let cursor = dflash.drafter.snapshot_cursor();
+    if !dflash.started {
+        dflash.drafter.seed_offset(dflash.skipped_rows as i32);
+        dflash.started = true;
+    }
     let capture_alternatives = matches!(read, Dflash2DraftRead::Tree);
     let drafted = if capture_alternatives {
         match dflash
@@ -892,7 +925,7 @@ fn dflash2_draft_window(
             // The drafter restored its own cursor. Restore again from the
             // pre-call snapshot so a partial runner-up write cannot stick.
             Err(_) => {
-                dflash.drafter.restore_cursor(cursor);
+                dflash.restore_drafter_cursor(cursor);
                 return Err("runner-up capture failed");
             }
         }
@@ -903,7 +936,7 @@ fn dflash2_draft_window(
             // restored its cursor; restore the pre-call snapshot too.
             // `pending_hidden` was cloned, not taken.
             Err(_) => {
-                dflash.drafter.restore_cursor(cursor);
+                dflash.restore_drafter_cursor(cursor);
                 return Err("linear draft evaluation failed");
             }
         }
@@ -922,7 +955,7 @@ fn dflash2_draft_window(
                 %error,
                 "DFlash2 draft evaluation failed; declining speculation"
             );
-            dflash.drafter.restore_cursor(cursor);
+            dflash.restore_drafter_cursor(cursor);
             return Err("tree verify evaluation failed");
         }
         if let Err(error) = mlx_sys::try_eval(&[&draft_arr]) {
@@ -931,7 +964,7 @@ fn dflash2_draft_window(
                 %error,
                 "DFlash2 draft evaluation failed; declining speculation"
             );
-            dflash.drafter.restore_cursor(cursor);
+            dflash.restore_drafter_cursor(cursor);
             return Err("tree verify evaluation failed");
         }
     }
@@ -952,7 +985,7 @@ fn dflash2_draft_block_from(
     match dflash.drafter.draft_block(primary, hidden, target, block) {
         Ok(drafted) => Some((drafted, cursor)),
         Err(_) => {
-            dflash.drafter.restore_cursor(cursor);
+            dflash.restore_drafter_cursor(cursor);
             None
         }
     }
@@ -962,7 +995,7 @@ fn dflash2_draft_block_from(
 /// made it left off, and `pending_hidden` still holds the rows it consumed.
 fn drop_dflash2_predraft(dflash: &mut Dflash2RequestState) {
     if let Some(predraft) = dflash.predraft.take() {
-        dflash.drafter.restore_cursor(predraft.cursor);
+        dflash.restore_drafter_cursor(predraft.cursor);
     }
 }
 
@@ -1013,7 +1046,7 @@ fn dflash2_cohort_packed_drafts(
         drop(packed);
         for (((state, _), cursor), was_started) in lanes.iter_mut().zip(cursors).zip(started) {
             if let Some(dflash) = state.dflash2.as_mut() {
-                dflash.drafter.restore_cursor(cursor);
+                dflash.restore_drafter_cursor(cursor);
                 dflash.started = was_started;
             }
         }
@@ -1062,7 +1095,7 @@ fn disable_dflash2_shape_mismatch(
     dflash: &mut Dflash2RequestState,
     cursor: crate::dflash2::DrafterCursor,
 ) {
-    dflash.drafter.restore_cursor(cursor);
+    dflash.restore_drafter_cursor(cursor);
     dflash.disabled = true;
 }
 
@@ -1233,9 +1266,9 @@ impl MlxRunner {
         {
             Ok(plan) => plan,
             Err(declined) => {
-                self.drop_dflash2_staged(state);
+                let staged = state.dflash2_staged.take().map(|staged| staged.cursor);
                 if let Some(dflash) = state.dflash2.as_mut() {
-                    drop_dflash2_predraft(dflash);
+                    dflash.discard_uncommitted_round(staged);
                 }
                 return declined;
             }
@@ -1253,7 +1286,7 @@ impl MlxRunner {
                 return self.commit_dflash2_round(state, staged, options);
             }
             if let Some(dflash) = state.dflash2.as_mut() {
-                dflash.drafter.restore_cursor(staged.cursor);
+                dflash.discard_uncommitted_round(Some(staged.cursor));
             }
         }
         let verify_len = plan.window;
@@ -1283,10 +1316,6 @@ impl MlxRunner {
             Some(predrafted) => predrafted,
             None => {
                 let dflash = state.dflash2.as_mut()?;
-                if !dflash.started {
-                    dflash.drafter.seed_offset(dflash.skipped_rows as i32);
-                    dflash.started = true;
-                }
                 let read = if tree {
                     Dflash2DraftRead::Tree
                 } else {
@@ -1319,7 +1348,7 @@ impl MlxRunner {
                         %error,
                         "DFlash2 draft submission failed; declining speculation"
                     );
-                    dflash.drafter.restore_cursor(cursor);
+                    dflash.restore_drafter_cursor(cursor);
                     return decline("draft submission failed");
                 }
                 (draft_arr, cursor, elapsed_us(draft_started))
@@ -1359,7 +1388,7 @@ impl MlxRunner {
                 // values so the next round can draft again.
                 Err(()) => {
                     if let Some(dflash) = state.dflash2.as_mut() {
-                        dflash.drafter.restore_cursor(cursor);
+                        dflash.restore_drafter_cursor(cursor);
                     }
                     return decline("tree verify evaluation failed");
                 }
@@ -1397,23 +1426,24 @@ impl MlxRunner {
             }
             return None;
         };
-        if crate::fastpath::mtp_rebind_verify_fa_enabled() {
-            // The verifier's K/V output backs every acceptance outcome; rebind
-            // the rollback source so its obsolete handles cannot block MLX
-            // donation at the evaluation fence below.
-            let _ = state
+        let cache_rebound = crate::fastpath::mtp_rebind_verify_fa_enabled()
+            && state
                 .cache
                 .rebind_contiguous_attention_storage_from(&verify_cache);
-        }
         let predicted_arr = argmax(&logits_all, None);
         let refs: Vec<&MlxArray> = captured.iter().collect();
         let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
-        // Rebind already published the verifier K/V into the request cache.
-        // This read must not retain the pre-rebind handles: that blocks MLX
-        // donation. A failure leaves the cache untrustworthy, so fail the
-        // request instead of restoring it.
+        // A successful rebind published verifier K/V into the request cache, so
+        // a fence failure then leaves it untrustworthy and must fail the request.
+        // Without a rebind the request cache is untouched and the round can decline.
         if let Some(error) = crate::dflash2::take_dflash2_capture_verify_eval_error() {
-            return fail_linear_verify_fence(state, error);
+            if cache_rebound {
+                return fail_linear_verify_fence(state, error);
+            }
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.park_for_retry(self.dflash2_handoff_target(), cursor);
+            }
+            return decline("linear verify evaluation failed");
         }
         // The logits come from `post_norm`, so evaluating it costs nothing and
         // keeps no part of the verify graph alive.
@@ -1425,7 +1455,13 @@ impl MlxRunner {
             mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr])
         };
         if let Err(error) = eval_result {
-            return fail_linear_verify_fence(state, error);
+            if cache_rebound {
+                return fail_linear_verify_fence(state, error);
+            }
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.park_for_retry(self.dflash2_handoff_target(), cursor);
+            }
+            return decline("linear verify evaluation failed");
         }
         let eval_wall_us = elapsed_us(eval_started);
         let verify_wall_us = elapsed_us(verify_started);
@@ -1493,8 +1529,14 @@ impl MlxRunner {
             ctx.answer_reserve_tokens,
             false,
         );
-        if think_budget_close_due {
-            return Err(decline("think budget close due"));
+        if think_budget_close_due
+            || think_budget_single_token_required(
+                state.ngram_in_think,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            )
+        {
+            return Err(decline("think budget requires single-token decode"));
         }
         let Some(primary) = state
             .next_model_last_token
@@ -1589,7 +1631,7 @@ impl MlxRunner {
             return;
         };
         if mlx_sys::try_async_eval(&[&drafted]).is_err() {
-            dflash.drafter.restore_cursor(cursor);
+            dflash.restore_drafter_cursor(cursor);
             return;
         }
         dflash.predraft = Some(Dflash2PreDraft {
@@ -1614,17 +1656,8 @@ impl MlxRunner {
             let ids = dflash2_window_ids(&predraft.drafted, plan.window);
             Some((ids, predraft.cursor, predraft.draft_wall_us))
         } else {
-            dflash.drafter.restore_cursor(predraft.cursor);
+            dflash.restore_drafter_cursor(predraft.cursor);
             None
-        }
-    }
-
-    /// Restores the drafter cursor of a cohort-verified round that is not used.
-    pub(super) fn drop_dflash2_staged(&self, state: &mut RequestState) {
-        if let Some(staged) = state.dflash2_staged.take()
-            && let Some(dflash) = state.dflash2.as_mut()
-        {
-            dflash.drafter.restore_cursor(staged.cursor);
         }
     }
 
@@ -1721,7 +1754,7 @@ impl MlxRunner {
             // Rebind already dropped the superseded K/V so the fence could
             // donate them. Logical length is still the pre-round length.
             if let Some(dflash) = state.dflash2.as_mut() {
-                dflash.drafter.restore_cursor(cursor);
+                dflash.restore_drafter_cursor(cursor);
             }
             return decline("linear verify evaluation failed");
         }
@@ -1897,7 +1930,7 @@ impl MlxRunner {
             // Cannot happen (every lane matched above); keep the drafter sane.
             for (idx, _, cursor) in predrafted.drain(..) {
                 if let Some(dflash) = lanes[idx].0.dflash2.as_mut() {
-                    dflash.drafter.restore_cursor(cursor);
+                    dflash.restore_drafter_cursor(cursor);
                 }
             }
         }
@@ -1913,10 +1946,6 @@ impl MlxRunner {
             let Some(dflash) = state.dflash2.as_mut() else {
                 continue;
             };
-            if !dflash.started {
-                dflash.drafter.seed_offset(dflash.skipped_rows as i32);
-                dflash.started = true;
-            }
             if let Ok((draft_arr, cursor)) = dflash2_draft_window(
                 dflash,
                 plan.primary,
@@ -1933,7 +1962,7 @@ impl MlxRunner {
              drafted: Vec<(usize, MlxArray, crate::dflash2::DrafterCursor)>| {
                 for (idx, _, cursor) in drafted {
                     if let Some(dflash) = lanes[idx].0.dflash2.as_mut() {
-                        dflash.drafter.restore_cursor(cursor);
+                        dflash.restore_drafter_cursor(cursor);
                     }
                 }
             };
@@ -2020,9 +2049,10 @@ impl MlxRunner {
         for (cache, (idx, _, _)) in verify_caches.iter_mut().zip(&drafted) {
             cache.advance(lanes[*idx].1.window);
         }
+        let mut cache_rebound = vec![false; drafted.len()];
         if crate::fastpath::mtp_rebind_verify_fa_enabled() {
-            for (cache, (idx, _, _)) in verify_caches.iter().zip(&drafted) {
-                let _ = lanes[*idx]
+            for (lane, (cache, (idx, _, _))) in verify_caches.iter().zip(&drafted).enumerate() {
+                cache_rebound[lane] = lanes[*idx]
                     .0
                     .cache
                     .rebind_contiguous_attention_storage_from(cache);
@@ -2042,10 +2072,12 @@ impl MlxRunner {
             mlx_sys::try_eval(&eval_refs).err()
         });
         if let Some(error) = fence_error {
-            // Rebind may already have published verifier K/V into the request
-            // caches: fail every lane, as the solo fence does.
-            for (idx, _, _) in &drafted {
-                let _ = fail_linear_verify_fence(lanes[*idx].0, error.clone());
+            for (lane, (idx, _, cursor)) in drafted.iter().enumerate() {
+                if cache_rebound[lane] {
+                    let _ = fail_linear_verify_fence(lanes[*idx].0, error.clone());
+                } else if let Some(dflash) = lanes[*idx].0.dflash2.as_mut() {
+                    dflash.restore_drafter_cursor(cursor.clone());
+                }
             }
             return (0, 0);
         }
@@ -2236,7 +2268,7 @@ impl MlxRunner {
                     });
                 }
                 // Packing or submission failed: the lane drafts in its own round.
-                None => dflash.drafter.restore_cursor(cursor),
+                None => dflash.restore_drafter_cursor(cursor),
             }
         }
     }
@@ -2483,9 +2515,7 @@ impl MlxRunner {
         let hidden = match dflash.pending_hidden.take() {
             Some(pending) if parked.dropped == 0 => concatenate(&[&pending, &rows], 1, None),
             _ => {
-                dflash
-                    .drafter
-                    .skip_rows((pending_rows + parked.dropped) as i32);
+                dflash.skip_unseen_rows((pending_rows + parked.dropped) as i32);
                 rows
             }
         };
@@ -2888,6 +2918,99 @@ impl MlxRunner {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_first_draft_restores_the_preseed_cursor() {
+        let (weights, target) = crate::dflash2::dflash2_tiny_fixture();
+        let width = weights.config().target_hidden_width();
+        let block = weights.config().block_size;
+        let mut state = Dflash2RequestState::new(weights);
+        state.pending_hidden = Some(mlx_sys::zeros(&[1, 2, width], MlxDtype::Bfloat16, None));
+        state.skipped_rows = 12;
+        crate::dflash2::fail_next_dflash2_capture_verify_eval_for_test(
+            "injected first draft failure",
+        );
+
+        let failed = dflash2_draft_window(
+            &mut state,
+            3,
+            &target,
+            block,
+            MIN_WINDOW,
+            Dflash2DraftRead::EvalOnly,
+        );
+
+        assert!(failed.is_err());
+        assert!(!state.started);
+        assert_eq!(state.drafter.cache_offset(), 0);
+        state.drafter.seed_offset(state.skipped_rows as i32);
+        assert_eq!(state.drafter.cache_offset(), 12);
+    }
+
+    #[test]
+    fn cancelling_a_cohort_round_restores_the_oldest_cursor() {
+        let (weights, _) = crate::dflash2::dflash2_tiny_fixture();
+        let mut state = Dflash2RequestState::new(weights);
+        let before_round = state.drafter.snapshot_cursor();
+        state.drafter.skip_rows(5);
+        let before_predraft = state.drafter.snapshot_cursor();
+        state.drafter.skip_rows(3);
+        state.predraft = Some(Dflash2PreDraft {
+            primary: 3,
+            token_offset: 8,
+            drafted: mlx_sys::zeros(&[1, 1], MlxDtype::Uint32, None),
+            cursor: before_predraft,
+            draft_wall_us: 0,
+        });
+
+        state.discard_uncommitted_round(Some(before_round));
+
+        assert_eq!(state.drafter.cache_offset(), 0);
+        assert!(state.predraft.is_none());
+    }
+
+    #[test]
+    fn clone_only_verify_failure_captures_one_generic_step_before_retry() {
+        let (weights, _) = crate::dflash2::dflash2_tiny_fixture();
+        let mut state = Dflash2RequestState::new(weights);
+        state.captured_rows = 5;
+        let cursor = state.drafter.snapshot_cursor();
+        state.drafter.skip_rows(2);
+
+        state.park_for_retry(HandoffTarget::Direct, cursor);
+
+        assert_eq!(state.drafter.cache_offset(), 0);
+        assert_eq!(state.handed_off, Some(HandoffTarget::Direct));
+        assert_eq!(state.resume_at, Some(6));
+        assert!(state.resume_due(6));
+        assert!(!state.parked_rows.lost);
+    }
+
+    #[test]
+    fn retry_seed_composes_with_rows_dropped_while_parked() {
+        let (weights, target) = crate::dflash2::dflash2_tiny_fixture();
+        let width = weights.config().target_hidden_width();
+        let block = weights.config().block_size;
+        let mut state = Dflash2RequestState::new(weights);
+        state.skipped_rows = 12;
+
+        state.skip_unseen_rows(66);
+
+        assert!(state.started);
+        assert_eq!(state.drafter.cache_offset(), 78);
+        state.pending_hidden = Some(mlx_sys::zeros(&[1, 2, width], MlxDtype::Bfloat16, None));
+        let (drafted, _) = dflash2_draft_window(
+            &mut state,
+            3,
+            &target,
+            block,
+            MIN_WINDOW,
+            Dflash2DraftRead::EvalOnly,
+        )
+        .expect("retry drafts without seeding twice");
+        mlx_sys::eval(&[&drafted]);
+        assert_eq!(state.drafter.cache_offset(), 80);
+    }
 
     #[test]
     fn pinned_window_stays_inside_small_drafter_blocks() {

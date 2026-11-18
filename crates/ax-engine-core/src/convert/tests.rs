@@ -757,6 +757,20 @@ fn gpt_oss_layer_types_from_config_and_default_alternate() {
         parse_layer_types(&qwen4_explicit, "qwen4_exp", 2),
         vec!["linear_attention".to_string(), "full_attention".to_string()]
     );
+
+    let qwen35_explicit = serde_json::json!({
+        "model_type": "qwen3_5",
+        "layer_types": ["full_attention", "linear_attention"]
+    });
+    assert_eq!(
+        parse_layer_types(&qwen35_explicit, "qwen3_5", 2),
+        vec!["full_attention".to_string(), "linear_attention".to_string()]
+    );
+    let qwen3_next_default = serde_json::json!({
+        "model_type": "qwen3_next",
+        "full_attention_interval": 4
+    });
+    assert!(parse_layer_types(&qwen3_next_default, "qwen3_next", 4).is_empty());
 }
 
 #[test]

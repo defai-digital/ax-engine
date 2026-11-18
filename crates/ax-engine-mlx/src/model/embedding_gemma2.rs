@@ -437,6 +437,7 @@ mod tests {
         cfg.head_dim = 8;
         cfg.layer_configs = vec![
             LayerConfig {
+                is_linear_attention: false,
                 head_dim: 8,
                 rope_theta: 10000.0,
                 rope_dims: 8,
@@ -446,6 +447,7 @@ mod tests {
                 v_norm_no_scale: true,
             },
             LayerConfig {
+                is_linear_attention: false,
                 head_dim: 8,
                 rope_theta: 1000000.0,
                 rope_dims: 8,

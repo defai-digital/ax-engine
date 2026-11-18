@@ -8,6 +8,7 @@ static NEXT_COMPILE_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 /// Per-layer hyperparameters for interleaved-SWA models (Gemma4).
 #[derive(Clone, Debug)]
 pub struct LayerConfig {
+    pub is_linear_attention: bool,
     pub head_dim: usize,
     pub rope_theta: f32,
     pub rope_dims: usize,
@@ -852,6 +853,11 @@ impl ModelConfig {
     }
 
     pub(crate) fn is_linear_attention_layer(&self, layer_idx: usize) -> bool {
+        if self.layer_configs.len() == self.layer_count
+            && let Some(layer) = self.layer_configs.get(layer_idx)
+        {
+            return layer.is_linear_attention;
+        }
         self.linear_attention
             .as_ref()
             .is_some_and(|linear| linear.is_linear_layer(layer_idx))
@@ -1033,6 +1039,7 @@ pub(super) fn build_layer_configs(
             let v_norm_no_scale = m.attention_v_norm_no_scale_layers.contains(&(i as u32));
             if lt == "full_attention" {
                 LayerConfig {
+                    is_linear_attention: false,
                     head_dim: full_head_dim,
                     rope_theta: default_rope_theta,
                     // Muse Glimmer full-attention layers are NoPE (iRoPE):
@@ -1051,12 +1058,22 @@ pub(super) fn build_layer_configs(
                     v_norm_no_scale,
                 }
             } else {
+                let is_linear_attention = lt == "linear_attention";
                 LayerConfig {
+                    is_linear_attention,
                     head_dim: default_head_dim,
-                    rope_theta: swa_theta,
+                    rope_theta: if is_linear_attention {
+                        default_rope_theta
+                    } else {
+                        swa_theta
+                    },
                     rope_dims: sliding_rope_dims,
                     rope_freqs: None,
-                    sliding_window,
+                    sliding_window: if is_linear_attention {
+                        None
+                    } else {
+                        sliding_window
+                    },
                     kv_source_layer,
                     v_norm_no_scale,
                 }
@@ -1207,6 +1224,55 @@ mod tests {
         assert_eq!(cfg.layer_configs.len(), 2);
         assert_eq!(cfg.layer_configs[0].sliding_window, Some(128));
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    #[test]
+    fn qwen_explicit_layer_types_override_the_full_attention_interval() {
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+                "model_family": "qwen3_5",
+                "tensor_format": "safetensors",
+                "layer_count": 4,
+                "hidden_size": 64,
+                "attention_head_count": 4,
+                "attention_head_dim": 16,
+                "kv_head_count": 1,
+                "vocab_size": 32,
+                "sliding_window_size": 128,
+                "layer_types": [
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention"
+                ],
+                "linear_attention": {
+                    "full_attention_interval": 4,
+                    "num_value_heads": 4,
+                    "num_key_heads": 1,
+                    "key_head_dim": 16,
+                    "value_head_dim": 16,
+                    "conv_kernel_dim": 4
+                },
+                "tensors": [],
+            }))
+            .expect("Qwen hybrid manifest");
+
+        let cfg = ModelConfig::from_manifest(&manifest);
+
+        assert!(!cfg.is_linear_attention_layer(0));
+        assert!(cfg.is_linear_attention_layer(1));
+        assert!(cfg.is_linear_attention_layer(2));
+        assert!(!cfg.is_linear_attention_layer(3));
+        assert_eq!(cfg.layer_configs[1].sliding_window, None);
+
+        let mut malformed = manifest.clone();
+        malformed.layer_types.truncate(1);
+        let cfg = ModelConfig::from_manifest(&malformed);
+        assert!(cfg.is_linear_attention_layer(0));
+        assert!(cfg.is_linear_attention_layer(1));
+        assert!(cfg.is_linear_attention_layer(2));
+        assert!(!cfg.is_linear_attention_layer(3));
     }
 
     fn rope_manifest(extra: serde_json::Value) -> ax_engine_core::NativeModelManifest {
