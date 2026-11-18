@@ -11481,14 +11481,13 @@ impl MlxRunner {
             )
         });
 
-        let think_single_token_required = think_hard_close_due
-            || options.request_context.is_some_and(|ctx| {
-                think_budget_single_token_required(
-                    state.ngram_in_think,
-                    ctx.max_think_tokens,
-                    ctx.answer_reserve_tokens,
-                )
-            });
+        let think_single_token_required = options.request_context.is_some_and(|ctx| {
+            think_budget_single_token_required(
+                self.cfg.think_end_token_id,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            )
+        });
 
         // A hard close replaces this step's token, so a queued bonus from the
         // reasoning branch must not escape before the singleton route.
@@ -11901,25 +11900,14 @@ impl MlxRunner {
         let remaining_budget = ctx.map_or(0, |ctx| {
             ctx.max_output_tokens.saturating_sub(ctx.generated_len)
         });
-        let think_budget_close_due = ctx.is_some_and(|ctx| {
-            think_budget_close_decision(
-                state.ngram_in_think,
+        let think_budget_active = ctx.is_some_and(|ctx| {
+            think_budget_single_token_required(
                 self.cfg.think_end_token_id,
-                remaining_budget,
-                state.think_emitted_tokens,
                 ctx.max_think_tokens,
                 ctx.answer_reserve_tokens,
-                false,
             )
         });
-        let think_single_token_required = think_budget_close_due
-            || ctx.is_some_and(|ctx| {
-                think_budget_single_token_required(
-                    state.ngram_in_think,
-                    ctx.max_think_tokens,
-                    ctx.answer_reserve_tokens,
-                )
-            });
+        let think_single_token_required = state.ngram_in_think && think_budget_active;
         let primary = state
             .next_model_last_token
             .or_else(|| input_tokens.last().copied());
@@ -11970,6 +11958,7 @@ impl MlxRunner {
                     input_tokens,
                     sampling,
                     options,
+                    think_budget_active,
                 );
                 let wall_us = elapsed_us(started).max(1);
                 let Some(tokens) = step else {
@@ -12113,6 +12102,15 @@ impl MlxRunner {
         };
 
         let remaining_output = remaining_budget as usize;
+        // The cursor treats a round stop as its next primary. The request
+        // still sees an ordinary token and applies the budget on the next step.
+        let mut round_stops = std::borrow::Cow::Borrowed(options.terminal_token_ids);
+        if think_budget_active
+            && let Some(open) = self.cfg.think_start_token_id
+            && !round_stops.contains(&open)
+        {
+            round_stops.to_mut().push(open);
+        }
         let step = match cursor.step(
             trunk_weights,
             head,
@@ -12120,7 +12118,7 @@ impl MlxRunner {
             self.cfg.compile_cache_identity,
             primary,
             remaining_output,
-            options.terminal_token_ids,
+            &round_stops,
         ) {
             Ok(step) => step,
             Err(error) => {
@@ -12426,6 +12424,7 @@ impl MlxRunner {
         input_tokens: &[u32],
         sampling: MlxSamplingParams,
         options: &DecodeOneOptions<'_>,
+        think_budget_active: bool,
     ) -> Option<Vec<u32>> {
         if state.flash_next_mtp.cursor.is_none() {
             state.flash_next_mtp.paused = None;
@@ -12437,7 +12436,13 @@ impl MlxRunner {
         state.flash_next_mtp.blocked_direct = true;
         let telemetry = &mut state.flash_next_mtp.telemetry;
         telemetry.cost_parked_steps = telemetry.cost_parked_steps.saturating_add(1);
-        self.run_flash_next_mtp_paused_body(state, input_tokens, sampling, None, options)
+        self.run_flash_next_mtp_paused_body(
+            state,
+            input_tokens,
+            sampling,
+            think_budget_active.then_some(FlashNextMtpFallbackReason::ThinkControl),
+            options,
+        )
     }
 
     /// Shared paused/parked direct body. `reason` is `None` for a cost-parked
@@ -12454,7 +12459,14 @@ impl MlxRunner {
             .next_model_last_token
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
-        if reason == Some(FlashNextMtpFallbackReason::PendingDirect) {
+        if matches!(
+            reason,
+            Some(
+                FlashNextMtpFallbackReason::PendingDirect
+                    | FlashNextMtpFallbackReason::ThinkControl
+            )
+        ) && state.pending_direct.is_some()
+        {
             // The lazy token already occupies the next position and its row was
             // captured by the step that consumed it: materialize it and stop
             // extending the double buffer so the next step can propose again.
@@ -12493,14 +12505,14 @@ impl MlxRunner {
                 let reason = reason.unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable);
                 self.record_flash_next_mtp_direct_fallback(state, reason);
                 state.flash_next_mtp.drop_cursor();
-                return None;
+                break;
             };
             if !state.flash_next_mtp.extend_pause(token, row) {
                 tracing::warn!(
                     target: "ax_engine_mlx::runner",
                     "Flash Next paused catch-up buffer overflowed; dropping the cursor"
                 );
-                return None;
+                break;
             }
         }
         Some(tokens)
@@ -16691,18 +16703,12 @@ impl MlxRunner {
                 || state.flash_next_mtp.pending_restored_cursor.is_some())
             && is_greedy
             && !sampling.uses_logits_processors();
-        // A hard think-budget close due at the first token must not prime the
-        // double buffer: priming commits the prefill token that the
-        // post-decode override is about to replace with the close token, and
-        // the commit cannot be rolled back.
-        let think_close_due_at_first_token = think_budget_close_decision(
-            state.ngram_in_think,
+        // A budgeted request starts on the singleton route. A prefetched
+        // token could otherwise commit across its first reasoning boundary.
+        let think_single_token_required = think_budget_single_token_required(
             self.cfg.think_end_token_id,
-            max_output,
-            state.think_emitted_tokens,
             think_budget_knobs.0,
             think_budget_knobs.1,
-            false,
         );
         if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
@@ -16711,7 +16717,7 @@ impl MlxRunner {
             mtp_uses_direct_pipeline,
             self.mtp_requested,
         ) || gemma_exact_direct_bootstrap)
-            && !think_close_due_at_first_token
+            && !think_single_token_required
             && !gemma_moe_long_mt_singleton
             && !flash_next_cursor_owns_decode
             && !(self.dflash2_request_eligible(sampling, is_greedy, false)
@@ -16747,8 +16753,8 @@ impl MlxRunner {
         ctx: Option<&RunnerRequestContext>,
         think_single_token_required: bool,
     ) -> Vec<u32> {
-        // Think budgets use singleton decode inside the reasoning block so a
-        // multi-token speculative commit cannot cross either hard limit. The
+        // Think budgets use singleton decode from the first step because a
+        // speculative round could open a reasoning block and cross its limit. The
         // soft-close probe and a due hard close also require materialized logits
         // and KV-exact replacement by the post-decode override.
         // MTP session state resets exactly like the
@@ -17026,11 +17032,12 @@ fn think_budget_controller_active(
 }
 
 fn think_budget_single_token_required(
-    in_think: bool,
+    think_end_token_id: Option<u32>,
     max_think_tokens: Option<u32>,
     answer_reserve_tokens: Option<u32>,
 ) -> bool {
-    in_think && think_budget_controller_active(max_think_tokens, answer_reserve_tokens)
+    think_end_token_id.is_some()
+        && think_budget_controller_active(max_think_tokens, answer_reserve_tokens)
 }
 
 /// Decide whether the thinking-budget controller must force the think-close
@@ -17170,10 +17177,10 @@ mod think_budget_controller_active_tests {
         assert!(think_budget_controller_active(Some(4096), Some(512)));
         // An explicit zero cap is still an active controller.
         assert!(think_budget_controller_active(Some(0), None));
-        assert!(think_budget_single_token_required(true, Some(1), None));
-        assert!(think_budget_single_token_required(true, None, Some(1)));
-        assert!(!think_budget_single_token_required(false, Some(1), None));
-        assert!(!think_budget_single_token_required(true, None, None));
+        assert!(think_budget_single_token_required(Some(23), Some(1), None));
+        assert!(think_budget_single_token_required(Some(23), None, Some(1)));
+        assert!(!think_budget_single_token_required(None, Some(1), None));
+        assert!(!think_budget_single_token_required(Some(23), None, None));
     }
 }
 

@@ -853,10 +853,11 @@ impl ModelConfig {
     }
 
     pub(crate) fn is_linear_attention_layer(&self, layer_idx: usize) -> bool {
-        if self.layer_configs.len() == self.layer_count
-            && let Some(layer) = self.layer_configs.get(layer_idx)
-        {
-            return layer.is_linear_attention;
+        if layer_idx >= self.layer_count {
+            return false;
+        }
+        if self.layer_configs.len() == self.layer_count {
+            return self.layer_configs[layer_idx].is_linear_attention;
         }
         self.linear_attention
             .as_ref()
@@ -1264,6 +1265,7 @@ mod tests {
         assert!(cfg.is_linear_attention_layer(1));
         assert!(cfg.is_linear_attention_layer(2));
         assert!(!cfg.is_linear_attention_layer(3));
+        assert!(!cfg.is_linear_attention_layer(4));
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
 
         let mut malformed = manifest.clone();

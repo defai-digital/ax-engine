@@ -6018,6 +6018,51 @@ fn mlx_manifest_validation_allows_qwen35_linear_attention() {
 }
 
 #[test]
+fn mlx_manifest_validation_admits_the_explicit_qwen_layout() {
+    let mut manifest = qwen35_linear_manifest();
+    manifest.layer_count = 2;
+    manifest.layer_types = vec!["full_attention".into(), "linear_attention".into()];
+    for tensor in &mut manifest.tensors {
+        if tensor.layer_index == Some(0) {
+            tensor.layer_index = Some(1);
+            tensor.name = tensor.name.replace(".0.", ".1.");
+        }
+    }
+    manifest.tensors.extend(
+        dense_manifest()
+            .tensors
+            .into_iter()
+            .filter(|tensor| tensor.layer_index == Some(0)),
+    );
+    let artifacts = write_artifacts(manifest.clone());
+    validate_mlx_supported_manifest(&artifacts).expect("explicit layout reaches the MLX runner");
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    assert!(!cfg.is_linear_attention_layer(0));
+    assert!(cfg.is_linear_attention_layer(1));
+
+    for (layer_types, message) in [
+        (vec!["full_attention"], "one entry per layer"),
+        (
+            vec!["full_attention", "sliding_attention"],
+            "must be linear_attention or full_attention",
+        ),
+        (
+            vec!["linear_attention", "full_attention"],
+            "tensor roles do not match",
+        ),
+    ] {
+        manifest.layer_types = layer_types.into_iter().map(String::from).collect();
+        let error = NativeModelArtifacts::from_manifest_and_root(
+            artifacts.root_dir().to_owned(),
+            manifest.clone(),
+        )
+        .expect_err("unsupported or inconsistent explicit layout");
+        assert!(error.to_string().contains(message), "{error}");
+    }
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
 fn mlx_manifest_validation_rejects_partial_linear_attention_fields() {
     // Each `.expect()` in `LinearAttentionConfig::from_manifest` corresponds
     // to one of these required fields; the validator must surface a typed
@@ -10225,6 +10270,130 @@ fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
     assert_eq!(followed.update.output_token, Some(11));
     assert!(runner.states.lock().contains_key(&RequestId(42)));
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
+}
+
+#[test]
+fn dflash2_draft_failure_retries_after_the_generic_decode_step() {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    let width = drafter.config().target_hidden_width();
+    let mut dflash = dflash2_decode::Dflash2RequestState::new(drafter.clone());
+    dflash.stage_pending_hidden_for_test(
+        mlx_sys::zeros(&[1, 2, width], mlx_sys::MlxDtype::Bfloat16, None),
+        0,
+    );
+    dflash.profile_draft_for_test();
+    runner.dflash2 = Some(drafter);
+    let mut state = RequestState::new(1, 41, None);
+    state.dflash2 = Some(dflash);
+    state.next_model_last_token = Some(3);
+    let mut ctx = ctx_with_argmax(true);
+    ctx.generated_len = 1;
+    let options = |ctx| DecodeOneOptions {
+        terminal_token_ids: &[],
+        final_by_max_output: false,
+        request_context: Some(ctx),
+    };
+    let sampling = MlxSamplingParams::greedy();
+    crate::dflash2::fail_next_dflash2_capture_verify_eval_for_test("injected draft eval failure");
+
+    let fallback = runner.decode_one(&mut state, &[3], sampling, true, options(&ctx));
+    assert_eq!(fallback.len(), 1);
+    assert!(crate::dflash2::take_dflash2_capture_verify_eval_error().is_none());
+    assert_eq!(state.cache.seq_len(), 1);
+    let dflash = state.dflash2.as_ref().unwrap();
+    assert_eq!(dflash.rounds, 0);
+    assert!(dflash.resume_due(state.cache.seq_len()));
+
+    let next_ctx = RunnerRequestContext {
+        generated_len: 2,
+        ..ctx
+    };
+    let retried = runner.decode_one(&mut state, &fallback, sampling, true, options(&next_ctx));
+    assert!(!retried.is_empty());
+    assert!(state.dflash2_verify_fence_error.is_none());
+    assert_eq!(state.dflash2.as_ref().unwrap().rounds, 1);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn think_budget_holds_when_a_qwen_decode_step_opens_reasoning() {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
+    runner.cfg.think_start_token_id = Some(0);
+    runner.cfg.think_end_token_id = Some(2);
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    let width = drafter.config().target_hidden_width();
+    let mut dflash = dflash2_decode::Dflash2RequestState::new(drafter.clone());
+    dflash.stage_pending_hidden_for_test(
+        mlx_sys::zeros(&[1, 2, width], mlx_sys::MlxDtype::Bfloat16, None),
+        0,
+    );
+    runner.dflash2 = Some(drafter);
+    let mut state = RequestState::new(1, 41, None);
+    state.dflash2 = Some(dflash);
+    state.next_model_last_token = Some(3);
+    runner.states.lock().insert(RequestId(41), state);
+    let mut ctx = ctx_with_argmax(true);
+    ctx.request_id = RequestId(41);
+    ctx.generated_len = 1;
+    ctx.max_think_tokens = Some(0);
+    ctx.ignore_eos = true;
+    let decode = |token, ctx| {
+        runner.run_item(
+            &decode_claim(41, token),
+            Some(ctx),
+            "qwen3_5",
+            4,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+
+    let opened = decode(3, &ctx).update;
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert_eq!(opened.tokens_executed, 1);
+    assert_eq!(opened.output_token, Some(0));
+    {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(41)];
+        assert!(state.ngram_in_think);
+        assert_eq!(state.think_emitted_tokens, 0);
+        assert_eq!(state.cache.seq_len(), 1);
+        assert_eq!(state.dflash2.as_ref().unwrap().rounds, 1);
+    }
+    let next_ctx = RunnerRequestContext {
+        generated_len: 2,
+        ..ctx
+    };
+    let closed = decode(0, &next_ctx).update;
+    assert!(closed.error.is_none(), "{:?}", closed.error);
+    assert_eq!(closed.tokens_executed, 1);
+    assert_eq!(closed.output_token, Some(2));
+    {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(41)];
+        assert!(!state.ngram_in_think);
+        assert_eq!(state.cache.seq_len(), 2);
+        assert_eq!(state.next_model_last_token, Some(2));
+    }
+    let reopened_ctx = RunnerRequestContext {
+        generated_len: 3,
+        ..ctx
+    };
+    let reopened = decode(2, &reopened_ctx).update;
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.output_token, Some(0));
+    {
+        let states = runner.states.lock();
+        let state = &states[&RequestId(41)];
+        assert!(state.ngram_in_think);
+        assert_eq!(state.cache.seq_len(), 3);
+        assert_eq!(state.dflash2.as_ref().unwrap().rounds, 2);
+    }
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
 }
 
 #[test]

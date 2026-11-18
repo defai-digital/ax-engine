@@ -2140,7 +2140,8 @@ fn converts_qwen3_5_linear_attention_model_directory() {
                 "linear_key_head_dim": 4,
                 "linear_value_head_dim": 2,
                 "linear_conv_kernel_dim": 4,
-                "full_attention_interval": 4
+                "full_attention_interval": 4,
+                "layer_types": ["linear_attention"]
             }
         }),
     );
@@ -2238,6 +2239,7 @@ fn converts_qwen3_5_linear_attention_model_directory() {
     assert_eq!(manifest.linear_attention.value_head_dim, Some(2));
     assert_eq!(manifest.linear_attention.conv_kernel_dim, Some(4));
     assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
+    assert_eq!(manifest.layer_types, ["linear_attention"]);
     assert!(
         manifest
             .tensors

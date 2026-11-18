@@ -149,7 +149,7 @@ impl Dflash2Config {
             sliding_window: int(top, "sliding_window")? as i32,
             block_size: int(flash, "block_size")? as i32,
             mask_token_id: u32::try_from(int(flash, "mask_token_id")?)
-                .map_err(|_| "DFlash2 mask_token_id must be non-negative")?,
+                .map_err(|_| "DFlash2 mask_token_id must fit in a u32")?,
             target_layer_ids,
             conv_group_size: int(flash, "conv_group_size")? as i32,
             conv_kernel_size: int(flash, "conv_kernel_size")? as i32,
@@ -194,7 +194,7 @@ impl Dflash2Config {
                 "DFlash2 target_layer_ids must be non-empty and strictly increasing".into(),
             );
         }
-        if self.selector_top_k > self.vocab_size || self.mask_token_id as i32 >= self.vocab_size {
+        if self.selector_top_k > self.vocab_size || self.mask_token_id >= self.vocab_size as u32 {
             return Err("DFlash2 selector_top_k or mask_token_id exceeds the vocabulary".into());
         }
         Ok(())
@@ -2898,6 +2898,9 @@ mod tests {
         assert!(Dflash2Config::from_json(&negative_layers).is_err());
         let negative_mask = CONFIG.replace("\"mask_token_id\": 248070", "\"mask_token_id\": -1");
         assert!(Dflash2Config::from_json(&negative_mask).is_err());
+        let oversized_mask =
+            CONFIG.replace("\"mask_token_id\": 248070", "\"mask_token_id\": 2147483648");
+        assert!(Dflash2Config::from_json(&oversized_mask).is_err());
         let causal = CONFIG.replace("\"is_causal\": false", "\"is_causal\": true");
         assert!(Dflash2Config::from_json(&causal).is_err());
         let unordered = CONFIG.replace("[5, 19, 33, 47, 61]", "[19, 5]");

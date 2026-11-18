@@ -212,8 +212,9 @@ impl Dflash2RequestState {
         }
     }
 
-    fn park_for_retry(&mut self, target: HandoffTarget, cursor: crate::dflash2::DrafterCursor) {
-        self.restore_drafter_cursor(cursor);
+    /// The cursor is already restored. Capture the target's fallback work
+    /// before the next speculative round.
+    fn park_for_retry(&mut self, target: HandoffTarget) {
         self.handed_off = Some(target);
         self.resume_at = Some(self.captured_rows.saturating_add(1));
         self.parked_rows = ParkedRows::default();
@@ -249,6 +250,11 @@ impl Dflash2RequestState {
         self.pending_hidden = Some(hidden);
         self.captured_rows = captured_rows;
         self.disabled = false;
+    }
+
+    #[cfg(test)]
+    pub(super) fn profile_draft_for_test(&mut self) {
+        self.drafter.set_stage_timing(true);
     }
 
     fn reset(&mut self) {
@@ -860,6 +866,17 @@ fn linear_window_commit(
     (emitted, 1 + emitted_drafts)
 }
 
+/// Emit the opening marker as the next anchor, leaving it out of retained KV.
+fn cut_at_think_entry(tokens: &mut Vec<u32>, accepted: usize, think_start: Option<u32>) -> usize {
+    if let Some(index) = think_start.and_then(|open| tokens.iter().position(|&token| token == open))
+    {
+        tokens.truncate(index + 1);
+        accepted.min(index)
+    } else {
+        accepted
+    }
+}
+
 /// Draft rows that survive the EOS and output-budget cut. Acceptance telemetry
 /// counts these, not the pre-cut greedy match, so it never credits a draft
 /// past the cut. The emitted count is one higher (the target's bonus token).
@@ -1269,6 +1286,15 @@ impl MlxRunner {
                 let staged = state.dflash2_staged.take().map(|staged| staged.cursor);
                 if let Some(dflash) = state.dflash2.as_mut() {
                     dflash.discard_uncommitted_round(staged);
+                    if state.ngram_in_think
+                        && self.dflash2_budget_active(options)
+                        && dflash.handed_off.is_none()
+                        && !dflash.disabled
+                        && dflash.pending_hidden.is_some()
+                        && dflash.captured_rows == state.cache.seq_len()
+                    {
+                        dflash.park_for_retry(self.dflash2_handoff_target());
+                    }
                 }
                 return declined;
             }
@@ -1294,6 +1320,7 @@ impl MlxRunner {
         let token_offset = plan.token_offset;
         let window = plan.window;
         let cfg = self.dflash2.as_ref().map(|weights| weights.config())?;
+        let handoff_target = self.dflash2_handoff_target();
 
         // --- Draft (lazy) ---------------------------------------------------
         // `pending_hidden` is cloned, not taken. A failed capture or verify
@@ -1330,7 +1357,10 @@ impl MlxRunner {
                     read,
                 ) {
                     Ok(drafted) => drafted,
-                    Err(reason) => return decline(reason),
+                    Err(reason) => {
+                        dflash.park_for_retry(handoff_target);
+                        return decline(reason);
+                    }
                 };
                 // Hand the drafter to the GPU now: the verify graph below
                 // chains on the lazy draft tokens, so the GPU drafts while the
@@ -1349,6 +1379,7 @@ impl MlxRunner {
                         "DFlash2 draft submission failed; declining speculation"
                     );
                     dflash.restore_drafter_cursor(cursor);
+                    dflash.park_for_retry(handoff_target);
                     return decline("draft submission failed");
                 }
                 (draft_arr, cursor, elapsed_us(draft_started))
@@ -1384,11 +1415,11 @@ impl MlxRunner {
                 }
                 Ok(None) => {}
                 // Logged once at the eval site. Request KV was not written.
-                // The drafter cursor and pending hidden go back to the pre-round
-                // values so the next round can draft again.
+                // Restore the drafter and capture the generic fallback step.
                 Err(()) => {
                     if let Some(dflash) = state.dflash2.as_mut() {
                         dflash.restore_drafter_cursor(cursor);
+                        dflash.park_for_retry(handoff_target);
                     }
                     return decline("tree verify evaluation failed");
                 }
@@ -1404,7 +1435,7 @@ impl MlxRunner {
 
         let verify_started = Instant::now();
         // The MTP head can only take over warm if it gets these rows.
-        let keep_post_norm = self.dflash2_handoff_target() == HandoffTarget::Mtp;
+        let keep_post_norm = handoff_target == HandoffTarget::Mtp;
         let capture = layer_capture::capture_layers(&cfg.target_layer_ids);
         let (logits_all, post_norm) = crate::model::forward_all_positions_with_post_norm_ids(
             &self.cfg,
@@ -1436,30 +1467,24 @@ impl MlxRunner {
         // A successful rebind published verifier K/V into the request cache, so
         // a fence failure then leaves it untrustworthy and must fail the request.
         // Without a rebind the request cache is untouched and the round can decline.
-        if let Some(error) = crate::dflash2::take_dflash2_capture_verify_eval_error() {
-            if cache_rebound {
-                return fail_linear_verify_fence(state, error);
-            }
-            if let Some(dflash) = state.dflash2.as_mut() {
-                dflash.park_for_retry(self.dflash2_handoff_target(), cursor);
-            }
-            return decline("linear verify evaluation failed");
-        }
         // The logits come from `post_norm`, so evaluating it costs nothing and
         // keeps no part of the verify graph alive.
         let verify_build_us = elapsed_us(verify_started);
         let eval_started = Instant::now();
-        let eval_result = if keep_post_norm {
-            mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr, &post_norm])
-        } else {
-            mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr])
-        };
-        if let Err(error) = eval_result {
+        let fence_error = crate::dflash2::take_dflash2_capture_verify_eval_error().or_else(|| {
+            if keep_post_norm {
+                mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr, &post_norm]).err()
+            } else {
+                mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr]).err()
+            }
+        });
+        if let Some(error) = fence_error {
             if cache_rebound {
                 return fail_linear_verify_fence(state, error);
             }
             if let Some(dflash) = state.dflash2.as_mut() {
-                dflash.park_for_retry(self.dflash2_handoff_target(), cursor);
+                dflash.restore_drafter_cursor(cursor);
+                dflash.park_for_retry(handoff_target);
             }
             return decline("linear verify evaluation failed");
         }
@@ -1520,22 +1545,7 @@ impl MlxRunner {
         if remaining < 2 {
             return Err(decline("output budget exhausted"));
         }
-        let think_budget_close_due = think_budget_close_decision(
-            state.ngram_in_think,
-            self.cfg.think_end_token_id,
-            remaining as u32,
-            state.think_emitted_tokens,
-            ctx.max_think_tokens,
-            ctx.answer_reserve_tokens,
-            false,
-        );
-        if think_budget_close_due
-            || think_budget_single_token_required(
-                state.ngram_in_think,
-                ctx.max_think_tokens,
-                ctx.answer_reserve_tokens,
-            )
-        {
+        if state.ngram_in_think && self.dflash2_budget_active(options) {
             return Err(decline("think budget requires single-token decode"));
         }
         let Some(primary) = state
@@ -1581,6 +1591,16 @@ impl MlxRunner {
             token_offset,
             window,
             remaining,
+        })
+    }
+
+    fn dflash2_budget_active(&self, options: &DecodeOneOptions<'_>) -> bool {
+        options.request_context.is_some_and(|ctx| {
+            think_budget_single_token_required(
+                self.cfg.think_end_token_id,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            )
         })
     }
 
@@ -1699,7 +1719,7 @@ impl MlxRunner {
         } else {
             None
         };
-        let Some((accepted, new_tokens)) = walk else {
+        let Some((accepted, mut new_tokens)) = walk else {
             // Cannot happen for a well-formed verify. Rewind the drafter and
             // leave DFlash2. Full-attention rebind, when it ran, stays.
             if let Some(dflash) = state.dflash2.as_mut() {
@@ -1707,6 +1727,11 @@ impl MlxRunner {
             }
             return None;
         };
+        let think_start = self
+            .cfg
+            .think_start_token_id
+            .filter(|_| self.dflash2_budget_active(options));
+        let accepted = cut_at_think_entry(&mut new_tokens, accepted, think_start);
 
         // --- Accept and commit ---------------------------------------------
         // Cut at EOS and the output budget before commit. Adopting the full
@@ -1755,6 +1780,7 @@ impl MlxRunner {
             // donate them. Logical length is still the pre-round length.
             if let Some(dflash) = state.dflash2.as_mut() {
                 dflash.restore_drafter_cursor(cursor);
+                dflash.park_for_retry(self.dflash2_handoff_target());
             }
             return decline("linear verify evaluation failed");
         }
@@ -1836,7 +1862,10 @@ impl MlxRunner {
         let ended = emitted
             .iter()
             .any(|token| options.terminal_token_ids.contains(token));
-        if !ended && let Some(next_primary) = state.next_model_last_token {
+        if !ended
+            && let Some(next_primary) = state.next_model_last_token
+            && Some(next_primary) != think_start
+        {
             self.predraft_dflash2_round(
                 state,
                 &committed_hidden,
@@ -2602,6 +2631,10 @@ impl MlxRunner {
         };
         let hiddens: RefCell<Vec<Option<MlxArray>>> = RefCell::new(Vec::new());
         let eval_error: RefCell<Option<String>> = RefCell::new(None);
+        let think_start = self
+            .cfg
+            .think_start_token_id
+            .filter(|_| self.dflash2_budget_active(options));
         let verify_started = Instant::now();
         let decision = {
             let base = &state.cache;
@@ -2627,6 +2660,7 @@ impl MlxRunner {
                         branch,
                         token_offset,
                         &capture_layers,
+                        think_start,
                         CommitLimits {
                             budget: remaining,
                             eos: options.terminal_token_ids,
@@ -2725,6 +2759,7 @@ impl MlxRunner {
         drafts: &[u32],
         token_offset: usize,
         capture_layers: &[usize],
+        think_start: Option<u32>,
         limits: super::tree_verify::CommitLimits<'_>,
         eval_error: &RefCell<Option<String>>,
     ) -> (
@@ -2796,9 +2831,10 @@ impl MlxRunner {
         if predicted.len() != verify_len {
             return failed(source);
         }
-        let Some((accepted, committed)) = greedy_walk(drafts, &predicted) else {
+        let Some((accepted, mut committed)) = greedy_walk(drafts, &predicted) else {
             return failed(source);
         };
+        let accepted = cut_at_think_entry(&mut committed, accepted, think_start);
         let (_emitted, cache_draft_rows) =
             limit_commit(&committed, accepted, limits.budget, limits.eos);
         let retained = 1 + cache_draft_rows;
@@ -2977,7 +3013,8 @@ mod tests {
         let cursor = state.drafter.snapshot_cursor();
         state.drafter.skip_rows(2);
 
-        state.park_for_retry(HandoffTarget::Direct, cursor);
+        state.restore_drafter_cursor(cursor);
+        state.park_for_retry(HandoffTarget::Direct);
 
         assert_eq!(state.drafter.cache_offset(), 0);
         assert_eq!(state.handed_off, Some(HandoffTarget::Direct));

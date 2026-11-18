@@ -1867,6 +1867,12 @@ fn validate_qwen_gated_delta_contract(
     model_type: &str,
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
+    manifest
+        .validate_qwen_gated_delta_layer_types()
+        .map_err(|error| ConvertError::InvalidModelContract {
+            model_type: model_type.to_string(),
+            message: error.to_string(),
+        })?;
     let Some(interval) = manifest
         .linear_attention
         .resolved_full_attention_interval(&manifest.model_family)
@@ -1883,7 +1889,10 @@ fn validate_qwen_gated_delta_contract(
     // least one full-attention layer. Models with fewer layers than the interval
     // have no full-attention layers (all-linear), which is valid for testing but
     // unusual in production.
-    if manifest.layer_count >= interval && !manifest.layer_count.is_multiple_of(interval) {
+    if !(manifest.supports_qwen_gated_delta_layer_types() && !manifest.layer_types.is_empty())
+        && manifest.layer_count >= interval
+        && !manifest.layer_count.is_multiple_of(interval)
+    {
         return invalid_model_contract(
             model_type,
             format!(

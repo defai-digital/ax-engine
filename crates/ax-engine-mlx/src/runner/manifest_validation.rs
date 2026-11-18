@@ -42,7 +42,7 @@ pub(super) fn validate_mlx_supported_manifest(
     // layer_types, so they skip this gate. Nemotron-H also uses layer_types for
     // hybrid mixer kinds (mamba/attention/moe) and must not enter this path.
     if !matches!(manifest.model_family.as_str(), "nemotron_h" | "qwen4_exp")
-        && (!manifest.layer_types.is_empty()
+        && ((!manifest.layer_types.is_empty() && !manifest.supports_qwen_gated_delta_layer_types())
             || !manifest.kv_shared_source_layers.is_empty()
             || manifest.global_head_dim.is_some()
             || manifest.rope_theta_swa.is_some())
@@ -669,10 +669,7 @@ pub(super) fn collect_added_token_ids_for_strings(
 pub(super) fn validate_qwen_gated_delta_linear_attention(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
-    if !matches!(
-        manifest.model_family.as_str(),
-        "qwen3_5" | "qwen3_next" | "minicpmv4_6"
-    ) {
+    if !manifest.supports_qwen_gated_delta_layer_types() {
         return Err(MlxRunnerError::UnsupportedFeature(
             "linear_attention is currently supported only for qwen3_5/qwen3_next/MiniCPM-V 4.6 MLX manifests".to_string(),
         ));

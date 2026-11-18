@@ -1286,6 +1286,40 @@ impl NativeModelManifest {
     pub fn generation_kind(&self) -> crate::generation::GenerationKind {
         crate::generation::GenerationKind::from_manifest(self)
     }
+
+    /// The shared gated-delta runner accepts explicit linear/full layouts.
+    /// Flash Next validates its separate sparse layout in its own contract.
+    pub fn supports_qwen_gated_delta_layer_types(&self) -> bool {
+        matches!(
+            self.model_family.as_str(),
+            "qwen3_5" | "qwen3_next" | "minicpmv4_6"
+        )
+    }
+
+    pub(crate) fn validate_qwen_gated_delta_layer_types(&self) -> Result<(), NativeModelError> {
+        if !self.supports_qwen_gated_delta_layer_types() || self.layer_types.is_empty() {
+            return Ok(());
+        }
+        if self.layer_types.len() != self.layer_count as usize {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer_types must contain one entry per layer, got {} for layer_count {}",
+                    self.layer_types.len(),
+                    self.layer_count,
+                ),
+            });
+        }
+        for (idx, kind) in self.layer_types.iter().enumerate() {
+            if !matches!(kind.as_str(), "linear_attention" | "full_attention") {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer_types[{idx}] must be linear_attention or full_attention, got {kind:?}"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 impl NativeModelArtifacts {
@@ -2171,6 +2205,19 @@ pub(crate) fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::LinearAttentionALog)
             || roles.contains(&NativeTensorRole::LinearAttentionNorm)
             || roles.contains(&NativeTensorRole::LinearAttentionOutProj);
+        if manifest.supports_qwen_gated_delta_layer_types()
+            && let Some(kind) = manifest.layer_types.get(layer_index as usize)
+            && match kind.as_str() {
+                "linear_attention" => !has_any_linear_attention || has_any_attention,
+                _ => !has_any_attention || has_any_linear_attention,
+            }
+        {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {layer_index} tensor roles do not match declared layer_type {kind:?}"
+                ),
+            });
+        }
         let has_any_moe = roles.contains(&NativeTensorRole::FfnGateInp)
             || roles.contains(&NativeTensorRole::FfnGateInpScale)
             || roles.contains(&NativeTensorRole::FfnGateInpCorrectionBias)
@@ -4382,7 +4429,9 @@ fn validate_interleaved_attention_metadata(
         }
     }
 
-    if !manifest.layer_types.is_empty() {
+    if manifest.supports_qwen_gated_delta_layer_types() {
+        manifest.validate_qwen_gated_delta_layer_types()?;
+    } else if !manifest.layer_types.is_empty() {
         if manifest.layer_types.len() != manifest.layer_count as usize {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
