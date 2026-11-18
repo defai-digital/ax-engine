@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import tempfile
 import socket
 import unittest
@@ -89,6 +91,27 @@ class RunQaMatrixTests(unittest.TestCase):
         for partial in ({}, {"ax_mtp_draft_tokens": 3}, {"ax_mtp_verify_tokens": 4}):
             self.assertFalse(m.server_mtp_active({"status": "finished", "route": {
                 "crossover_decisions": partial}}))
+
+    def test_live_route_probe_requests_the_full_budget_past_eos(self):
+        m = _load()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            with patch.object(m, "ensure_port_available"), \
+                    patch.object(m, "wait_ready", return_value=True), \
+                    patch.object(m.subprocess, "Popen"), \
+                    patch.object(m.urllib.request, "urlopen", return_value=io.BytesIO(
+                        b'{"status":"failed"}')) as request:
+                cell = m.run_cell(
+                    m.Cell("direct", "qwen3.8-27b", root), repo=root, scratch=root,
+                    server_bin=root / "server", host="127.0.0.1", port=1,
+                    seed=0, sample=1, timeout=1, ready_max=1,
+                    run_surface=False, streams="both", verify_live_route=True,
+                )
+            self.assertEqual(cell.note, "server_direct_path_not_exercised")
+            payload = json.loads(request.call_args.args[0].data)
+            self.assertEqual(payload["max_output_tokens"], 64)
+            self.assertIs(payload["sampling"]["ignore_eos"], True)
 
     def test_classify_engine_fail_detects_panic_and_null(self) -> None:
         m = _load()

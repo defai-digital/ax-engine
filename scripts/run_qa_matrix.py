@@ -405,10 +405,11 @@ def run_cell(
         base = f"http://{host}:{port}"
         if cell.mode == "mtp" or verify_live_route:
             # A bench process is not proof of the running server's route.
+            # Use the complete fixed-token budget even when the model emits EOS.
             probe_request = {"model": model_id, "input_tokens": list(range(1, 17)),
                              "max_output_tokens": 64,
                              "sampling": {"temperature": 0, "seed": 0, "top_k": 0,
-                                          "top_p": 1, "repetition_penalty": 1}}
+                                          "top_p": 1, "repetition_penalty": 1, "ignore_eos": True}}
             (scratch / f"server-route-request-{cell.mode}-{safe}.json").write_text(
                 json.dumps(probe_request, indent=2))
             request = urllib.request.Request(
