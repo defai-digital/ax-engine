@@ -496,28 +496,46 @@ impl RequestRecord {
         self.transition_to(RequestState::Runnable)
     }
 
+    /// A duplicate finish keeps the first stop reason; the reason is written
+    /// only after the transition succeeds.
     pub(crate) fn finish_with_reason(
         &mut self,
         terminal_stop_reason: Option<StopReason>,
     ) -> Result<(), StateTransitionError> {
+        if self.state == RequestState::Finished {
+            return Ok(());
+        }
+        self.transition_to(RequestState::Finished)?;
         self.terminal_stop_reason = terminal_stop_reason;
-        self.transition_to(RequestState::Finished)
+        Ok(())
     }
 
+    /// A duplicate failure keeps the first error; the error is written only
+    /// after the transition succeeds.
     pub(crate) fn fail(&mut self, error: impl Into<String>) -> Result<(), StateTransitionError> {
+        if self.state == RequestState::Failed {
+            return Ok(());
+        }
+        self.transition_to(RequestState::Failed)?;
         self.last_error = Some(error.into());
-        self.transition_to(RequestState::Failed)
+        Ok(())
     }
 
+    /// Terminal requests are a no-op: a late cancel must not flip
+    /// `cancel_requested` on a record whose final snapshot already went out.
     pub(crate) fn request_cancel(&mut self) -> Result<(), StateTransitionError> {
-        self.cancel_requested = true;
         match self.state {
-            RequestState::Waiting | RequestState::Runnable | RequestState::BlockedOnMemory => {
-                self.terminal_stop_reason = Some(StopReason::Cancelled);
-                self.transition_to(RequestState::Cancelled)
-            }
-            RequestState::Running => Ok(()),
             RequestState::Finished | RequestState::Cancelled | RequestState::Failed => Ok(()),
+            RequestState::Running => {
+                self.cancel_requested = true;
+                Ok(())
+            }
+            RequestState::Waiting | RequestState::Runnable | RequestState::BlockedOnMemory => {
+                self.transition_to(RequestState::Cancelled)?;
+                self.terminal_stop_reason = Some(StopReason::Cancelled);
+                self.cancel_requested = true;
+                Ok(())
+            }
         }
     }
 
@@ -840,6 +858,187 @@ mod tests {
         record.request_cancel().unwrap();
 
         assert_eq!(record.state, RequestState::Finished);
+        assert!(!record.cancel_requested);
+        assert_eq!(
+            record.terminal_stop_reason,
+            Some(StopReason::MaxOutputTokens)
+        );
+    }
+
+    fn record_in_state(target: RequestState) -> RequestRecord {
+        let mut record = make_record();
+        record.mark_runnable().unwrap();
+        match target {
+            RequestState::Runnable => {}
+            RequestState::BlockedOnMemory => record.mark_blocked_on_memory().unwrap(),
+            RequestState::Running => record.start_running().unwrap(),
+            RequestState::Cancelled => record.request_cancel().unwrap(),
+            RequestState::Finished => {
+                record.start_running().unwrap();
+                record
+                    .finish_with_reason(Some(StopReason::EosToken))
+                    .unwrap();
+            }
+            RequestState::Failed => {
+                record.start_running().unwrap();
+                record.fail("terminal failure").unwrap();
+            }
+            RequestState::Waiting => unreachable!("helper always marks runnable first"),
+        }
+        assert_eq!(record.state, target);
+        record
+    }
+
+    #[test]
+    fn cancel_on_terminal_request_is_a_full_noop() {
+        for target in [
+            RequestState::Finished,
+            RequestState::Cancelled,
+            RequestState::Failed,
+        ] {
+            let mut record = record_in_state(target);
+            let before = record.clone();
+
+            record.request_cancel().unwrap();
+
+            assert_eq!(
+                record, before,
+                "{target:?}: cancel must not mutate the record"
+            );
+            assert_eq!(record.state, target);
+        }
+    }
+
+    #[test]
+    fn cancel_still_records_the_flag_on_non_terminal_states() {
+        for target in [
+            RequestState::Runnable,
+            RequestState::BlockedOnMemory,
+            RequestState::Running,
+        ] {
+            let mut record = record_in_state(target);
+
+            record.request_cancel().unwrap();
+
+            assert!(
+                record.cancel_requested,
+                "{target:?}: non-terminal cancel must record the flag"
+            );
+        }
+    }
+
+    #[test]
+    fn finish_with_reason_rejected_transition_does_not_write_stop_reason() {
+        let mut record = make_record();
+
+        let error = record
+            .finish_with_reason(Some(StopReason::MaxOutputTokens))
+            .expect_err("Waiting -> Finished is not a legal transition");
+
+        assert_eq!(
+            error,
+            StateTransitionError::InvalidTransition {
+                from: RequestState::Waiting,
+                to: RequestState::Finished,
+            }
+        );
+        assert_eq!(record.state, RequestState::Waiting);
+        assert_eq!(
+            record.terminal_stop_reason, None,
+            "rejected finish must not set a stop reason"
+        );
+        assert!(record.cleanup_request_id().is_none());
+    }
+
+    #[test]
+    fn fail_rejected_transition_does_not_write_error() {
+        let mut record = record_in_state(RequestState::Finished);
+
+        let error = record
+            .fail("late runner error")
+            .expect_err("Finished -> Failed is not a legal transition");
+
+        assert_eq!(
+            error,
+            StateTransitionError::InvalidTransition {
+                from: RequestState::Finished,
+                to: RequestState::Failed,
+            }
+        );
+        assert_eq!(record.state, RequestState::Finished);
+        assert_eq!(
+            record.last_error, None,
+            "rejected failure must not set last_error"
+        );
+        assert_eq!(record.terminal_stop_reason, Some(StopReason::EosToken));
+    }
+
+    #[test]
+    fn fail_from_cancelled_request_does_not_write_error() {
+        let mut record = record_in_state(RequestState::Cancelled);
+
+        let error = record
+            .fail("late runner error")
+            .expect_err("Cancelled -> Failed is not a legal transition");
+
+        assert_eq!(
+            error,
+            StateTransitionError::InvalidTransition {
+                from: RequestState::Cancelled,
+                to: RequestState::Failed,
+            }
+        );
+        assert_eq!(record.state, RequestState::Cancelled);
+        assert_eq!(record.last_error, None);
+    }
+
+    #[test]
+    fn duplicate_finish_keeps_first_stop_reason() {
+        let mut record = record_in_state(RequestState::Finished);
+        let before = record.clone();
+        assert_eq!(before.terminal_stop_reason, Some(StopReason::EosToken));
+
+        record
+            .finish_with_reason(Some(StopReason::MaxOutputTokens))
+            .unwrap();
+
+        assert_eq!(
+            record, before,
+            "duplicate finish must not rewrite the stop reason"
+        );
+    }
+
+    #[test]
+    fn duplicate_fail_keeps_first_error() {
+        let mut record = record_in_state(RequestState::Failed);
+        let before = record.clone();
+        assert_eq!(before.last_error.as_deref(), Some("terminal failure"));
+
+        record.fail("second failure").unwrap();
+
+        assert_eq!(record, before, "duplicate fail must not rewrite last_error");
+    }
+
+    #[test]
+    fn finish_on_failed_or_cancelled_rejects_without_metadata_change() {
+        for target in [RequestState::Failed, RequestState::Cancelled] {
+            let mut record = record_in_state(target);
+            let before = record.clone();
+
+            let error = record
+                .finish_with_reason(Some(StopReason::MaxOutputTokens))
+                .expect_err("non-finished terminal states cannot finish");
+
+            assert_eq!(
+                error,
+                StateTransitionError::InvalidTransition {
+                    from: target,
+                    to: RequestState::Finished,
+                },
+                "{target:?}"
+            );
+            assert_eq!(record, before, "{target:?}");
+        }
     }
 
     #[test]
@@ -851,6 +1050,8 @@ mod tests {
         record.request_cancel().unwrap();
 
         assert_eq!(record.state, RequestState::Cancelled);
+        assert!(record.cancel_requested);
+        assert_eq!(record.terminal_stop_reason, Some(StopReason::Cancelled));
     }
 
     #[test]
