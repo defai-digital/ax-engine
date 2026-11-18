@@ -1,6 +1,6 @@
 # Qwen 3.8 27B AXQ Certification
 
-Last reviewed: **2026-10-04**. Status: **Candidate**.
+Last reviewed: **2026-11-18**. Status: **Candidate**.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -13,13 +13,17 @@ The product scope is MLX AXQ MXFP4 / MXFP8 with MTP sidecars. Standalone
 qualification are pending. The MXFP4 pack's protected affine8 embeddings
 and output head remain intact. See [format policy](../QWEN38-FORMAT-POLICY.md).
 
-M5 and later are the primary hardware target; the Mac mini M4 Pro 64 GB
-remains a supported configuration and the host of the existing record. New
-qualification campaigns run on M5-class hardware. New-pack runtime, quality,
-memory and release inventory gates are open. Prior 6-bit qualification,
-MTP-S and performance results do not transfer. MTP-S/P/D are not assessed
-for this replacement pack; MTP execution remains explicit opt-in with
-`--mlx-mtp-policy required`. Direct/default controls remain necessary.
+M5 and later are the primary hardware target. The Mac mini M4 Pro 64 GB
+remains a supported configuration and the host of the historical record.
+The pinned MXFP4 inventory and the 2026-11-18 live product-health gate
+passed on MacBook Pro M5 Max 128 GB. Default, direct and required MTP
+each passed 32/32 hard QA checks and the required API surface checks.
+Required MTP ran with zero direct fallbacks. The paired 64-token greedy
+diagnostic matched at every position. See the [product-health receipt](../../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-product-health/).
+
+Broader quality, memory and release gates remain open. The current
+pack still needs MTP-S/P/D evidence, and MTP execution remains explicit
+opt-in with `--mlx-mtp-policy required`.
 DFlash2 block drafting is not an MTP default. It runs for greedy text when
 the pinned drafter checkpoint is already present, and it is outside this
 certification record. See [DFlash2](../mtp/README.md#dflash2).

@@ -58,8 +58,9 @@ See [DFlash2](mtp/README.md#dflash2). MTP-S, MTP-P and MTP-D require evidence
 tied to each pack.
 Receipts of one format do not qualify another: the MXFP4 release gates do
 not qualify the 6-bit pack, and the September 6-bit receipts do not qualify
-MXFP4 or MXFP8. SKU targets remain
-Mac mini M4 Pro 64 GB for 27B and MacBook Pro M5 Max 128 GB for Flash Next.
+MXFP4 or MXFP8. New 27B and Flash Next qualification campaigns use
+MacBook Pro M5 Max 128 GB. Mac mini M4 Pro 64 GB is the supported-tier
+check for 27B.
 
 MXFP8 is in scope, but no unverified download alias, revision, throughput
 claim or production promotion is published. AXQuant owns conversion and

@@ -21,7 +21,7 @@ Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certifica
 | --- | --- | --- |
 | Always-on | Format, unit tests, Clippy, script gates, alias/revision pin, public-claim contract | Every release |
 | Small-pack CI smoke | Tiny Certified/Compatible checkpoints load and generate | Every release that runs model-smoke |
-| Primary 27B qualification | Pinned `qwen3.8-27b:axq` on Mac mini M4 Pro, 64 GB | Minor/major, and patches that touch runtime, model, kernel, cache, scheduler, or serving |
+| Primary 27B qualification | Pinned `qwen3.8-27b:axq` on MacBook Pro M5 Max, 128 GB | Minor/major, and patches that touch runtime, model, kernel, cache, scheduler, or serving |
 | Secondary family regression | One representative checkpoint per other Certified family | Minor/major, and patches that touch that family |
 
 ## Always-on
