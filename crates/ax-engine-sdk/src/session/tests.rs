@@ -3149,8 +3149,14 @@ fn cancelling_a_finished_native_request_is_a_no_op() {
         .generate(native_probe_request(vec![1, 2, 3], 2))
         .expect("generate");
     session
+        .cancel(RequestId(response.request_id))
+        .expect("typed cancel after completion must not error");
+    session
         .cancel_request(response.request_id)
         .expect("cancel after completion must not error");
+    let report = session.request_report(response.request_id).expect("report");
+    assert_eq!(report.state, SessionRequestState::Finished);
+    assert!(!report.cancel_requested);
 }
 
 #[test]

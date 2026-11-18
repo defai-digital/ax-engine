@@ -1574,22 +1574,7 @@ fn openai_workload_metadata(
         );
     }
 
-    let Some(metadata) = metadata else {
-        return Some(Value::Object(hints).to_string());
-    };
-    if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&metadata) {
-        for (key, value) in hints {
-            object.entry(key).or_insert(value);
-        }
-        return Some(Value::Object(object).to_string());
-    }
-
-    let suffix = hints
-        .keys()
-        .map(|key| format!("{key}=true"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    Some(format!("{metadata}; {suffix}"))
+    Some(merge_metadata_hints(metadata, hints))
 }
 
 /// Merge the AX thinking-budget knobs into the workload metadata string the
@@ -1603,32 +1588,37 @@ fn merge_thinking_budget_metadata(
     if max_think_tokens.is_none() && answer_reserve_tokens.is_none() {
         return metadata;
     }
-    let mut keys = Vec::new();
+    let mut hints = Map::new();
     if let Some(value) = max_think_tokens {
-        keys.push(("ax_max_think_tokens", value));
+        hints.insert("ax_max_think_tokens".into(), Value::from(value));
     }
     if let Some(value) = answer_reserve_tokens {
-        keys.push(("ax_answer_reserve_tokens", value));
+        hints.insert("ax_answer_reserve_tokens".into(), Value::from(value));
     }
+    Some(merge_metadata_hints(metadata, hints))
+}
+
+fn merge_metadata_hints(metadata: Option<String>, hints: Map<String, Value>) -> String {
     let Some(metadata) = metadata else {
-        let object: Map<String, Value> = keys
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), Value::from(value)))
-            .collect();
-        return Some(Value::Object(object).to_string());
+        return Value::Object(hints).to_string();
     };
-    if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&metadata) {
-        for (key, value) in keys {
-            object.entry(key).or_insert(Value::from(value));
+    if let Ok(value) = serde_json::from_str::<Value>(&metadata) {
+        let mut object = match value {
+            Value::Object(object) => object,
+            // Keep JSON strings and arrays visible to the core workload parser.
+            existing => Map::from_iter([("workload".into(), existing)]),
+        };
+        for (key, value) in hints {
+            object.entry(key).or_insert(value);
         }
-        return Some(Value::Object(object).to_string());
+        return Value::Object(object).to_string();
     }
-    let suffix = keys
+    let suffix = hints
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join("; ");
-    Some(format!("{metadata}; {suffix}"))
+    format!("{metadata}; {suffix}")
 }
 
 pub(crate) fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) -> bool {
@@ -2069,6 +2059,23 @@ fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use ax_engine_core::RequestWorkloadHints;
+
+    #[test]
+    fn workload_and_thinking_hints_preserve_existing_json_metadata() {
+        for metadata in [
+            r#""tool_call; ax_max_think_tokens=32""#,
+            r#"[{"tool_call":true,"ax_max_think_tokens":32}]"#,
+        ] {
+            let with_workload = openai_workload_metadata(Some(metadata.into()), false, true);
+            let with_budget = merge_thinking_budget_metadata(with_workload, None, Some(8));
+            let hints = RequestWorkloadHints::from_metadata(with_budget.as_deref());
+            assert!(hints.tool_call, "{metadata}");
+            assert!(hints.structured_output, "{metadata}");
+            assert_eq!(hints.max_think_tokens, Some(32), "{metadata}");
+            assert_eq!(hints.answer_reserve_tokens, Some(8), "{metadata}");
+        }
+    }
 
     #[test]
     fn tool_contract_accepts_flat_function_tools() {

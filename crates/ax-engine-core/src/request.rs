@@ -244,34 +244,14 @@ impl RequestWorkloadHints {
         {
             self.answer_reserve_tokens = Some(number.min(u32::MAX as u64) as u32);
         }
-        if truthy
-            && matches!(
-                key.as_str(),
-                "tool_call"
-                    | "tool_call_mode"
-                    | "ax_speculative_tool_call"
-                    | "openai_tools"
-                    | "tools"
-                    | "tool_choice"
-            )
-        {
+        if truthy && TOOL_CALL_HINT_KEYS.contains(&key.as_str()) {
             self.tool_call = true;
         }
-        if truthy
-            && matches!(
-                key.as_str(),
-                "structured_output"
-                    | "structured_output_mode"
-                    | "ax_speculative_structured_output"
-                    | "json_mode"
-                    | "json_object"
-                    | "strict_json"
-            )
-        {
+        if truthy && STRUCTURED_OUTPUT_HINT_KEYS.contains(&key.as_str()) {
             self.structured_output = true;
         }
 
-        if matches!(key.as_str(), "workload" | "ax_workload" | "mode" | "task") {
+        if WORKLOAD_CONTAINER_KEYS.contains(&key.as_str()) {
             self.merge_json(value);
         }
     }
@@ -309,17 +289,13 @@ impl RequestWorkloadHints {
             // Keep the raw value as well: lossy normalization rewrites
             // numeric spellings like `0.0` to `0_0`, which would otherwise
             // miss the explicit-false check and read as truthy.
-            let (key, raw_value, value_token) = match part.split_once('=') {
-                Some((key, raw_value)) => (
-                    normalize_workload_hint_token(key),
-                    Some(raw_value),
-                    Some(normalize_workload_hint_token(raw_value)),
-                ),
-                None => (normalize_workload_hint_token(part), None, None),
+            let (key, raw_value) = match part.split_once('=') {
+                Some((key, raw_value)) => (normalize_workload_hint_token(key), Some(raw_value)),
+                None => (normalize_workload_hint_token(part), None),
             };
 
-            if let Some(raw_value) = raw_value {
-                if TEXT_TOOL_CALL_HINT_KEYS.contains(&key.as_str()) {
+            let token = if let Some(raw_value) = raw_value {
+                if TOOL_CALL_HINT_KEYS.contains(&key.as_str()) {
                     if text_hint_value_is_false(raw_value) {
                         tool_call_false = true;
                     } else {
@@ -327,7 +303,7 @@ impl RequestWorkloadHints {
                     }
                     continue;
                 }
-                if TEXT_STRUCTURED_OUTPUT_HINT_KEYS.contains(&key.as_str()) {
+                if STRUCTURED_OUTPUT_HINT_KEYS.contains(&key.as_str()) {
                     if text_hint_value_is_false(raw_value) {
                         structured_output_false = true;
                     } else {
@@ -335,18 +311,21 @@ impl RequestWorkloadHints {
                     }
                     continue;
                 }
-            }
-
-            // A `key=value` pair whose key is not an exact boolean key falls
-            // back to the value as a bare alias (legacy
-            // `workload=tool-call; mode=strict-json`); a bare segment is
-            // matched as the alias itself.
-            let token = value_token.as_deref().unwrap_or(key.as_str());
-            if matches!(token, "tool_call" | "toolcall" | "ax_speculative_tool_call") {
+                if !WORKLOAD_CONTAINER_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                normalize_workload_hint_token(raw_value)
+            } else {
+                key
+            };
+            if matches!(
+                token.as_str(),
+                "tool_call" | "toolcall" | "ax_speculative_tool_call"
+            ) {
                 self.tool_call = true;
             }
             if matches!(
-                token,
+                token.as_str(),
                 "structured_output" | "json_mode" | "json_object" | "strict_json"
             ) {
                 self.structured_output = true;
@@ -362,7 +341,9 @@ impl RequestWorkloadHints {
     }
 }
 
-const TEXT_TOOL_CALL_HINT_KEYS: &[&str] = &[
+const WORKLOAD_CONTAINER_KEYS: &[&str] = &["workload", "ax_workload", "mode", "task"];
+
+const TOOL_CALL_HINT_KEYS: &[&str] = &[
     "tool_call",
     "tool_call_mode",
     "ax_speculative_tool_call",
@@ -371,7 +352,7 @@ const TEXT_TOOL_CALL_HINT_KEYS: &[&str] = &[
     "tool_choice",
 ];
 
-const TEXT_STRUCTURED_OUTPUT_HINT_KEYS: &[&str] = &[
+const STRUCTURED_OUTPUT_HINT_KEYS: &[&str] = &[
     "structured_output",
     "structured_output_mode",
     "ax_speculative_structured_output",
@@ -427,10 +408,7 @@ fn json_hint_truthy(value: &serde_json::Value) -> bool {
         serde_json::Value::Null => false,
         serde_json::Value::Bool(value) => *value,
         serde_json::Value::Number(value) => json_number_is_nonzero(value),
-        serde_json::Value::String(value) => {
-            let value = normalize_workload_hint_token(value);
-            !matches!(value.as_str(), "" | "false" | "none" | "null" | "off" | "0")
-        }
+        serde_json::Value::String(value) => !text_hint_value_is_false(value),
         serde_json::Value::Array(values) => !values.is_empty(),
         serde_json::Value::Object(object) => !object.is_empty(),
     }
@@ -834,10 +812,12 @@ mod tests {
         for value in [
             r#"{"tools":0}"#,
             r#"{"tools":0.0}"#,
+            r#"{"tools":"0.0"}"#,
             r#"{"tool_choice":0}"#,
             r#"{"tool_choice":0.0}"#,
             r#"{"structured_output":0}"#,
             r#"{"structured_output":0.0}"#,
+            r#"{"structured_output":"-0e0"}"#,
         ] {
             let hints = RequestWorkloadHints::from_metadata(Some(value));
             assert_eq!(hints, RequestWorkloadHints::default(), "{value}");
@@ -846,10 +826,12 @@ mod tests {
         for value in [
             r#"{"tools":-1}"#,
             r#"{"tools":0.5}"#,
+            r#"{"tools":"0.5"}"#,
             r#"{"tool_choice":-1}"#,
             r#"{"tool_choice":0.5}"#,
             r#"{"structured_output":-1}"#,
             r#"{"structured_output":0.5}"#,
+            r#"{"structured_output":"-0.5"}"#,
         ] {
             let hints = RequestWorkloadHints::from_metadata(Some(value));
             if value.contains("structured_output") {
@@ -990,11 +972,14 @@ mod tests {
     }
 
     #[test]
-    fn text_workload_hint_ignores_tenant_substrings() {
+    fn text_workload_hint_ignores_unrelated_metadata_values() {
         for value in [
             "tenant=exp-json-object-detection",
             "tenant=tool-call-detector",
             "tenant=structured-output-inspector",
+            "tenant=tool_call",
+            "tenant=strict-json",
+            "label=ax_speculative_tool_call",
         ] {
             let hints = RequestWorkloadHints::from_metadata(Some(value));
             assert_eq!(hints, RequestWorkloadHints::default(), "{value}");

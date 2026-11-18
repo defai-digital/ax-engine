@@ -190,6 +190,10 @@ impl RequestExecutionUpdate {
         self.output_token.is_some() || !self.output_tokens.is_empty()
     }
 
+    pub(crate) fn cancelled_without_output(&self) -> bool {
+        self.stop_reason == Some(StopReason::Cancelled) && !self.has_output_tokens()
+    }
+
     /// Mid-block diffusion denoise progress: schedule feedback only, no visible
     /// token yet. Decode contract allows this without logits/output tokens.
     #[inline]

@@ -828,6 +828,15 @@ impl EngineSession {
         if !self.uses_mlx_runtime() {
             return self.cancel_request(request_id.0);
         }
+        // A cancel racing completion is a no-op on either backend.
+        if self
+            .core
+            .request_manager()
+            .snapshot(request_id)
+            .is_some_and(|snapshot| snapshot.state.is_terminal())
+        {
+            return Ok(());
+        }
         self.core
             .cancel(request_id)
             .map_err(EngineSessionError::from)
@@ -847,16 +856,6 @@ impl EngineSession {
             if let Some(report) = terminal_report {
                 self.store_terminal_llama_report(request_id, report);
             }
-            return Ok(());
-        }
-        // Cancelling a request that already finished is a no-op, as on the
-        // delegated path: a cancel racing completion must not error.
-        if self
-            .core
-            .request_manager()
-            .snapshot(RequestId(request_id))
-            .is_some_and(|snapshot| snapshot.state.is_terminal())
-        {
             return Ok(());
         }
         self.cancel(RequestId(request_id))

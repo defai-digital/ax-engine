@@ -651,6 +651,9 @@ impl RequestManager {
                     summary.ttft_events += 1;
                 }
                 stop
+            } else if update.cancelled_without_output() {
+                // An abort can leave the scheduled work incomplete.
+                None
             } else {
                 let next_processed_prompt_tokens = record
                     .processed_prompt_tokens

@@ -28,8 +28,8 @@ use crate::runner::{
     RunnerRequestMultimodalInput, RunnerRequestPrefillHints,
 };
 use crate::sampling::{
-    DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, TokenSampler,
-    presence_frequency_penalty_active, recent_repetition_tokens,
+    DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
+    TokenSampler, presence_frequency_penalty_active, recent_repetition_tokens,
     sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
@@ -1742,32 +1742,31 @@ impl EngineCore {
                             (record.max_output_tokens as usize)
                                 .saturating_sub(record.generated_tokens.len())
                         });
-                let batch_start = runner_tokens.len();
-                if let Some(token_id) = update.output_token {
+                let output_count =
+                    usize::from(update.output_token.is_some()) + update.output_tokens.len();
+                let kept_count = output_count.min(remaining);
+                let stop_reason = if kept_count < output_count
+                    && update.stop_reason != Some(StopReason::Cancelled)
+                {
+                    Some(StopReason::MaxOutputTokens)
+                } else {
+                    update.stop_reason
+                };
+                let tokens = update
+                    .output_token
+                    .into_iter()
+                    .chain(update.output_tokens.iter().copied());
+                for (index, token_id) in tokens.take(kept_count).enumerate() {
                     runner_tokens.push(SampledToken {
                         request_id,
                         token_id,
-                        stop_reason: if update.output_tokens.is_empty() {
-                            update.stop_reason
+                        stop_reason: if index + 1 == kept_count {
+                            stop_reason
                         } else {
                             None
                         },
                         logprob: None,
                     });
-                }
-                let last_index = update.output_tokens.len().saturating_sub(1);
-                for (index, &token_id) in update.output_tokens.iter().enumerate() {
-                    runner_tokens.push(SampledToken {
-                        request_id,
-                        token_id,
-                        stop_reason: (index == last_index)
-                            .then_some(update.stop_reason)
-                            .flatten(),
-                        logprob: None,
-                    });
-                }
-                if runner_tokens.len() - batch_start > remaining {
-                    runner_tokens.truncate(batch_start + remaining);
                 }
                 continue;
             }
@@ -1790,7 +1789,7 @@ impl EngineCore {
             let item = &execution_batch.items[item_idx];
             let decode_request = item.mode == ExecutionMode::Decode;
             if logits.is_none() && !self.scratch_logits_handles.contains(&request_id) {
-                if !decode_request {
+                if !decode_request || update.cancelled_without_output() {
                     continue;
                 }
                 return Err(EngineCoreError::RunnerContractViolation {
@@ -1900,6 +1899,8 @@ impl EngineCore {
                 && !matches!(update.stop_reason, Some(crate::sampling::StopReason::Error))
                 && update.tokens_executed != item.scheduled_token_count
                 && !(update.is_diffusion_schedule_progress_only() && update.tokens_executed == 0)
+                && !(update.cancelled_without_output()
+                    && update.tokens_executed < item.scheduled_token_count)
             {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
@@ -2015,14 +2016,15 @@ impl EngineCore {
                     message: "failed decode update must not provide decode result sources",
                 });
             }
-            if !failed && decode_result_sources == 0 {
-                // Allow schedule-only mid-denoise progress (no visible token yet).
-                if !update.is_diffusion_schedule_progress_only() {
-                    return Err(EngineCoreError::RunnerContractViolation {
-                        step_id: execution_batch.step_id,
-                        message: "decode update must provide logits payload, logits handle, or output token",
-                    });
-                }
+            if !failed
+                && decode_result_sources == 0
+                && !update.is_diffusion_schedule_progress_only()
+                && !update.cancelled_without_output()
+            {
+                return Err(EngineCoreError::RunnerContractViolation {
+                    step_id: execution_batch.step_id,
+                    message: "decode update must provide logits payload, logits handle, or output token",
+                });
             }
             if decode_result_sources > 1 {
                 return Err(EngineCoreError::RunnerContractViolation {
@@ -4604,6 +4606,86 @@ mod tests {
                 .is_err(),
             "failed request must not keep a live block table"
         );
+    }
+
+    #[test]
+    fn runner_can_cancel_decode_without_returning_a_token() {
+        #[derive(Debug)]
+        struct CancellingDecodeRunner {
+            tokens_executed: u32,
+        }
+
+        impl ExecutionRunner for CancellingDecodeRunner {
+            fn run(&self, input: RunnerInput) -> RunnerOutput {
+                let mut output = MultiTokenDecodeRunner {
+                    extra_tokens: 0,
+                    stop_on_decode: None,
+                }
+                .run(input);
+                for update in &mut output.request_updates {
+                    if update.request_id == RequestId(1) && update.output_token.is_some() {
+                        output.kv_write_summary.tokens_written -=
+                            update.tokens_executed - self.tokens_executed;
+                        update.output_token = None;
+                        update.tokens_executed = self.tokens_executed;
+                        update.stop_reason = Some(StopReason::Cancelled);
+                    }
+                }
+                output
+            }
+        }
+
+        for tokens_executed in [0, 1] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+                CancellingDecodeRunner { tokens_executed },
+                PanicSampler,
+            );
+            engine.submit(make_submission(1, 1, 2)).unwrap();
+            engine.submit(make_submission(2, 2, 2)).unwrap();
+            engine.step(8, true).unwrap();
+            let outcome = engine.step(2, true).unwrap();
+
+            let cancelled = engine.request_manager().snapshot(RequestId(1)).unwrap();
+            assert_eq!(cancelled.state, RequestState::Cancelled);
+            assert_eq!(cancelled.terminal_stop_reason, Some(StopReason::Cancelled));
+            assert!(cancelled.generated_tokens.is_empty());
+            assert!(engine.request_manager().record(RequestId(1)).is_none());
+
+            let peer = engine.request_manager().snapshot(RequestId(2)).unwrap();
+            assert_eq!(peer.state, RequestState::Runnable);
+            assert_eq!(peer.generated_tokens, vec![50]);
+            assert_eq!(outcome.metrics.ttft_events, 1);
+        }
+    }
+
+    #[test]
+    fn speculative_eos_outside_the_output_budget_finishes_at_length() {
+        for (budget, expected_tokens, expected_reason) in [
+            (2, vec![50, 51], StopReason::MaxOutputTokens),
+            (4, vec![50, 51, 52], StopReason::EosToken),
+        ] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+                MultiTokenDecodeRunner {
+                    extra_tokens: 3,
+                    stop_on_decode: Some(StopReason::EosToken),
+                },
+                PanicSampler,
+            );
+            engine.submit(make_submission(1, 1, budget)).unwrap();
+            engine.step(4, true).unwrap();
+            let outcome = engine.step(1, true).unwrap();
+
+            let snapshot = engine.request_manager().snapshot(RequestId(1)).unwrap();
+            assert_eq!(snapshot.state, RequestState::Finished);
+            assert_eq!(snapshot.generated_tokens, expected_tokens);
+            assert_eq!(snapshot.terminal_stop_reason, Some(expected_reason));
+            assert_eq!(
+                outcome.sampled_tokens.last().unwrap().stop_reason,
+                Some(expected_reason)
+            );
+        }
     }
 
     #[test]
