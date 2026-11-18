@@ -293,21 +293,118 @@ impl RequestWorkloadHints {
                 }
             }
         }
-        let value = normalize_workload_hint_token(value);
-        if value.contains("tool_call")
-            || value.contains("toolcall")
-            || value.contains("ax_speculative_tool_call")
-        {
-            self.tool_call = true;
+        // Semantic flags parse per segment instead of substring-matching the
+        // whole string. Only exact boolean keys gate a flag, so a tenant or
+        // arbitrary value that merely mentions a token cannot enable it. An
+        // explicit false dominates positives for that flag, which keeps
+        // client metadata authoritative over a server canonical `=true`
+        // suffix appended later.
+        let mut tool_call_false = false;
+        let mut structured_output_false = false;
+        for part in value.split([';', ',']) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            // Keep the raw value as well: lossy normalization rewrites
+            // numeric spellings like `0.0` to `0_0`, which would otherwise
+            // miss the explicit-false check and read as truthy.
+            let (key, raw_value, value_token) = match part.split_once('=') {
+                Some((key, raw_value)) => (
+                    normalize_workload_hint_token(key),
+                    Some(raw_value),
+                    Some(normalize_workload_hint_token(raw_value)),
+                ),
+                None => (normalize_workload_hint_token(part), None, None),
+            };
+
+            if let Some(raw_value) = raw_value {
+                if TEXT_TOOL_CALL_HINT_KEYS.contains(&key.as_str()) {
+                    if text_hint_value_is_false(raw_value) {
+                        tool_call_false = true;
+                    } else {
+                        self.tool_call = true;
+                    }
+                    continue;
+                }
+                if TEXT_STRUCTURED_OUTPUT_HINT_KEYS.contains(&key.as_str()) {
+                    if text_hint_value_is_false(raw_value) {
+                        structured_output_false = true;
+                    } else {
+                        self.structured_output = true;
+                    }
+                    continue;
+                }
+            }
+
+            // A `key=value` pair whose key is not an exact boolean key falls
+            // back to the value as a bare alias (legacy
+            // `workload=tool-call; mode=strict-json`); a bare segment is
+            // matched as the alias itself.
+            let token = value_token.as_deref().unwrap_or(key.as_str());
+            if matches!(token, "tool_call" | "toolcall" | "ax_speculative_tool_call") {
+                self.tool_call = true;
+            }
+            if matches!(
+                token,
+                "structured_output" | "json_mode" | "json_object" | "strict_json"
+            ) {
+                self.structured_output = true;
+            }
         }
-        if value.contains("structured_output")
-            || value.contains("json_mode")
-            || value.contains("json_object")
-            || value.contains("strict_json")
-        {
-            self.structured_output = true;
+
+        if tool_call_false {
+            self.tool_call = false;
+        }
+        if structured_output_false {
+            self.structured_output = false;
         }
     }
+}
+
+const TEXT_TOOL_CALL_HINT_KEYS: &[&str] = &[
+    "tool_call",
+    "tool_call_mode",
+    "ax_speculative_tool_call",
+    "openai_tools",
+    "tools",
+    "tool_choice",
+];
+
+const TEXT_STRUCTURED_OUTPUT_HINT_KEYS: &[&str] = &[
+    "structured_output",
+    "structured_output_mode",
+    "ax_speculative_structured_output",
+    "json_mode",
+    "json_object",
+    "strict_json",
+];
+
+fn text_hint_value_is_false(value: &str) -> bool {
+    if text_hint_value_is_numeric_zero(value) {
+        return true;
+    }
+    matches!(
+        normalize_workload_hint_token(value).as_str(),
+        "" | "false" | "none" | "null" | "off" | "0"
+    )
+}
+
+/// True for any numeric spelling that evaluates to zero (`0`, `0.0`,
+/// `-0.0`, `0e0`, …). The character gate keeps words and non-finite tokens
+/// such as `inf`/`nan` out of the numeric parse so they never read as zero.
+fn text_hint_value_is_numeric_zero(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'))
+    {
+        return false;
+    }
+    value.parse::<f64>().is_ok_and(|number| number == 0.0)
 }
 
 fn normalize_workload_hint_token(value: &str) -> String {
@@ -769,6 +866,139 @@ mod tests {
             RequestWorkloadHints::from_metadata(Some("workload=tool-call; mode=strict-json"));
         assert!(hints.tool_call);
         assert!(hints.structured_output);
+    }
+
+    #[test]
+    fn text_workload_hint_explicit_false_is_not_a_positive_match() {
+        let hints =
+            RequestWorkloadHints::from_metadata(Some("tool_call=false; structured_output=off"));
+        assert_eq!(hints, RequestWorkloadHints::default());
+
+        for value in [
+            "tool_call=false",
+            "tool_call=FALSE",
+            "tool_call=off",
+            "tool_call=none",
+            "tool_call=null",
+            "tool_call=0",
+            "tool_call=",
+            // Numeric zero spellings normalize lossily (`0.0` -> `0_0`), so
+            // the false check must read the raw value.
+            "tool_call=0.0",
+            "tool_call=0.00",
+            "tool_call=-0.0",
+            "tool_call=+0.0",
+            "tool_call=0e0",
+            "tool_call=0E-0",
+            "tool_call=00",
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            assert!(!hints.tool_call, "{value}");
+        }
+
+        for value in [
+            "structured_output=false",
+            "structured_output=OFF",
+            "structured_output=none",
+            "structured_output=null",
+            "structured_output=0",
+            "structured_output=",
+            "structured_output=0.0",
+            "structured_output=0.00",
+            "structured_output=-0.0",
+            "structured_output=+0.0",
+            "structured_output=0e0",
+            "structured_output=0E-0",
+            "structured_output=00",
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            assert!(!hints.structured_output, "{value}");
+        }
+    }
+
+    #[test]
+    fn text_workload_hint_numeric_zero_suppresses_appended_server_canonical_true() {
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "tool_call=0.0; ax_speculative_tool_call=true",
+        ));
+        assert!(!hints.tool_call);
+        assert!(!hints.structured_output);
+
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "structured_output=-0.0; ax_speculative_structured_output=true",
+        ));
+        assert!(!hints.structured_output);
+        assert!(!hints.tool_call);
+    }
+
+    #[test]
+    fn text_workload_hint_nonzero_numeric_values_stay_true() {
+        for value in [
+            "tool_call=1",
+            "tool_call=1.0",
+            "tool_call=0.5",
+            "tool_call=-1",
+            "tool_call=1e3",
+            "tool_call=7",
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            assert!(hints.tool_call, "{value}");
+        }
+
+        for value in [
+            "structured_output=1",
+            "structured_output=1.0",
+            "structured_output=0.5",
+            "structured_output=-2",
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            assert!(hints.structured_output, "{value}");
+        }
+    }
+
+    #[test]
+    fn text_workload_hint_explicit_false_suppresses_appended_server_canonical_true() {
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "tool_call=false; ax_speculative_tool_call=true",
+        ));
+        assert!(!hints.tool_call);
+        assert!(!hints.structured_output);
+
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "structured_output=false; ax_speculative_structured_output=true",
+        ));
+        assert!(!hints.structured_output);
+        assert!(!hints.tool_call);
+    }
+
+    #[test]
+    fn text_workload_hint_keeps_legacy_positive_aliases() {
+        let hints =
+            RequestWorkloadHints::from_metadata(Some("workload=tool-call; mode=strict-json"));
+        assert!(hints.tool_call);
+        assert!(hints.structured_output);
+
+        let hints = RequestWorkloadHints::from_metadata(Some("tool_call; structured_output"));
+        assert!(hints.tool_call);
+        assert!(hints.structured_output);
+
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "ax_speculative_tool_call=true; ax_speculative_structured_output=true",
+        ));
+        assert!(hints.tool_call);
+        assert!(hints.structured_output);
+    }
+
+    #[test]
+    fn text_workload_hint_ignores_tenant_substrings() {
+        for value in [
+            "tenant=exp-json-object-detection",
+            "tenant=tool-call-detector",
+            "tenant=structured-output-inspector",
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            assert_eq!(hints, RequestWorkloadHints::default(), "{value}");
+        }
     }
 
     #[test]
