@@ -22,9 +22,9 @@ def digest(path: Path) -> str:
 
 def validate_host(host: dict) -> None:
     if (host.get('system'), host.get('arch'), host.get('chip'), host.get('memory_bytes')) != (
-        'Darwin', 'arm64', 'Apple M4 Pro', 64 * 1024**3
-    ) or host.get('model') != 'Mac16,11':
-        raise ValueError('qualification requires Mac mini M4 Pro 64 GB (Mac16,11)')
+        'Darwin', 'arm64', 'Apple M5 Max', 128 * 1024**3
+    ) or host.get('model') != 'Mac17,6':
+        raise ValueError('qualification requires MacBook Pro M5 Max 128 GB (Mac17,6)')
 
 
 def validate_cells(cells: list[dict]) -> None:

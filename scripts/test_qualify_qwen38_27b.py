@@ -64,11 +64,15 @@ class LiveGateTest(unittest.TestCase):
             validate_default_route(cell, {**response, 'output_tokens': []})
 
     def test_only_designated_hardware_is_admitted(self):
-        host = dict(system="Darwin", arch="arm64", chip="Apple M4 Pro",
-                    memory_bytes=64 * 1024**3, model="Mac16,11")
+        host = dict(system="Darwin", arch="arm64", chip="Apple M5 Max",
+                    memory_bytes=128 * 1024**3, model="Mac17,6")
         validate_host(host)
-        for changes in ({"chip": "Apple M5 Max"}, {"memory_bytes": 32 * 1024**3},
-                        {"model": "MacBookPro"}, {"system": "Linux"}):
+        for changes in (
+            {"chip": "Apple M4 Pro", "memory_bytes": 64 * 1024**3, "model": "Mac16,11"},
+            {"memory_bytes": 64 * 1024**3},
+            {"model": "MacBookPro"},
+            {"system": "Linux"},
+        ):
             with self.assertRaises(ValueError):
                 validate_host({**host, **changes})
 
@@ -136,7 +140,7 @@ class LiveGateTest(unittest.TestCase):
             self.assertEqual(result["schema"], 4)
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["cells"], [])
-            self.assertIn("requires Mac mini", result["error"])
+            self.assertIn("requires MacBook Pro M5 Max", result["error"])
 
     def test_live_report_preserves_diagnostic_split_but_rejects_invalid_or_fallback(self):
         # Fixture orchestration only: no hardware, installed wheel or model qualification.
@@ -219,7 +223,7 @@ class LiveGateTest(unittest.TestCase):
                      patch("qwen38_live_gate.platform.system", return_value="Darwin"), \
                      patch("qwen38_live_gate.platform.machine", return_value="arm64"), \
                      patch("qwen38_live_gate.subprocess.check_output", side_effect=[
-                         "Apple M4 Pro", "Mac16,11", str(64 * 1024**3), "26.6.2", "fixture-commit", ""]), \
+                         "Apple M5 Max", "Mac17,6", str(128 * 1024**3), "27.2.1", "fixture-commit", ""]), \
                      patch("qwen38_live_gate.subprocess.run", side_effect=doctor), \
                      patch.object(matrix, "run_cell", side_effect=run_cell):
                     code = run_live(args, contract, ROOT)
@@ -267,7 +271,21 @@ class QualifyQwen38Test(unittest.TestCase):
             "b2c5354f779e430d0c1733143db848a72b71c16e",
         )
         self.assertIn("27B weights", payload["ci"])
-        self.assertEqual(payload["host_class"], "Mac mini M4 Pro, 64 GB")
+        self.assertEqual(payload["host_class"], "MacBook Pro M5 Max, 128 GB")
+
+    def test_contract_binds_the_verified_release_inventory(self):
+        path = (ROOT / "benchmarks/results/qualification"
+                / "2026-11-18-qwen38-27b-mxfp4-inventory/pack-inventory.json")
+        inventory = json.loads(path.read_text())
+        payload = mod.contract()
+        self.assertEqual(inventory["repo_id"], payload["repo_id"])
+        self.assertEqual(inventory["revision"], payload["revision"])
+        self.assertEqual(len(inventory["files"]), 21)
+        self.assertIn("mtp.safetensors", inventory["files"])
+        self.assertIn("model-manifest.json", inventory["files"])
+        canonical = json.dumps(inventory["files"], sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(hashlib.sha256(canonical).hexdigest(), inventory["inventory_sha256"])
+        self.assertEqual(inventory["inventory_sha256"], payload["model_manifest_sha256"])
 
     def test_contract_separates_product_health_from_mtp_certification(self):
         payload = mod.contract()

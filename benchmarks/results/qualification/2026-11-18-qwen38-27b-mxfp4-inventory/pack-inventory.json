@@ -1,0 +1,28 @@
+{
+  "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+  "revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
+  "inventory_sha256": "635763473e39744a32478b9b7a5dfd5f137f778557ff26aec9112f9d9ac28122",
+  "files": {
+    ".gitattributes": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+    "README.md": "3eb8245024a79f4e9a7961152a1f5ab3aca2ba8c84bdbc9d0b5b5c0a7077b3f3",
+    "axquant_manifest.json": "ee704531cca3bbe083f8acb3e65d34c972d24b95b076aa51b77f21b01cd62bb1",
+    "axquant_mtp_sidecar_manifest.json": "11cc9ea99289a7021240024358df53674102c828a8b930930af0a83074e93b87",
+    "axquant_plan.json": "fce5a93299e4ccc15b7d5c4d861572f3ded153b2d76d8da2e8da5919b7435b68",
+    "axquant_quantizer_execution.json": "c389d287323a820bbbd56cc49d29e0add0011db9c5cc75bc012aa5a43c6eb39b",
+    "axquant_runtime.json": "35b5323bb62130be059d863dd684c17fab25157657e4788ba0a6a103192390c8",
+    "axquant_vision_sidecar_manifest.json": "aa54f3fc80257ea5433e7e161e6a66d4cb25335f4fb2a00f69c2b013e2b0ef28",
+    "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "config.json": "5fb63c8d952c521b289e1fd412a1e225020301c37cebcb44dfa881e334003619",
+    "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+    "model-00001-of-00003.safetensors": "cf4901a75d3c819b69df7002d8134d81982c94d20ba600522add8a2df858033b",
+    "model-00002-of-00003.safetensors": "e710ff4cc5964f52e422be8881cd17eacd007831d67a903ce52f3d7452dc29e8",
+    "model-00003-of-00003.safetensors": "5cd45370f41b0d6bf5b8f10def7b0be1cbaf76cdc392320c5778726763a639f5",
+    "model-manifest.json": "524163237ca2b879bff41f782a5eee6a1266b4f80f5d2c99e07117b7b899127a",
+    "model.safetensors.index.json": "e20dbf6b96058c7b6ccfc1d79745c3f5f4cf8ea4d287ed408da95bdaa4833911",
+    "mtp.safetensors": "914bef4ec6fcfde83925f9c138559253db030d9138b0a375623d6fdc06ebe898",
+    "mtplx_runtime.json": "119b930ed4b470a08008aa2a51b4a83162907a85b8455f559cffa03e33236ed6",
+    "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+    "tokenizer_config.json": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+    "vision.safetensors": "d0d927c489250588557d5761dcd47ca267ef64c95f7e7d58dd6a0cccf54ac68f"
+  }
+}

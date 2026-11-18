@@ -2,7 +2,7 @@
 """Qwen 3.8 27B primary qualification contract.
 
 `--dry-run` prints the pinned pack and required commands (CI-safe, no weights).
-A live `--model-dir` run belongs on Mac mini M4 Pro 64 GB with a clean checkout.
+A live `--run` belongs on MacBook Pro M5 Max 128 GB with a clean checkout.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from typing import Any, Sequence
 PRIMARY_ALIAS = "qwen3.8-27b:axq"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
 PRIMARY_REVISION = "b2c5354f779e430d0c1733143db848a72b71c16e"
-HOST_CLASS = "Mac mini M4 Pro, 64 GB"
+MXFP4_INVENTORY_SHA256 = "635763473e39744a32478b9b7a5dfd5f137f778557ff26aec9112f9d9ac28122"
+HOST_CLASS = "MacBook Pro M5 Max, 128 GB"
 STATUS_SENTENCE = (
     "Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
@@ -29,12 +30,12 @@ def contract() -> dict[str, Any]:
         "alias": PRIMARY_ALIAS,
         "repo_id": PRIMARY_REPO,
         "revision": PRIMARY_REVISION,
-        "model_manifest_sha256": None,
+        "model_manifest_sha256": MXFP4_INVENTORY_SHA256,
         "format_scope": ["mxfp4", "mxfp8"],
         "target_quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32},
         "mtp_sidecar_required": True,
         "mtp_certification": {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")},
-        "inventory_status": "MXFP4 release inventory binding pending; retired 6-bit inventory must not be reused",
+        "inventory_status": "MXFP4 release inventory verified and bound to the pinned revision",
         "mxfp8_status": "in scope; pack pin and SKU qualification pending",
         "host_class": HOST_CLASS,
         "status": STATUS_SENTENCE,
