@@ -927,6 +927,210 @@ fn greedy_linear_mtp_rejection_prefers_recomputed_production_argmax() {
     );
 }
 
+#[derive(serde::Serialize)]
+struct QwenMtpGreedyCycle {
+    token_offset: usize,
+    drafts: Vec<u32>,
+    verifier_tokens: Vec<u32>,
+    accepted: usize,
+    emitted: Vec<u32>,
+    skip_primary: bool,
+}
+
+thread_local! {
+    static QWEN_MTP_GREEDY_CYCLES: std::cell::RefCell<Option<Vec<QwenMtpGreedyCycle>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn record_qwen_mtp_greedy_cycle(
+    logits: &MlxArray,
+    drafts: &[u32],
+    emitted: &[u32],
+    accepted: usize,
+    skip_primary: bool,
+    optimistic: bool,
+    token_offset: usize,
+) {
+    QWEN_MTP_GREEDY_CYCLES.with_borrow_mut(|record| {
+        let Some(cycles) = record else { return };
+        assert!(
+            !optimistic,
+            "speculative acceptance skipped the target verifier"
+        );
+        let rows = astype(logits, MlxDtype::Float32, None);
+        // Evaluate after the production accept/emit decision. The host scan
+        // does not reuse the verifier's acceptance reduction or token IDs.
+        mlx_sys::try_eval(&[&rows]).unwrap();
+        let shape = rows.shape();
+        assert_eq!(shape.len(), 2);
+        assert_eq!(shape[0] as usize, drafts.len() + 1);
+        let verifier_tokens = rows
+            .data_f32()
+            .chunks_exact(shape[1] as usize)
+            .map(|row| {
+                assert!(row.iter().all(|logit| logit.is_finite()));
+                let mut best = 0;
+                for (index, logit) in row.iter().copied().enumerate().skip(1) {
+                    if logit > row[best] {
+                        best = index;
+                    }
+                }
+                best as u32
+            })
+            .collect();
+        cycles.push(QwenMtpGreedyCycle {
+            token_offset,
+            drafts: drafts.to_vec(),
+            verifier_tokens,
+            accepted,
+            emitted: emitted.to_vec(),
+            skip_primary,
+        });
+    });
+}
+
+#[test]
+#[ignore = "requires the pinned Qwen 3.8 27B MXFP4 MTP artifacts and primary-tier hardware"]
+fn qwen38_27b_greedy_mtp_commits_same_state_verifier_choices() {
+    use ax_engine_core::{
+        ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, StopReason,
+        WorkUnitKind,
+    };
+
+    let model = std::env::var_os("AX_QWEN38_27B_MTP_S_MODEL_DIR").unwrap();
+    let artifacts = NativeModelArtifacts::from_dir(model).unwrap();
+    assert_eq!(artifacts.manifest().model_family, "qwen3_5");
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2048, true).unwrap();
+    assert!(runner.has_mtp());
+    runner.set_mtp_requested(true);
+    assert!(runner.mtp_requested());
+    let input: Vec<u32> = (1..=16).collect();
+    let execute =
+        |context: RunnerRequestContext, tokens: &[u32], mode: ExecutionMode, position: u32| {
+            let token_count = tokens.len() as u32;
+            runner.run(RunnerInput {
+                request_prefill_hints: Vec::new(),
+                block_size_tokens: 16,
+                memory_pressure: None,
+                block_tables: Vec::new(),
+                request_contexts: vec![context],
+                request_multimodal_inputs: Vec::new(),
+                request_logit_biases: Vec::new(),
+                request_json_grammars: Vec::new(),
+                execution_batch: ExecutionBatch {
+                    step_id: StepId(u64::from(position)),
+                    model_id: "qwen3.8-27b".into(),
+                    execution_plan_ref: None,
+                    total_scheduled_tokens: token_count,
+                    route_metadata: RouteMetadata {
+                        execution_plan: None,
+                        attention_route: None,
+                        kv_mode: None,
+                        prefix_cache_path: None,
+                        barrier_mode: None,
+                        crossover_decisions: Vec::new(),
+                    },
+                    items: vec![ExecutionItem {
+                        request_id: context.request_id,
+                        mode,
+                        planned_work_unit: if mode == ExecutionMode::Prefill {
+                            WorkUnitKind::PrefillChunk
+                        } else {
+                            WorkUnitKind::TokenDecode
+                        },
+                        input_token_slice: tokens.to_vec(),
+                        reused_prefix_token_slice: Vec::new(),
+                        position_range: PositionRange {
+                            start: position,
+                            end_exclusive: position + token_count,
+                        },
+                        scheduled_token_count: token_count,
+                        block_table_ref: context.request_id,
+                        prefix_tokens_reused: 0,
+                        prefix_blocks_reused: 0,
+                    }],
+                },
+            })
+        };
+
+    let run = |id, budget, ignore_eos| {
+        let mut context = ctx_with_argmax(true);
+        context.request_id = RequestId(id);
+        context.prompt_len = input.len() as u32;
+        context.max_output_tokens = budget;
+        context.seed_explicit = true;
+        context.ignore_eos = ignore_eos;
+        QWEN_MTP_GREEDY_CYCLES.set(Some(Vec::new()));
+        let prefill = execute(context, &input, ExecutionMode::Prefill, 0);
+        let first = &prefill.request_updates[0];
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let mut output = vec![first.output_token.unwrap()];
+        output.extend_from_slice(&first.output_tokens);
+        let mut stop = first.stop_reason;
+        context.processed_prompt_tokens = context.prompt_len;
+        while stop.is_none() && output.len() < budget as usize {
+            context.generated_len = output.len() as u32;
+            let decoded = execute(
+                context,
+                &[*output.last().unwrap()],
+                ExecutionMode::Decode,
+                context.prompt_len + context.generated_len - 1,
+            );
+            let update = &decoded.request_updates[0];
+            assert!(update.error.is_none(), "{:?}", update.error);
+            output.extend(update.output_token);
+            output.extend_from_slice(&update.output_tokens);
+            stop = update.stop_reason;
+            assert!(
+                stop.is_some() || output.len() > context.generated_len as usize,
+                "decode returned no output and no stop reason"
+            );
+        }
+        assert!(output.len() <= budget as usize);
+        (output, stop, QWEN_MTP_GREEDY_CYCLES.take().unwrap())
+    };
+    let (fixed, fixed_stop, fixed_cycles) = run(103, 64, true);
+    let (eos, eos_stop, eos_cycles) = run(104, 64, false);
+    let (short, short_stop, short_cycles) = run(105, 7, true);
+    assert_eq!(fixed.len(), 64);
+    assert_eq!(short.len(), 7);
+    assert_eq!(eos_stop, Some(StopReason::EosToken));
+    assert!(eos.len() < fixed.len() && fixed.starts_with(&eos));
+    assert!(fixed_cycles.iter().any(|cycle| cycle.accepted > 0));
+    assert!(fixed_cycles.windows(2).any(|pair| {
+        pair[0].accepted < pair[0].drafts.len() && pair[1].token_offset > pair[0].token_offset
+    }));
+    assert!(!eos_cycles.is_empty());
+    for cycle in fixed_cycles.iter().chain(&eos_cycles).chain(&short_cycles) {
+        let expected = cycle
+            .drafts
+            .iter()
+            .zip(&cycle.verifier_tokens)
+            .take_while(|(draft, verifier)| draft == verifier)
+            .count();
+        assert!(
+            cycle.accepted <= expected,
+            "target offset {} accepted {} drafts with only {expected} same-state matches",
+            cycle.token_offset,
+            cycle.accepted
+        );
+        let start = usize::from(cycle.skip_primary);
+        assert_eq!(
+            &cycle.emitted[start..start + cycle.accepted],
+            &cycle.verifier_tokens[..cycle.accepted]
+        );
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "input": input,
+            "fixed": {"output": fixed, "stop": fixed_stop, "cycles": fixed_cycles},
+            "eos": {"output": eos, "stop": eos_stop, "cycles": eos_cycles},
+            "short": {"output": short, "stop": short_stop, "cycles": short_cycles},
+        })
+    );
+}
+
 fn forced_replay_test_model() -> (ModelConfig, ModelWeights) {
     let mut manifest = dense_manifest();
     manifest.model_family = "qwen3".into();

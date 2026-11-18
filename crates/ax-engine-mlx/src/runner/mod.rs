@@ -15284,6 +15284,22 @@ impl MlxRunner {
             primary_tok_from_skip,
             accept_count
         );
+        #[cfg(test)]
+        if has_linear_attention
+            && pure_qwen_mtp_pending
+            && sampling.temperature == 0.0
+            && !sampling.uses_logits_processors()
+        {
+            tests::record_qwen_mtp_greedy_cycle(
+                &logits_all,
+                &pending,
+                &result,
+                accept_count,
+                primary_tok_from_skip.is_some(),
+                optimistic,
+                token_offset,
+            );
+        }
         mtp_timings.emitted_tokens = saturating_u32(result.len());
 
         // Record MTP draft/accept telemetry.

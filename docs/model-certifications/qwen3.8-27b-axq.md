@@ -24,6 +24,12 @@ each passed 32/32 hard QA checks and the required API surface checks.
 Required MTP ran with zero direct fallbacks. The paired 64-token greedy
 diagnostic matched at every position. See the [product-health receipt](../../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-product-health/).
 
+The same pinned MXFP4 pack passed bounded same-state greedy verifier
+controls on MacBook Pro M5 Max 128 GB. All 69 accepted drafts matched
+their target verifier decisions across 38 cycles, including rejection
+and continuation, EOS, and the seven-token budget. See the
+[same-state receipt](../../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-mtp-s-controls/).
+
 Broader quality, memory and release gates remain open. The current
 pack still needs MTP-S/P/D evidence, and MTP execution remains explicit
 opt-in with `--mlx-mtp-policy required`.
