@@ -1,0 +1,74 @@
+{
+  "hardware": "MacBook Pro M5 Max 128 GB",
+  "mlx_version": "0.32.4",
+  "revision": "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b",
+  "request": {
+    "model": "qwen3.8-flash-next-mxfp8",
+    "input_tokens": [
+      1
+    ],
+    "max_output_tokens": 4,
+    "sampling": {
+      "temperature": 0,
+      "seed": 0,
+      "top_k": 0,
+      "top_p": 1,
+      "ignore_eos": true
+    }
+  },
+  "preview_flags": {
+    "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1",
+    "AX_MLX_FLASH_NEXT_SELECTED_EXPERTS": "1"
+  },
+  "scoped_support": "Auto residency with selected expert reads",
+  "server_sha256": "2f289ac01736b46db2f203b028d5b99a7262d3b2cfb0b8d960beea1ed2772cf5",
+  "prefill_chunk": 1,
+  "max_concurrent_requests": 1,
+  "routes": {
+    "disabled": {
+      "output_tokens": [
+        198,
+        262,
+        680,
+        283
+      ],
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": false,
+        "active": false,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 0,
+        "accepted_tokens": 0,
+        "decode_steps": 0
+      },
+      "paged_read_telemetry": {
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192,
+        "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 9504000
+      }
+    },
+    "required": {
+      "output_tokens": [
+        198,
+        262,
+        680,
+        283
+      ],
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": true,
+        "active": true,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 2,
+        "accepted_tokens": 0,
+        "decode_steps": 2
+      },
+      "paged_read_telemetry": {
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192,
+        "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 9504000
+      }
+    }
+  },
+  "matched": true
+}

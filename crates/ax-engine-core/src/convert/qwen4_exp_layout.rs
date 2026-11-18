@@ -61,6 +61,7 @@ fn has_unknown_layout_blocker(manifest: &NativeModelManifest) -> bool {
 enum ExpertLayout {
     Affine(u32, u32),
     Mxfp4,
+    Mxfp8,
 }
 
 fn protected_projections_match(
@@ -69,7 +70,15 @@ fn protected_projections_match(
 ) -> bool {
     manifest.tensors.iter().all(|tensor| {
         let Some(quant) = &tensor.quantization else {
-            return true;
+            return expert_layout != ExpertLayout::Mxfp8
+                || !matches!(
+                    tensor.role,
+                    NativeTensorRole::LmHead
+                        | NativeTensorRole::TokenEmbedding
+                        | NativeTensorRole::NgramEmbedding
+                        | NativeTensorRole::FfnGateInp
+                        | NativeTensorRole::FfnSharedExpertGateInp
+                );
         };
         match expert_layout {
             ExpertLayout::Affine(bits, group) => {
@@ -98,6 +107,11 @@ fn protected_projections_match(
                     affine8 || (quant.mode == "mxfp4" && (quant.bits, quant.group_size) == (4, 32))
                 }
             }
+            ExpertLayout::Mxfp8 => {
+                quant.mode == "mxfp8"
+                    && (quant.bits, quant.group_size) == (8, 32)
+                    && tensor.dtype == NativeTensorDataType::U32
+            }
         }
     })
 }
@@ -108,7 +122,7 @@ fn inspect_expert_layout(manifest: &NativeModelManifest) -> Result<Option<Expert
     let mut expert_layout = None;
     for tensor in &manifest.tensors {
         if let Some(quantization) = &tensor.quantization {
-            if !matches!(quantization.mode.as_str(), "affine" | "mxfp4") {
+            if !matches!(quantization.mode.as_str(), "affine" | "mxfp4" | "mxfp8") {
                 return Err(format!(
                     "qwen4_exp rejects quantization mode {} on tensor {}",
                     quantization.mode, tensor.name
@@ -124,6 +138,7 @@ fn inspect_expert_layout(manifest: &NativeModelManifest) -> Result<Option<Expert
                         ExpertLayout::Affine(bits, group)
                     }
                     ("mxfp4", 4, 32) => ExpertLayout::Mxfp4,
+                    ("mxfp8", 8, 32) => ExpertLayout::Mxfp8,
                     _ => {
                         return Err(format!(
                             "qwen4_exp expert tensor {} has unsupported quantization layout {:?}",
@@ -187,6 +202,7 @@ pub(crate) fn experimental_runtime_admission(
     }
     match expert_layout {
         ExpertLayout::Affine(4 | 6, 64) | ExpertLayout::Mxfp4 => true,
+        ExpertLayout::Mxfp8 => enabled && model_dir.join("mtp.safetensors").is_file(),
         ExpertLayout::Affine(2, 32) => enabled,
         _ => false,
     }
@@ -202,6 +218,18 @@ pub(crate) fn audited_mxfp4_runtime_format(
         && matches!(
             inspect_expert_layout(manifest),
             Ok(Some(ExpertLayout::Mxfp4))
+        )
+        && experimental_runtime_admission(model_dir, manifest, true)
+}
+
+pub(crate) fn audited_mxfp8_runtime_format(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+) -> bool {
+    manifest.tensor_format == crate::model::NativeTensorFormat::Safetensors
+        && matches!(
+            inspect_expert_layout(manifest),
+            Ok(Some(ExpertLayout::Mxfp8))
         )
         && experimental_runtime_admission(model_dir, manifest, true)
 }
@@ -237,6 +265,17 @@ pub(crate) fn validate_qwen4_exp_runtime_formats(
 AX_ENGINE_2BIT_EXPERIMENTAL=1 is also required)"
                 .to_string(),
         );
+    }
+    if expert_layout == ExpertLayout::Mxfp8 {
+        if !experimental {
+            return Err(
+                "Flash Next MXFP8 functional preview requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1"
+                    .into(),
+            );
+        }
+        if !model_dir.join("mtp.safetensors").is_file() {
+            return Err("Flash Next MXFP8 requires the published MTP sidecar".into());
+        }
     }
     if !layout_apply_matches(model_dir, manifest) {
         return Err(
@@ -1219,6 +1258,49 @@ mod tests {
             );
             write_axquant_manifest(&dir, &audited_legacy_json());
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mxfp8_preview_requires_opt_in_audited_layout_and_sidecar() {
+        let dir = temp_model_dir("mxfp8-preview");
+        write_axquant_manifest(&dir, &audited_legacy_json());
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        for (name, role, shape) in [
+            ("expert", NativeTensorRole::FfnGateExps, vec![4, 64, 16]),
+            ("head", NativeTensorRole::LmHead, vec![64, 16]),
+        ] {
+            let mut tensor = conv_tensor(name, role, shape, NativeTensorDataType::U32, true);
+            tensor.quantization = Some(NativeTensorQuantization {
+                mode: "mxfp8".into(),
+                bits: 8,
+                group_size: 32,
+            });
+            manifest.tensors.push(tensor);
+        }
+        assert!(!audited_mxfp8_runtime_format(&dir, &manifest));
+        assert!(
+            validate_qwen4_exp_runtime_formats(&dir, &manifest, true)
+                .unwrap_err()
+                .contains("requires the published MTP sidecar")
+        );
+        std::fs::write(dir.join("mtp.safetensors"), b"fixture").unwrap();
+        assert!(audited_mxfp8_runtime_format(&dir, &manifest));
+        assert!(!experimental_runtime_admission(&dir, &manifest, false));
+        assert!(
+            validate_qwen4_exp_runtime_formats(&dir, &manifest, false)
+                .unwrap_err()
+                .contains("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
+        );
+        validate_qwen4_exp_runtime_formats(&dir, &manifest, true).unwrap();
+        manifest.tensors.last_mut().unwrap().quantization = None;
+        assert!(!audited_mxfp8_runtime_format(&dir, &manifest));
+        assert!(
+            validate_qwen4_exp_runtime_formats(&dir, &manifest, true)
+                .unwrap_err()
+                .contains("protected-projection")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

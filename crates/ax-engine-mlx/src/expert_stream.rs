@@ -1992,11 +1992,12 @@ impl ExpertStackPager {
                     "duplicate expert projection".into(),
                 ));
             }
-            if mode == ExpertQuantizationMode::Mxfp4 {
-                if (tensor.bits, tensor.group_size) != (4, 32) {
-                    return Err(ExpertStreamError::InvalidManifest(
-                        "MXFP4 requires bits=4/group32".into(),
-                    ));
+            if let Some(bits) = mode.packed_mx_bits() {
+                let label = mode.as_str().to_ascii_uppercase();
+                if (tensor.bits, tensor.group_size) != (bits, 32) {
+                    return Err(ExpertStreamError::InvalidManifest(format!(
+                        "{label} requires bits={bits}/group32"
+                    )));
                 }
                 let base = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
                 if manifest
@@ -2004,9 +2005,9 @@ impl ExpertStackPager {
                     .iter()
                     .any(|t| t.name == format!("{base}.biases") || t.name == format!("{base}.bias"))
                 {
-                    return Err(ExpertStreamError::InvalidManifest(
-                        "MXFP4 expert bias is unsupported".into(),
-                    ));
+                    return Err(ExpertStreamError::InvalidManifest(format!(
+                        "{label} expert bias is unsupported"
+                    )));
                 }
             }
         }
@@ -2222,25 +2223,33 @@ impl ExpertStackPager {
             .iter()
             .filter(|t| !is_quantization_sidecar_name(&t.name))
         {
-            if quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
-                .map_err(ExpertStreamError::Paging)?
-                == ExpertQuantizationMode::Mxfp4
-            {
+            let mode = quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
+                .map_err(ExpertStreamError::Paging)?;
+            if mode.packed_mx_bits().is_some() {
                 let base = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
                 let weight = loaded.get(&tensor.name).ok_or_else(|| {
-                    ExpertStreamError::Paging(format!("missing MXFP4 weight {}", tensor.name))
+                    ExpertStreamError::Paging(format!(
+                        "missing {} weight {}",
+                        mode.as_str(),
+                        tensor.name
+                    ))
                 })?;
                 let scales = loaded.get(&format!("{base}.scales")).ok_or_else(|| {
-                    ExpertStreamError::Paging(format!("missing MXFP4 scales for {}", tensor.name))
+                    ExpertStreamError::Paging(format!(
+                        "missing {} scales for {}",
+                        mode.as_str(),
+                        tensor.name
+                    ))
                 })?;
                 if loaded.contains_key(&format!("{base}.biases"))
                     || loaded.contains_key(&format!("{base}.bias"))
                 {
-                    return Err(ExpertStreamError::Paging(
-                        "MXFP4 expert bias is unsupported".into(),
-                    ));
+                    return Err(ExpertStreamError::Paging(format!(
+                        "{} expert bias is unsupported",
+                        mode.as_str().to_ascii_uppercase()
+                    )));
                 }
-                quantization::validate_mxfp4_pair(
+                mode.validate_mx_pair(
                     &weight.shape(),
                     weight.dtype(),
                     &scales.shape(),
@@ -2286,16 +2295,14 @@ impl ExpertStackPager {
             let mode = quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
                 .map_err(ExpertStreamError::Paging)?;
             // Fail closed on the generic pager path (no bound quantization
-            // modes, so every tensor above binds Affine): MXFP4 scales are
-            // u8 (e4m3) while affine scales are float, so u8 scales here mean
-            // an MXFP4 pack reached a pager that would silently dequantize
-            // it as affine.
+            // modes, so every tensor above binds Affine): MX scales are U8
+            // while affine scales are floating point.
             if mode == ExpertQuantizationMode::Affine
                 && let Some(scales) = scales.as_ref()
                 && scales.dtype() == mlx_sys::MlxDtype::Uint8
             {
                 return Err(ExpertStreamError::Paging(format!(
-                    "tensor {}: u8 scales on an affine-bound pager look like MXFP4; \
+                    "tensor {}: u8 scales on an affine-bound pager look like an MX format; \
                      bind quantization modes explicitly for this pack",
                     tensor.name
                 )));

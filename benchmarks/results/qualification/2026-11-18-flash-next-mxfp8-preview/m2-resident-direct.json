@@ -1,0 +1,61 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "mlx_version": "0.32.4",
+  "revision": "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b",
+  "server_sha256": "05da04ae1bd97e9b4d26114c59220974e7112c68862ee0bc08965f8e7e534c1a",
+  "expert_stream": "off",
+  "preview_opt_in": true,
+  "request": {
+    "model": "qwen3.8-flash-next-mxfp8",
+    "input_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ],
+    "max_output_tokens": 12,
+    "sampling": {
+      "temperature": 0,
+      "seed": 0,
+      "top_k": 0,
+      "top_p": 1,
+      "ignore_eos": true
+    }
+  },
+  "output_tokens": [
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    33898,
+    2110,
+    30
+  ],
+  "status": "finished",
+  "mtp": {
+    "available": true,
+    "requested": false,
+    "active": false,
+    "direct_fallback_steps": 0,
+    "draft_tokens": 0,
+    "accepted_tokens": 0,
+    "decode_steps": 0
+  }
+}

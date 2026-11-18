@@ -10,7 +10,7 @@ families retain their existing support.
 | Model | Current selector | Pinned MXFP4 MTP revision | Affine 6-bit MTP | MXFP8 MTP |
 | --- | --- | --- | --- | --- |
 | Qwen 3.8 27B | `qwen3.8-27b:axq`, `qwen3.8-27b:axq-mxfp4`, `qwen3.8-27b:mxfp4` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Loader admits affine 6-bit/group64; no pinned catalog pack | Candidate via `qwen3.8-27b:mxfp8` or `qwen3.8-27b:axq-mxfp8` at `11d81dd63869cc80be5c541520071aa9192192b6` |
-| Qwen 3.8 Flash Next | `qwen3.8-flash-next:axq`, `qwen3.8-flash-next:mxfp4` | `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3` | `qwen3.8-flash-next:axq-6bit` at `3c1dd547d70cb7bf01dd0a89c41c400dde32ed39` (public; on 128 GB run with `--stream-experts off`) | Audited pack and dedicated native-path admission pending |
+| Qwen 3.8 Flash Next | `qwen3.8-flash-next:axq`, `qwen3.8-flash-next:mxfp4` | `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3` | `qwen3.8-flash-next:axq-6bit` at `3c1dd547d70cb7bf01dd0a89c41c400dde32ed39` (public; on 128 GB run with `--stream-experts off`) | Explicit local functional preview at `48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b`. Catalog admission is pending. |
 
 The generic AXQ selectors resolve to MXFP4 MTP. An explicitly named
 unsupported format, such as `qwen3.8-flash-next:axq-4bit`, returns an error;
@@ -30,6 +30,14 @@ their source-model metadata, and rejects other standalone affine widths.
 Older Qwen models share the `qwen3_5` architecture, so architecture name
 alone cannot identify the 27B format scope. Unknown Flash Next exporter
 identities remain blocked. Experimental flags do not bypass this scope.
+
+The Flash Next MXFP8 preview requires `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1`
+for local manifest validation and serving. It uses bounded MXFP8 n-gram
+reads, mode-bound expert paging and the canonical singleton MTP verifier.
+Auto selected paging on MacBook Pro M5 Max 128 GB. The short functional
+control enabled `AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1` and used
+`--prefill-chunk 1 --max-concurrent-requests 1`. See the
+[Flash Next MXFP8 preview receipt](../benchmarks/results/qualification/2026-11-18-flash-next-mxfp8-preview/).
 
 A Flash Next pack from a newer AXQuant exporter loads only when it declares
 its weight layout. `axquant_manifest.json` must use `schema_version`

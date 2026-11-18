@@ -849,7 +849,8 @@ mod hf_config;
 mod model_family;
 pub mod qwen4_exp_layout;
 pub(crate) use qwen4_exp_layout::{
-    audited_mxfp4_runtime_format, experimental_runtime_admission as admit_experimental_flash_next,
+    audited_mxfp4_runtime_format, audited_mxfp8_runtime_format,
+    experimental_runtime_admission as admit_experimental_flash_next,
     validate_qwen4_exp_runtime_formats,
 };
 mod tensor_mapping;

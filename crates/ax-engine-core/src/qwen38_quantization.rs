@@ -31,10 +31,18 @@ pub(crate) fn validate(root: &Path, manifest: &NativeModelManifest) -> Result<()
             return Ok(());
         }
     }
+    let block_mxfp8 = flash_next
+        && manifest.tensors.iter().any(|tensor| {
+            tensor
+                .quantization
+                .as_ref()
+                .is_some_and(|quant| quant.mode == "mxfp8")
+        })
+        && !crate::convert::audited_mxfp8_runtime_format(root, manifest);
     let mut has_product_projection = false;
     for tensor in &manifest.tensors {
         if let Some(quant) = &tensor.quantization {
-            validate_projection(quant, tensor.role, flash_next)
+            validate_projection(quant, tensor.role, block_mxfp8)
                 .map_err(|message| format!("{}: {message}", tensor.name))?;
             has_product_projection |=
                 matches!(quant.mode.as_str(), "mxfp4" | "mxfp8") || is_affine6(quant);
@@ -56,7 +64,7 @@ fn is_affine6(quant: &NativeTensorQuantization) -> bool {
 fn validate_projection(
     quant: &NativeTensorQuantization,
     role: NativeTensorRole,
-    flash_next: bool,
+    block_mxfp8: bool,
 ) -> Result<(), String> {
     let expert = matches!(
         role,
@@ -69,7 +77,7 @@ fn validate_projection(
         return Ok(());
     }
     if quant.mode == "mxfp8" && (quant.bits, quant.group_size) == (8, 32) {
-        if flash_next {
+        if block_mxfp8 {
             return Err("Flash Next MXFP8 admission requires an audited AXQ MTP pack; use the pinned MXFP4 MTP pack".into());
         }
         return Ok(());

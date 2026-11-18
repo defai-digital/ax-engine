@@ -7,6 +7,7 @@ use std::collections::HashMap;
 pub(crate) enum ExpertQuantizationMode {
     Affine,
     Mxfp4,
+    Mxfp8,
 }
 
 impl ExpertQuantizationMode {
@@ -14,7 +15,47 @@ impl ExpertQuantizationMode {
         match self {
             Self::Affine => "affine",
             Self::Mxfp4 => "mxfp4",
+            Self::Mxfp8 => "mxfp8",
         }
+    }
+
+    pub(super) fn packed_mx_bits(self) -> Option<u32> {
+        match self {
+            Self::Affine => None,
+            Self::Mxfp4 => Some(4),
+            Self::Mxfp8 => Some(8),
+        }
+    }
+
+    pub(super) fn validate_mx_pair(
+        self,
+        weight_shape: &[i32],
+        weight_dtype: MlxDtype,
+        scale_shape: &[i32],
+        scale_dtype: MlxDtype,
+        experts: u32,
+    ) -> Result<(), String> {
+        let packed_per_group = self.packed_mx_bits().ok_or_else(|| {
+            "MX expert weight/scale validation requires an explicit MX mode".to_string()
+        })?;
+        // The group width and the U32 word width are both 32.
+        if weight_dtype != MlxDtype::Uint32
+            || scale_dtype != MlxDtype::Uint8
+            || weight_shape.len() != 3
+            || scale_shape.len() != 3
+            || weight_shape.iter().any(|&d| d <= 0)
+            || scale_shape.iter().any(|&d| d <= 0)
+            || weight_shape[..2] != scale_shape[..2]
+            || weight_shape[0] as u32 != experts
+            || u64::from(weight_shape[2] as u32)
+                != u64::from(scale_shape[2] as u32) * u64::from(packed_per_group)
+        {
+            return Err(format!(
+                "incompatible {} expert weight/scale pair: {weight_dtype:?} {weight_shape:?}, {scale_dtype:?} {scale_shape:?}",
+                self.as_str().to_ascii_uppercase()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -33,28 +74,4 @@ pub(super) fn mode_for(
         // bind every projection explicitly; their map cannot fall back here.
         None => Ok(ExpertQuantizationMode::Affine),
     }
-}
-
-pub(super) fn validate_mxfp4_pair(
-    weight_shape: &[i32],
-    weight_dtype: MlxDtype,
-    scale_shape: &[i32],
-    scale_dtype: MlxDtype,
-    experts: u32,
-) -> Result<(), String> {
-    if weight_dtype != MlxDtype::Uint32
-        || scale_dtype != MlxDtype::Uint8
-        || weight_shape.len() != 3
-        || scale_shape.len() != 3
-        || weight_shape.iter().any(|&d| d <= 0)
-        || scale_shape.iter().any(|&d| d <= 0)
-        || weight_shape[..2] != scale_shape[..2]
-        || weight_shape[0] as u64 != u64::from(experts)
-        || u64::from(weight_shape[2] as u32) != u64::from(scale_shape[2] as u32) * 4
-    {
-        return Err(format!(
-            "incompatible MXFP4 expert weight/scale pair: {weight_dtype:?} {weight_shape:?}, {scale_dtype:?} {scale_shape:?}"
-        ));
-    }
-    Ok(())
 }

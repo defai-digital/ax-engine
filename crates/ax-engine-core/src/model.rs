@@ -1334,6 +1334,11 @@ impl NativeModelArtifacts {
         crate::convert::audited_mxfp4_runtime_format(&self.root_dir, &self.manifest)
     }
 
+    /// Whether validated artifacts use the Flash Next MXFP8 functional preview.
+    pub fn audited_qwen4_exp_mxfp8(&self) -> bool {
+        crate::convert::audited_mxfp8_runtime_format(&self.root_dir, &self.manifest)
+    }
+
     /// Build artifacts directly from a pre-parsed manifest and root directory.
     /// Used by the GGUF loader to bypass the JSON manifest file.
     pub fn from_manifest_and_root(

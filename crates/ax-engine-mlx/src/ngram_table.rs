@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ax_engine_core::{NativeTensorDataType, NativeTensorRole, NativeTensorSpec};
-use mlx_sys::{MlxArray, MlxDtype, RowTensorMeta, SafetensorsRowReader};
+use mlx_sys::{MlxArray, MlxDtype, MlxQuantizationMode, RowTensorMeta, SafetensorsRowReader};
 
 /// Errors for [`NgramTable`] open and gather.
 ///
@@ -123,7 +123,7 @@ impl std::fmt::Display for NgramTableError {
             Self::UnsupportedEncoding(detail) => write!(f, "{detail}"),
             Self::MissingQuantization(name) => write!(
                 f,
-                "ngram table: tensor {name:?} needs explicit affine quantization"
+                "ngram table: tensor {name:?} needs explicit quantization"
             ),
             Self::InvalidBits { name, bits } => write!(
                 f,
@@ -302,7 +302,7 @@ fn is_fp8_mxfp_hint(text: &str) -> bool {
 fn unsupported_encoding(name: &str, detail: &str) -> NgramTableError {
     NgramTableError::UnsupportedEncoding(format!(
         "ngram table: tensor {name:?} uses unsupported encoding ({detail}); \
-         table encodings outside dense BF16/F16/F32 and affine U32 2/4/6/8-bit are rejected, \
+         expected dense BF16/F16/F32, affine U32 2/4/6/8-bit, or MXFP8 U32 group32, \
          and Flash Next model support remains incomplete"
     ))
 }
@@ -317,17 +317,36 @@ fn dense_mlx_dtype(dtype: NativeTensorDataType) -> Option<MlxDtype> {
 }
 
 #[derive(Clone, Debug)]
+struct SidecarLocation {
+    name: String,
+    file: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct SidecarPlane {
+    location: SidecarLocation,
+    meta: Box<RowTensorMeta>,
+}
+
+struct QuantizedSource {
+    quant: QuantSpec,
+    scales: SidecarLocation,
+    biases: Option<SidecarLocation>,
+}
+
+#[derive(Default)]
+struct HeaderSelection {
+    required: HashSet<String>,
+    forbidden: HashSet<String>,
+}
+
+#[derive(Clone, Debug)]
 enum ShardEncoding {
     Dense,
     Quantized {
-        bits: u32,
-        group_size: u32,
-        scales_name: String,
-        scales_file: PathBuf,
-        scales_meta: Box<RowTensorMeta>,
-        biases_name: String,
-        biases_file: PathBuf,
-        biases_meta: Box<RowTensorMeta>,
+        quant: QuantSpec,
+        scales: SidecarPlane,
+        biases: Option<SidecarPlane>,
     },
 }
 
@@ -345,15 +364,11 @@ impl Shard {
     fn staging_row_bytes(&self) -> usize {
         match &self.encoding {
             ShardEncoding::Dense => self.weight_meta.row_bytes,
-            ShardEncoding::Quantized {
-                scales_meta,
-                biases_meta,
-                ..
-            } => self
+            ShardEncoding::Quantized { scales, biases, .. } => self
                 .weight_meta
                 .row_bytes
-                .saturating_add(scales_meta.row_bytes)
-                .saturating_add(biases_meta.row_bytes),
+                .saturating_add(scales.meta.row_bytes)
+                .saturating_add(biases.as_ref().map_or(0, |plane| plane.meta.row_bytes)),
         }
     }
 }
@@ -738,11 +753,10 @@ impl PlaneLayout {
 enum BatchLayout {
     Dense(PlaneLayout),
     Quantized {
-        bits: i32,
-        group_size: i32,
+        quant: QuantSpec,
         weight: PlaneLayout,
         scales: PlaneLayout,
-        biases: PlaneLayout,
+        biases: Option<PlaneLayout>,
     },
 }
 
@@ -756,7 +770,10 @@ impl BatchLayout {
                 scales,
                 biases,
                 ..
-            } => vec![weight, scales, biases],
+            } => match biases {
+                Some(biases) => vec![weight, scales, biases],
+                None => vec![weight, scales],
+            },
         }
     }
 }
@@ -769,17 +786,14 @@ fn uniform_batch_layout(shards: &[Shard]) -> Option<BatchLayout> {
         let layout = match &shard.encoding {
             ShardEncoding::Dense => BatchLayout::Dense(PlaneLayout::of(&shard.weight_meta)),
             ShardEncoding::Quantized {
-                bits,
-                group_size,
-                scales_meta,
-                biases_meta,
-                ..
+                quant,
+                scales,
+                biases,
             } => BatchLayout::Quantized {
-                bits: i32::try_from(*bits).ok()?,
-                group_size: i32::try_from(*group_size).ok()?,
+                quant: *quant,
                 weight: PlaneLayout::of(&shard.weight_meta),
-                scales: PlaneLayout::of(scales_meta),
-                biases: PlaneLayout::of(biases_meta),
+                scales: PlaneLayout::of(&scales.meta),
+                biases: biases.as_ref().map(|plane| PlaneLayout::of(&plane.meta)),
             },
         };
         match &found {
@@ -977,9 +991,33 @@ fn select_layer_shards(
     Ok(out)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct QuantSpec {
     bits: u32,
     group_size: u32,
+    mode: MlxQuantizationMode,
+}
+
+impl QuantSpec {
+    fn dequantize(
+        self,
+        weights: &MlxArray,
+        scales: &MlxArray,
+        biases: Option<&MlxArray>,
+    ) -> MlxArray {
+        // quant_spec_for bounds both fields.
+        let group_size = Some(self.group_size as i32);
+        let bits = Some(self.bits as i32);
+        let array = match self.mode {
+            MlxQuantizationMode::Affine => {
+                mlx_sys::dequantize(weights, scales, biases, group_size, bits, None)
+            }
+            mode => mlx_sys::dequantize_with_mode(
+                weights, scales, biases, group_size, bits, mode, None, None, None,
+            ),
+        };
+        mlx_sys::astype(&array, MlxDtype::Float32, None)
+    }
 }
 
 fn quant_spec_for(name: &str, spec: &NativeTensorSpec) -> Result<QuantSpec, NgramTableError> {
@@ -992,10 +1030,20 @@ fn quant_spec_for(name: &str, spec: &NativeTensorSpec) -> Result<QuantSpec, Ngra
         .quantization
         .as_ref()
         .ok_or_else(|| NgramTableError::MissingQuantization(name.to_string()))?;
-    if is_fp8_mxfp_hint(&quant.mode) {
+    let mode = quant.mode.to_ascii_lowercase();
+    if mode == "mxfp8" {
+        if (quant.bits, quant.group_size) != (8, 32) {
+            return Err(unsupported_encoding(name, "MXFP8 requires bits=8/group32"));
+        }
+        return Ok(QuantSpec {
+            bits: 8,
+            group_size: 32,
+            mode: MlxQuantizationMode::Mxfp8,
+        });
+    }
+    if is_fp8_mxfp_hint(&mode) {
         return Err(unsupported_encoding(name, &format!("mode {}", quant.mode)));
     }
-    let mode = quant.mode.to_ascii_lowercase();
     if mode != "affine" && !mode.is_empty() {
         return Err(NgramTableError::InvalidMode {
             name: name.to_string(),
@@ -1017,6 +1065,7 @@ fn quant_spec_for(name: &str, spec: &NativeTensorSpec) -> Result<QuantSpec, Ngra
     Ok(QuantSpec {
         bits: quant.bits,
         group_size: quant.group_size,
+        mode: MlxQuantizationMode::Affine,
     })
 }
 
@@ -1073,9 +1122,9 @@ impl Core {
         let canonical_root = canonical_root_of(root)?;
         let selected = select_layer_shards(specs, layer, expected_shards)?;
         let weight_map = read_weight_map(root)?;
-        let mut file_names: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        let mut files: HashMap<PathBuf, HeaderSelection> = HashMap::new();
         let mut shard_files: Vec<PathBuf> = Vec::new();
-        let mut shard_quant: Vec<Option<QuantSpec>> = Vec::new();
+        let mut shard_quant: Vec<Option<QuantizedSource>> = Vec::new();
         let mut shard_dense: Vec<Option<MlxDtype>> = Vec::new();
         for item in &selected {
             let name = item.spec.name.clone();
@@ -1094,9 +1143,10 @@ impl Core {
                 ));
             }
             let weight_file = join_inside_root(root, &canonical_root, &item.spec.file)?;
-            file_names
+            files
                 .entry(weight_file.clone())
                 .or_default()
+                .required
                 .insert(name.clone());
             shard_files.push(weight_file.clone());
             if item.spec.dtype == NativeTensorDataType::U32 {
@@ -1104,36 +1154,53 @@ impl Core {
                 let base = name
                     .strip_suffix(".weight")
                     .ok_or_else(|| NgramTableError::InvalidName(name.clone()))?;
-                let scales_name = format!("{base}.scales");
-                let biases_name = format!("{base}.biases");
-                let (scales_file, biases_file) = match &weight_map {
-                    Some(map) => {
-                        let scales_rel = map.get(&scales_name).ok_or_else(|| {
+                let mut select = |name: String| -> Result<SidecarLocation, NgramTableError> {
+                    let file = if let Some(map) = &weight_map {
+                        let relative = map.get(&name).ok_or_else(|| {
                             NgramTableError::Sidecar(format!(
-                                "tensor {scales_name:?} missing from index weight_map"
+                                "tensor {name:?} missing from index weight_map"
                             ))
                         })?;
-                        let biases_rel = map.get(&biases_name).ok_or_else(|| {
-                            NgramTableError::Sidecar(format!(
-                                "tensor {biases_name:?} missing from index weight_map"
-                            ))
-                        })?;
-                        (
-                            join_inside_root(root, &canonical_root, Path::new(scales_rel))?,
-                            join_inside_root(root, &canonical_root, Path::new(biases_rel))?,
-                        )
-                    }
-                    None => (weight_file.clone(), weight_file.clone()),
+                        join_inside_root(root, &canonical_root, Path::new(relative))?
+                    } else {
+                        weight_file.clone()
+                    };
+                    files
+                        .entry(file.clone())
+                        .or_default()
+                        .required
+                        .insert(name.clone());
+                    Ok(SidecarLocation { name, file })
                 };
-                file_names
-                    .entry(scales_file)
-                    .or_default()
-                    .insert(scales_name);
-                file_names
-                    .entry(biases_file)
-                    .or_default()
-                    .insert(biases_name);
-                shard_quant.push(Some(quant));
+                let scales = select(format!("{base}.scales"))?;
+                let biases_name = format!("{base}.biases");
+                let biases = if quant.mode == MlxQuantizationMode::Affine {
+                    Some(select(biases_name)?)
+                } else {
+                    for bias in [biases_name, format!("{base}.bias")] {
+                        if weight_map
+                            .as_ref()
+                            .is_some_and(|map| map.contains_key(&bias))
+                        {
+                            return Err(NgramTableError::Sidecar(format!(
+                                "MXFP8 tensor {name:?} forbids {bias:?} in index weight_map"
+                            )));
+                        }
+                        for file in [&weight_file, &scales.file] {
+                            files
+                                .entry(file.clone())
+                                .or_default()
+                                .forbidden
+                                .insert(bias.clone());
+                        }
+                    }
+                    None
+                };
+                shard_quant.push(Some(QuantizedSource {
+                    quant,
+                    scales,
+                    biases,
+                }));
                 shard_dense.push(None);
             } else {
                 let dtype = check_dense_spec(&name, &item.spec)?;
@@ -1142,11 +1209,18 @@ impl Core {
             }
         }
         let mut readers: HashMap<PathBuf, SafetensorsRowReader> = HashMap::new();
-        for (file, names) in &file_names {
-            let mut sorted: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-            sorted.sort_unstable();
-            let reader = SafetensorsRowReader::open_selected(file, &sorted, max_gather_bytes)
-                .map_err(|e| NgramTableError::Reader(format!("{}: {e}", file.display())))?;
+        for (file, selection) in &files {
+            let mut required: Vec<&str> = selection.required.iter().map(String::as_str).collect();
+            let mut forbidden: Vec<&str> = selection.forbidden.iter().map(String::as_str).collect();
+            required.sort_unstable();
+            forbidden.sort_unstable();
+            let reader = SafetensorsRowReader::open_selected_rejecting(
+                file,
+                &required,
+                &forbidden,
+                max_gather_bytes,
+            )
+            .map_err(|e| NgramTableError::Reader(format!("{}: {e}", file.display())))?;
             readers.insert(file.clone(), reader);
         }
         let mut shards: Vec<Shard> = Vec::new();
@@ -1168,7 +1242,8 @@ impl Core {
                 shard_quant.get(pos).and_then(|q| q.as_ref()),
                 shard_dense.get(pos).and_then(|d| *d),
             ) {
-                (Some(quant), None) => {
+                (Some(source), None) => {
+                    let quant = source.quant;
                     if weight_meta.dtype != MlxDtype::Uint32 {
                         return Err(NgramTableError::DtypeMismatch {
                             name: name.clone(),
@@ -1203,82 +1278,48 @@ impl Core {
                         });
                     }
                     let num_groups = embedding_width / (quant.group_size as usize);
-                    let base = name
-                        .strip_suffix(".weight")
-                        .ok_or_else(|| NgramTableError::InvalidName(name.clone()))?;
-                    let scales_name = format!("{base}.scales");
-                    let biases_name = format!("{base}.biases");
-                    let (scales_file, biases_file) = match &weight_map {
-                        Some(map) => {
-                            let s = map.get(&scales_name).ok_or_else(|| {
+                    let read_meta = |location: &SidecarLocation| {
+                        let meta = readers
+                            .get(&location.file)
+                            .and_then(|reader| reader.tensor_meta(&location.name))
+                            .ok_or_else(|| {
                                 NgramTableError::Sidecar(format!(
-                                    "tensor {scales_name:?} missing from index"
+                                    "tensor {:?} missing after open",
+                                    location.name
                                 ))
                             })?;
-                            let b = map.get(&biases_name).ok_or_else(|| {
-                                NgramTableError::Sidecar(format!(
-                                    "tensor {biases_name:?} missing from index"
-                                ))
-                            })?;
-                            (
-                                join_inside_root(root, &canonical_root, Path::new(s))?,
-                                join_inside_root(root, &canonical_root, Path::new(b))?,
-                            )
+                        if (meta.rows, meta.cols) != (weight_meta.rows, num_groups) {
+                            return Err(NgramTableError::Sidecar(format!(
+                                "tensor {:?} needs {} rows and {num_groups} groups",
+                                location.name, weight_meta.rows
+                            )));
                         }
-                        None => (weight_file.clone(), weight_file.clone()),
+                        Ok(SidecarPlane {
+                            location: location.clone(),
+                            meta: Box::new(meta),
+                        })
                     };
-                    let scales_meta = readers
-                        .get(&scales_file)
-                        .and_then(|r| r.tensor_meta(&scales_name))
-                        .ok_or_else(|| {
-                            NgramTableError::Sidecar(format!(
-                                "tensor {scales_name:?} missing after open"
-                            ))
-                        })?;
-                    let biases_meta = readers
-                        .get(&biases_file)
-                        .and_then(|r| r.tensor_meta(&biases_name))
-                        .ok_or_else(|| {
-                            NgramTableError::Sidecar(format!(
-                                "tensor {biases_name:?} missing after open"
-                            ))
-                        })?;
-                    if scales_meta.rows != weight_meta.rows || biases_meta.rows != weight_meta.rows
-                    {
-                        return Err(NgramTableError::Sidecar(format!(
-                            "tensor {name:?} sidecar rows differ from weight rows"
-                        )));
-                    }
-                    if scales_meta.cols != num_groups || biases_meta.cols != num_groups {
-                        return Err(NgramTableError::Sidecar(format!(
-                            "tensor {name:?} sidecar cols differ from groups {num_groups}"
-                        )));
-                    }
-                    let ok_dtype = |d: MlxDtype| {
-                        matches!(
-                            d,
-                            MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
-                        )
+                    let scales = read_meta(&source.scales)?;
+                    let biases = source.biases.as_ref().map(read_meta).transpose()?;
+                    let valid_dtype = match &biases {
+                        Some(biases) => {
+                            matches!(
+                                scales.meta.dtype,
+                                MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
+                            ) && scales.meta.dtype == biases.meta.dtype
+                        }
+                        None => scales.meta.dtype == MlxDtype::Uint8,
                     };
-                    if !ok_dtype(scales_meta.dtype) || !ok_dtype(biases_meta.dtype) {
+                    if !valid_dtype {
                         return Err(NgramTableError::Sidecar(format!(
-                            "tensor {name:?} sidecar dtype must be dense float"
-                        )));
-                    }
-                    if scales_meta.dtype != biases_meta.dtype {
-                        return Err(NgramTableError::Sidecar(format!(
-                            "tensor {name:?} scales/biases dtype differ"
+                            "tensor {name:?} has invalid scale or bias dtype for {:?}",
+                            quant.mode
                         )));
                     }
                     ShardEncoding::Quantized {
-                        bits: quant.bits,
-                        group_size: quant.group_size,
-                        scales_name,
-                        scales_file,
-                        scales_meta: Box::new(scales_meta),
-                        biases_name,
-                        biases_file,
-                        biases_meta: Box::new(biases_meta),
+                        quant,
+                        scales,
+                        biases,
                     }
                 }
                 (None, Some(want)) => {
@@ -1360,30 +1401,21 @@ impl Core {
             if cancel.is_some_and(prefetch::CancelFlag::is_cancelled) {
                 break;
             }
-            if let ShardEncoding::Quantized {
-                scales_name,
-                scales_file,
-                biases_name,
-                biases_file,
-                ..
-            } = &shard.encoding
-            {
-                let scales_reader = self.readers.get(scales_file).ok_or_else(|| {
-                    format!("warm scales: reader missing for {}", scales_file.display())
-                })?;
-                total = total.saturating_add(
-                    scales_reader.warm_tensor_cancellable(scales_name, || {
-                        cancel.is_some_and(prefetch::CancelFlag::is_cancelled)
-                    })?,
-                );
-                let biases_reader = self.readers.get(biases_file).ok_or_else(|| {
-                    format!("warm biases: reader missing for {}", biases_file.display())
-                })?;
-                total = total.saturating_add(
-                    biases_reader.warm_tensor_cancellable(biases_name, || {
-                        cancel.is_some_and(prefetch::CancelFlag::is_cancelled)
-                    })?,
-                );
+            if let ShardEncoding::Quantized { scales, biases, .. } = &shard.encoding {
+                for plane in std::iter::once(scales).chain(biases.as_ref()) {
+                    let location = &plane.location;
+                    let reader = self.readers.get(&location.file).ok_or_else(|| {
+                        format!(
+                            "warm sidecar: reader missing for {}",
+                            location.file.display()
+                        )
+                    })?;
+                    total = total.saturating_add(
+                        reader.warm_tensor_cancellable(&location.name, || {
+                            cancel.is_some_and(prefetch::CancelFlag::is_cancelled)
+                        })?,
+                    );
+                }
             }
         }
         Ok(total)
@@ -1689,16 +1721,10 @@ impl Core {
                     .ok_or_else(|| NgramTableError::Overflow("local row".to_string()))?;
                 let mut sources: Vec<(&PathBuf, &str)> =
                     vec![(&shard.weight_file, &shard.weight_name)];
-                if let ShardEncoding::Quantized {
-                    scales_name,
-                    scales_file,
-                    biases_name,
-                    biases_file,
-                    ..
-                } = &shard.encoding
-                {
-                    sources.push((scales_file, scales_name));
-                    sources.push((biases_file, biases_name));
+                if let ShardEncoding::Quantized { scales, biases, .. } = &shard.encoding {
+                    for plane in std::iter::once(scales).chain(biases.as_ref()) {
+                        sources.push((&plane.location.file, &plane.location.name));
+                    }
                 }
                 if sources.len() != cursors.len() {
                     return Err(NgramTableError::Internal(
@@ -1756,18 +1782,15 @@ impl Core {
                 None,
             )),
             BatchLayout::Quantized {
-                bits,
-                group_size,
+                quant,
                 weight,
                 scales,
                 biases,
             } => {
                 let w = array_of(&staging[0], weight);
                 let s = array_of(&staging[1], scales);
-                let b = array_of(&staging[2], biases);
-                let deq =
-                    mlx_sys::dequantize(&w, &s, Some(&b), Some(*group_size), Some(*bits), None);
-                Ok(mlx_sys::astype(&deq, MlxDtype::Float32, None))
+                let b = biases.as_ref().map(|plane| array_of(&staging[2], plane));
+                Ok(quant.dequantize(&w, &s, b.as_ref()))
             }
         }
     }
@@ -1789,36 +1812,29 @@ impl Core {
                 Ok(mlx_sys::astype(&rows, MlxDtype::Float32, None))
             }
             ShardEncoding::Quantized {
-                bits,
-                group_size,
-                scales_name,
-                scales_file,
-                biases_name,
-                biases_file,
-                ..
+                quant,
+                scales,
+                biases,
             } => {
-                let scales_reader = self.readers.get(scales_file).ok_or_else(|| {
-                    NgramTableError::Internal("scales reader missing".to_string())
-                })?;
-                let biases_reader = self.readers.get(biases_file).ok_or_else(|| {
-                    NgramTableError::Internal("biases reader missing".to_string())
-                })?;
+                let gather_sidecar = |plane: &SidecarPlane| {
+                    let location = &plane.location;
+                    self.readers
+                        .get(&location.file)
+                        .ok_or_else(|| {
+                            NgramTableError::Internal(format!(
+                                "reader missing for {}",
+                                location.name
+                            ))
+                        })?
+                        .gather_rows(&location.name, local_ids)
+                        .map_err(NgramTableError::Gather)
+                };
                 let w = weight_reader
                     .gather_rows(&shard.weight_name, local_ids)
                     .map_err(NgramTableError::Gather)?;
-                let s = scales_reader
-                    .gather_rows(scales_name, local_ids)
-                    .map_err(NgramTableError::Gather)?;
-                let b = biases_reader
-                    .gather_rows(biases_name, local_ids)
-                    .map_err(NgramTableError::Gather)?;
-                let group_i32 = i32::try_from(*group_size)
-                    .map_err(|_| NgramTableError::Overflow("group i32".to_string()))?;
-                let bits_i32 = i32::try_from(*bits)
-                    .map_err(|_| NgramTableError::Overflow("bits i32".to_string()))?;
-                let deq =
-                    mlx_sys::dequantize(&w, &s, Some(&b), Some(group_i32), Some(bits_i32), None);
-                Ok(mlx_sys::astype(&deq, MlxDtype::Float32, None))
+                let s = gather_sidecar(scales)?;
+                let b = biases.as_ref().map(gather_sidecar).transpose()?;
+                Ok(quant.dequantize(&w, &s, b.as_ref()))
             }
         }
     }
@@ -2007,6 +2023,146 @@ mod tests {
         let scales = parts[1].data_f32().to_vec();
         let biases = parts[2].data_f32().to_vec();
         (packed, scales, biases, packed_cols, groups)
+    }
+
+    #[test]
+    fn mxfp8_gathers_only_weight_and_scale_rows() {
+        let dir = test_dir("mxfp8");
+        let n0 = "model.layers.1.ple.ngram_embedding.shard_0";
+        let n1 = "model.layers.1.ple.ngram_embedding.shard_1";
+        let weight0 = format!("{n0}.weight");
+        let weight1 = format!("{n1}.weight");
+        let scale0 = format!("{n0}.scales");
+        let scale1 = format!("{n1}.scales");
+        let bias0 = format!("{n0}.biases");
+        let packed = [
+            [0x3830_2820; 16],
+            [0xb8b0_a8a0; 16],
+            [0x4038_3028; 16],
+            [0xc0b8_b0a8; 16],
+        ]
+        .concat();
+        let scales = [127, 128, 129, 130, 125, 126, 127, 128];
+        for (name, file, words) in [
+            (&weight0, "a.safetensors", &packed[..32]),
+            (&weight1, "b.safetensors", &packed[32..]),
+        ] {
+            write_st(
+                &dir.join(file),
+                vec![(
+                    name.clone(),
+                    "U32".to_string(),
+                    vec![2, 16],
+                    u32_to_bytes(words),
+                )],
+            );
+        }
+        let scale_tensors = vec![
+            (
+                scale0.clone(),
+                "U8".to_string(),
+                vec![2, 2],
+                scales[..4].to_vec(),
+            ),
+            (
+                scale1.clone(),
+                "U8".to_string(),
+                vec![2, 2],
+                scales[4..].to_vec(),
+            ),
+        ];
+        write_st(&dir.join("s.safetensors"), scale_tensors.clone());
+        let index = dir.join("model.safetensors.index.json");
+        let mut weight_map = serde_json::json!({
+            (weight0.clone()): "a.safetensors",
+            (weight1.clone()): "b.safetensors",
+            (scale0.clone()): "s.safetensors",
+            (scale1.clone()): "s.safetensors",
+        });
+        let write_index = |map: &serde_json::Value| {
+            std::fs::write(&index, serde_json::json!({ "weight_map": map }).to_string()).unwrap();
+        };
+        write_index(&weight_map);
+        let mut specs = [
+            quant_spec(&weight0, 1, "a.safetensors", 2, 16, 8, 32),
+            quant_spec(&weight1, 1, "b.safetensors", 2, 16, 8, 32),
+        ];
+        for spec in &mut specs {
+            spec.quantization.as_mut().unwrap().mode = "mxfp8".to_string();
+        }
+        let open = || NgramTable::open(&dir, &specs, 1, 2, 64, 1 << 20);
+        let table = open().unwrap();
+        assert!(table.core.batch.is_some());
+        assert_eq!(table.payload_bytes_read(), 0);
+        let rows = [3usize, 0, 3, 2];
+        let gathered = table.gather(&rows.map(|row| row as u64)).unwrap();
+        let reference_weights = MlxArray::from_raw_data(
+            packed.as_ptr().cast(),
+            packed.len() * 4,
+            &[4, 16],
+            MlxDtype::Uint32,
+        );
+        let reference_scales =
+            MlxArray::from_raw_data(scales.as_ptr(), scales.len(), &[4, 2], MlxDtype::Uint8);
+        let reference = mlx_sys::dequantize_with_mode(
+            &reference_weights,
+            &reference_scales,
+            None,
+            Some(32),
+            Some(8),
+            MlxQuantizationMode::Mxfp8,
+            None,
+            Some(MlxDtype::Float32),
+            None,
+        );
+        let shard = table
+            .core
+            .gather_shard_block(&table.core.shards[0], &[1])
+            .unwrap();
+        mlx_sys::eval(&[&gathered, &reference, &shard]);
+        let want: Vec<_> = rows
+            .into_iter()
+            .flat_map(|row| {
+                reference.data_f32()[row * 64..(row + 1) * 64]
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        assert_eq!(gathered.data_f32(), want);
+        assert_eq!(shard.data_f32(), &reference.data_f32()[64..128]);
+        let payload = 4 * (16 * 4 + 2);
+        assert_eq!(table.payload_bytes_read(), payload);
+        assert_eq!(table.core.warm_aux_planes().unwrap(), scales.len() as u64);
+        assert_eq!(table.payload_bytes_read(), payload);
+        drop(table);
+
+        let mut wrong_group = specs.clone();
+        wrong_group[0].quantization.as_mut().unwrap().group_size = 64;
+        assert!(
+            NgramTable::open(&dir, &wrong_group, 1, 2, 64, 1 << 20)
+                .err()
+                .unwrap()
+                .contains("MXFP8 requires bits=8/group32")
+        );
+        weight_map[&bias0] = serde_json::json!("s.safetensors");
+        write_index(&weight_map);
+        assert!(open().err().unwrap().contains("forbids"));
+        weight_map.as_object_mut().unwrap().remove(&bias0);
+        write_index(&weight_map);
+        let mut invalid = scale_tensors.clone();
+        invalid.push((bias0, "U8".to_string(), vec![2, 2], vec![0; 4]));
+        write_st(&dir.join("s.safetensors"), invalid);
+        assert!(open().err().unwrap().contains("forbidden tensor"));
+        let mut invalid = scale_tensors;
+        invalid[0].1 = "F32".to_string();
+        invalid[0].3 = f32_to_bytes(&[1.0; 4]);
+        write_st(&dir.join("s.safetensors"), invalid);
+        assert!(
+            open()
+                .err()
+                .unwrap()
+                .contains("invalid scale or bias dtype")
+        );
     }
 
     #[test]

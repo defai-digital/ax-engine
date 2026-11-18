@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use mlx_sys::{MlxDtype, RowTensorMeta, SafetensorsRowReader};
 
-use super::quantization::{
-    ExpertQuantizationMode, ExpertQuantizationModes, mode_for, validate_mxfp4_pair,
-};
+use super::quantization::{ExpertQuantizationMode, ExpertQuantizationModes, mode_for};
 use super::{ExpertProj, ExpertStreamManifest, LayerExpertStack, is_quantization_sidecar_name};
 use crate::weights::QuantizedWeight;
 
@@ -96,7 +94,7 @@ impl SelectedExpertRows {
             }
         }
         if tensors.iter().any(|t| forbidden.contains(&t.name)) {
-            return Err("selected experts: MXFP4 expert bias is unsupported".into());
+            return Err("selected experts: MX expert bias is unsupported".into());
         }
         let forbidden: Vec<&str> = forbidden.iter().map(String::as_str).collect();
         let mut readers = Vec::new();
@@ -139,12 +137,10 @@ impl SelectedExpertRows {
                 return Err("selected experts: duplicate projection".into());
             }
             let mode = mode_for(modes, &tensor.name)?;
-            let supported = match mode {
-                ExpertQuantizationMode::Affine => {
-                    matches!((tensor.bits, tensor.group_size), (2, 32) | (4 | 6, 64))
-                }
-                ExpertQuantizationMode::Mxfp4 => (tensor.bits, tensor.group_size) == (4, 32),
-            };
+            let supported = mode.packed_mx_bits().map_or_else(
+                || matches!((tensor.bits, tensor.group_size), (2, 32) | (4 | 6, 64)),
+                |bits| (tensor.bits, tensor.group_size) == (bits, 32),
+            );
             if tensor.expert_axis != 0 || tensor.num_experts != manifest.num_experts || !supported {
                 return Err("selected experts: unsupported quantized expert layout".into());
             }
@@ -178,8 +174,8 @@ impl SelectedExpertRows {
                     }
                     Some(biases)
                 }
-                ExpertQuantizationMode::Mxfp4 => {
-                    validate_mxfp4_pair(
+                ExpertQuantizationMode::Mxfp4 | ExpertQuantizationMode::Mxfp8 => {
+                    mode.validate_mx_pair(
                         &weight.meta.shape,
                         weight.meta.dtype,
                         &scales.meta.shape,
@@ -394,10 +390,10 @@ mod tests {
                 Some(parts[1].clone()),
                 parts.get(2).cloned(),
             );
-            weight.mode = if mode == MlxQuantizationMode::Mxfp4 {
-                "mxfp4"
-            } else {
-                "affine"
+            weight.mode = match mode {
+                MlxQuantizationMode::Mxfp4 => "mxfp4",
+                MlxQuantizationMode::Mxfp8 => "mxfp8",
+                _ => "affine",
             }
             .into();
             weight.bits = bits;
@@ -763,29 +759,42 @@ mod tests {
         assert_eq!(decoded.data_f32(), expected);
     }
 
-    fn mxfp4_modes(manifest: &ExpertStreamManifest) -> ExpertQuantizationModes {
+    fn bound_modes(
+        manifest: &ExpertStreamManifest,
+        mode: ExpertQuantizationMode,
+    ) -> ExpertQuantizationModes {
         manifest
             .tensors
             .iter()
             .filter(|t| !is_quantization_sidecar_name(&t.name))
-            .map(|t| (t.name.clone(), ExpertQuantizationMode::Mxfp4))
+            .map(|t| (t.name.clone(), mode))
             .collect()
     }
 
     #[test]
-    fn mxfp4_paging_preserves_scales_routing_outputs_and_recovery() {
-        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
-            let root = std::env::temp_dir()
-                .join(format!("ax-mxfp4-paging-{}-{dtype:?}", std::process::id()));
+    fn mx_paging_preserves_scales_routing_outputs_and_recovery() {
+        let formats = [
+            (ExpertQuantizationMode::Mxfp4, MlxQuantizationMode::Mxfp4, 4),
+            (ExpertQuantizationMode::Mxfp8, MlxQuantizationMode::Mxfp8, 8),
+        ];
+        let dtypes = [MlxDtype::Float32, MlxDtype::Bfloat16];
+        for ((mode, mlx_mode, bits), dtype) in formats
+            .into_iter()
+            .flat_map(|format| dtypes.map(|dtype| (format, dtype)))
+        {
+            let root = std::env::temp_dir().join(format!(
+                "ax-{}-paging-{}-{dtype:?}",
+                mode.as_str(),
+                std::process::id()
+            ));
             std::fs::create_dir_all(&root).unwrap();
-            let (manifest, resident) =
-                fixture_with_mode(&root, 4, 32, dtype, MlxQuantizationMode::Mxfp4);
-            let modes = mxfp4_modes(&manifest);
+            let (manifest, resident) = fixture_with_mode(&root, bits, 32, dtype, mlx_mode);
+            let modes = bound_modes(&manifest, mode);
             let reader =
                 SelectedExpertRows::open(&manifest, &root, 0, 1 << 20, Some(&modes)).unwrap();
             assert_eq!(reader.payload_bytes_read(), 0);
             let row_bytes = reader.bytes_per_expert;
-            assert_eq!(row_bytes, 3 * (64 * 8 * 4 + 64 * 2));
+            assert_eq!(row_bytes, 3 * 64 * (2 * bits as usize * 4 + 2));
             let stack = reader.gather(&[7, 2, 7, 5]).unwrap();
             let ids = astype(
                 &MlxArray::from_f32_slice(&[7., 2., 7., 5.]),
@@ -797,7 +806,7 @@ mod tests {
                 (stack.up_exps.as_ref().unwrap(), &resident.up),
                 (stack.down_exps.as_ref().unwrap(), &resident.down),
             ] {
-                assert_eq!(actual.mode, "mxfp4");
+                assert_eq!(actual.mode, mode.as_str());
                 assert!(actual.biases.is_none());
                 assert_eq!(actual.scales.as_ref().unwrap().dtype(), MlxDtype::Uint8);
                 equal(
@@ -820,7 +829,7 @@ mod tests {
                 .unwrap(),
             );
             let full = pager.ensure_layer(0).unwrap();
-            assert_eq!(full.gate_exps.as_ref().unwrap().mode, "mxfp4");
+            assert_eq!(full.gate_exps.as_ref().unwrap().mode, mode.as_str());
             equal(
                 &full.gate_exps.as_ref().unwrap().weight,
                 &resident.gate.weight,
@@ -908,7 +917,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (manifest, _) =
             fixture_with_mode(&root, 4, 32, MlxDtype::Float32, MlxQuantizationMode::Mxfp4);
-        let modes = mxfp4_modes(&manifest);
+        let modes = bound_modes(&manifest, ExpertQuantizationMode::Mxfp4);
         for changed in [ExpertQuantizationModes::new(), {
             let mut m = modes.clone();
             m.insert("unknown".into(), ExpertQuantizationMode::Mxfp4);

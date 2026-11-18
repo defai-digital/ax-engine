@@ -315,7 +315,23 @@ impl SafetensorsRowReader {
         tensor_names: &[&str],
         max_gather_bytes: usize,
     ) -> Result<Self, String> {
-        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 2, &[])
+        Self::open_selected_rejecting(path, tensor_names, &[], max_gather_bytes)
+    }
+
+    /// Open selected rank-two tensors and reject forbidden entries in the header.
+    pub fn open_selected_rejecting(
+        path: &Path,
+        tensor_names: &[&str],
+        forbidden_names: &[&str],
+        max_gather_bytes: usize,
+    ) -> Result<Self, String> {
+        Self::open_inner(
+            path,
+            Some(tensor_names),
+            max_gather_bytes,
+            2,
+            forbidden_names,
+        )
     }
 
     /// Open selected rank-3 stacks for bounded axis-zero gathers.
