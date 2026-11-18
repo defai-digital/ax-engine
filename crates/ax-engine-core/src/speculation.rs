@@ -42,20 +42,28 @@ pub enum CommitError {
     PredictionCount,
 }
 
-/// A checked host-side oracle for backend conformance tests and replay tools.
+/// The greedy verify walk shared by every backend: accepted drafts followed by
+/// the target's own token at the first mismatch (or after the last draft).
 /// `predicted[i]` is the target choice after row `i`, not the input at that row.
-pub fn plan_greedy_commit(
-    drafts: &[u32],
-    predicted: &[u32],
-    budget: usize,
-    eos: &[u32],
-) -> Result<GreedyCommit, CommitError> {
+/// Fails closed unless there is exactly one prediction per draft plus a bonus.
+pub fn greedy_verify(drafts: &[u32], predicted: &[u32]) -> Result<(usize, Vec<u32>), CommitError> {
     if drafts.len().checked_add(1) != Some(predicted.len()) {
         return Err(CommitError::PredictionCount);
     }
     let accepted_drafts = accepted_prefix_len(drafts, predicted);
     let mut verified = drafts[..accepted_drafts].to_vec();
     verified.push(predicted[accepted_drafts]);
+    Ok((accepted_drafts, verified))
+}
+
+/// A checked host-side oracle for backend conformance tests and replay tools.
+pub fn plan_greedy_commit(
+    drafts: &[u32],
+    predicted: &[u32],
+    budget: usize,
+    eos: &[u32],
+) -> Result<GreedyCommit, CommitError> {
+    let (accepted_drafts, verified) = greedy_verify(drafts, predicted)?;
     let (emitted, retained_draft_rows) = limit_commit(&verified, accepted_drafts, budget, eos);
     Ok(GreedyCommit {
         accepted_drafts,
@@ -69,21 +77,38 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// The loop-based rule `limit_commit` replaced, kept as an independent reference.
+    fn reference_limit_commit(
+        tokens: &[u32],
+        accepted_drafts: usize,
+        budget: usize,
+        eos: &[u32],
+    ) -> (Vec<u32>, usize) {
+        let mut emitted = Vec::new();
+        for &token in tokens {
+            if emitted.len() >= budget {
+                break;
+            }
+            emitted.push(token);
+            if eos.contains(&token) {
+                break;
+            }
+        }
+        let retained = emitted.len().min(accepted_drafts);
+        (emitted, retained)
+    }
+
     proptest! {
         #[test]
-        fn commit_never_crosses_budget_or_first_eos(
+        fn limit_commit_matches_the_reference_loop(
             tokens in proptest::collection::vec(0u32..12, 0..40),
-            accepted in 0usize..40, budget in 0usize..40, eos in 0u32..12,
+            accepted in 0usize..40, budget in 0usize..40,
+            eos in proptest::collection::vec(0u32..12, 0..3),
         ) {
-            let (emitted, retained) = limit_commit(&tokens, accepted, budget, &[eos]);
-            prop_assert!(emitted.len() <= budget);
-            prop_assert!(tokens.starts_with(&emitted));
-            prop_assert_eq!(retained, emitted.len().min(accepted));
-            if let Some(index) = tokens.iter().take(budget).position(|token| *token == eos) {
-                prop_assert_eq!(emitted.len(), index + 1);
-            } else {
-                prop_assert_eq!(emitted.len(), tokens.len().min(budget));
-            }
+            let actual = limit_commit(&tokens, accepted, budget, &eos);
+            prop_assert!(actual.0.len() <= budget);
+            prop_assert!(tokens.starts_with(&actual.0));
+            prop_assert_eq!(actual, reference_limit_commit(&tokens, accepted, budget, &eos));
         }
     }
 }

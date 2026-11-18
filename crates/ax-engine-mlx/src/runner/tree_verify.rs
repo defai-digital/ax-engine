@@ -13,6 +13,8 @@
 //! `AX_MLX_TREE_VERIFY` is off unless set to a truthy value. Unset or `0`
 //! leaves the linear DFlash2 verify path in place.
 
+use ax_engine_core::speculation::limit_commit;
+
 /// Most nodes a tree in this increment may hold.
 pub(crate) const MAX_TREE_NODES: usize = 4;
 /// Draft positions that may branch. Position 0 is the first draft token.
@@ -257,10 +259,6 @@ pub(crate) enum TreeVerifyError {
     NoBranch,
 }
 
-/// How many committed tokens survive the budget and EOS, and how many of those
-/// are draft rows the cache must retain.
-pub(crate) use ax_engine_core::speculation::limit_commit;
-
 fn accepted_prefix_ok(drafts: &[u32], accepted: usize, committed: &[u32]) -> bool {
     accepted <= drafts.len()
         && committed.len() == accepted + 1
@@ -384,7 +382,7 @@ mod tests {
         drafts: &[u32],
         predicted: Vec<u32>,
     ) -> BranchVerification<S> {
-        let (accepted, committed) = greedy_walk(drafts, &predicted);
+        let (accepted, committed) = greedy_walk(drafts, &predicted).unwrap();
         BranchVerification {
             accepted_drafts: accepted,
             committed,
@@ -472,7 +470,7 @@ mod tests {
         let primary = [10, 20];
         let tree = DraftTree::from_top2(&primary, &[Some(11), Some(21)]).unwrap();
         let predicted = linear_target(&primary, 30, &primary);
-        let (linear_accepted, linear_tokens) = greedy_walk(&primary, &predicted);
+        let (linear_accepted, linear_tokens) = greedy_walk(&primary, &predicted).unwrap();
         let decision = verify_draft_tree(&tree, &primary.to_vec(), unlimited(), |state, drafts| {
             verify_linear(state, drafts, linear_target(&primary, 30, drafts))
         })

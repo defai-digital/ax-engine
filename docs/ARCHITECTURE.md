@@ -63,9 +63,14 @@ prefixes, EOS/output-budget cuts, and retained draft-row counts. MLX linear and
 tree verification use those rules while keeping tensor execution, cache replay,
 and rollback in `ax-engine-mlx`. The checked host oracle is also exercised against
 the versioned `tests/fixtures/speculation-v1.json` corpus shared with
-`ax-engine-sglang`; the fixture manifest pins the benchmark evidence schema and
-corpus by SHA-256. This shares correctness contracts across runtimes without
-adding CUDA or Python dependencies to the Rust core.
+`ax-engine-sglang`, and the MLX linear commit path is tested against the same
+corpus. The fixture manifest pins the mirrored corpus and the
+`ax.engine.benchmark.v1` evidence schema by SHA-256 so the copies cannot drift
+silently; when an `ax-engine-sglang` checkout is present the test also compares
+them byte for byte. The benchmark schema is mirrored for that drift check only:
+this repository's benchmark scripts do not emit or validate against it yet.
+This shares correctness contracts across runtimes without adding CUDA or
+Python dependencies to the Rust core.
 
 ## Dependency Boundaries
 

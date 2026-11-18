@@ -1,0 +1,2 @@
+# Contract assets are SHA-256 pinned; keep their bytes exactly as mirrored.
+*.json -text

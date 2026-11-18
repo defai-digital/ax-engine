@@ -808,16 +808,13 @@ fn note_mlx_eval_failure(slot: &RefCell<Option<String>>, error: &str) {
     *slot.borrow_mut() = Some(error.to_owned());
 }
 
-/// The greedy speculative walk: `drafts[i]` is checked against `predicted[i]`,
-/// the target's choice after row `i` of the verify window. Returns how many
-/// drafts were accepted and the committed tokens: the accepted drafts followed
-/// by the target's own token at the first mismatch (or after the last draft).
-pub(crate) fn greedy_walk(drafts: &[u32], predicted: &[u32]) -> (usize, Vec<u32>) {
-    debug_assert_eq!(predicted.len(), drafts.len() + 1);
-    let accepted = ax_engine_core::speculation::accepted_prefix_len(drafts, predicted);
-    let mut tokens = drafts[..accepted].to_vec();
-    tokens.push(predicted[accepted]);
-    (accepted, tokens)
+/// The greedy speculative walk, delegated to the shared core rule:
+/// `drafts[i]` is checked against `predicted[i]`, the target's choice after
+/// row `i` of the verify window. Returns how many drafts were accepted and the
+/// committed tokens, or `None` (in release builds too) unless there is exactly
+/// one prediction per draft plus the bonus prediction.
+pub(crate) fn greedy_walk(drafts: &[u32], predicted: &[u32]) -> Option<(usize, Vec<u32>)> {
+    ax_engine_core::speculation::greedy_verify(drafts, predicted).ok()
 }
 
 /// Cut a linear verify window the way the tree path does, before anything is
@@ -831,8 +828,7 @@ fn linear_window_commit(
 ) -> (Vec<u32>, usize) {
     let (emitted, emitted_drafts) =
         ax_engine_core::speculation::limit_commit(new_tokens, accepted, budget, eos);
-    let keep = 1 + emitted_drafts.min(accepted);
-    (emitted, keep)
+    (emitted, 1 + emitted_drafts)
 }
 
 /// Draft rows that survive the EOS and output-budget cut. Acceptance telemetry
@@ -1665,20 +1661,24 @@ impl MlxRunner {
             ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize
         });
         let drafts: &[u32] = &drafts_owned;
-        if predicted.len() != verify_len || drafts.len() + 1 != verify_len {
+        let walk = if predicted.len() == verify_len {
+            greedy_walk(drafts, &predicted)
+        } else {
+            None
+        };
+        let Some((accepted, new_tokens)) = walk else {
             // Cannot happen for a well-formed verify. Rewind the drafter and
             // leave DFlash2. Full-attention rebind, when it ran, stays.
             if let Some(dflash) = state.dflash2.as_mut() {
                 disable_dflash2_shape_mismatch(dflash, cursor);
             }
             return None;
-        }
+        };
 
         // --- Accept and commit ---------------------------------------------
         // Cut at EOS and the output budget before commit. Adopting the full
         // window would leave KV, GDN state, and captured rows for drafts the
         // caller never emits. `keep == verify_len` is the only full adopt.
-        let (accepted, new_tokens) = greedy_walk(drafts, &predicted);
         let (emitted, keep) =
             linear_window_commit(&new_tokens, accepted, remaining, options.terminal_token_ids);
         let rollback_started = Instant::now();
@@ -2084,20 +2084,25 @@ impl MlxRunner {
             let drafts = draft_arr.data_u32().to_vec();
             // What this lane's commit will keep, so its next round can be
             // drafted now (the commit itself runs in the lane's own step).
-            let (accepted, new_tokens) = greedy_walk(&drafts, &predicted_all[start..end]);
-            let (emitted, keep) = linear_window_commit(
-                &new_tokens,
-                accepted,
-                plan.remaining,
-                &self.terminal_token_ids,
+            // A malformed window skips the pre-draft; the lane's own commit
+            // step rejects the same shape and leaves DFlash2.
+            let predraft = greedy_walk(&drafts, &predicted_all[start..end]).and_then(
+                |(accepted, new_tokens)| {
+                    let (emitted, keep) = linear_window_commit(
+                        &new_tokens,
+                        accepted,
+                        plan.remaining,
+                        &self.terminal_token_ids,
+                    );
+                    let ended = emitted
+                        .iter()
+                        .any(|token| self.terminal_token_ids.contains(token));
+                    let next_primary = emitted.last().copied()?;
+                    (!ended && plan.remaining.saturating_sub(emitted.len()) >= 2)
+                        .then_some((next_primary, keep))
+                },
             );
-            let ended = emitted
-                .iter()
-                .any(|token| self.terminal_token_ids.contains(token));
-            if !ended
-                && plan.remaining.saturating_sub(emitted.len()) >= 2
-                && let Some(&next_primary) = emitted.last()
-            {
+            if let Some((next_primary, keep)) = predraft {
                 next_rounds.push((
                     idx,
                     next_primary,
@@ -2696,7 +2701,8 @@ impl MlxRunner {
         super::tree_verify::BranchVerification<MlxKVCache>,
         Option<MlxArray>,
     ) {
-        use super::tree_verify::{BranchVerification, limit_commit};
+        use super::tree_verify::BranchVerification;
+        use ax_engine_core::speculation::limit_commit;
 
         let failed = |cache: MlxKVCache| {
             (
@@ -2760,7 +2766,9 @@ impl MlxRunner {
         if predicted.len() != verify_len {
             return failed(source);
         }
-        let (accepted, committed) = greedy_walk(drafts, &predicted);
+        let Some((accepted, committed)) = greedy_walk(drafts, &predicted) else {
+            return failed(source);
+        };
         let (_emitted, cache_draft_rows) =
             limit_commit(&committed, accepted, limits.budget, limits.eos);
         let retained = 1 + cache_draft_rows;
@@ -3354,24 +3362,24 @@ mod tests {
         let predicted = [1, 2, 3, 4, 5, 6, 7, 8];
         assert_eq!(
             greedy_walk(&drafts, &predicted),
-            (7, vec![1, 2, 3, 4, 5, 6, 7, 8])
+            Some((7, vec![1, 2, 3, 4, 5, 6, 7, 8]))
         );
         // The third draft differs: two accepted, then the target's own token.
         let predicted = [1, 2, 9, 4, 5, 6, 7, 8];
-        assert_eq!(greedy_walk(&drafts, &predicted), (2, vec![1, 2, 9]));
+        assert_eq!(greedy_walk(&drafts, &predicted), Some((2, vec![1, 2, 9])));
         // The first draft differs: nothing accepted, one token committed.
         let predicted = [9, 2, 3, 4, 5, 6, 7, 8];
-        assert_eq!(greedy_walk(&drafts, &predicted), (0, vec![9]));
+        assert_eq!(greedy_walk(&drafts, &predicted), Some((0, vec![9])));
         // A later match does not count after a mismatch.
         let predicted = [1, 9, 3, 4, 5, 6, 7, 8];
-        assert_eq!(greedy_walk(&drafts, &predicted), (1, vec![1, 9]));
+        assert_eq!(greedy_walk(&drafts, &predicted), Some((1, vec![1, 9])));
     }
 
     #[test]
     fn linear_commit_cuts_mid_window_by_budget_and_eos() {
         let drafts = [10_u32, 20, 30, 40, 50, 60, 70];
         let predicted = [10, 20, 30, 40, 50, 60, 70, 80];
-        let (accepted, new_tokens) = greedy_walk(&drafts, &predicted);
+        let (accepted, new_tokens) = greedy_walk(&drafts, &predicted).unwrap();
         assert_eq!(new_tokens, vec![10, 20, 30, 40, 50, 60, 70, 80]);
         let token_offset = 16usize;
         let verify_len = drafts.len() + 1;
@@ -3403,11 +3411,55 @@ mod tests {
         assert_eq!(full_keep, accepted + 1);
     }
 
+    /// The production linear commit (walk, then window cut) against the shared
+    /// cross-runtime corpus, not only the core oracle.
+    #[test]
+    fn linear_commit_matches_the_shared_speculation_corpus() {
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../ax-engine-core/tests/fixtures/speculation-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(corpus["schema_version"], "ax.engine.speculation.v1");
+        let tokens = |value: &serde_json::Value| -> Vec<u32> {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|token| u32::try_from(token.as_u64().unwrap()).unwrap())
+                .collect()
+        };
+        let cases = corpus["cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let drafts = tokens(&case["drafts"]);
+            let predicted = tokens(&case["predicted"]);
+            let budget = case["budget"].as_u64().unwrap() as usize;
+            let eos = tokens(&case["eos"]);
+            let walk = greedy_walk(&drafts, &predicted);
+            if case.get("error").is_some() {
+                assert_eq!(case["error"], "prediction_count", "{name}");
+                assert_eq!(walk, None, "{name}");
+                continue;
+            }
+            let (accepted, new_tokens) = walk.unwrap();
+            assert_eq!(
+                Some(accepted as u64),
+                case["accepted_drafts"].as_u64(),
+                "{name}"
+            );
+            let (emitted, keep) = linear_window_commit(&new_tokens, accepted, budget, &eos);
+            assert_eq!(emitted, tokens(&case["emitted"]), "{name}");
+            let retained = case["retained_draft_rows"].as_u64().unwrap() as usize;
+            assert_eq!(keep, 1 + retained, "{name}");
+        }
+    }
+
     #[test]
     fn acceptance_telemetry_counts_post_cut_drafts() {
         let drafts = [10_u32, 20, 30, 40, 50, 60, 70];
         let predicted = [10, 20, 30, 40, 50, 60, 70, 80];
-        let (accepted, new_tokens) = greedy_walk(&drafts, &predicted);
+        let (accepted, new_tokens) = greedy_walk(&drafts, &predicted).unwrap();
         assert_eq!(accepted, 7);
 
         let (budget_tokens, budget_keep) = linear_window_commit(&new_tokens, accepted, 3, &[]);
