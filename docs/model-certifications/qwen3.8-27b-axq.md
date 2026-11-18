@@ -9,9 +9,12 @@ loads `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` at
 `b2c5354f779e430d0c1733143db848a72b71c16e`.
 
 The product scope is MLX AXQ MXFP4 / MXFP8 with MTP sidecars. Standalone
-6-bit, affine4/8 and non-MTP variants are retired. MXFP8 pack pin and
-qualification are pending. The MXFP4 pack's protected affine8 embeddings
-and output head remain intact. See [format policy](../QWEN38-FORMAT-POLICY.md).
+6-bit, affine4/8 and non-MTP variants are retired. The MXFP4 pack's protected
+affine8 embeddings and output head remain intact. The explicit MXFP8
+Candidate `qwen3.8-27b:mxfp8` loads
+`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP` at
+`11d81dd63869cc80be5c541520071aa9192192b6`. Its separate SKU qualification
+and MTP-S/P/D gates remain open. See [format policy](../QWEN38-FORMAT-POLICY.md).
 
 M5 and later are the primary hardware target. The Mac mini M4 Pro 64 GB
 remains a supported configuration and the host of the historical record.

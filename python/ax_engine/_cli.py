@@ -319,6 +319,10 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
 )
 
 
+_QWEN38_27B_MXFP8_NAME = "AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP"
+_QWEN38_27B_MXFP8_REPO = f"AutomatosX/{_QWEN38_27B_MXFP8_NAME}"
+
+
 def _automatosx_profile(
     label: str,
     repo_name: str,
@@ -577,6 +581,12 @@ AUTOMATOSX_MODEL_PROFILES: tuple[ModelProfile, ...] = (
             "qwen3.8-27b:axq", "qwen3.8-27b:axq-mxfp4", "qwen3.8-27b:mxfp4",
             "ax-qwen3.8-27b-axq-mxfp4", "ax-qwen3.8-27b-mxfp4",
         ),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-mxfp8",
+        _QWEN38_27B_MXFP8_NAME,
+        ("ax-qwen3.8-27b-mxfp8", "qwen3.8-27b:axq-mxfp8", "qwen3.8-27b:mxfp8"),
         preset="qwen3.8-27b",
     ),
     _automatosx_profile(
@@ -1067,6 +1077,7 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit": ("323a48f2a821f7d0349466095b1b84562d11c9a0"),
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit": ("e52d06296bf133b248a6572561c4f2e150dc3429"),
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP": ("b2c5354f779e430d0c1733143db848a72b71c16e"),
+    _QWEN38_27B_MXFP8_REPO: "11d81dd63869cc80be5c541520071aa9192192b6",
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit": ("a524f97c81ec82be3eead17aabcf652450d33842"),
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit": ("29e7bcf5e6ef2471cc3587783713e3631e98b50c"),
     "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit": ("20f2d2bd0b1055f8ab990e82fa0fc784a9de4c89"),
@@ -1145,6 +1156,7 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-EmbeddingGemma-2-MLX-AXQ-MXFP8",
 
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    _QWEN38_27B_MXFP8_REPO,
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
@@ -1256,8 +1268,15 @@ def _reject_retired_qwen38_target(value: str) -> None:
     if not any(key in normalized for key in ("qwen3.8-27b", "qwen38-27b", "qwen3.8-flash-next")):
         return
     if "mxfp8" in normalized:
+        if any(
+            profile.repo_id == _QWEN38_27B_MXFP8_REPO
+            and normalized in (profile.repo_id.lower(), *profile.aliases)
+            for profile in MODEL_PROFILES
+        ):
+            return
         raise SystemExit(
-            "Qwen 3.8 AXQ MXFP8 MTP pack admission is pending; use the pinned MXFP4 MTP pack"
+            "This Qwen 3.8 MXFP8 target is unsupported. Use the pinned qwen3.8-27b:mxfp8 "
+            "MTP pack; Flash Next MXFP8 admission is pending"
         )
     flash_next_6bit = "flash-next" in normalized and (
         normalized.endswith("-6bit-mtp")
@@ -1273,9 +1292,9 @@ def _reject_retired_qwen38_target(value: str) -> None:
         normalized.startswith("automatosx/") and not normalized.endswith("-mxfp4-mtp")
     ):
         raise SystemExit(
-            "Qwen 3.8 supports MLX AXQ MXFP4 MTP (qwen3.8-27b:axq, qwen3.8-flash-next:mxfp4) "
+            "Qwen 3.8 supports MLX AXQ MXFP4 MTP, 27B MXFP8 MTP (qwen3.8-27b:mxfp8), "
             "and Flash Next affine 6-bit MTP; other affine widths and non-MTP packs are not "
-            "supported. MXFP8 MTP catalog admission is pending verified pack evidence."
+            "supported."
         )
 
 

@@ -16,6 +16,8 @@ use crate::environment_probe::{
     bytes_to_gib, command_stdout, detect_memory_bytes, detect_os_build, detect_os_version,
 };
 
+const QWEN38_27B_MXFP8_REPO: &str = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP";
+
 #[derive(Clone, Copy)]
 struct ModelProfile {
     label: &'static str,
@@ -98,6 +100,7 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP" => {
             Some("b2c5354f779e430d0c1733143db848a72b71c16e")
         }
+        QWEN38_27B_MXFP8_REPO => Some("11d81dd63869cc80be5c541520071aa9192192b6"),
         "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit" => {
             Some("a524f97c81ec82be3eead17aabcf652450d33842")
         }
@@ -189,6 +192,7 @@ fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
         | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
+        | QWEN38_27B_MXFP8_REPO
         | "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
         | "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP"
@@ -1365,6 +1369,19 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(17436265609),
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-mxfp8",
+        preset: Some("qwen3.8-27b"),
+        repo_id: QWEN38_27B_MXFP8_REPO,
+        aliases: &[
+            "ax-qwen3.8-27b-axq-mxfp8",
+            "ax-qwen3.8-27b-mxfp8",
+            "qwen3.8-27b:axq-mxfp8",
+            "qwen3.8-27b:mxfp8",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(29_541_733_616),
     },
     ModelProfile {
         label: "ax-unlimited-ocr",
@@ -3848,9 +3865,6 @@ fn download_repo_id(
     if let Some(dir) = local_model_dir(value) {
         return Ok((dir.to_string_lossy().into_owned(), None, None));
     }
-    if let Some(message) = qwen38_target_error(value) {
-        return Err(message.to_string());
-    }
     if let Some(profile) = profile {
         if !profile.downloadable {
             return Err(format!(
@@ -3871,6 +3885,9 @@ fn download_repo_id(
             return Err(message.to_string());
         }
         return Ok((repo_ref.repo_id, None, repo_ref.revision));
+    }
+    if let Some(message) = qwen38_target_error(value) {
+        return Err(message.to_string());
     }
     Err(format!(
         "unknown model alias or repo id: {value:?}; pass a Hugging Face repo id, \
@@ -4031,7 +4048,7 @@ fn print_download_summary(summary: &Value) {
 }
 
 fn qwen38_target_error(value: &str) -> Option<&'static str> {
-    let value = value.to_ascii_lowercase();
+    let value = normalize_alias(value);
     let value = value.split('@').next().unwrap_or(&value);
     if !["qwen3.8-27b", "qwen38-27b", "qwen3.8-flash-next"]
         .iter()
@@ -4040,7 +4057,15 @@ fn qwen38_target_error(value: &str) -> Option<&'static str> {
         return None;
     }
     if value.contains("mxfp8") {
-        return Some("Qwen 3.8 AXQ MXFP8 MTP pack admission is pending; use pinned MXFP4 MTP");
+        if MODEL_PROFILES.iter().any(|profile| {
+            profile.repo_id == QWEN38_27B_MXFP8_REPO
+                && (profile.repo_id.eq_ignore_ascii_case(value) || profile.aliases.contains(&value))
+        }) {
+            return None;
+        }
+        return Some(
+            "This Qwen 3.8 MXFP8 target is unsupported. Use the pinned qwen3.8-27b:mxfp8 MTP pack; Flash Next MXFP8 admission is pending",
+        );
     }
     let supported_hub_ref = value.ends_with("-mxfp4-mtp")
         || (value.contains("flash-next") && value.ends_with("-6bit-mtp"));
@@ -4051,7 +4076,7 @@ fn qwen38_target_error(value: &str) -> Option<&'static str> {
         || (value.starts_with("automatosx/") && !supported_hub_ref)
     {
         return Some(
-            "Qwen 3.8 supports MLX AXQ MXFP4 MTP (qwen3.8-27b:axq, qwen3.8-flash-next:mxfp4) and Flash Next affine 6-bit MTP (qwen3.8-flash-next:axq-6bit); other affine widths and non-MTP packs are not supported",
+            "Qwen 3.8 supports MLX AXQ MXFP4 MTP, 27B MXFP8 MTP (qwen3.8-27b:mxfp8), and Flash Next affine 6-bit MTP (qwen3.8-flash-next:axq-6bit); other affine widths and non-MTP packs are not supported",
         );
     }
     None
@@ -4459,7 +4484,7 @@ mod tests {
         );
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 75] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 76] = [
         "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -4523,6 +4548,7 @@ mod tests {
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
         "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -4576,7 +4602,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            34
+            35
         );
     }
 
@@ -4816,16 +4842,28 @@ mod tests {
             revision.as_deref(),
             Some("b2c5354f779e430d0c1733143db848a72b71c16e")
         );
+        let mxfp8_revision = "11d81dd63869cc80be5c541520071aa9192192b6";
+        for target in ["qwen3.8-27b:axq-mxfp8", "qwen3.8-27b:mxfp8"] {
+            let (repo, profile, revision) =
+                download_repo_id(target, profile_for_model(target)).unwrap();
+            assert_eq!(repo, QWEN38_27B_MXFP8_REPO);
+            assert_eq!(profile_certification(profile.unwrap()), Some("candidate"));
+            assert_eq!(revision.as_deref(), Some(mxfp8_revision));
+        }
+        let mxfp8_url =
+            format!("https://huggingface.co/{QWEN38_27B_MXFP8_REPO}/tree/{mxfp8_revision}");
+        let (repo, _, revision) = download_repo_id(&mxfp8_url, None).unwrap();
+        assert_eq!(repo, QWEN38_27B_MXFP8_REPO);
+        assert_eq!(revision.as_deref(), Some(mxfp8_revision));
         for target in [
-            "qwen3.8-27b:axq-mxfp8",
-            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8",
             "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP8-MTP/tree/main",
         ] {
             assert!(
                 download_repo_id(target, None)
                     .err()
                     .unwrap()
-                    .contains("pending")
+                    .contains("unsupported")
             );
         }
     }

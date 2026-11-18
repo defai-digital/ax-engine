@@ -100,6 +100,7 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
@@ -145,7 +146,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 92)
+        self.assertEqual(len(targets), 93)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -486,6 +487,21 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(profile.preset, "qwen3.8-27b")
         self.assertEqual(_cli._profile_certification(profile), "candidate")
 
+    def test_qwen38_27b_mxfp8_is_explicit_pinned_candidate(self) -> None:
+        repo_id = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP"
+        pinned_revision = "11d81dd63869cc80be5c541520071aa9192192b6"
+        for alias in ("qwen3.8-27b:mxfp8", "qwen3.8-27b:axq-mxfp8"):
+            with self.subTest(alias=alias):
+                repo, profile, revision = _cli._download_repo_id(alias)
+                self.assertEqual((repo, revision), (repo_id, pinned_revision))
+                assert profile is not None
+                self.assertEqual(profile.preset, "qwen3.8-27b")
+                self.assertEqual(_cli._profile_certification(profile), "candidate")
+        self.assertEqual(
+            _cli._download_repo_id(f"https://huggingface.co/{repo_id}/tree/{pinned_revision}"),
+            (repo_id, None, pinned_revision),
+        )
+
     def test_qwen38_retired_formats_fail_before_download(self) -> None:
         for model in ("qwen3.8-27b:axq-6bit", "ax-qwen3.8-27b-8bit",
                       "qwen3.8-flash-next:axq-4bit", "qwen3.8-27b:axq-mxfp4-base",
@@ -498,10 +514,10 @@ class AxEngineCliTests(unittest.TestCase):
             "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP/tree/main"
         )
         _cli._reject_retired_qwen38_target("qwen3.8-flash-next:axq-6bit")
-        for model in ("qwen3.8-27b:axq-mxfp8",
-                      "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
+        for model in ("AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8",
+                      "qwen3.8-flash-next:axq-mxfp8",
                       "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP8-MTP/tree/main"):
-            with self.subTest(model=model), self.assertRaisesRegex(SystemExit, "admission is pending"):
+            with self.subTest(model=model), self.assertRaisesRegex(SystemExit, "unsupported"):
                 _cli._download_repo_id(model)
         self.assertIsNotNone(_cli._profile_for_model("qwen3.6-27b:axq-6bit"))
 
@@ -2139,7 +2155,7 @@ class AxEngineDownloadCatalogTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 34)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 35)
 
     def test_download_without_model_never_prompts(self) -> None:
         for arguments in (["download"], ["download", "--no-interactive"]):

@@ -9,7 +9,7 @@ families retain their existing support.
 
 | Model | Current selector | Pinned MXFP4 MTP revision | Affine 6-bit MTP | MXFP8 MTP |
 | --- | --- | --- | --- | --- |
-| Qwen 3.8 27B | `qwen3.8-27b:axq`, `qwen3.8-27b:axq-mxfp4`, `qwen3.8-27b:mxfp4` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Loader admits affine 6-bit/group64; no pinned catalog pack | Pack admission and SKU qualification pending |
+| Qwen 3.8 27B | `qwen3.8-27b:axq`, `qwen3.8-27b:axq-mxfp4`, `qwen3.8-27b:mxfp4` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Loader admits affine 6-bit/group64; no pinned catalog pack | Candidate via `qwen3.8-27b:mxfp8` or `qwen3.8-27b:axq-mxfp8` at `11d81dd63869cc80be5c541520071aa9192192b6` |
 | Qwen 3.8 Flash Next | `qwen3.8-flash-next:axq`, `qwen3.8-flash-next:mxfp4` | `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3` | `qwen3.8-flash-next:axq-6bit` at `3c1dd547d70cb7bf01dd0a89c41c400dde32ed39` (public; on 128 GB run with `--stream-experts off`) | Audited pack and dedicated native-path admission pending |
 
 The generic AXQ selectors resolve to MXFP4 MTP. An explicitly named
@@ -62,7 +62,8 @@ MXFP4 or MXFP8. New 27B and Flash Next qualification campaigns use
 MacBook Pro M5 Max 128 GB. Mac mini M4 Pro 64 GB is the supported-tier
 check for 27B.
 
-MXFP8 is in scope, but no unverified download alias, revision, throughput
-claim or production promotion is published. AXQuant owns conversion and
-pack publication; admission requires the immutable pack, MTP metadata and
-native-path checks before SKU qualification.
+The 27B MXFP8 Candidate has pack-bound native functional evidence on MacBook
+Pro M5 Max 128 GB. The paired raw greedy probe diverged between direct decode
+and required MTP. MXFP8 SKU qualification and MTP-S/P/D remain open. See the
+[27B MXFP8 receipt](../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp8-catalog/).
+AXQuant owns conversion and pack publication.

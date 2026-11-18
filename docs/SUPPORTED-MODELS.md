@@ -2,8 +2,8 @@
 
 Qwen 3.8 27B and Flash Next target **MLX AXQ MXFP4 / MXFP8 with MTP**, and
 Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
-(ADR-050). Other standalone affine widths are not supported; MXFP8 pack
-admission is pending. Historical receipts of one format do not qualify another.
+(ADR-050). The 27B MXFP8 pack is a catalog Candidate. Flash Next MXFP8
+admission is pending. Historical receipts apply to their recorded format.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
 AX Engine supports LLMs through a direct-first runtime contract. Direct support
