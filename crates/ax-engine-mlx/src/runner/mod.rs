@@ -1904,10 +1904,11 @@ fn load_gemma4_assistant_mtp_runtime(
         }
     };
 
-    let assistant_artifacts = match NativeModelArtifacts::from_dir(&config.assistant_path) {
-        Ok(artifacts) => artifacts,
-        Err(error) => return (disabled(config, &error.to_string()), None),
-    };
+    let assistant_artifacts =
+        match NativeModelArtifacts::from_dir_or_convert(&config.assistant_path) {
+            Ok(artifacts) => artifacts,
+            Err(error) => return (disabled(config, &error.to_string()), None),
+        };
     let assistant_cfg = ModelConfig::from_manifest(assistant_artifacts.manifest());
     if assistant_cfg.model_family != "gemma4_assistant" {
         return (

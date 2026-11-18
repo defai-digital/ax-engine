@@ -636,8 +636,18 @@ fn converts_gemma4_assistant_q_only_external_kv_contract() {
         tensor.role,
         NativeTensorRole::AttentionK | NativeTensorRole::AttentionV
     )));
-    crate::model::NativeModelArtifacts::from_manifest_and_root(dir.clone(), manifest)
-        .expect("Gemma4 assistant manifest should validate");
+    let path = dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    assert!(!path.exists());
+    let artifacts = crate::model::NativeModelArtifacts::from_dir_or_convert(&dir)
+        .expect("Gemma4 assistant manifest should generate and validate");
+    assert_eq!(artifacts.manifest().model_family, manifest.model_family);
+    assert!(path.is_file());
+    fs::write(&path, b"invalid manifest").expect("write invalid assistant manifest");
+    assert!(crate::model::NativeModelArtifacts::from_dir_or_convert(&dir).is_err());
+    assert_eq!(
+        fs::read(&path).expect("read invalid manifest"),
+        b"invalid manifest"
+    );
     let _ = fs::remove_dir_all(dir);
 }
 

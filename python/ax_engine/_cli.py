@@ -1137,9 +1137,9 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP": ("d2a6ac9d59655f0b86a57a64ed85616d0a10e27e"),
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP": ("7ad79df2b0c272431f3e927b133b7dc3d70872f4"),
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP": ("490b1183ce4505e79334423547422204fb9144d0"),
-    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP": ("940a60b13e7298140c85d3762492dde6733f8a57"),
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP": ("a772139a221fbf6f2fdc962ebb0747d8961c1a67"),
     "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP": ("fdd851347f487c565b067c0593fdb5ac7a3057a2"),
-    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP": ("7b11bd5179d71a74200fe56075cba5c21212fe6a"),
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP": ("de5906d049f00b464673f5f48dfb2b473df0ff2d"),
 }
 
 # Hub Checkpoint Tier 1 packs are pinned but not labeled candidate

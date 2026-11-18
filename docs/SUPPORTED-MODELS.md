@@ -399,11 +399,11 @@ serve them through the idempotent resolution flow:
 
 | `qwen3.6-35b:axq`, `qwen3.6-35b:axq-6bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP` | `6a4c220734f81112555ee8783d91e0065c54301c` | Candidate; 35B-A3B AXQ 6-bit MTP |
 | `qwen3.6-35b:axq-4bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP` | `952031cbfbb9cf31414a57eeb681c34dc08ec1e9` | Candidate; compact 4-bit MTP sibling |
-| `gemma4-12b:axq`, `gemma4-12b:axq-6bit` | `AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP` | `7ad79df2b0c272431f3e927b133b7dc3d70872f4` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
+| `gemma4-12b:axq`, `gemma4-12b:axq-6bit` | `AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP` | `7ad79df2b0c272431f3e927b133b7dc3d70872f4` | Candidate; pinned assistant-MTP snapshot unavailable at the Hub on 2026-11-18 |
 | `gemma4-12b:axq-4bit` | `AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP` | `d2a6ac9d59655f0b86a57a64ed85616d0a10e27e` | Candidate; compact 4-bit sibling |
-| `gemma4-26b:axq`, `gemma4-26b:axq-6bit` | `AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP` | `940a60b13e7298140c85d3762492dde6733f8a57` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
+| `gemma4-26b:axq`, `gemma4-26b:axq-6bit` | `AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP` | `a772139a221fbf6f2fdc962ebb0747d8961c1a67` | Candidate; qualification pending on this revision |
 | `gemma4-26b:axq-4bit` | `AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP` | `490b1183ce4505e79334423547422204fb9144d0` | Candidate; compact 4-bit sibling |
-| `gemma4-31b:axq`, `gemma4-31b:axq-6bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP` | `7b11bd5179d71a74200fe56075cba5c21212fe6a` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
+| `gemma4-31b:axq`, `gemma4-31b:axq-6bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP` | `de5906d049f00b464673f5f48dfb2b473df0ff2d` | Candidate; qualification pending on this revision |
 | `gemma4-31b:axq-4bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP` | `fdd851347f487c565b067c0593fdb5ac7a3057a2` | Candidate; compact 4-bit sibling |
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `b48b626d9b00e45d6200aa3c15e40cc47d83b7e7` | Tier 1 certified; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `e932be1b8ab79f5410f607de7eb7312756325fce` | Tier 1 certified; compact 4-bit sibling |

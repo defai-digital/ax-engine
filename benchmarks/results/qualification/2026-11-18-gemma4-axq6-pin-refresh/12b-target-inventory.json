@@ -1,0 +1,89 @@
+{
+  "file_count": 20,
+  "files": {
+    ".gitattributes": {
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "size_bytes": 1570
+    },
+    "README.md": {
+      "sha256": "42be72ddd3ce46a3aa09e311aa7923bcd50eaabf91dba1957ac4935406338639",
+      "size_bytes": 2730
+    },
+    "axquant_compatibility.json": {
+      "sha256": "0dc74878168aff6bc4ce28480c610d23ff5e5398222d7595484e1a942dd30e6a",
+      "size_bytes": 1175
+    },
+    "axquant_manifest.json": {
+      "sha256": "33e3fd7d426e907e13d7e62b043385a42f73a57039c84c12eba73752e0fe83d2",
+      "size_bytes": 6556
+    },
+    "axquant_plan.json": {
+      "sha256": "6bd84dd64e83a712ad2833dd0075fc7c2b0b737a6ab0dc84f12a3150c45d8ae5",
+      "size_bytes": 653933
+    },
+    "axquant_quantizer_execution.json": {
+      "sha256": "fffdf31cbaa93b4f498db17c53492ae5be28e974095d2d9c99330c85dda32db5",
+      "size_bytes": 85137
+    },
+    "axquant_runtime.json": {
+      "sha256": "9680ce3e0253d81064c3772035ae39d8c8e88e78b489c47337243ed0d0eddf16",
+      "size_bytes": 1656
+    },
+    "axquant_smoke.json": {
+      "sha256": "eab83fabe90f73e2442d32ad0acddefeb27c5a1599653be983e584a2dfabfd6b",
+      "size_bytes": 519
+    },
+    "axquant_source_binding.json": {
+      "sha256": "6cd32c8637b8f632a05c462f84635cc46116e8f40863fef4ce24500ecd136a2d",
+      "size_bytes": 630
+    },
+    "axquant_vision_sidecar_manifest.json": {
+      "sha256": "995bd6aab3f17ee5bf92c70c46a836d6eb06f36411cbb7331ef42f2e19baa250",
+      "size_bytes": 882
+    },
+    "chat_template.jinja": {
+      "sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+      "size_bytes": 18683
+    },
+    "config.json": {
+      "sha256": "470ebd60d1924e82b42860084c025fc8696451df81a61c5f95da18516b823af7",
+      "size_bytes": 87606
+    },
+    "generation_config.json": {
+      "sha256": "a8349d9bd64cc5841297fcb5002f0fdc4749c473c8f1b10ea337f9ce4ee7014e",
+      "size_bytes": 260
+    },
+    "model-00001-of-00002.safetensors": {
+      "sha256": "642b2d1dd91597300c0f6665ba1466d51d6acf399c50b8b1b091502d6a5e5754",
+      "size_bytes": 5341849796
+    },
+    "model-00002-of-00002.safetensors": {
+      "sha256": "1b3ddac45e4bd83c954be921c748d3a3c51b16789a4212af1d044f57833ce7cb",
+      "size_bytes": 5332235038
+    },
+    "model.safetensors.index.json": {
+      "sha256": "bf58ed5244a2dce0bbc93a1d8adea6ab3e544aca7a827d13de7c5c386aa30a53",
+      "size_bytes": 129348
+    },
+    "processor_config.json": {
+      "sha256": "6b938e76555b3e9946890770e1abcd442a4718f34041a58e8139dc8ad34545c9",
+      "size_bytes": 1382
+    },
+    "tokenizer.json": {
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+      "size_bytes": 32169626
+    },
+    "tokenizer_config.json": {
+      "sha256": "9777db03c223bef85571ed74b863f6343adf7a77f2e1220f30843c7b3cc6ad18",
+      "size_bytes": 3767
+    },
+    "vision.safetensors": {
+      "sha256": "0b02e5510e3d7aef13b7b2235e468ee93631b001d8414bbc93f526ebb710b62d",
+      "size_bytes": 104761128
+    }
+  },
+  "inventory_sha256": "1914a33ac8d8e5791bbae0e9a7dd459c13b07fba1c1d2555d7d697c6c1ef266b",
+  "repo": "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit",
+  "revision": "292265a2924c078a28a6d2d1a529e98b1d248d44",
+  "total_bytes": 10812011422
+}

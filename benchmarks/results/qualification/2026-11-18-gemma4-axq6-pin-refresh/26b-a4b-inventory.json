@@ -1,0 +1,137 @@
+{
+  "file_count": 32,
+  "files": {
+    ".gitattributes": {
+      "sha256": "b66f817befc0158c72d0950b4c2ee25904452b8eb4ff3b41321c28cb5482d4c7",
+      "size_bytes": 1631
+    },
+    "README.md": {
+      "sha256": "6a86b12bbb8c3347c033bc3abcb5f46f20d1b6ba7c4e7799e3239f6f317b5ddb",
+      "size_bytes": 3162
+    },
+    "assistant/README.md": {
+      "sha256": "dbefa6eb400add77a99a7a2915cf3586c34a66da649ba13c70e6822c2638dbdc",
+      "size_bytes": 2333
+    },
+    "assistant/config.json": {
+      "sha256": "f393dd4bbdbb1de9bfade9de224493de4e728ba020f9078db8de93cc66a551b2",
+      "size_bytes": 2315
+    },
+    "assistant/generation_config.json": {
+      "sha256": "8e58004dc0e2407b63410b190bb8470efbdcfeb71533f1770e09c20abe193a6f",
+      "size_bytes": 307
+    },
+    "assistant/model.safetensors": {
+      "sha256": "006c8713b29b046e296c0f0b7c524aa9264ae07ae8b0c3888b9bc062242297ff",
+      "size_bytes": 839427840
+    },
+    "assistant/tokenizer.json": {
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+      "size_bytes": 32169626
+    },
+    "assistant/tokenizer_config.json": {
+      "sha256": "8227f6f1d959e2ded8be6351bf863a77b781bfd93b82b01e6f65d5d91d5cecb8",
+      "size_bytes": 3760
+    },
+    "ax_composite_pack_manifest.json": {
+      "sha256": "510106b020eec74e18502365130b84ce7aa4161dd7ec0e5b078d2d4462f9339e",
+      "size_bytes": 12080
+    },
+    "ax_expert_stream.json": {
+      "sha256": "1a8385e88f9dc06126cf8c048aae2063b0983f1bc5d4b3cd6926631aa5dff3e3",
+      "size_bytes": 75023
+    },
+    "ax_gemma4_assistant_mtp.json": {
+      "sha256": "fc4c593d3ce8b18740cd014399895af42780d3b826a194ef60576a707253c0dd",
+      "size_bytes": 258
+    },
+    "axquant_compatibility.json": {
+      "sha256": "3ed424a6213dd3158ef128a1621bc635a18c88f2d4146656602b9b5a4ca10b85",
+      "size_bytes": 1151
+    },
+    "axquant_manifest.json": {
+      "sha256": "462a97d6eff5b315afe9513beb4770c5a48156f9f65b0dc499054ac987e1ffb0",
+      "size_bytes": 7929
+    },
+    "axquant_plan.json": {
+      "sha256": "24b082296d0bf26ffc3c413fdb2bcc9a4f90743470365539d9296c186f7e9cfe",
+      "size_bytes": 955769
+    },
+    "axquant_quantizer_execution.json": {
+      "sha256": "031b95c2191293c0b33fa66ad37ff74e6c7647a2458ba79ec5cc92508315047c",
+      "size_bytes": 76471
+    },
+    "axquant_runtime.json": {
+      "sha256": "7c5e2618c18214a5e2e5425c83ed443cfe9b0b7dfc78d8ab10496c410522c750",
+      "size_bytes": 2303
+    },
+    "axquant_smoke.json": {
+      "sha256": "6d8918debcdb4de3fb5083c2e8cc8e8450fa5855e5157063925bbb594f0ef48b",
+      "size_bytes": 519
+    },
+    "axquant_source_binding.json": {
+      "sha256": "2665cb73d78c83153c4d99c8ccfcdcf25edced84c3602ba99bf87b11084df57e",
+      "size_bytes": 798
+    },
+    "axquant_vision_sidecar_manifest.json": {
+      "sha256": "7fafbcc2f68c5609791abb01709c03d99034e2a017de6c07a1007d37c231d0b9",
+      "size_bytes": 897
+    },
+    "chat_template.jinja": {
+      "sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+      "size_bytes": 18683
+    },
+    "config.json": {
+      "sha256": "0bcfec0bd38fdd6ab4e2e7ec481d379a34ceb05d844b03553db0e9c3dca1f639",
+      "size_bytes": 88042
+    },
+    "generation_config.json": {
+      "sha256": "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+      "size_bytes": 208
+    },
+    "model-00001-of-00005.safetensors": {
+      "sha256": "6fc12318cdf4890d8bfa0a22da9bfdc16bae27861020fb4143e4520a9c252156",
+      "size_bytes": 5360547483
+    },
+    "model-00002-of-00005.safetensors": {
+      "sha256": "94a665e32e385308a535ba3741093a298fbc09fcec13ba567b9882fe530fcbb0",
+      "size_bytes": 5253559012
+    },
+    "model-00003-of-00005.safetensors": {
+      "sha256": "016c9ddd48762fb07dbbebca2e183074b8690c966a25b8c988d4a215287d83e2",
+      "size_bytes": 5268185326
+    },
+    "model-00004-of-00005.safetensors": {
+      "sha256": "c59a253b3b1635ee230868a69aab762c7d94d5001b412ea3232664185bb17636",
+      "size_bytes": 5221839377
+    },
+    "model-00005-of-00005.safetensors": {
+      "sha256": "f5cc3ab6db0fd8550a422e661a4ee00c62b08d5b829fe6e49c7f51d003cce65f",
+      "size_bytes": 1169167501
+    },
+    "model.safetensors.index.json": {
+      "sha256": "14f6a9aaae614a93e0001096231a6fd734cb46abb9ad95c6ef876797bc5e9aa4",
+      "size_bytes": 164842
+    },
+    "processor_config.json": {
+      "sha256": "32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c",
+      "size_bytes": 1689
+    },
+    "tokenizer.json": {
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+      "size_bytes": 32169626
+    },
+    "tokenizer_config.json": {
+      "sha256": "8227f6f1d959e2ded8be6351bf863a77b781bfd93b82b01e6f65d5d91d5cecb8",
+      "size_bytes": 3760
+    },
+    "vision.safetensors": {
+      "sha256": "c74651833a92a31dac0aa923fe36cc2b02fd8a104187c19b4f430f015f702854",
+      "size_bytes": 1145636232
+    }
+  },
+  "inventory_sha256": "99e05d5315e040eb863443cb160a9e7ddad0c1f933bab279168356055e9d1cb3",
+  "repo": "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+  "revision": "a772139a221fbf6f2fdc962ebb0747d8961c1a67",
+  "total_bytes": 24324125953
+}

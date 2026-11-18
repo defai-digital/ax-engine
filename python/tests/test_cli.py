@@ -356,12 +356,12 @@ class AxEngineCliTests(unittest.TestCase):
             ),
             "gemma4-26b:axq": (
                 "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
-                "940a60b13e7298140c85d3762492dde6733f8a57",
+                "a772139a221fbf6f2fdc962ebb0747d8961c1a67",
                 "candidate",
             ),
             "gemma4-31b:axq": (
                 "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
-                "7b11bd5179d71a74200fe56075cba5c21212fe6a",
+                "de5906d049f00b464673f5f48dfb2b473df0ff2d",
                 "candidate",
             ),
         }
