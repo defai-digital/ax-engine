@@ -244,6 +244,7 @@ int mlx_softmax_axis(mlx_array* res, const mlx_array a, int axis, bool precise, 
 int mlx_zeros(mlx_array* res, const int* shape, size_t shape_num, mlx_dtype dtype, const mlx_stream s);
 int mlx_arange(mlx_array* res, double start, double stop, double step, mlx_dtype dtype, const mlx_stream s);
 int mlx_random_categorical(mlx_array* res, const mlx_array logits, int axis, const mlx_array key, const mlx_stream s);
+int mlx_random_split_seed(mlx_array* res, uint64_t seed, int count, const mlx_stream s);
 
 /* Linear algebra */
 int mlx_matmul(mlx_array* res, const mlx_array a, const mlx_array b, const mlx_stream s);

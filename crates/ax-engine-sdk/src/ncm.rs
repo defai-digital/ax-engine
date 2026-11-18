@@ -15,10 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NcmSamplingMode {
     Greedy,
+    SeededV1 { seed: u64 },
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,9 +107,12 @@ impl NcmSession {
         &self,
         request: NcmGenerateRequest,
     ) -> Result<NcmGeneration, NcmError> {
-        match (request.sampling, request.output_mode) {
-            (NcmSamplingMode::Greedy, NcmOutputMode::FullSequence128) => {}
-        }
+        let sampling = match (request.sampling, request.output_mode) {
+            (NcmSamplingMode::Greedy, NcmOutputMode::FullSequence128) => NcmSampling::Greedy,
+            (NcmSamplingMode::SeededV1 { seed }, NcmOutputMode::FullSequence128) => {
+                NcmSampling::SeededV1 { seed }
+            }
+        };
         if self.owner.closed.load(Ordering::Acquire) {
             return Err(NcmError::Contract("session closed".into()));
         }
@@ -123,13 +127,8 @@ impl NcmSession {
             .next_id
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| NcmError::Contract("request ID space exhausted".into()))?;
-        let cancellation = core.submit_ncm(
-            RequestId(id),
-            NcmRequestConfig {
-                sampling: NcmSampling::Greedy,
-            },
-            self.timeout,
-        )?;
+        let cancellation =
+            core.submit_ncm(RequestId(id), NcmRequestConfig { sampling }, self.timeout)?;
         *self
             .owner
             .cancellation
@@ -265,6 +264,36 @@ mod tests {
         }
         assert!(serde_json::from_str::<NcmGenerateRequest>("{}").is_err());
         assert!(serde_json::from_str::<NcmGenerateRequest>(r#"{"sampling":"sample"}"#).is_err());
+    }
+
+    #[test]
+    fn seeded_mode_requires_a_nested_unsigned_seed_and_rejects_extra_controls() {
+        let request = serde_json::from_str::<NcmGenerateRequest>(
+            r#"{"sampling":{"seeded_v1":{"seed":18446744073709551615}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request.sampling,
+            NcmSamplingMode::SeededV1 { seed: u64::MAX }
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap()["sampling"],
+            serde_json::json!({"seeded_v1": {"seed": u64::MAX}})
+        );
+        for invalid in [
+            r#"{"sampling":"seeded_v1"}"#,
+            r#"{"sampling":{"seeded_v1":{}}}"#,
+            r#"{"sampling":{"seeded_v1":{"seed":-1}}}"#,
+            r#"{"sampling":{"seeded_v1":{"seed":1.5}}}"#,
+            r#"{"sampling":{"seeded_v1":{"seed":1,"seed":2}}}"#,
+            r#"{"sampling":{"seeded_v1":{"seed":1,"temperature":1}}}"#,
+            r#"{"sampling":{"seeded_v1":{"seed":1}},"top_p":1}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<NcmGenerateRequest>(invalid).is_err(),
+                "{invalid}"
+            );
+        }
     }
     #[derive(Debug)]
     struct FakeRunner {

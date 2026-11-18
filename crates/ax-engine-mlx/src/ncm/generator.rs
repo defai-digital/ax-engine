@@ -361,18 +361,26 @@ pub fn rotate(x: &MlxArray, cosine: &MlxArray, sine: &MlxArray) -> MlxArray {
 }
 
 pub fn chosen(logits: &MlxArray) -> Result<Vec<u32>, String> {
+    choose(logits, None)
+}
+
+pub(super) fn choose(logits: &MlxArray, key: Option<&MlxArray>) -> Result<Vec<u32>, String> {
     let shape = logits.shape();
     if shape.len() != 3 || shape[0] != 1 || shape[1] <= 0 || shape[2] != 4096 {
         return Err("code logits must have shape [1, length, 4096]".into());
     }
-    let array = contiguous(&astype(&argmax(logits, None), MlxDtype::Uint32, None), None);
+    let ids = match key {
+        Some(key) => mlx_sys::random_categorical_with_key(logits, key, None),
+        None => argmax(logits, None),
+    };
+    let array = contiguous(&astype(&ids, MlxDtype::Uint32, None), None);
     try_eval(&[&array])?;
     if array.shape() != [1, shape[1]] {
-        return Err("code argmax must preserve all positions".into());
+        return Err("code selection must preserve all positions".into());
     }
     let values = array.data_u32().to_vec();
     if values.len() != shape[1] as usize || values.iter().any(|&v| v >= 4096) {
-        return Err("invalid code argmax output".into());
+        return Err("invalid selected code".into());
     }
     Ok(values)
 }

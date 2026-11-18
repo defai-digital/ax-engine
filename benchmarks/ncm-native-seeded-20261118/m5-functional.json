@@ -1,0 +1,65 @@
+{
+  "hardware": "MacBook Pro M5 Max 128 GB",
+  "macos_version": "27.2.1",
+  "mlx_version": "0.32.4",
+  "mlx_library_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "rust_version": "1.99.1",
+  "artifact_revision": "2d5f137713fe047abb6fcffe780aad419486f3dd",
+  "artifact_identity": "6c8317970b1a8614e4b05d6aed56a2e3ed061fb65f7883943a1817da25b5e9fb",
+  "executables_sha256": {
+    "ncm-infer": "35b32557c20e00a6a8a311ed4d2eba72b24ec8980aa20f2e1b725ba3905995a1",
+    "ncm-native-test": "2c845a267c4da838734c8ad27d92cb3531042510104f9a282dce28c6216294fe",
+    "ncm-mlx-test": "fb6ec2883adc55d78fa164a3a20332f4fdd2fba0ec5a7ead6b0552bcb0c35760"
+  },
+  "greedy_matches_retained_trace": true,
+  "same_seed_matches_after_interleaved_cli_requests": true,
+  "sdk_real_weight_tests": 2,
+  "synthetic_key_isolation_tests": 1,
+  "cli_invalid_controls": [
+    "duplicate_seed",
+    "greedy_seed",
+    "missing_sampling",
+    "missing_seed",
+    "negative_seed",
+    "overflow_seed",
+    "temperature"
+  ],
+  "output": {
+    "greedy": {
+      "raw_bpe_sha256": "96618ec5ba2a82c8077756c2c05ebb410a8da4bb2f388b15d3162ff5de9acc9b",
+      "visible_bpe_sha256": "96618ec5ba2a82c8077756c2c05ebb410a8da4bb2f388b15d3162ff5de9acc9b",
+      "work_units": 14,
+      "visible_tokens": 128,
+      "finish_reason": "length"
+    },
+    "17": {
+      "raw_bpe_sha256": "a270f3fc3cdc20e20bf86cf89c1b56bf0d3328e2448a92b6dc8de322492fe580",
+      "visible_bpe_sha256": "a270f3fc3cdc20e20bf86cf89c1b56bf0d3328e2448a92b6dc8de322492fe580",
+      "work_units": 14,
+      "visible_tokens": 128,
+      "finish_reason": "length"
+    },
+    "29": {
+      "raw_bpe_sha256": "0cf9f8af44255cb82ace9a68826a535f0cc8e58cff4cb53b89434e90fdf6cc1d",
+      "visible_bpe_sha256": "0cf9f8af44255cb82ace9a68826a535f0cc8e58cff4cb53b89434e90fdf6cc1d",
+      "work_units": 14,
+      "visible_tokens": 128,
+      "finish_reason": "length"
+    },
+    "u64-max": {
+      "raw_bpe_sha256": "84cb2813dc912e4ebc419eec1e51a7a9e390190ee6114b60d907882e3a89a63e",
+      "visible_bpe_sha256": "84cb2813dc912e4ebc419eec1e51a7a9e390190ee6114b60d907882e3a89a63e",
+      "work_units": 14,
+      "visible_tokens": 128,
+      "finish_reason": "length"
+    },
+    "17-replay": {
+      "raw_bpe_sha256": "a270f3fc3cdc20e20bf86cf89c1b56bf0d3328e2448a92b6dc8de322492fe580",
+      "visible_bpe_sha256": "a270f3fc3cdc20e20bf86cf89c1b56bf0d3328e2448a92b6dc8de322492fe580",
+      "work_units": 14,
+      "visible_tokens": 128,
+      "finish_reason": "length"
+    }
+  },
+  "storage": "SMB network share"
+}

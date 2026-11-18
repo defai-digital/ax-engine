@@ -7,14 +7,15 @@ fn run() -> Result<(), String> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: ncm-infer <model-dir> --sampling greedy [--memory-budget-mib 2048] [--timeout-ms 60000] [--json]\nExperimental unconditional F32 TinyStories only. No prompt, chat or sampling controls."
+            "Usage: ncm-infer <model-dir> (--sampling greedy | --sampling seeded-v1 --seed <u64>) [--memory-budget-mib 2048] [--timeout-ms 60000] [--json]\nExperimental unconditional F32 TinyStories only."
         );
         return Ok(());
     }
     let path = PathBuf::from(args.first().ok_or("missing model directory; see --help")?);
     let mut memory = 2048u64;
     let mut timeout = 60000u64;
-    let mut sampling = false;
+    let mut sampling = None;
+    let mut seed = None;
     let mut json = false;
     let mut seen = BTreeSet::new();
     let mut i = 1;
@@ -28,7 +29,14 @@ fn run() -> Result<(), String> {
             i += 1;
             continue;
         }
-        if !["--sampling", "--memory-budget-mib", "--timeout-ms"].contains(&flag) {
+        if ![
+            "--sampling",
+            "--seed",
+            "--memory-budget-mib",
+            "--timeout-ms",
+        ]
+        .contains(&flag)
+        {
             return Err(format!("unsupported option {flag}"));
         }
         let value = args
@@ -36,21 +44,21 @@ fn run() -> Result<(), String> {
             .and_then(|v| v.to_str())
             .ok_or("missing option value")?;
         match flag {
-            "--sampling" => {
-                if value != "greedy" {
-                    return Err("only explicit greedy mode is supported".into());
-                }
-                sampling = true;
-            }
+            "--sampling" => sampling = Some(value),
+            "--seed" => seed = Some(value.parse().map_err(|_| "invalid unsigned seed")?),
             "--memory-budget-mib" => memory = value.parse().map_err(|_| "invalid memory budget")?,
             "--timeout-ms" => timeout = value.parse().map_err(|_| "invalid timeout")?,
             _ => {}
         }
         i += 2;
     }
-    if !sampling {
-        return Err("--sampling greedy is required".into());
-    }
+    let sampling = match (sampling, seed) {
+        (Some("greedy"), None) => NcmSamplingMode::Greedy,
+        (Some("greedy"), Some(_)) => return Err("--seed requires --sampling seeded-v1".into()),
+        (Some("seeded-v1"), Some(seed)) => NcmSamplingMode::SeededV1 { seed },
+        (Some("seeded-v1"), None) => return Err("--sampling seeded-v1 requires --seed".into()),
+        _ => return Err("--sampling must be greedy or seeded-v1".into()),
+    };
     let bytes = memory
         .checked_mul(1024 * 1024)
         .ok_or("memory budget overflow")?;
@@ -58,7 +66,7 @@ fn run() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let response = session
         .generate_unconditional(NcmGenerateRequest {
-            sampling: NcmSamplingMode::Greedy,
+            sampling,
             output_mode: NcmOutputMode::FullSequence128,
         })
         .map_err(|e| e.to_string())?

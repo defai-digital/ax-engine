@@ -33,6 +33,7 @@ pub enum NcmError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NcmSampling {
     Greedy,
+    SeededV1 { seed: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

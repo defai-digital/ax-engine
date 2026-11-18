@@ -1,7 +1,7 @@
 use super::{
     artifact::{ByteDecoder, NcmArtifactDescriptorV1, SCRATCH_BYTES, runtime, validate_unigram},
     codec::{Codec, LENGTH, LEVELS, WIDTH, token_ids, validate_tensor},
-    generator::{Generator, area_pool, chosen},
+    generator::{Generator, area_pool, choose},
 };
 use ax_engine_core::{
     ExecutionRunner, GenerationKind, RequestId, RunnerInput, RunnerOutput,
@@ -11,7 +11,7 @@ use ax_engine_core::{
         NcmRequestConfig, NcmSampling,
     },
 };
-use mlx_sys::{MlxArray, add, load_safetensors};
+use mlx_sys::{MlxArray, add, load_safetensors, log, random_split_seed, reshape, slice};
 use parking_lot::Mutex;
 use std::{fmt, path::Path, sync::OnceLock, time::Duration};
 
@@ -44,12 +44,25 @@ struct Model {
     generator: Generator,
     decoder: ByteDecoder,
     level0: u32,
+    level0_logits: MlxArray,
 }
 struct State {
     id: RequestId,
+    config: NcmRequestConfig,
     progress: ConceptProgress,
+    level_keys: Option<MlxArray>,
     latent: Option<MlxArray>,
     output: Option<NcmOutput>,
+}
+
+impl State {
+    fn level_key(&self, level: usize) -> Option<MlxArray> {
+        let level = level as i32;
+        self.level_keys.as_ref().map(|keys| {
+            let row = slice(keys, &[level, 0], &[level + 1, 2], &[1, 1], None);
+            reshape(&row, &[2], None)
+        })
+    }
 }
 
 /// One immutable model and an exclusive request/scratch lease. No AR KV state.
@@ -112,6 +125,7 @@ impl NcmRunner {
             .ok_or_else(|| runtime("missing L0 unigram"))?;
         validate_tensor("level0_unigram", probabilities, &[4096]).map_err(runtime)?;
         let level0 = validate_unigram(probabilities.data_f32())?;
+        let level0_logits = log(&reshape(probabilities, &[1, 1, 4096], None), None);
         let codec = Codec::load_verified(
             descriptor.file("codec.safetensors")?,
             descriptor.file("spec.json")?,
@@ -126,6 +140,7 @@ impl NcmRunner {
                 generator,
                 decoder,
                 level0,
+                level0_logits,
             },
             state: Mutex::new(None),
             _load_lease: lease,
@@ -188,25 +203,21 @@ impl ExecutionRunner for NcmRunner {
         }
     }
     fn begin_ncm(&self, id: RequestId, config: NcmRequestConfig) -> Result<(), NcmError> {
-        match config.sampling {
-            NcmSampling::Greedy => {}
-        }
         let mut state = self.state.try_lock().ok_or(NcmError::Busy)?;
         if state.is_some() {
             return Err(NcmError::Busy);
         }
         *state = Some(State {
             id,
+            config,
             progress: ConceptProgress::default(),
+            level_keys: None,
             latent: None,
             output: None,
         });
         Ok(())
     }
     fn run_ncm(&self, work: ConceptWork) -> Result<ConceptUpdate, NcmError> {
-        match work.config.sampling {
-            NcmSampling::Greedy => {}
-        }
         if work.cancellation.is_cancelled() {
             return Err(NcmError::Cancelled);
         }
@@ -215,9 +226,20 @@ impl ExecutionRunner for NcmRunner {
         if s.id != work.request_id || s.progress != work.before {
             return Err(runtime("runner/core progress mismatch"));
         }
+        if s.config != work.config {
+            return Err(runtime("runner/core sampling mismatch"));
+        }
         let output = match work.before.phase {
             ConceptPhase::Init => {
-                s.latent = Some(self.model.codec.contribution(&[self.model.level0], 0));
+                let ids = match s.config.sampling {
+                    NcmSampling::Greedy => vec![self.model.level0],
+                    NcmSampling::SeededV1 { seed } => {
+                        s.level_keys = Some(random_split_seed(seed, LEVELS.len() as i32, None));
+                        choose(&self.model.level0_logits, s.level_key(0).as_ref())
+                            .map_err(runtime)?
+                    }
+                };
+                s.latent = Some(self.model.codec.contribution(&ids, 0));
                 None
             }
             ConceptPhase::Predict(level @ 1..=11) => {
@@ -239,7 +261,7 @@ impl ExecutionRunner for NcmRunner {
                     &[1, LEVELS[level] as i32, 4096],
                 )
                 .map_err(runtime)?;
-                let ids = chosen(&forward.logits).map_err(runtime)?;
+                let ids = choose(&forward.logits, s.level_key(level).as_ref()).map_err(runtime)?;
                 s.latent = Some(add(
                     latent,
                     &self.model.codec.contribution(&ids, level),
@@ -310,5 +332,43 @@ mod resource_tests {
         let again = LoadLease::acquire(100, initial + 100).unwrap();
         drop(again);
         assert_eq!(*load_ledger().lock(), initial);
+    }
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn seeded_selection_uses_the_level_key_and_excludes_zero_probability() {
+        let config = NcmRequestConfig {
+            sampling: NcmSampling::SeededV1 { seed: u64::MAX },
+        };
+        let state = State {
+            id: RequestId(1),
+            config,
+            progress: ConceptProgress::default(),
+            level_keys: Some(random_split_seed(u64::MAX, LEVELS.len() as i32, None)),
+            latent: None,
+            output: None,
+        };
+        let mut values = vec![0.0; 4096];
+        values[731] = 1.0;
+        let logits = log(
+            &reshape(&MlxArray::from_f32_slice(&values), &[1, 1, 4096], None),
+            None,
+        );
+        assert_eq!(
+            choose(&logits, state.level_key(0).as_ref()).unwrap(),
+            vec![731]
+        );
+        let logits = mlx_sys::zeros(&[1, 8, 4096], mlx_sys::MlxDtype::Float32, None);
+        let select = |level| choose(&logits, state.level_key(level).as_ref()).unwrap();
+        let first = select(1);
+        mlx_sys::eval(&[&mlx_sys::random_categorical(&logits, None)]);
+        assert_eq!(select(1), first);
+        assert_ne!(select(2), first);
+        assert_eq!(first.len(), 8);
     }
 }

@@ -3471,13 +3471,41 @@ pub fn unflatten(a: &MlxArray, axis: i32, shape: &[i32], s: Option<&MlxStream>) 
 ///
 /// Uses MLX's internal RNG state (`key=null`). Not reproducible across runs.
 pub fn random_categorical(logits: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    categorical(logits, None, s)
+}
+
+/// Sample along the last axis with an explicit MLX key.
+pub fn random_categorical_with_key(
+    logits: &MlxArray,
+    key: &MlxArray,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    categorical(logits, Some(key), s)
+}
+
+fn categorical(logits: &MlxArray, key: Option<&MlxArray>, s: Option<&MlxStream>) -> MlxArray {
     crate::op_count::bump_named("random_categorical");
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let key = key.map_or_else(null_ffi_array, |key| key.inner);
+        let mut res = MlxArray::empty();
+        checked_ffi!(
+            "mlx_random_categorical",
+            ffi::mlx_random_categorical(&mut res.inner, logits.inner, -1, key, stream)
+        );
+        res
+    }
+}
+
+/// Split an explicit seed into `count` MLX keys (a U32 `[count, 2]` array).
+pub fn random_split_seed(seed: u64, count: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump_named("random_split_seed");
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
         checked_ffi!(
-            "mlx_random_categorical",
-            ffi::mlx_random_categorical(&mut res.inner, logits.inner, -1, null_ffi_array(), stream)
+            "mlx_random_split_seed",
+            ffi::mlx_random_split_seed(&mut res.inner, seed, count, stream)
         );
         res
     }

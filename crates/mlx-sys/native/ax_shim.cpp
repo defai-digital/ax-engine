@@ -609,6 +609,8 @@ extern "C" int mlx_arange(mlx_array* r, double start, double stop, double step, 
   AX_TRY { aset(r, mx::arange(start, stop, step, to_dtype(dt), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_random_categorical(mlx_array* r, const mlx_array logits, int ax, const mlx_array key, const mlx_stream s) {
   AX_TRY { aset(r, mx::random::categorical(aref(logits), ax, opt_arr(key), sd(s))); return 0; } AX_CATCH }
+extern "C" int mlx_random_split_seed(mlx_array* r, uint64_t seed, int count, const mlx_stream s) {
+  AX_TRY { aset(r, mx::random::split(mx::random::key(seed), count, sd(s))); return 0; } AX_CATCH }
 
 /* Linear algebra */
 extern "C" int mlx_matmul(mlx_array* r, const mlx_array a, const mlx_array b, const mlx_stream s) {

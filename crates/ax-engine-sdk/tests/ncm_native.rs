@@ -92,3 +92,40 @@ fn reference_free_identity_and_lifecycle() {
     assert!(matches!(handle.step(), Err(NcmError::Deadline)));
     assert!(session.generate_unconditional(request()).is_ok());
 }
+
+#[test]
+#[ignore = "requires pinned TinyStories weights"]
+fn seeded_selection_repeats_across_requests_and_after_cancellation() {
+    let path = PathBuf::from(std::env::var_os("AX_NCM_TEST_MODEL").unwrap());
+    let session =
+        NcmSession::load_experimental(&path, 2 * 1024 * 1024 * 1024, Duration::from_secs(60))
+            .unwrap();
+    let seeded = |seed| NcmGenerateRequest {
+        sampling: NcmSamplingMode::SeededV1 { seed },
+        output_mode: NcmOutputMode::FullSequence128,
+    };
+    let run = |config| {
+        session
+            .generate_unconditional(config)
+            .unwrap()
+            .finish()
+            .unwrap()
+    };
+    let greedy = run(request());
+    let a = run(seeded(17));
+    let b = run(seeded(29));
+    assert_ne!(a.raw_bpe_ids, b.raw_bpe_ids);
+    assert_ne!(a.raw_bpe_ids, greedy.raw_bpe_ids);
+    let mut interrupted = session.generate_unconditional(seeded(u64::MAX)).unwrap();
+    for _ in 0..5 {
+        assert!(interrupted.step().unwrap().1.is_none());
+    }
+    assert!(interrupted.cancellation().cancel());
+    assert!(matches!(interrupted.step(), Err(NcmError::Cancelled)));
+    let replay = run(seeded(17));
+    assert_eq!(replay.raw_bpe_ids, a.raw_bpe_ids);
+    assert_eq!(replay.text, a.text);
+    assert_eq!(replay.prompt_tokens, 0);
+    assert_eq!(replay.work_units, 14);
+    assert_eq!(run(request()).raw_bpe_ids, greedy.raw_bpe_ids);
+}

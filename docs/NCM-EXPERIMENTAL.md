@@ -2,8 +2,8 @@
 
 AX provides a separate native Rust/MLX unconditional TinyStories CLI and Rust
 SDK. The model selects its initial concept from the pinned unigram, predicts
-11 further levels and decodes 128 raw BPE positions to text. The first mode
-is deterministic greedy; repeated requests produce the same story.
+11 further levels and decodes 128 raw BPE positions to text. Choose greedy
+generation or versioned, seed-controlled concept sampling.
 
 The supported research artifact is
 `janmusic/NCM-TinyStories-89M-Upstream-MLX` at
@@ -21,6 +21,7 @@ Build the experimental binary:
 rustup run 1.99.1 cargo build -p ax-engine-sdk --features mlx-native --bin ncm-infer
 ./target/debug/ncm-infer "$MODEL_DIR" --sampling greedy
 ./target/debug/ncm-infer "$MODEL_DIR" --sampling greedy --json
+./target/debug/ncm-infer "$MODEL_DIR" --sampling seeded-v1 --seed 17 --json
 ```
 
 `MODEL_DIR` contains the seven pinned files: `LICENSE`, `config.json`,
@@ -70,9 +71,19 @@ only after final commit. Dropping an unfinished handle cancels it; closing
 or dropping the session cancels pending work and releases request state at a
 GPU-safe boundary. The same loaded session can be used for later requests.
 
-JSON requests require `sampling: "greedy"`; only `output_mode` may default
-(to `full_sequence128`). Unknown fields are rejected, including default-valued
-seed, temperature, top-p/top-k, numeric output budgets, prompt and streaming.
+Select `NcmSamplingMode::SeededV1 { seed: 17 }` for seeded generation.
+JSON requests require an explicit sampling mode, either
+`{"sampling":"greedy"}` or `{"sampling":{"seeded_v1":{"seed":17}}}`.
+Only `output_mode` may default, to `full_sequence128`. A seed must be an
+unsigned 64-bit integer inside the seeded mode. Requests with temperature,
+top-p, top-k, numeric output budgets, prompts or streaming fields are rejected.
+
+Seeded V1 uses one explicit MLX key per concept level. It samples level zero
+from the pinned unigram and all later concept positions from the learned
+logits at temperature one. The final codec still selects BPE IDs by argmax.
+Repeatability is scoped to the same AX build, model and hardware. Seeded
+outputs can differ across Apple Silicon generations.
+
 The raw output has 128 BPE positions. Presentation stops before EOS 0, skips
 PAD 1, joins byte fragments before UTF-8 decoding and preserves whitespace.
 The response distinguishes raw IDs from visible IDs, permits empty text and
@@ -82,7 +93,7 @@ reports zero user prompt tokens. The fixed internal prefix is not a user prompt.
 
 This is experimental unconditional inference, separate from ordinary
 `ax-engine serve` and generic SDK `GenerateRequest`. No chat, arbitrary prompt,
-seeded sampling, tools, grammar, stop strings, logprobs, speculative decoding,
+tools, grammar, stop strings, logprobs, speculative decoding,
 prefix cache or partial text streaming is admitted. HTTP model registration,
 official-source parity and M5/M4 admission evidence remain pending. M2 Ultra
 functional controls do not establish M5 qualification, quality or speed.
