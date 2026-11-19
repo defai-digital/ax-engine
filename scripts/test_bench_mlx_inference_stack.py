@@ -1551,6 +1551,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(run["client_first_output_event"], "response")
         self.assertEqual(run["client_first_output_tokens"], 1)
         self.assertEqual(run["client_output_tokens_after_first_event"], 0)
+        self.assertNotIn("finish_reason", run)
 
     def test_axengine_one_run_records_batched_first_output_and_socket_timeout(self) -> None:
         class FakeResponse:
@@ -1560,7 +1561,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 for event, payload in (
                     ("step", {"step": {"runner_time_us": 100_000}, "request": {"output_len": 2}}),
                     ("step", {"step": {"runner_time_us": 200_000}, "request": {"output_len": 4}}),
-                    ("response", {"response": {"output_tokens": [41, 42, 43, 44]}}),
+                    ("response", {"response": {
+                        "output_tokens": [41, 42, 43, 44], "finish_reason": "stop",
+                    }}),
                 ):
                     yield f"event: {event}\n".encode()
                     yield b"data: " + json.dumps(payload).encode() + b"\n"
@@ -1572,13 +1575,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             patch.object(bench.http.client, "HTTPConnection", return_value=connection) as factory,
             patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.1, 10.3]),
         ):
-            run = bench.axengine_one_run(19091, [1, 2, 3], 4, socket_timeout_seconds=1800)
+            run = bench.axengine_one_run(19091, [1, 2, 3], 8, socket_timeout_seconds=1800)
         factory.assert_called_once_with("127.0.0.1", 19091, timeout=1800)
         connection.close.assert_called_once_with()
         self.assertEqual(run["client_first_output_tokens"], 2)
         self.assertEqual(run["client_output_tokens_after_first_event"], 2)
         self.assertEqual(run["client_first_output_event"], "step")
         self.assertEqual(run["socket_timeout_seconds"], 1800)
+        self.assertEqual(run["finish_reason"], "stop")
 
     def test_axengine_one_run_rejects_unbounded_or_nonpositive_socket_timeout(self) -> None:
         with patch.object(bench.http.client, "HTTPConnection") as factory:

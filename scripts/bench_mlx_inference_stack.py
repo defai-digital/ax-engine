@@ -4321,6 +4321,8 @@ def axengine_one_run(
         "client_wall_total_ms": client_wall_total_ms,
         "socket_timeout_seconds": socket_timeout_seconds,
     }
+    if isinstance(terminal_reason, str):
+        run["finish_reason"] = terminal_reason
     if first_output_wall_s is not None:
         run["client_wall_ttft_ms"] = first_output_wall_s * 1000.0
         # A speculative step may expose multiple tokens at one client timestamp.
