@@ -4138,8 +4138,8 @@ impl MlxRunner {
 
             let mut rows = Vec::with_capacity(members.len());
             for (item_index, item, ctx, mut state) in members {
-                let pending = state.mtp_pending_draft.clone();
-                let pending_sources = state.mtp_pending_draft_sources.clone();
+                let mut pending = state.mtp_pending_draft.clone();
+                let mut pending_sources = state.mtp_pending_draft_sources.clone();
                 let sampling = sampling_params_from_context(
                     ctx,
                     self.unlimited_ocr_page_guard_applies(Some(ctx)),
@@ -4162,6 +4162,20 @@ impl MlxRunner {
                     .or_else(|| item.input_token_slice.last().copied())
                     .unwrap_or(0);
                 let token_offset = state.cache.seq_len();
+                let cap_guard = state.cache.has_hard_fa_block_cap();
+                if cap_guard {
+                    pending.truncate(gemma_capped_verify_draft_len(
+                        &pending,
+                        &self.terminal_token_ids,
+                        Some(ctx),
+                    ));
+                    pending_sources.truncate(pending.len());
+                }
+                let verify_len = pending.len() + 1;
+                // Use batched verification only when it needs no new pages.
+                // Otherwise charge the pool as each draft is accepted.
+                let cap_requires_sequential =
+                    cap_guard && state.cache.additional_fa_blocks_for_append(verify_len) != Some(0);
                 let early_gen_force = gemma_early_gen_pure_direct_force(
                     early_gen_on,
                     state.generated_tokens.len(),
@@ -4193,7 +4207,7 @@ impl MlxRunner {
                             oracle_on,
                             cycle_guard_on,
                             cycle_force,
-                            early_gen_force,
+                            early_gen_force || cap_requires_sequential,
                         ),
                         GemmaGreedyVerifyRoute::SequentialOracle
                     );
@@ -4203,7 +4217,6 @@ impl MlxRunner {
                     }
                     state.mtp_telemetry.record_gemma_cycle_guard();
                 }
-                let verify_len = pending.len() + 1;
                 // The sequential oracle writes only the incoming token and
                 // accepted drafts. Select it before allocating speculative KV.
                 let (target, verify_forward_wall_us) = if use_sequential_oracle {
@@ -13647,6 +13660,22 @@ impl MlxRunner {
             pending = tokens;
         }
 
+        let gemma_assistant_draft = sampling.temperature <= 0.0
+            && !pending.is_empty()
+            && state
+                .mtp_pending_draft_sources
+                .contains(&MtpDraftSource::Gemma4Assistant)
+            && self.weights.deepseek_v4_nextn.is_none();
+        let gemma_cap_guard = gemma_assistant_draft && state.cache.has_hard_fa_block_cap();
+        if gemma_cap_guard && primary_tok_from_skip.is_none() {
+            pending.truncate(gemma_capped_verify_draft_len(
+                &pending,
+                &self.terminal_token_ids,
+                ctx,
+            ));
+            state.mtp_pending_draft_sources.truncate(pending.len());
+        }
+
         let profitability_mtp_round = is_profitability_mtp_round(
             pending.len(),
             &state.mtp_pending_draft_sources,
@@ -14446,12 +14475,6 @@ impl MlxRunner {
                 //   almost always cycle-continuation false accepts).
                 // - SEQUENTIAL_ORACLE=0 and non-looping: multi-token on a clone,
                 //   full-accept adopt for Tier 2 speed.
-                let gemma_assistant_draft = sampling.temperature <= 0.0
-                    && !pending.is_empty()
-                    && state
-                        .mtp_pending_draft_sources
-                        .contains(&MtpDraftSource::Gemma4Assistant)
-                    && self.weights.deepseek_v4_nextn.is_none();
                 // SEQUENTIAL_ORACLE=1 → always pure-direct.
                 // SEQUENTIAL_ORACLE=0 → multi-token full-accept only; pure-direct
                 // on reject (avoids multi-token pos0 contamination, smoke18 t0)
@@ -14513,7 +14536,9 @@ impl MlxRunner {
                     force_pure_direct,
                     cycle_guard_on && gemma_assistant_draft,
                     cycle_force,
-                    early_gen_force,
+                    early_gen_force
+                        || (gemma_cap_guard
+                            && state.cache.additional_fa_blocks_for_append(verify_len) != Some(0)),
                 );
                 let gemma_sequential_oracle = gemma_assistant_draft
                     && matches!(verify_route, GemmaGreedyVerifyRoute::SequentialOracle);
@@ -18877,6 +18902,27 @@ fn argmax_with_softmax_confidence(logits: &[f32]) -> (u32, f32) {
         0.0
     };
     (argmax, confidence)
+}
+
+fn gemma_capped_verify_draft_len(
+    drafts: &[u32],
+    terminal_ids: &[u32],
+    context: Option<&RunnerRequestContext>,
+) -> usize {
+    // The tail prediction can itself be the final output or EOS. Feeding
+    // that token into the trunk would consume KV beyond the request's end.
+    let max_drafts = context.map_or(drafts.len(), |ctx| {
+        ctx.max_output_tokens
+            .saturating_sub(ctx.generated_len.saturating_add(1)) as usize
+    });
+    let within_budget = &drafts[..drafts.len().min(max_drafts)];
+    if context.is_some_and(|ctx| ctx.ignore_eos) {
+        return within_budget.len();
+    }
+    within_budget
+        .iter()
+        .position(|&token| token_is_terminal(token, terminal_ids))
+        .unwrap_or(within_budget.len())
 }
 
 fn apply_decode_result(

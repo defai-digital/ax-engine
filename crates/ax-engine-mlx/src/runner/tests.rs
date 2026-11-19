@@ -10327,7 +10327,7 @@ fn gemma_coalesced_oracle_does_not_charge_rejected_drafts_to_the_kv_cap() {
     fs::remove_dir_all(artifacts.root_dir()).unwrap();
     let mixed_routes = !crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
     let second = if mixed_routes {
-        let history = GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS + 2;
+        let history = (GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS + 3).next_multiple_of(4) + 1;
         (history, [1, 1], (history + 3).div_ceil(4) as u32, Some(3))
     } else {
         (3, [2, 3], 1, Some(1))
@@ -10398,6 +10398,159 @@ fn gemma_coalesced_oracle_does_not_charge_rejected_drafts_to_the_kv_cap() {
                 )
             );
             assert!(!runner.states.lock().contains_key(&run.update.request_id));
+        }
+    }
+}
+
+#[test]
+fn gemma_coalesced_and_singleton_verify_preserve_the_last_kv_slot() {
+    const CHILD: &str = "AX_MLX_GEMMA_CAP_END_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for oracle in ["1", "0"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runner::tests::gemma_coalesced_and_singleton_verify_preserve_the_last_kv_slot",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE", oracle)
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT", "0")
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD", "0")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stdout}\n{stderr}");
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+        }
+        return;
+    }
+
+    let mut manifest = dense_manifest();
+    manifest.model_family = "gemma4".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    runner.terminal_token_ids = vec![1];
+    let cases = [
+        ([1, 1], false, 64, Some(StopReason::EosToken)),
+        ([1, 1], true, 2, Some(StopReason::MaxOutputTokens)),
+        ([2, 1], true, 64, None),
+    ];
+
+    let capped_state = |seed, drafts: [u32; 2]| {
+        let mut state = RequestState::new(
+            1,
+            seed,
+            Some(FaBlockPoolConfig {
+                block_size_tokens: 4,
+                max_blocks: 1,
+                hard_cap: true,
+            }),
+        );
+        let (logits, hidden) = forward_all_positions_with_post_norm(
+            &runner.cfg,
+            &runner.weights,
+            &[1; 3],
+            &mut state.cache,
+            0,
+        );
+        state.cache.advance(3);
+        eval(&[&logits, &hidden]);
+        assert!(!state.cache.hard_cap_exhausted());
+        state.generated_tokens = vec![1];
+        state.mtp_pending_draft = drafts.to_vec();
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafts.len()];
+        state
+    };
+
+    let mut items = Vec::new();
+    let mut contexts = Vec::new();
+    for (index, (drafts, ignore_eos, max_output_tokens, _)) in cases.into_iter().enumerate() {
+        let mut item = decode_claim(index as u64 + 1, 1);
+        item.position_range = PositionRange {
+            start: 3,
+            end_exclusive: 4,
+        };
+        let context = RunnerRequestContext {
+            request_id: item.request_id,
+            prompt_len: 3,
+            processed_prompt_tokens: 3,
+            generated_len: 1,
+            max_output_tokens,
+            ignore_eos,
+            ..ctx_with_argmax(true)
+        };
+        // Independent pools so verifying one route cannot borrow capacity
+        // from the other or retain an extra reference to a shared page.
+        let mut singleton = capped_state(item.request_id.0, drafts);
+        let output = runner.run_mtp_decode(
+            &mut singleton,
+            1,
+            MlxSamplingParams::greedy(),
+            Some(&context),
+        );
+        assert_eq!(output, [1]);
+        assert!(!singleton.cache.hard_cap_exhausted());
+        assert_eq!(singleton.cache.seq_len(), 4);
+        assert!(singleton.pending_direct.is_none());
+
+        runner
+            .states
+            .lock()
+            .insert(item.request_id, capped_state(item.request_id.0, drafts));
+        items.push(item);
+        contexts.push(context);
+    }
+
+    // A terminal draft can cut an n-gram prefix short. The remaining
+    // verifier inputs and their provenance must have the same length.
+    let mut stacked = capped_state(10, [2, 1]);
+    stacked.mtp_pending_draft.push(1);
+    stacked.mtp_pending_draft_sources = vec![
+        MtpDraftSource::Ngram,
+        MtpDraftSource::Ngram,
+        MtpDraftSource::Gemma4Assistant,
+    ];
+    let stacked_output = runner.run_mtp_decode(
+        &mut stacked,
+        1,
+        MlxSamplingParams::greedy(),
+        contexts.first(),
+    );
+    assert_eq!(stacked_output, [1]);
+    assert!(!stacked.cache.hard_cap_exhausted());
+    assert_eq!(stacked.cache.seq_len(), 4);
+
+    let group = items.iter().enumerate().collect::<Vec<_>>();
+    let (runs, forward_rows) = runner.run_gemma4_assistant_mtp_coalesced_group(&group, &contexts);
+    assert_eq!(runs.len(), cases.len());
+    let oracle = crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+    assert_eq!(forward_rows, if oracle { 0 } else { 2 });
+    for (index, run) in runs {
+        assert!(run.update.error.is_none(), "{:?}", run.update.error);
+        assert_eq!(run.update.output_token, Some(1));
+        assert!(run.update.output_tokens.is_empty());
+        assert_eq!(run.update.stop_reason, cases[index].3);
+        let state = runner.states.lock().remove(&run.update.request_id);
+        if cases[index].3.is_none() {
+            let state = state.unwrap();
+            assert_eq!(state.cache.seq_len(), 4);
+            assert!(!state.cache.hard_cap_exhausted());
+        } else {
+            assert!(state.is_none());
         }
     }
 }
