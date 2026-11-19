@@ -12002,8 +12002,7 @@ fn live_prefix_snapshot_restores_an_independent_clone_without_a_payload() {
     assert_eq!(again.usage_snapshot().logical_bytes, logical);
 }
 
-#[test]
-fn dflash2_verifier_does_not_spend_the_last_capped_kv_slot() {
+fn tiny_qwen_hybrid_runner() -> (MlxRunner, NativeModelArtifacts) {
     let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
     runner
         .cfg
@@ -12023,6 +12022,13 @@ fn dflash2_verifier_does_not_spend_the_last_capped_kv_slot() {
     layer.v_proj = Some(dense_qw(&[kv_width, 8]));
     layer.o_proj = Some(dense_qw(&[8, q_width]));
     Arc::get_mut(&mut runner.weights).unwrap().layers[1] = layer;
+
+    (runner, artifacts)
+}
+
+#[test]
+fn dflash2_verifier_does_not_spend_the_last_capped_kv_slot() {
+    let (mut runner, artifacts) = tiny_qwen_hybrid_runner();
 
     runner.fa_block_pool_config = Some(FaBlockPoolConfig {
         block_size_tokens: 4,
@@ -12149,4 +12155,160 @@ fn dflash2_verifier_does_not_spend_the_last_capped_kv_slot() {
         exhausted.update.error.as_deref(),
         Some("FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"),
     );
+}
+
+#[test]
+fn qwen_mtp_releases_verify_pages_before_committed_decode() {
+    let (mut runner, artifacts) = tiny_qwen_hybrid_runner();
+    let norm = || f32_ones(8);
+    let ffn_layer = tiny_linear_dflash_weights().layers.remove(0);
+    let weights = Arc::get_mut(&mut runner.weights).unwrap();
+    weights.token_embedding =
+        QuantizedWeight::new(mlx_sys::reshape(&f32_ones(128), &[16, 8], None), None, None);
+    let mut head = [0.0; 128];
+    head[8..16].fill(1.0);
+    let head = mlx_sys::reshape(&MlxArray::from_f32_slice(&head), &[16, 8], None);
+    weights.lm_head = QuantizedWeight::new(head, None, None);
+    weights.mtp = Some(crate::weights::MtpWeights {
+        fc: dense_qw(&[8, 16]),
+        mtp_norm: norm(),
+        draft_lm_head: None,
+        pre_fc_norm_embedding: norm(),
+        pre_fc_norm_hidden: norm(),
+        attn_norm: norm(),
+        ffn_norm: norm(),
+        q_norm: None,
+        k_norm: None,
+        q_proj: dense_qw(&[16, 8]),
+        k_proj: dense_qw(&[4, 8]),
+        v_proj: dense_qw(&[4, 8]),
+        o_proj: dense_qw(&[8, 8]),
+        ffn_layer,
+        n_heads: 2,
+        n_kv_heads: 1,
+        head_dim: 4,
+        max_depth: 2,
+        draft_sampling: MlxSamplingParams::greedy(),
+    });
+    runner.mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+        qwen_depth: Some(2),
+        qwen_linear_attention: true,
+        qwen_linear_exact_enabled: true,
+        qwen_linear_certification_candidate: true,
+        ..MtpModelPolicyInputs::default()
+    });
+    runner.mtp_requested = true;
+    runner.mtp_skip_state = false;
+    runner.disable_mtp_ngram_stacking = true;
+    runner.shared_fa_block_pool = None;
+    runner.terminal_token_ids.clear();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+
+    for (id, max_blocks, greedy, optimistic, pending) in [
+        (51, 1, true, false, &[1, 2][..]),
+        (52, 1, true, false, &[][..]),
+        (53, 1, false, false, &[1, 2][..]),
+        (54, 1, true, true, &[1, 2][..]),
+        (55, 2, true, false, &[1, 2][..]),
+    ] {
+        runner.mtp_optimistic = optimistic;
+        runner.fa_block_pool_config = Some(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks,
+            hard_cap: true,
+        });
+        let run = |item: &ax_engine_core::ExecutionItem, ctx: &RunnerRequestContext| {
+            runner.run_item(item, Some(ctx), "qwen3_5", 4, None, None, None, None, None)
+        };
+        let mut prefill = decode_claim(id, 3);
+        prefill.mode = ExecutionMode::Prefill;
+        prefill.planned_work_unit = ax_engine_core::WorkUnitKind::PrefillChunk;
+        prefill.input_token_slice = vec![2, 4, 3];
+        prefill.position_range = PositionRange {
+            start: 0,
+            end_exclusive: 3,
+        };
+        prefill.scheduled_token_count = 3;
+        let mut ctx = RunnerRequestContext {
+            request_id: prefill.request_id,
+            prompt_len: 3,
+            max_output_tokens: 64,
+            temperature: if greedy { 0.0 } else { 1.0 },
+            top_k: if greedy { 0 } else { 1 },
+            ..ctx_with_argmax(greedy)
+        };
+        let (sampling, is_greedy) = runner.request_sampling(Some(&ctx));
+        assert_eq!(is_greedy, greedy);
+        assert!(mtp_exact_sampling_supported(
+            sampling,
+            runner.mtp_target_softmax_topk
+        ));
+
+        let prefilled = run(&prefill, &ctx);
+        assert!(
+            prefilled.update.error.is_none(),
+            "{:?}",
+            prefilled.update.error
+        );
+        let anchor = prefilled.update.output_token.unwrap();
+        ctx.generated_len = 1;
+        ctx.processed_prompt_tokens = 3;
+        let mut step = decode_claim(id, anchor);
+        step.position_range = PositionRange {
+            start: 3,
+            end_exclusive: 4,
+        };
+        {
+            assert!(runner.has_generic_mtp() && runner.mtp_requested);
+            let mut states = runner.states.lock();
+            let state = states.get_mut(&step.request_id).unwrap();
+            assert_eq!(state.cache.seq_len(), 3);
+            assert_eq!(state.cache.fa_block_pool_available(), Some(max_blocks - 1));
+            state.mtp_pending_draft = pending.to_vec();
+            state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; pending.len()];
+        }
+        let decoded = run(&step, &ctx);
+        assert!(decoded.update.error.is_none(), "{:?}", decoded.update.error);
+        assert_eq!(decoded.update.output_token, Some(1));
+        assert!(decoded.update.output_tokens.is_empty());
+        assert_eq!(decoded.mtp_telemetry.direct_fallback_steps, 1);
+        assert_eq!(decoded.mtp_telemetry.optimistic_steps, 0);
+        {
+            let states = runner.states.lock();
+            let state = &states[&step.request_id];
+            assert_eq!(state.cache.seq_len(), 4);
+            assert!(state.cache.has_hard_fa_block_cap());
+            assert!(!state.cache.hard_cap_exhausted());
+            assert_eq!(state.cache.fa_block_pool_available(), Some(max_blocks - 1));
+            assert!(state.mtp_pending_draft.is_empty());
+            assert!(state.mtp_pending_draft_lazy.is_none());
+            assert_eq!(state.mtp_cache.as_ref().unwrap().rope_offset, 4);
+            assert!(!state.mtp_bypassed);
+        }
+        ctx.generated_len += 1;
+        step.input_token_slice = vec![decoded.update.output_token.unwrap()];
+        step.position_range = PositionRange {
+            start: 4,
+            end_exclusive: 5,
+        };
+        let next = run(&step, &ctx);
+        if max_blocks == 1 {
+            assert_eq!(next.update.output_token, None);
+            assert_eq!(
+                next.update.error.as_deref(),
+                Some(
+                    "FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"
+                )
+            );
+        } else {
+            assert!(next.update.error.is_none(), "{:?}", next.update.error);
+            assert_eq!(next.update.output_token, Some(1));
+            assert_eq!(next.mtp_telemetry.direct_fallback_steps, 1);
+            let mut states = runner.states.lock();
+            let state = states.remove(&step.request_id).unwrap();
+            assert_eq!(state.cache.seq_len(), 5);
+            assert_eq!(state.cache.fa_block_pool_available(), Some(0));
+            assert!(!state.cache.hard_cap_exhausted());
+        }
+    }
 }

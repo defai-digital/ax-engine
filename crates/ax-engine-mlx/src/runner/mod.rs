@@ -13255,6 +13255,34 @@ impl MlxRunner {
         elapsed_us(started)
     }
 
+    fn run_linear_mtp_cap_fallback(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        sampling: MlxSamplingParams,
+    ) -> Vec<u32> {
+        clear_pending_mtp_proposal(state);
+        state.mtp_telemetry.record_direct_fallback();
+        // The verifier clone has already released its pages. Decode only the
+        // committed anchor with the ordinary singleton kernels.
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
+        let _relaxed = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
+        let _qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
+        let result = if sampling.temperature <= 0.0 && !sampling.uses_logits_processors() {
+            vec![self.run_direct_pipeline_decode(state, last_token, false, true)]
+        } else {
+            self.run_single_decode(state, last_token, sampling)
+        };
+        state.mtp_decode_count = 0;
+        state.mtp_cache = self.weights.mtp.as_ref().map(|_| {
+            let mut cache = MlxKVCache::new(1);
+            cache.rope_offset = state.cache.seq_len();
+            cache
+        });
+        result
+    }
+
     /// MTP model-based speculative decode step.
     ///
     /// Runs a verify forward on `[last_token] ++ pending_draft`, accepts/rejects
@@ -13440,6 +13468,7 @@ impl MlxRunner {
         let mut pending = state.mtp_pending_draft.clone();
         let token_offset = state.cache.seq_len();
         let has_linear_attention = self.cfg.linear_attention.is_some();
+        let capped_linear_verify = has_linear_attention && state.cache.has_hard_fa_block_cap();
         let replay_kill_switch =
             has_linear_attention && crate::fastpath::mtp_linear_exact_replay_enabled();
         let forced_greedy_replay = has_linear_attention
@@ -13518,7 +13547,7 @@ impl MlxRunner {
         // Skip-state is only valid when there's no pending draft to verify
         // (otherwise we need to verify the pending draft first).
         let (skip_logits, skip_argmax, skip_hidden) =
-            take_mtp_skip_state(state, forced_greedy_replay);
+            take_mtp_skip_state(state, forced_greedy_replay || capped_linear_verify);
         // The skip-state primary is sampled without the request's history,
         // so penalised verification never takes it.
         let can_skip_qwen = skip_logits.is_some()
@@ -13698,23 +13727,6 @@ impl MlxRunner {
         };
         let approximate_profile =
             optimistic_allowed && (self.mtp_optimistic || auto_optimistic_enabled);
-        state.mtp_telemetry.record_correctness_mode(
-            if approximate_profile {
-                MtpCorrectnessMode::ApproximateOptimistic
-            } else if sampling.temperature > 0.0 {
-                MtpCorrectnessMode::SampledExact
-            } else {
-                MtpCorrectnessMode::GreedyExact
-            },
-            proposal_law,
-        );
-        if optimistic {
-            state.mtp_telemetry.record_optimistic_step();
-        }
-        if auto_optimistic && !self.mtp_optimistic {
-            state.mtp_telemetry.auto_optimistic_steps =
-                state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
-        }
         // When auto-optimistic is active, we accept all drafts for output but
         // must track the TRUE acceptance rate for EWMA so the gate can
         // deactivate if draft quality drops. Without this, record_step sees
@@ -13804,11 +13816,10 @@ impl MlxRunner {
             if optimistic {
                 // ── Explicit approximate optimistic shortcut ──
                 // Accept all drafts without rejection sampling. The full draft
-                // commits, so no rollback can occur — verify directly on the
-                // request cache. Cloning here (as the rejection path below must)
-                // would defeat MLX buffer donation and copy every full-attention
-                // layer's capacity-sized K/V per MTP cycle, an O(context) tax on
-                // the steady-state greedy path.
+                // commits. Keep it in place unless a hard cap requires
+                // rolling the whole round back on allocation failure.
+                let mut trial = capped_linear_verify.then(|| state.cache.clone());
+                let cache = trial.as_mut().unwrap_or(&mut state.cache);
                 let ac = pending.len();
                 let needs_predicted =
                     sampling.temperature <= 0.0 || (auto_optimistic && !self.mtp_optimistic);
@@ -13818,7 +13829,7 @@ impl MlxRunner {
                         &self.cfg,
                         &self.weights,
                         &verify_input,
-                        &mut state.cache,
+                        cache,
                         token_offset,
                     )
                 } else {
@@ -13826,15 +13837,19 @@ impl MlxRunner {
                         &self.cfg,
                         &self.weights,
                         &verify_input,
-                        &mut state.cache,
+                        cache,
                         token_offset,
                     )
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.advance(verify_len);
+                cache.advance(verify_len);
+                if capped_linear_verify && cache.hard_cap_exhausted() {
+                    drop(trial);
+                    return self.run_linear_mtp_cap_fallback(state, last_token, sampling);
+                }
                 let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let kv_refs = state.cache.collect_eval_refs();
+                let kv_refs = cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
                 if let Some(ref predicted_arr) = predicted_arr {
                     targets.push(predicted_arr);
@@ -13845,9 +13860,12 @@ impl MlxRunner {
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 let rollback_started = Instant::now();
                 let committed_len = token_offset + 1 + ac;
-                let trimmed = state.cache.trim_to(committed_len);
+                let trimmed = cache.trim_to(committed_len);
                 debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                if let Some(verified) = trial {
+                    state.cache = verified;
+                }
                 let predicted: Vec<u32> = predicted_arr
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
@@ -13990,6 +14008,10 @@ impl MlxRunner {
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 verify_cache.advance(verify_len);
+                if verify_cache.hard_cap_exhausted() {
+                    drop(verify_cache);
+                    return self.run_linear_mtp_cap_fallback(state, last_token, sampling);
+                }
                 if relaxed_target_verify
                     && projected_replay
                     && crate::fastpath::mtp_rebind_verify_fa_enabled()
@@ -14280,6 +14302,10 @@ impl MlxRunner {
                 // other replay paths retain their existing state/correction
                 // contract, and projected replay avoids a backbone replay.
                 let recomputed_correction_argmax = if exact_linear_replay {
+                    // Free speculative physical pages before replaying on the
+                    // request cache, which uses the same block budget.
+                    drop(kv_refs);
+                    drop(verify_cache);
                     Some(replay_linear_mtp_accepted_prefix(
                         &self.cfg,
                         &self.weights,
@@ -14309,6 +14335,7 @@ impl MlxRunner {
                         state.cache = verify_cache;
                         None
                     } else {
+                        drop(verify_cache);
                         Some(recompute_committed_prefix_with_argmax(
                             &self.cfg,
                             &self.weights,
@@ -14359,6 +14386,7 @@ impl MlxRunner {
                         state.cache = verify_cache;
                         None
                     } else {
+                        drop(verify_cache);
                         Some(recompute_committed_prefix_with_argmax(
                             &self.cfg,
                             &self.weights,
@@ -14406,6 +14434,7 @@ impl MlxRunner {
                         state.cache = verify_cache;
                         None
                     } else {
+                        drop(verify_cache);
                         Some(recompute_committed_prefix_with_argmax(
                             &self.cfg,
                             &self.weights,
@@ -14416,6 +14445,8 @@ impl MlxRunner {
                         ))
                     }
                 } else {
+                    drop(kv_refs);
+                    drop(verify_cache);
                     Some(recompute_committed_prefix_with_argmax(
                         &self.cfg,
                         &self.weights,
@@ -15115,6 +15146,25 @@ impl MlxRunner {
                 }
             }
         };
+
+        state.mtp_telemetry.record_correctness_mode(
+            if approximate_profile {
+                MtpCorrectnessMode::ApproximateOptimistic
+            } else if sampling.temperature > 0.0 {
+                MtpCorrectnessMode::SampledExact
+            } else {
+                MtpCorrectnessMode::GreedyExact
+            },
+            proposal_law,
+        );
+        if optimistic {
+            state.mtp_telemetry.record_optimistic_step();
+        }
+
+        if auto_optimistic && !self.mtp_optimistic {
+            state.mtp_telemetry.auto_optimistic_steps =
+                state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
+        }
 
         // A depth-D head chain has D new cache entries, but they represent the
         // committed main token followed by drafts 1..D-1. Keep the main entry,
@@ -16264,6 +16314,7 @@ impl MlxRunner {
             // Includes Gemma 4 assistant MTP (vLLM/Lightning always-advance pattern).
             let can_capture_skip = self.mtp_skip_state
                 && !forced_greedy_replay
+                && !capped_linear_verify
                 && state.mtp_pending_draft.is_empty()
                 && (self.weights.mtp.is_some()
                     || self.weights.glm_mtp.is_some()
