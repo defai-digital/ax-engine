@@ -12001,3 +12001,152 @@ fn live_prefix_snapshot_restores_an_independent_clone_without_a_payload() {
     assert_eq!(again.seq_len(), 3);
     assert_eq!(again.usage_snapshot().logical_bytes, logical);
 }
+
+#[test]
+fn dflash2_verifier_does_not_spend_the_last_capped_kv_slot() {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
+    runner
+        .cfg
+        .linear_attention
+        .as_mut()
+        .unwrap()
+        .full_attention_interval = 2;
+    assert!(runner.cfg.is_linear_attention_layer(0));
+    assert!(!runner.cfg.is_linear_attention_layer(1));
+    let mut layer = tiny_linear_dflash_weights().layers.remove(0);
+    let head_dim = runner.cfg.head_dim as i32;
+    let q_width = head_dim * runner.cfg.n_heads as i32;
+    let kv_width = head_dim * runner.cfg.n_kv_heads as i32;
+    layer.linear_attn = None;
+    layer.q_proj = Some(dense_qw(&[q_width, 8]));
+    layer.k_proj = Some(dense_qw(&[kv_width, 8]));
+    layer.v_proj = Some(dense_qw(&[kv_width, 8]));
+    layer.o_proj = Some(dense_qw(&[8, q_width]));
+    Arc::get_mut(&mut runner.weights).unwrap().layers[1] = layer;
+
+    runner.fa_block_pool_config = Some(FaBlockPoolConfig {
+        block_size_tokens: 4,
+        max_blocks: 3,
+        hard_cap: true,
+    });
+    runner.shared_fa_block_pool = None;
+    runner.terminal_token_ids.clear();
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    runner.dflash2 = Some(drafter);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+
+    let run = |item: &ax_engine_core::ExecutionItem, ctx: &RunnerRequestContext| {
+        runner.run_item(item, Some(ctx), "qwen3_5", 4, None, None, None, None, None)
+    };
+    let prepare = |id, prompt_len| {
+        let mut prefill = decode_claim(id, 3);
+        prefill.mode = ExecutionMode::Prefill;
+        prefill.planned_work_unit = ax_engine_core::WorkUnitKind::PrefillChunk;
+        prefill.input_token_slice = vec![3; prompt_len as usize];
+        prefill.position_range = PositionRange {
+            start: 0,
+            end_exclusive: prompt_len,
+        };
+        prefill.scheduled_token_count = prompt_len;
+        let ctx = RunnerRequestContext {
+            request_id: prefill.request_id,
+            prompt_len,
+            ..ctx_with_argmax(true)
+        };
+        let result = run(&prefill, &ctx);
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        let anchor = result.update.output_token.unwrap();
+        let mut step = decode_claim(id, anchor);
+        step.position_range = PositionRange {
+            start: prompt_len,
+            end_exclusive: prompt_len + 1,
+        };
+        let ctx = RunnerRequestContext {
+            generated_len: 1,
+            processed_prompt_tokens: prompt_len,
+            ..ctx
+        };
+        (step, ctx)
+    };
+
+    let (mut scarce, mut scarce_ctx) = prepare(41, 11);
+    let (roomy, roomy_ctx) = prepare(42, 3);
+    if !crate::fastpath::tree_verify_enabled() {
+        let mut states = runner.states.lock();
+        let mut scarce_state = states.remove(&scarce.request_id).unwrap();
+        let mut roomy_state = states.remove(&roomy.request_id).unwrap();
+        assert_eq!(scarce_state.cache.fa_block_pool_available(), Some(0));
+        assert_eq!(roomy_state.cache.fa_block_pool_available(), Some(2));
+        let plan = |state: &mut RequestState, tokens: &[u32], ctx: &RunnerRequestContext| {
+            runner
+                .dflash2_plan_round(
+                    state,
+                    tokens,
+                    MlxSamplingParams::greedy(),
+                    true,
+                    &DecodeOneOptions {
+                        terminal_token_ids: &[],
+                        final_by_max_output: false,
+                        request_context: Some(ctx),
+                    },
+                )
+                .unwrap()
+        };
+        let scarce_plan = plan(&mut scarce_state, &scarce.input_token_slice, &scarce_ctx);
+        let roomy_plan = plan(&mut roomy_state, &roomy.input_token_slice, &roomy_ctx);
+        assert_eq!(
+            runner.dflash2_cohort_verify(&mut [
+                (&mut scarce_state, scarce_plan),
+                (&mut roomy_state, roomy_plan)
+            ]),
+            (0, 0),
+        );
+        for (id, state, positions, free) in [
+            (scarce.request_id, scarce_state, 11, 0),
+            (roomy.request_id, roomy_state, 3, 2),
+        ] {
+            assert!(state.dflash2_staged.is_none());
+            assert_eq!(state.cache.seq_len(), positions);
+            assert!(!state.cache.hard_cap_exhausted());
+            assert_eq!(state.cache.fa_block_pool_available(), Some(free));
+            states.insert(id, state);
+        }
+    }
+
+    let result = run(&scarce, &scarce_ctx);
+    assert!(result.update.error.is_none(), "{:?}", result.update.error);
+    let last = result.update.output_token.unwrap();
+    assert!(result.update.output_tokens.is_empty());
+    {
+        let states = runner.states.lock();
+        let state = &states[&scarce.request_id];
+        assert_eq!(state.cache.seq_len(), 12);
+        assert_eq!(state.cache.fa_block_pool_available(), Some(0));
+        assert!(!state.cache.hard_cap_exhausted());
+        let dflash = state.dflash2.as_ref().unwrap();
+        assert_eq!(dflash.rounds, 0);
+        assert!(dflash.resume_due(state.cache.seq_len()));
+    }
+
+    let peer = run(&roomy, &roomy_ctx);
+    assert!(peer.update.error.is_none(), "{:?}", peer.update.error);
+    {
+        let states = runner.states.lock();
+        let state = &states[&roomy.request_id];
+        assert_eq!(state.dflash2.as_ref().unwrap().rounds, 1);
+        assert!(!state.cache.hard_cap_exhausted());
+    }
+
+    scarce.input_token_slice = vec![last];
+    scarce.position_range = PositionRange {
+        start: 12,
+        end_exclusive: 13,
+    };
+    scarce_ctx.generated_len = 2;
+    let exhausted = run(&scarce, &scarce_ctx);
+    assert_eq!(exhausted.update.output_token, None);
+    assert_eq!(
+        exhausted.update.error.as_deref(),
+        Some("FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"),
+    );
+}

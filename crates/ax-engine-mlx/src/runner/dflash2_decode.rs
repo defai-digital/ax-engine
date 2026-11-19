@@ -1449,6 +1449,16 @@ impl MlxRunner {
         let captured = layer_capture::take();
         drop(capture);
         verify_cache.advance(verify_len);
+        if verify_cache.hard_cap_exhausted() {
+            // The clone can need a copy-on-write or draft page that the
+            // committed singleton does not. Keep the live cache and retry
+            // after capturing the fallback step.
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.restore_drafter_cursor(cursor);
+                dflash.park_for_retry(handoff_target);
+            }
+            return decline("linear verify exceeds the KV block cap");
+        }
         let Some(captured) = captured else {
             // The layers ran outside `layer_forward`: nothing was captured, so
             // the drafter cannot continue. Decode normally from here.
@@ -2077,6 +2087,11 @@ impl MlxRunner {
         };
         for (cache, (idx, _, _)) in verify_caches.iter_mut().zip(&drafted) {
             cache.advance(lanes[*idx].1.window);
+        }
+        if verify_caches.iter().any(MlxKVCache::hard_cap_exhausted) {
+            // Each lane can retry from its original cache in its own step.
+            restore(lanes, drafted);
+            return (0, 0);
         }
         let mut cache_rebound = vec![false; drafted.len()];
         if crate::fastpath::mtp_rebind_verify_fa_enabled() {
@@ -2811,6 +2826,9 @@ impl MlxRunner {
         let captured = layer_capture::take();
         drop(capture);
         verify_cache.advance(verify_len);
+        if verify_cache.hard_cap_exhausted() {
+            return failed(source);
+        }
         let Some(captured) = captured else {
             return failed(source);
         };
@@ -2864,7 +2882,7 @@ impl MlxRunner {
             token_offset,
             eval_error,
         );
-        if eval_failed {
+        if eval_failed || cache.hard_cap_exhausted() {
             return failed(cache);
         }
         (
