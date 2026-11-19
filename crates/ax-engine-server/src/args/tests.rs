@@ -557,6 +557,37 @@ fn explicit_qwen36_mtp_artifacts_infer_model_id_when_omitted() {
 }
 
 #[test]
+fn inferred_model_id_uses_pack_label_without_cache_root_or_revision() {
+    let root = unique_test_dir("holo3-mtp-cache");
+    let no_mtp = "AX-Qwen3.8-27B-MLX-AXQ-4bit";
+    let cached = root
+        .join(format!("models--holo3-mtp--{no_mtp}"))
+        .join("snapshots")
+        .join("repacked-mtp");
+    let local = root.join(no_mtp);
+    let with_mtp = root
+        .join("models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP")
+        .join("snapshots")
+        .join("v1");
+
+    for (path, expected) in [
+        (cached, "qwen3.8-27b"),
+        (local, "qwen3.8-27b"),
+        (with_mtp, "qwen3.8-27b-mtp"),
+    ] {
+        write_artifact_dir(&path, "qwen3_5");
+        let args = ServerArgs {
+            model_id: String::new(),
+            mlx: true,
+            mlx_model_artifacts_dir: Some(path),
+            ..base_args()
+        };
+        assert_eq!(args.effective_model_id().unwrap(), expected);
+    }
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
 fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
     // AutomatosX org packs (https://huggingface.co/AutomatosX) resolve to
     // the same product model ids as the unbranded artifact layouts.
@@ -1090,6 +1121,37 @@ fn qwen36_27b_preset_hf_cache_resolution_accepts_cached_snapshot() {
     );
     let args = ServerArgs {
         preset: Some(ServerPreset::Qwen36_27b),
+        resolve_model_artifacts: ModelArtifactResolution::HfCache,
+        hf_cache_root: Some(root.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(expected.as_path())
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn qwen38_preset_matches_each_pack_in_a_named_cache_root() {
+    let root = unique_test_dir("hf-cache-qwen3.8-27b");
+    let expected = write_hf_snapshot(
+        &root,
+        "models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        "v1",
+        "qwen3_5",
+    );
+    write_hf_snapshot(
+        &root,
+        "models--AutomatosX--Qwen3.5-9B-4bit",
+        "v2",
+        "qwen3_5",
+    );
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen38_27b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()

@@ -131,7 +131,7 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
     let Some(model_type) = config_model_type(&config) else {
         return Ok(None);
     };
-    let path_label = normalize_model_label(&path.display().to_string());
+    let path_label = artifact_model_label(path);
 
     Ok(match model_type {
         "glm4_moe_lite" => Some("glm4_moe_lite".to_string()),
@@ -343,8 +343,29 @@ fn looks_like_artifact_dir(path: &Path) -> bool {
     path.join("config.json").is_file()
 }
 
+/// Use the repository name for a Hub snapshot and the artifact directory
+/// name for a local pack. Cache roots, organizations, and snapshot revisions
+/// can reuse product or MTP labels without identifying the pack.
+fn artifact_model_label(path: &Path) -> String {
+    let cached_repo = path
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|name| name == "snapshots"))
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .filter(|name| name.to_string_lossy().starts_with("models--"));
+    let directory = cached_repo
+        .or_else(|| path.file_name())
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let label = directory.strip_prefix("models--").map_or_else(
+        || directory.as_ref(),
+        |repo| repo.split_once("--").map_or(repo, |(_, label)| label),
+    );
+    normalize_model_label(label)
+}
+
 fn path_matches_preset(path: &Path, preset: &PresetDefinition) -> bool {
-    let normalized = normalize_model_label(&path.display().to_string());
+    let normalized = artifact_model_label(path);
     preset
         .aliases
         .iter()
