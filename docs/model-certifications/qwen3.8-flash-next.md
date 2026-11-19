@@ -870,9 +870,11 @@ MTP token. The historical state error (0.100864 versus 0.1) was a separate
 HC projection issue, now passing in the twelve-cell HC matrix above. Wider
 QA, API, cost and target-hardware requirements remain independent.
 
-The primary default remains [Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) on
-Mac mini M4 Pro 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and
-[Testing](../TESTING.md) for the wider operator contract.
+[Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) remains the recommended default
+model and primary optimization target. New qualification runs use the
+MacBook Pro M5 Max 128 GB. The Mac mini M4 Pro 64 GB remains a
+supported-tier check host. See [Supported Models](../SUPPORTED-MODELS.md)
+and [Testing](../TESTING.md) for setup and verification guidance.
 
 The throughput campaign stopped after entering 6-bit reference / 2,048 tokens.
 The SSH command exited 255; the process was absent on inspection, and its

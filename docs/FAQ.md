@@ -39,8 +39,8 @@ short-to-moderate context — not for multi-model residency or 27B/35B stacks.
 | Mac mini M4 (base) | 16 GB | One compact chat model (e.g. Qwen 3.5 9B AXQ / OptiQ 4-bit), embeddings, or other small packs |
 | MacBook Air / Pro M3–M4 with 16–24 GB | 16–24 GB | Same light single-model use |
 
-Validated light-host matrix (**Mac mini M4 / 16 GB**, `df-macmini-02`): short
-OpenAI chat after `ax-engine serve` for single-model Qwen 3.5 9B packs:
+A Mac mini M4 with 16 GB used `ax-engine serve` for each Qwen 3.5 9B pack
+below on its own and answered a short OpenAI-compatible chat request.
 
 | Pack | Serve + chat | Approx. free after load |
 | --- | --- | ---: |
@@ -90,7 +90,7 @@ but the better local setup is to match the model to the workflow.
 
 | Role | Recommended model | Setup | App | Why |
 | --- | --- | --- | --- | --- |
-| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | MXFP4 MTP pack, 16K-32K, Mac mini M4 Pro 64 GB | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; MXFP4 SKU qualification pending; historical 6-bit speeds do not transfer |
+| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | MXFP4 MTP pack, 16K-32K. M5 Max 128 GB (primary), M4 Pro 64 GB (supported) | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; MXFP4 SKU qualification pending; historical 6-bit speeds do not transfer |
 | Secondary dense / MoE | Qwen 3.6 27B or 35B-A3B | 27B 4/6-bit; 35B A3B 4-bit, 16K-32K | AX server / SDK | Certified secondary families; 3.6 holds the published 8h soak |
 | Coding specialist | Tiel Coder 35B A3B MXFP4 MTP | AX Code managed default; Cyber-Tiel alternate | [ax-code](https://github.com/defai-digital/ax-code) | MoE coding packs; **194.88** completion tok/s on M5 Max. Not the Engine 27B table. |
 | Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |
