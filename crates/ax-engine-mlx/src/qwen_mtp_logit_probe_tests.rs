@@ -5,7 +5,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, reshape, slice, try_eval};
+use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, slice, try_eval};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -174,7 +174,7 @@ fn paired_gaps_use_emitted_and_rival_scores_and_preserve_ties() {
 fn captures_committed_verifier_rows_and_rejects_ambiguous_targets() {
     let target_a = MlxArray::from_f32_slice(&[4.0, 1.0, 2.0]);
     let target_b = MlxArray::from_f32_slice(&[4.0, 2.0, 1.0]);
-    let verify = reshape(
+    let verify = mlx_sys::reshape(
         &MlxArray::from_f32_slice(&[3.0, 1.0, 2.0, 1.0, 4.0, 2.0]),
         &[2, 3],
         None,
