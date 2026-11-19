@@ -1012,7 +1012,8 @@ env_flag!(
     /// `AX_MLX_MTP_WHOLE_VERIFY_COMPILE` — compile the complete dense
     /// Qwen3.5 target-verifier step with explicit full-attention and
     /// gated-delta cache tensor inputs/outputs. Exact target semantics are
-    /// preserved; failure falls back to the ordinary verifier.
+    /// preserved; failure or an explicit physical KV cap selects the
+    /// ordinary verifier.
     ///
     /// **Default: OFF.** No named bit-exact test covers this compile, so the
     /// numerics tier records `mtp_whole_verify` when it is on. A false token

@@ -144,6 +144,8 @@ fn qwen_whole_verify_eligible(
         || cfg.global_sliding_window.is_some()
         || cfg.protected_prefix_sliding_window.is_some()
         || cfg.kv_cache_quant.iter().any(Option::is_some)
+        // Installing the compiled verifier's dense K/V releases paged blocks.
+        || cache.has_hard_fa_block_cap()
         || (weights.qwen3_vl_vision.is_some() && cache.mrope_position_delta() != 0)
         || weights.layers.len() != cfg.layer_count
     {

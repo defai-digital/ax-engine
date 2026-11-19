@@ -12159,6 +12159,30 @@ fn dflash2_verifier_does_not_spend_the_last_capped_kv_slot() {
 
 #[test]
 fn qwen_mtp_releases_verify_pages_before_committed_decode() {
+    const CHILD: &str = "AX_MLX_QWEN_MTP_CAP_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for whole_compile in ["0", "1"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runner::tests::qwen_mtp_releases_verify_pages_before_committed_decode",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("AX_MLX_MTP_WHOLE_VERIFY_COMPILE", whole_compile)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "whole_compile={whole_compile}\n{stdout}\n{stderr}"
+            );
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+        }
+        return;
+    }
+
     let (mut runner, artifacts) = tiny_qwen_hybrid_runner();
     let norm = || f32_ones(8);
     let ffn_layer = tiny_linear_dflash_weights().layers.remove(0);
@@ -12204,18 +12228,19 @@ fn qwen_mtp_releases_verify_pages_before_committed_decode() {
     runner.terminal_token_ids.clear();
     fs::remove_dir_all(artifacts.root_dir()).unwrap();
 
-    for (id, max_blocks, greedy, optimistic, pending) in [
-        (51, 1, true, false, &[1, 2][..]),
-        (52, 1, true, false, &[][..]),
-        (53, 1, false, false, &[1, 2][..]),
-        (54, 1, true, true, &[1, 2][..]),
-        (55, 2, true, false, &[1, 2][..]),
+    for (id, max_blocks, hard_cap, greedy, optimistic, pending) in [
+        (51, 1, true, true, false, &[1, 2][..]),
+        (52, 1, true, true, false, &[][..]),
+        (53, 1, true, false, false, &[1, 2][..]),
+        (54, 1, true, true, true, &[1, 2][..]),
+        (55, 2, true, true, false, &[1, 2][..]),
+        (56, 1, false, true, false, &[1, 2][..]),
     ] {
         runner.mtp_optimistic = optimistic;
         runner.fa_block_pool_config = Some(FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks,
-            hard_cap: true,
+            hard_cap,
         });
         let run = |item: &ax_engine_core::ExecutionItem, ctx: &RunnerRequestContext| {
             runner.run_item(item, Some(ctx), "qwen3_5", 4, None, None, None, None, None)
@@ -12270,6 +12295,14 @@ fn qwen_mtp_releases_verify_pages_before_committed_decode() {
         let decoded = run(&step, &ctx);
         assert!(decoded.update.error.is_none(), "{:?}", decoded.update.error);
         assert_eq!(decoded.update.output_token, Some(1));
+        if !hard_cap {
+            assert_eq!(decoded.update.output_tokens, [1]);
+            assert_eq!(
+                decoded.mtp_telemetry.whole_verify_compile_hits,
+                u32::from(crate::fastpath::mtp_whole_verify_compile_enabled())
+            );
+            continue;
+        }
         assert!(decoded.update.output_tokens.is_empty());
         assert_eq!(decoded.mtp_telemetry.direct_fallback_steps, 1);
         assert_eq!(decoded.mtp_telemetry.optimistic_steps, 0);
