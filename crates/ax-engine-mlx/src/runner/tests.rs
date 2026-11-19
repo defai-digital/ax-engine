@@ -10076,6 +10076,81 @@ fn tiny_linear_dflash_runner(layer_count: u32) -> (MlxRunner, NativeModelArtifac
 }
 
 #[test]
+fn gemma_temporary_oracle_leaves_cache_at_emitted_boundary() {
+    const CHILD: &str = "AX_MLX_GEMMA_TEMPORARY_ORACLE_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runner::tests::gemma_temporary_oracle_leaves_cache_at_emitted_boundary",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE", "0")
+            .env("AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT", "1")
+            .env("AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD", "0")
+            .env("AX_MLX_MTP_DISABLE_NGRAM_STACKING", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+        return;
+    }
+
+    let mut manifest = dense_manifest();
+    manifest.model_family = "gemma4".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+
+    let history = vec![1; GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS + 2];
+    for (drafts, expected_count) in [([1, 1], 3), ([2, 1], 1), ([1, 2], 2)] {
+        let mut state = RequestState::new(1, 1, None);
+        let (logits, hidden) = forward_all_positions_with_post_norm(
+            &runner.cfg,
+            &runner.weights,
+            &history,
+            &mut state.cache,
+            0,
+        );
+        state.cache.advance(history.len());
+        eval(&[&logits, &hidden]);
+        state.generated_tokens = vec![1; GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS - 1];
+        state.direct_pipeline_emitted_tokens = 1;
+        state.mtp_pending_draft = drafts.to_vec();
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafts.len()];
+        let emitted = runner.run_mtp_decode(&mut state, 1, MlxSamplingParams::greedy(), None);
+        assert_eq!(emitted, vec![1; expected_count]);
+        assert_eq!(state.cache.seq_len(), history.len() + emitted.len());
+        assert!(state.pending_direct.is_none());
+
+        state.generated_tokens.extend(emitted);
+        state.mtp_pending_draft = vec![1, 1];
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; 2];
+        let next = runner.run_mtp_decode(&mut state, 1, MlxSamplingParams::greedy(), None);
+        assert_eq!(next, vec![1; 3]);
+        assert_eq!(
+            state.cache.seq_len(),
+            history.len() + expected_count + next.len()
+        );
+        assert!(state.pending_direct.is_none());
+    }
+}
+
+#[test]
 fn gemma_coalesced_verify_leaves_the_surviving_request_at_its_original_cursor() {
     let (runner, artifacts) = tiny_linear_dflash_runner(1);
     let item = decode_claim(1, 5);

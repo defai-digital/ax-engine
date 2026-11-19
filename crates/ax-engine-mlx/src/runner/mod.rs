@@ -14533,7 +14533,10 @@ impl MlxRunner {
                 }
                 if gemma_sequential_oracle {
                     let verify_forward_started = Instant::now();
-                    let final_by_max = false;
+                    // A temporary oracle can return to multi-token verification
+                    // on the next round. Finish each token without lookahead
+                    // so that handoff sees the committed cache boundary.
+                    let finish_singleton = !force_pure_direct && !(cycle_guard_on && cycle_force);
                     let mut ac = 0usize;
                     let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
                     let mut correction = 0u32;
@@ -14549,7 +14552,7 @@ impl MlxRunner {
                         let tok = self.run_direct_pipeline_decode(
                             state,
                             verify_last_token,
-                            final_by_max,
+                            finish_singleton,
                             false,
                         );
                         verify_last_token = tok;
@@ -14566,7 +14569,7 @@ impl MlxRunner {
                         correction = self.run_direct_pipeline_decode(
                             state,
                             verify_last_token,
-                            final_by_max,
+                            finish_singleton,
                             false,
                         );
                         predicted.push(correction);

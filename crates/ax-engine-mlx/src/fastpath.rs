@@ -652,11 +652,9 @@ env_flag!(
     /// pure-direct sequential path for the first N generated tokens (see
     /// `GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS`).
     ///
-    /// **Default: OFF.** On formal A/B this desynchronizes MTP-on from the
-    /// MTP-off multi-token-compatible baseline (shared bounded ring /
-    /// `forward_all_positions` singleton) and regressed agent-coding exactness
-    /// in M5 retests. Kept as an opt-in probe only; residual general-long
-    /// identity must be fixed on the multi-token path itself.
+    /// **Default: OFF.** This diagnostic switch changes only the early
+    /// verification windows. Later multi-token windows still require
+    /// their own exactness evidence.
     gemma4_assistant_mtp_early_gen_pure_direct_enabled,
     "AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT"
 );
