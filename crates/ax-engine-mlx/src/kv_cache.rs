@@ -1713,6 +1713,12 @@ impl MlxKVCache {
         self.hard_cap_exhausted
     }
 
+    pub(crate) fn has_hard_fa_block_cap(&self) -> bool {
+        self.fa_pool
+            .as_ref()
+            .is_some_and(|pool| pool.config().hard_cap)
+    }
+
     #[cfg(test)]
     /// Blocks available in the owning FA pool, if paged mode is active.
     pub(crate) fn fa_block_pool_available(&self) -> Option<u32> {
@@ -3738,11 +3744,7 @@ impl MlxKVCache {
             // memory bound; without an explicit cap this stays fail-soft.
             self.paged_pool_exhaustion_fallbacks =
                 self.paged_pool_exhaustion_fallbacks.saturating_add(1);
-            if self
-                .fa_pool
-                .as_ref()
-                .is_some_and(|pool| pool.config().hard_cap)
-            {
+            if self.has_hard_fa_block_cap() {
                 self.hard_cap_exhausted = true;
             }
             self.demote_paged_layer_to_contiguous(layer, write_start);

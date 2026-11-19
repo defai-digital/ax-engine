@@ -10151,6 +10151,140 @@ fn gemma_temporary_oracle_leaves_cache_at_emitted_boundary() {
 }
 
 #[test]
+fn direct_pipeline_emits_the_token_from_the_last_available_kv_slot() {
+    let mut manifest = dense_manifest();
+    manifest.model_family = "qwen3".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    runner.disable_ngram_acceleration = true;
+    runner.terminal_token_ids = vec![1];
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+
+    let decode = |item: &ax_engine_core::ExecutionItem, ctx: &RunnerRequestContext| {
+        runner.run_item(item, Some(ctx), "qwen3", 4, None, None, None, None, None)
+    };
+    let capped_state = |id| {
+        let mut state = RequestState::new(
+            1,
+            id,
+            Some(FaBlockPoolConfig {
+                block_size_tokens: 4,
+                max_blocks: 1,
+                hard_cap: true,
+            }),
+        );
+        let (logits, hidden) = forward_all_positions_with_post_norm(
+            &runner.cfg,
+            &runner.weights,
+            &[3, 4, 5],
+            &mut state.cache,
+            0,
+        );
+        state.cache.advance(3);
+        eval(&[&logits, &hidden]);
+        assert!(!state.cache.hard_cap_exhausted());
+        state.generated_tokens = vec![5, 2];
+        state.next_model_last_token = Some(2);
+        state.direct_pipeline_emitted_tokens = 1;
+        state
+    };
+    for (id, ignore_eos) in [(1, false), (2, true)] {
+        let mut item = decode_claim(id, 2);
+        item.position_range = PositionRange {
+            start: 3,
+            end_exclusive: 4,
+        };
+        let mut ctx = RunnerRequestContext {
+            request_id: item.request_id,
+            prompt_len: 2,
+            processed_prompt_tokens: 2,
+            generated_len: 2,
+            ignore_eos,
+            ..ctx_with_argmax(true)
+        };
+        runner
+            .states
+            .lock()
+            .insert(item.request_id, capped_state(id));
+
+        let result = decode(&item, &ctx);
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        assert_eq!(result.update.output_token, Some(1));
+        assert!(result.update.output_tokens.is_empty());
+        if ignore_eos {
+            assert!(result.update.stop_reason.is_none());
+            {
+                let states = runner.states.lock();
+                let continued = &states[&item.request_id];
+                assert_eq!(continued.cache.seq_len(), 4);
+                assert!(continued.pending_direct.is_none());
+            }
+            item.input_token_slice = vec![1];
+            item.position_range = PositionRange {
+                start: 4,
+                end_exclusive: 5,
+            };
+            ctx.generated_len = 3;
+            let failed = decode(&item, &ctx);
+            assert!(failed.update.output_token.is_none());
+            assert_eq!(
+                failed.update.error.as_deref(),
+                Some(
+                    "FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"
+                )
+            );
+        } else {
+            assert_eq!(
+                result.update.stop_reason,
+                Some(ax_engine_core::StopReason::EosToken)
+            );
+        }
+        assert!(!runner.states.lock().contains_key(&item.request_id));
+    }
+
+    // Rows with a pending direct result can still be drained together.
+    let items = [decode_claim(3, 2), decode_claim(4, 2)];
+    let contexts = items.clone().map(|item| RunnerRequestContext {
+        request_id: item.request_id,
+        prompt_len: 2,
+        processed_prompt_tokens: 2,
+        generated_len: 2,
+        ..ctx_with_argmax(true)
+    });
+    for item in &items {
+        let mut state = capped_state(item.request_id.0);
+        let (pending, _) =
+            start_direct_pipeline_capturing(&runner.cfg, &runner.weights, 2, &mut state.cache);
+        assert_eq!(state.cache.seq_len(), 4);
+        state.pending_direct = Some(pending);
+        runner.states.lock().insert(item.request_id, state);
+    }
+    let (runs, prepared_rows) =
+        runner.run_row_exact_coalesced_group(&[(0, &items[0]), (1, &items[1])], &contexts);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(prepared_rows, 0);
+    for (_, run) in runs {
+        assert!(run.update.error.is_none(), "{:?}", run.update.error);
+        assert_eq!(run.update.output_token, Some(1));
+        assert_eq!(
+            run.update.stop_reason,
+            Some(ax_engine_core::StopReason::EosToken)
+        );
+    }
+}
+
+#[test]
 fn gemma_coalesced_oracle_does_not_charge_rejected_drafts_to_the_kv_cap() {
     const CHILD: &str = "AX_MLX_GEMMA_COALESCED_CAP_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {

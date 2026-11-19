@@ -859,6 +859,11 @@ slots in sharing mode. K/V storage is per layer in fixed arrays shaped
 resizes or copies an existing slab to the configured ceiling. Refcount-zero
 rows are reused; each layer cache carries only its ordered physical-ID table.
 
+With an explicit hard cap, the direct pipeline completes the current token
+before allocating KV for subsequent decoding. The final available slot can
+produce a token or finish the request with EOS. A continuing request reports
+exhaustion when its next step needs an unavailable page.
+
 Private mode materializes its block arrays. Two-flag sharing maps IDs to slab
 rows, groups the logical row list into maximal same-slab runs, applies one
 `take(axis=0)` per run, and reshapes/transposes the lazy result to

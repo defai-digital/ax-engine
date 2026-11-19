@@ -3815,7 +3815,8 @@ impl MlxRunner {
             }
 
             let should_prepare = !row.final_by_max_output
-                && !matches!(row.disposition, CoalescedDirectDisposition::DrainToNgram);
+                && !matches!(row.disposition, CoalescedDirectDisposition::DrainToNgram)
+                && !row.state.cache.has_hard_fa_block_cap();
             if should_prepare {
                 row.prepared = Some(prepare_direct_pipeline_advance(
                     &self.cfg,
@@ -12586,20 +12587,28 @@ impl MlxRunner {
         final_by_max_output: bool,
     ) -> (u32, Vec<(u32, Option<MlxArray>)>) {
         let mut consumed: Vec<(u32, Option<MlxArray>)> = Vec::with_capacity(2);
-        let tok = match next_direct_pipeline_step(&mut state.pending_direct, final_by_max_output) {
-            DirectPipelineStep::FinishPending(pending) => {
-                self.run_direct_pipeline_finish_pending(state, pending)
-            }
-            DirectPipelineStep::ContinuePending(bootstrap_token) => {
-                self.run_direct_pipeline_once(state, bootstrap_token, &mut consumed)
-            }
-            DirectPipelineStep::BootstrapFinal => {
-                self.run_direct_pipeline_bootstrap_final(state, last_token, &mut consumed)
-            }
-            DirectPipelineStep::Bootstrap => {
-                self.run_direct_pipeline_bootstrap(state, last_token, &mut consumed)
-            }
-        };
+        // A lookahead could exhaust the pool after the current token fits.
+        // Finish the current token first so it can stop or reach the caller.
+        let hard_cap = state.cache.has_hard_fa_block_cap();
+        let finish_without_lookahead = final_by_max_output || hard_cap;
+        let tok =
+            match next_direct_pipeline_step(&mut state.pending_direct, finish_without_lookahead) {
+                DirectPipelineStep::FinishPending(pending) => {
+                    self.run_direct_pipeline_finish_pending(state, pending)
+                }
+                DirectPipelineStep::ContinuePending(bootstrap_token) => {
+                    self.run_direct_pipeline_once(state, bootstrap_token, &mut consumed)
+                }
+                DirectPipelineStep::BootstrapFinal => {
+                    self.run_direct_pipeline_bootstrap_final(state, last_token, &mut consumed)
+                }
+                DirectPipelineStep::Bootstrap => {
+                    self.run_direct_pipeline_bootstrap(state, last_token, &mut consumed)
+                }
+            };
+        if hard_cap {
+            state.direct_pipeline_emitted_tokens = state.direct_pipeline_emitted_tokens.max(1);
+        }
         state.next_model_last_token = Some(tok);
         (tok, consumed)
     }
