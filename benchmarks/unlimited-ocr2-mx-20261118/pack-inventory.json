@@ -1,0 +1,76 @@
+{
+  "repo": "AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP4",
+  "revision": "5f014cccd03da6a2273f84bd069056b6534e0b6c",
+  "files": {
+    "axquant_manifest.json": {
+      "size": 7528,
+      "blob_id": "cefd83c222c73c74039ceb401921fbe54e5b1a04",
+      "lfs_sha256": null,
+      "sha256": "03f42b3cb196dd8c973498325cf388ccfab2b9777151b49d26c4a7743c118a90"
+    },
+    "axquant_source_binding.json": {
+      "size": 786,
+      "blob_id": "81ded69607143ae9ddde2f65f0e68ca43edf691e",
+      "lfs_sha256": null,
+      "sha256": "78148fa4807e045ea0677506ebf99a20941ca6cd0c0a95396b36a1594671fbed"
+    },
+    "config.json": {
+      "size": 265469,
+      "blob_id": "909dc130057efb28533df4bd4c72fdb52162b402",
+      "lfs_sha256": null,
+      "sha256": "bd673091da96712561e3a672977e35696aae97858dd8252bdbe0dcf9bf2df1a5"
+    },
+    "generation_config.json": {
+      "size": 111,
+      "blob_id": "6f7f9313195af78c979fc889accc234edb6e0d3c",
+      "lfs_sha256": null,
+      "sha256": "dcd0479f3a12e5e4413d956197f8a4074408e4901834b38c7e036519134e05af"
+    },
+    "model-00001-of-00002.safetensors": {
+      "size": 1582892800,
+      "blob_id": "067122b6f01b0d1364f6cb4a2ce02a899b43a778",
+      "lfs_sha256": "df3567345a16a78279dab00dbc71d86a37644f7f9b6b58c8fd019a824330ca54",
+      "sha256": "df3567345a16a78279dab00dbc71d86a37644f7f9b6b58c8fd019a824330ca54"
+    },
+    "model-00002-of-00002.safetensors": {
+      "size": 1282739255,
+      "blob_id": "e5fcd4252d0fd4a18d4ef76ceaaae7b2074a2a35",
+      "lfs_sha256": "0c7c891c5da90e91b7bda21d44af1089ee51fb82fc055c1c1f14630e295dcdb6",
+      "sha256": "0c7c891c5da90e91b7bda21d44af1089ee51fb82fc055c1c1f14630e295dcdb6"
+    },
+    "model.safetensors.index.json": {
+      "size": 450045,
+      "blob_id": "f6ed2bfab0b74c483a94cafb0acf569d5c83f25a",
+      "lfs_sha256": null,
+      "sha256": "555a57c3fb600ab9a9134aa23d902fdbae25b1a99ee83a99f5608d12f6b2c552"
+    },
+    "special_tokens_map.json": {
+      "size": 549,
+      "blob_id": "ae2383ca05f494aa736e72e6a874332cd2f1c67e",
+      "lfs_sha256": null,
+      "sha256": "9e89493d7938e7710c524dbaff613c3648f0a018262417af78505128004e5cb4"
+    },
+    "tokenizer.json": {
+      "size": 9980278,
+      "blob_id": "d5909a7c1e63a78be90fe2bde6c8464e6e9e8540",
+      "lfs_sha256": null,
+      "sha256": "c55c165e32c5a67830362a53e1f548c8930dcc8469efa30ff3252a982799c589"
+    },
+    "tokenizer_config.json": {
+      "size": 166632,
+      "blob_id": "e97c1bb98fa1de585d85259b77e4785bf1c195a2",
+      "lfs_sha256": null,
+      "sha256": "ceba7d221f265cca4c98b5e0a1d48c10107270b7b29c12396610d6d0fd64b126"
+    }
+  },
+  "layout": {
+    "tensor_count": 5015,
+    "by_dtype": {
+      "BF16": 622,
+      "U8": 2196,
+      "U32": 2196,
+      "I64": 1
+    },
+    "mxfp4_weight_scale_pairs": 2196
+  }
+}

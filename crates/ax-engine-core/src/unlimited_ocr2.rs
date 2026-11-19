@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NativeModelManifest, NativeTensorDataType, NativeTensorRole};
+use crate::{NativeModelManifest, NativeTensorDataType, NativeTensorRole, NativeTensorSpec};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -143,6 +143,29 @@ pub fn source_expert(name: &str) -> Option<(u32, u32, &str)> {
     .then_some((layer.parse().ok()?, expert.parse().ok()?, suffix))
 }
 
+fn packed_matrix_columns(
+    tensor: &NativeTensorSpec,
+    input_cols: u64,
+    protected: bool,
+) -> Result<u64, String> {
+    let name = &tensor.name;
+    let q = tensor
+        .quantization
+        .as_ref()
+        .ok_or_else(|| format!("missing quantization for {name}"))?;
+    if protected
+        || tensor.dtype != NativeTensorDataType::U32
+        || !input_cols.is_multiple_of(32)
+        || !matches!(
+            (q.mode.as_str(), q.bits, q.group_size),
+            ("mxfp4", 4, 32) | ("mxfp8", 8, 32)
+        )
+    {
+        return Err(format!("unsupported or protected quantization for {name}"));
+    }
+    Ok(input_cols / 32 * u64::from(q.bits))
+}
+
 pub(crate) fn validate_manifest(m: &NativeModelManifest) -> Result<(), String> {
     let cfg = m
         .unlimited_ocr2
@@ -150,6 +173,12 @@ pub(crate) fn validate_manifest(m: &NativeModelManifest) -> Result<(), String> {
         .ok_or("missing Unlimited-OCR-2 attention contract")?;
     cfg.validate(m.layer_count as usize)?;
     for tensor in &m.tensors {
+        if tensor.name.ends_with(".biases") {
+            return Err(format!(
+                "OCR-2 does not support group biases: {}",
+                tensor.name
+            ));
+        }
         if crate::convert::ocr2_tensor_mapping(&tensor.name)
             != Some((tensor.role, tensor.layer_index))
         {
@@ -162,6 +191,15 @@ pub(crate) fn validate_manifest(m: &NativeModelManifest) -> Result<(), String> {
             && (layer == 0 || layer >= m.layer_count || expert >= 64)
         {
             return Err(format!("unexpected OCR-2 expert {}", tensor.name));
+        }
+        if (tensor.name.starts_with("model.sam_model.")
+            || tensor.name.starts_with("model.vision_model."))
+            && (tensor.source_quantized || tensor.name.ends_with(".scales"))
+        {
+            return Err(format!(
+                "unsupported OCR-2 vision quantization for {}",
+                tensor.name
+            ));
         }
         for router in [".self_attn.dash_router.", ".self_attn.indexer."] {
             if let Some((_, suffix)) = tensor.name.split_once(router)
@@ -204,13 +242,7 @@ pub(crate) fn validate_manifest(m: &NativeModelManifest) -> Result<(), String> {
             .find(|t| t.name == name)
             .ok_or_else(|| format!("missing {name}"))?;
         let packed_cols = if t.source_quantized {
-            let q = t
-                .quantization
-                .as_ref()
-                .ok_or_else(|| format!("missing quantization for {name}"))?;
-            if protected || q.bits != 8 || q.group_size != 32 || q.mode != "mxfp8" {
-                return Err(format!("unsupported or protected quantization for {name}"));
-            }
+            let packed_cols = packed_matrix_columns(t, cols, protected)?;
             let base = name.strip_suffix(".weight").ok_or("invalid packed name")?;
             let scales = m
                 .tensors
@@ -220,7 +252,7 @@ pub(crate) fn validate_manifest(m: &NativeModelManifest) -> Result<(), String> {
             if scales.shape != [rows, cols / 32] || scales.dtype != NativeTensorDataType::U8 {
                 return Err(format!("invalid {base}.scales"));
             }
-            cols * 8 / 32
+            packed_cols
         } else {
             if !matches!(
                 t.dtype,
@@ -534,6 +566,43 @@ mod tests {
         );
         assert!(source_expert("model.layers.11.mlp.experts.10.up_proj.scales").is_none());
         assert!(source_expert("model.layers.11.mlp.experts.bad.up_proj.weight").is_none());
+    }
+
+    #[test]
+    fn packed_matrix_geometry_accepts_only_mx_groups_of_32() {
+        let mut tensor = NativeTensorSpec {
+            name: "model.layers.1.mlp.experts.0.up_proj.weight".into(),
+            role: NativeTensorRole::Other,
+            layer_index: None,
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![896, 160],
+            file: "weights.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 896 * 160 * 4,
+        };
+        assert!(packed_matrix_columns(&tensor, 1280, false).is_err());
+        for (mode, bits, cols) in [("mxfp4", 4, 160), ("mxfp8", 8, 320)] {
+            tensor.quantization = Some(crate::NativeTensorQuantization {
+                mode: mode.into(),
+                group_size: 32,
+                bits,
+            });
+            assert_eq!(packed_matrix_columns(&tensor, 1280, false), Ok(cols));
+            assert!(packed_matrix_columns(&tensor, 1280, true).is_err());
+            assert!(packed_matrix_columns(&tensor, 1279, false).is_err());
+        }
+        for (mode, bits, group_size) in [("affine", 4, 32), ("mxfp4", 8, 32), ("mxfp8", 8, 64)] {
+            tensor.quantization = Some(crate::NativeTensorQuantization {
+                mode: mode.into(),
+                group_size,
+                bits,
+            });
+            assert!(packed_matrix_columns(&tensor, 1280, false).is_err());
+        }
     }
 
     #[test]

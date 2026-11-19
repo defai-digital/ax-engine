@@ -13,12 +13,30 @@ import re
 import time
 from pathlib import Path
 
-PACK_SHA256 = {
-    "model-00001-of-00002.safetensors": "34d8a55b84fc3df9edac6094c12b5f9f1a126177493b8e45bd6345f8429f7bfb",
-    "model-00002-of-00002.safetensors": "e2a8ede94d2280231f93702522ce2af0310e8d63b00a75012ff3d2fde5594857",
-    "config.json": "fcf27e3d579846e44d6425eecbc6f2b63e15a1b18bc652b6639341ec9e28404d",
-    "tokenizer.json": "c55c165e32c5a67830362a53e1f548c8930dcc8469efa30ff3252a982799c589",
-    "model.safetensors.index.json": "45d7dba90ce15a2a5c07b03513ffbd94f3fb72bebac010b6093af1a5825bc994",
+TOKENIZER_SHA256 = "c55c165e32c5a67830362a53e1f548c8930dcc8469efa30ff3252a982799c589"
+PACKS = {
+    "mxfp8": (
+        "AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8",
+        "462c40bb4f2c7eeb3e1230e912940efcbdefc8a3",
+        {
+            "model-00001-of-00002.safetensors": "34d8a55b84fc3df9edac6094c12b5f9f1a126177493b8e45bd6345f8429f7bfb",
+            "model-00002-of-00002.safetensors": "e2a8ede94d2280231f93702522ce2af0310e8d63b00a75012ff3d2fde5594857",
+            "config.json": "fcf27e3d579846e44d6425eecbc6f2b63e15a1b18bc652b6639341ec9e28404d",
+            "model.safetensors.index.json": "45d7dba90ce15a2a5c07b03513ffbd94f3fb72bebac010b6093af1a5825bc994",
+            "tokenizer.json": TOKENIZER_SHA256,
+        },
+    ),
+    "mxfp4": (
+        "AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP4",
+        "5f014cccd03da6a2273f84bd069056b6534e0b6c",
+        {
+            "model-00001-of-00002.safetensors": "df3567345a16a78279dab00dbc71d86a37644f7f9b6b58c8fd019a824330ca54",
+            "model-00002-of-00002.safetensors": "0c7c891c5da90e91b7bda21d44af1089ee51fb82fc055c1c1f14630e295dcdb6",
+            "config.json": "bd673091da96712561e3a672977e35696aae97858dd8252bdbe0dcf9bf2df1a5",
+            "model.safetensors.index.json": "555a57c3fb600ab9a9134aa23d902fdbae25b1a99ee83a99f5608d12f6b2c552",
+            "tokenizer.json": TOKENIZER_SHA256,
+        },
+    ),
 }
 
 
@@ -45,6 +63,7 @@ def ocr_text_matches(text: str, expected: list[str], pages: int) -> tuple[bool, 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", type=Path, required=True)
+    parser.add_argument("--pack-format", choices=PACKS, default="mxfp8")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--host-label", required=True)
     args = parser.parse_args()
@@ -54,9 +73,10 @@ def main() -> None:
     from tokenizers import Tokenizer
 
     model = args.model_dir
+    repo, revision, pinned_hashes = PACKS[args.pack_format]
     args.output.mkdir(parents=True, exist_ok=True)
     hashes = {}
-    for name, expected in PACK_SHA256.items():
+    for name, expected in pinned_hashes.items():
         with (model / name).open("rb") as stream:
             hashes[name] = hashlib.file_digest(stream, "sha256").hexdigest()
         if hashes[name] != expected:
@@ -99,18 +119,18 @@ def main() -> None:
             record = {"name": name, "prompt_tokens": len(request.input_tokens),
                       "output_tokens": list(result.output_tokens), "text": text,
                       "elapsed_seconds": time.monotonic() - before,
+                      "status": result.status, "finish_reason": result.finish_reason,
                       "expected": expected, "body": body,
-                      "passed": passed}
+                      "passed": passed and result.status == "finished" and result.finish_reason == "stop"}
             records.append(record)
             print(json.dumps(record), flush=True)
             (args.output / f"{name}.json").write_text(json.dumps(record, indent=2) + "\n")
 
     reset_equal = records[0]["output_tokens"] == records[-1]["output_tokens"]
-    summary = {"model_id": "AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8",
-               "revision": "462c40bb4f2c7eeb3e1230e912940efcbdefc8a3",
+    summary = {"model_id": repo, "revision": revision,
                "host": args.host_label, "os": platform.mac_ver()[0],
                "mlx": importlib.metadata.version("mlx"),
-               "config_sha256": hashlib.sha256((model / "config.json").read_bytes()).hexdigest(),
+               "config_sha256": hashes["config.json"],
                "pack_sha256": hashes,
                "load_seconds": loaded - started,
                "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,

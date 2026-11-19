@@ -1,0 +1,14 @@
+{
+  "repo": "AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP4",
+  "revision": "5f014cccd03da6a2273f84bd069056b6534e0b6c",
+  "packed_weights": 2196,
+  "tensors": 5015,
+  "files_verified": 10,
+  "inventory_sha256": "e5ce2292e445198b36df03af24695a917af82b9bd7bb8cb027161831d3b80c7d",
+  "manifest_sha256": "139eacbdf2e28eb28cfedcdde753ef3bb71197b3a19549ef08d959494251ca47",
+  "invalid_geometry_rejected": {
+    "model.layers.1.mlp.experts.0.up_proj.weight": "invalid model.layers.1.mlp.experts.0.up_proj.weight shape",
+    "model.layers.1.mlp.experts.0.up_proj.scales": "invalid model.layers.1.mlp.experts.0.up_proj.scales",
+    "model.layers.1.mlp.experts.0.up_proj.biases": "OCR-2 does not support group biases: model.layers.1.mlp.experts.0.up_proj.biases"
+  }
+}

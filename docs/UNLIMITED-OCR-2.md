@@ -1,15 +1,17 @@
 # Unlimited-OCR-2 native preview
 
-AX Engine has an experimental native Rust/MLX path for
-[`AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8`](https://huggingface.co/AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8)
-at revision `462c40bb4f2c7eeb3e1230e912940efcbdefc8a3`.
-Use a build containing this implementation and an explicit local model
-directory. The published pack card still describes its original reference
-storage release; these runtime results belong to AX Engine's subsequent
-implementation. The model repository's Python code is not executed.
+AX Engine has an experimental native Rust/MLX path for these pinned packs.
+
+| Expert format | Pack | Revision |
+| --- | --- | --- |
+| MXFP4 | [`AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP4`](https://huggingface.co/AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP4) | `5f014cccd03da6a2273f84bd069056b6534e0b6c` |
+| MXFP8 | [`AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8`](https://huggingface.co/AutomatosX/AX-Unlimited-OCR-2-AXQ-MXFP8) | `462c40bb4f2c7eeb3e1230e912940efcbdefc8a3` |
+
+Point the Python session at an explicit local model directory. AX Engine
+loads the pack's tensors directly.
 
 The native graph uses protected DASH routing weights, page-aware RoPE,
-the source-layout MXFP8 expert matrices, and the existing dual vision tower.
+source-layout MXFP4 or MXFP8 expert matrices, and the dual vision tower.
 The helper accepts 1..32 ordered page images and requires one
 `<PAGE><image>` pair per image. It expands placeholders and attaches RGB
 pixels for native processing. Single-page requests use dynamic tiles by
@@ -69,12 +71,10 @@ Inline chat image parts are not accepted; use the prepared native request.
 
 The [test report](UNLIMITED-OCR-2-TEST-REPORT.md) records the synthetic controls
 and official-sample quality probes, including scoring methods and limits.
-The [functional evidence](../benchmarks/unlimited-ocr2-mxfp8-20261031/README.md)
-covers the exact pack on MacBook Pro M5 Max 128 GB with MLX 0.32.4. The
-controls check complete synthetic OCR text, page count and identical output
-after another request. These are bounded functional tests, not document
-quality or performance qualification. Long documents, broad languages and
-layouts, cancellation/interleaving stress, and BF16 quality comparisons need
-separate evidence. MTP is not supported. Full per-request KV and routing
-keys are retained, so total memory grows with document length; this preview
-does not provide the upstream system's constant-memory document scheduling.
+The [MXFP4 and MXFP8 functional controls](../benchmarks/unlimited-ocr2-mx-20261118/README.md)
+ran on MacBook Pro M5 Max 128 GB with MLX 0.32.4. They check complete
+synthetic OCR text, page count, native stopping and identical token output
+after another request. Long documents, broad languages and layouts,
+cancellation and interleaving, and BF16 quality comparisons need separate
+evidence. The preview uses autoregressive decode and retains full per-request
+KV and routing keys, so total memory grows with document length.

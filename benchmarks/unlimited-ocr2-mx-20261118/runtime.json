@@ -1,0 +1,9 @@
+{
+  "profile": "release-pyext",
+  "macos": "27.2.1",
+  "mlx": "0.32.4",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "source_parent": "7115eaea69f1acb70a965d5b8df82c01ce76325a",
+  "source_patch_sha256": "3ba4ed0739741b56b71f2bee761128fd5dec9293b9fcb3932727fe78c4c2f796",
+  "extension_sha256": "dd36c3501665c1b1ef64d64e1421c5a7ba541e4f76159b0ffd041904e02f5c71"
+}
