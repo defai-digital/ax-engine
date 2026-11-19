@@ -592,6 +592,75 @@ fn inferred_model_id_uses_pack_label_without_cache_root_or_revision() {
 }
 
 #[test]
+fn inferred_unlimited_ocr_id_uses_the_sparse_attention_contract() {
+    let root = unique_test_dir("infer-unlimited-ocr");
+    let artifact_dir = write_artifact_dir(&root, "unlimited-ocr");
+    let args = ServerArgs {
+        model_id: String::new(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+        ..base_args()
+    };
+    assert_eq!(args.effective_model_id().unwrap(), "unlimited-ocr");
+
+    let sparse = serde_json::json!({
+        "use_sparse_attention": true,
+        "training_stage": "dash",
+        "dash_stage0": "head_cls",
+        "dash_router": "entmax_topk_perlayer",
+        "sparse_main_rope_mode": "page2d",
+        "sparse_rope_mode": "page2d",
+        "sparse_main_rope_tok_freq_mode": "resample",
+        "sparse_rope_tok_freq_mode": "resample",
+        "sparse_rope_tok_theta": 10000,
+        "sparse_rope_page_theta": 256,
+        "sparse_rope_page_pairs": 1,
+        "sparse_rope_page_mod": 2,
+        "sparse_rope_page_span": 0,
+        "dash_image_only": true,
+        "image_bucket_constraint": true,
+        "sparse_attention_freq": vec![1; 12],
+        "sparse_block_size": 32,
+        "sparse_local_block": 4,
+        "dash_topk_blocks": 12,
+        "sparse_index_dim": 128,
+        "image_token_id": 42,
+        "page_token_id": 43,
+        "dash_scale_per_layer": vec![1.0; 12],
+        "dash_floor_per_layer": vec![0.25; 12],
+        "dash_sigma": 1.0,
+    });
+    let config_path = artifact_dir.join("config.json");
+    for config in [
+        serde_json::json!({
+            "model_type": "unlimited-ocr",
+            "num_hidden_layers": 12,
+            "sparse_attention_config": sparse,
+        }),
+        serde_json::json!({
+            "model_type": "unlimited_ocr",
+            "language_config": {
+                "num_hidden_layers": 12,
+                "sparse_attention_config": sparse,
+            },
+        }),
+    ] {
+        fs::write(&config_path, config.to_string()).unwrap();
+        assert_eq!(args.effective_model_id().unwrap(), "unlimited_ocr2");
+    }
+
+    let invalid = serde_json::json!({
+        "model_type": "unlimited-ocr",
+        "num_hidden_layers": 1,
+        "sparse_attention_config": sparse,
+    });
+    fs::write(&config_path, invalid.to_string()).unwrap();
+    let error = args.effective_model_id().unwrap_err();
+    assert!(error.contains("Unlimited-OCR-2"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
     // AutomatosX org packs (https://huggingface.co/AutomatosX) resolve to
     // the same product model ids as the unbranded artifact layouts.

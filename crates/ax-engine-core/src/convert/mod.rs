@@ -866,6 +866,7 @@ pub use deepseek_v4_chat::{
     DEEPSEEK_V4_CHAT_TEMPLATE_SHA256, ensure_deepseek_v4_chat_template,
 };
 pub(crate) use deepseek_v4_quantized::*;
+pub use hf_config::unlimited_ocr2_config_from_hf;
 pub(crate) use hf_config::*;
 pub(crate) use model_family::*;
 pub(crate) use tensor_mapping::*;

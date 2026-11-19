@@ -145,7 +145,16 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
         "embedding_gemma2" | "embedding_gemma2_text" => Some("embeddinggemma-2".to_string()),
         "muse_glimmer" | "muse_glimmer_text" => Some("muse-glimmer-30b".to_string()),
         "nemotron_h" | "nemotron_h_nano_omni" => Some("nemotron-3-nano".to_string()),
-        "unlimited-ocr" | "unlimited_ocr" | "deepseekocr" => Some("unlimited-ocr".to_string()),
+        "unlimited-ocr" | "unlimited_ocr" | "deepseekocr" => {
+            let sparse =
+                ax_engine_core::convert::unlimited_ocr2_config_from_hf(&config, model_type)
+                    .map_err(|error| error.to_string())?;
+            Some(if sparse.is_some() {
+                "unlimited_ocr2".to_string()
+            } else {
+                "unlimited-ocr".to_string()
+            })
+        }
         "mistral3" | "mistral" | "ministral3" => Some(infer_mistral_model_id(&path_label)),
         "gpt_oss" => Some(infer_gpt_oss_model_id(&path_label)),
         // Hy-MT2 30B-A3B is the only `hy_v3` product; the dense Hy-MT2

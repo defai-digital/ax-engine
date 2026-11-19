@@ -191,6 +191,22 @@ pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
     )
 }
 
+/// Resolve the released sparse attention contract using the converter's layer count.
+pub fn unlimited_ocr2_config_from_hf(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> Result<Option<crate::unlimited_ocr2::UnlimitedOcr2Config>, ConvertError> {
+    let layers = arch_u64(config, model_type, "num_hidden_layers")
+        .and_then(|layers| usize::try_from(layers).ok())
+        .unwrap_or(0);
+    crate::unlimited_ocr2::UnlimitedOcr2Config::from_hf(config, layers).map_err(|message| {
+        ConvertError::InvalidModelContract {
+            model_type: model_type.into(),
+            message: format!("Unlimited-OCR-2 SR-SWA: {message}"),
+        }
+    })
+}
+
 /// Reject second-generation sparse attention before the v1 mapper can drop
 /// routing weights and produce a plausible but semantically different graph.
 pub(crate) fn validate_unlimited_ocr_attention(
@@ -201,31 +217,14 @@ pub(crate) fn validate_unlimited_ocr_attention(
     if !is_unlimited_ocr(model_type) {
         return Ok(());
     }
-    let sparse_config = [
-        Some(config),
-        config.get("language_config"),
-        config.get("text_config"),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|scope| {
-        scope
-            .get("sparse_attention_config")
-            .is_some_and(|v| !v.is_null())
-    });
+    if unlimited_ocr2_config_from_hf(config, model_type)?.is_some() {
+        return Ok(());
+    }
     let sparse_weights = tensor_names.into_iter().any(|name| {
         let name = name.as_ref();
         name.contains(".self_attn.dash_router.") || name.contains(".self_attn.indexer.")
     });
-    if sparse_config {
-        let layers = arch_u64(config, model_type, "num_hidden_layers").unwrap_or(0) as usize;
-        crate::unlimited_ocr2::UnlimitedOcr2Config::from_hf(config, layers).map_err(|message| {
-            ConvertError::InvalidModelContract {
-                model_type: model_type.into(),
-                message: format!("Unlimited-OCR-2 SR-SWA: {message}"),
-            }
-        })?;
-    } else if sparse_weights {
+    if sparse_weights {
         return Err(ConvertError::InvalidModelContract {
             model_type: model_type.into(),
             message:

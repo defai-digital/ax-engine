@@ -77,7 +77,7 @@ impl UnlimitedOcr2Config {
             .is_some_and(|freq| {
                 freq.len() == layers && freq.iter().all(|v| v.as_f64() == Some(1.0))
             });
-        if !every_layer || s.get("sparse_inconsistency_freq").is_some() {
+        if layers == 0 || !every_layer || s.get("sparse_inconsistency_freq").is_some() {
             return Err("Unlimited-OCR-2 requires independent DASH routing at every layer".into());
         }
         let integer = |key: &str| -> Result<usize, String> {
