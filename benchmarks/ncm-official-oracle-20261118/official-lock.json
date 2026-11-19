@@ -1,0 +1,28 @@
+{
+  "repo_id": "hazyresearch/ncm-checkpoints",
+  "revision": "d342ce8aaea58830eef3b8ad473664673e41f692",
+  "license_metadata": "mit",
+  "verification_scope": "Pinned checkpoint, config, vocabulary and merge bytes",
+  "files": {
+    "tinystories/bpe_merges_8192.pickle": {
+      "size_bytes": 108277,
+      "sha256": "0d4cab13f2e7b684b75eaa290a52e596ba87744ef13d943cf3a50a5a8e080ec1"
+    },
+    "tinystories/bpe_vocab_8192.pickle": {
+      "size_bytes": 95122,
+      "sha256": "fb176b4c68108e4b5ef61b9ff2af3731600124e3e160970a6bd78cd0a5d3ff6c"
+    },
+    "tinystories/config.yaml": {
+      "size_bytes": 2483,
+      "sha256": "4009baccad5a159bfc12cd48f3da17c22c4a281b86f71f2fc70b7c1bbb62004b"
+    },
+    "tinystories/generator.pt": {
+      "size_bytes": 356160651,
+      "sha256": "0acaf4f795390f9f7ccc8f84047867619a1d00e291681e299b855d7e563be6ff"
+    },
+    "tinystories/tokenizer.pt": {
+      "size_bytes": 221861835,
+      "sha256": "76e26003719db32dc3d542518951c286be07d6a5881f29ad5152d299764b0f81"
+    }
+  }
+}

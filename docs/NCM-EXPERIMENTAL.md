@@ -24,6 +24,11 @@ rustup run 1.99.1 cargo build -p ax-engine-sdk --features mlx-native --bin ncm-i
 ./target/debug/ncm-infer "$MODEL_DIR" --sampling seeded-v1 --seed 17 --json
 ```
 
+For comparison with the official TinyStories reference, launch with
+`MLX_ENABLE_TF32=0`. This selects full F32 matrix precision for that
+process. Apply the same setting at process launch when using the Rust SDK
+for a reference comparison. [Official-reference controls](../benchmarks/ncm-official-oracle-20261118/).
+
 `MODEL_DIR` contains the seven pinned files: `LICENSE`, `config.json`,
 `spec.json`, `generator.safetensors`, `codec.safetensors`,
 `inference.safetensors` and `bpe.json`. Documentation files are allowed;
@@ -81,8 +86,9 @@ top-p, top-k, numeric output budgets, prompts or streaming fields are rejected.
 Seeded V1 uses one explicit MLX key per concept level. It samples level zero
 from the pinned unigram and all later concept positions from the learned
 logits at temperature one. The final codec still selects BPE IDs by argmax.
-Repeatability is scoped to the same AX build, model and hardware. Seeded
-outputs can differ across Apple Silicon generations.
+Repeatability is scoped to the same AX build, model, hardware and MLX
+precision settings. Seeded outputs can differ across Apple Silicon
+generations.
 
 The raw output has 128 BPE positions. Presentation stops before EOS 0, skips
 PAD 1, joins byte fragments before UTF-8 decoding and preserves whitespace.
@@ -94,9 +100,10 @@ reports zero user prompt tokens. The fixed internal prefix is not a user prompt.
 This is experimental unconditional inference, separate from ordinary
 `ax-engine serve` and generic SDK `GenerateRequest`. No chat, arbitrary prompt,
 tools, grammar, stop strings, logprobs, speculative decoding,
-prefix cache or partial text streaming is admitted. HTTP model registration,
-official-source parity and M5/M4 admission evidence remain pending. M2 Ultra
-functional controls do not establish M5 qualification, quality or speed.
+prefix cache or partial text streaming is admitted. The official-reference
+controls cover three fixed inputs and expose precision differences on M5.
+Normal model admission, HTTP model registration and qualification remain
+open. [Official-reference controls](../benchmarks/ncm-official-oracle-20261118/).
 
 ## Reproduce the functional controls
 
