@@ -10076,6 +10076,47 @@ fn tiny_linear_dflash_runner(layer_count: u32) -> (MlxRunner, NativeModelArtifac
 }
 
 #[test]
+fn gemma_coalesced_verify_leaves_the_surviving_request_at_its_original_cursor() {
+    let (runner, artifacts) = tiny_linear_dflash_runner(1);
+    let item = decode_claim(1, 5);
+    let removed = decode_claim(2, 6);
+    let context = ctx_with_argmax(true);
+    let removed_context = RunnerRequestContext {
+        request_id: removed.request_id,
+        ..ctx_with_argmax(true)
+    };
+    let mut state = RequestState::new(1, 1, None);
+    let (logits, hidden) = forward_all_positions_with_post_norm(
+        &runner.cfg,
+        &runner.weights,
+        &[1, 2, 3, 4],
+        &mut state.cache,
+        0,
+    );
+    state.cache.advance(4);
+    eval(&[&logits, &hidden]);
+    state.mtp_pending_draft = vec![7, 8];
+    state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; 2];
+    runner.states.lock().insert(item.request_id, state);
+
+    // The second request lost its state after admission. The surviving
+    // request will be processed by ordinary singleton decode.
+    let runs = runner.run_gemma4_assistant_mtp_coalesced_group(
+        &[(0, &item), (1, &removed)],
+        &[context, removed_context],
+    );
+    let survivor = runner.states.lock().remove(&item.request_id).unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    assert!(runs.is_empty());
+    assert_eq!(survivor.cache.seq_len(), 4);
+    assert_eq!(survivor.mtp_pending_draft, [7, 8]);
+    assert_eq!(
+        survivor.mtp_pending_draft_sources,
+        [MtpDraftSource::Gemma4Assistant; 2]
+    );
+}
+
+#[test]
 #[ignore = "requires AX_MLX_PREFIX_SEMANTIC_CUTS=1 or AX_MLX_PREFIX_RESTORE_VALUE=1"]
 fn populated_request_cache_does_not_emit_restore_events() {
     assert!(

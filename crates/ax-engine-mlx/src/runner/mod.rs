@@ -4096,9 +4096,9 @@ impl MlxRunner {
             verify_forward_wall_us: u32,
         }
 
-        let mut rows = Vec::with_capacity(group.len());
-        {
+        let rows = {
             let mut states = self.states.lock();
+            let mut members = Vec::with_capacity(group.len());
             for &(item_index, item) in group {
                 let Some(ctx) = contexts
                     .iter()
@@ -4106,14 +4106,13 @@ impl MlxRunner {
                 else {
                     continue;
                 };
-                let Some(mut state) = states.remove(&item.request_id) else {
+                let Some(state) = states.remove(&item.request_id) else {
                     continue;
                 };
-                let pending = state.mtp_pending_draft.clone();
-                let pending_sources = state.mtp_pending_draft_sources.clone();
-                let valid = !pending.is_empty()
-                    && pending.len() == pending_sources.len()
-                    && pending_sources
+                let valid = !state.mtp_pending_draft.is_empty()
+                    && state.mtp_pending_draft.len() == state.mtp_pending_draft_sources.len()
+                    && state
+                        .mtp_pending_draft_sources
                         .iter()
                         .all(|source| *source == MtpDraftSource::Gemma4Assistant)
                     && !state.mtp_bypassed
@@ -4124,7 +4123,21 @@ impl MlxRunner {
                     states.insert(item.request_id, state);
                     continue;
                 }
+                members.push((item_index, item, ctx, state));
+            }
+            // A cancelled sibling can leave one member after admission. Return
+            // its original cache before building any speculative forwards.
+            if members.len() < 2 {
+                for (_, item, _, state) in members {
+                    states.insert(item.request_id, state);
+                }
+                return Vec::new();
+            }
 
+            let mut rows = Vec::with_capacity(members.len());
+            for (item_index, item, ctx, mut state) in members {
+                let pending = state.mtp_pending_draft.clone();
+                let pending_sources = state.mtp_pending_draft_sources.clone();
                 let sampling = sampling_params_from_context(
                     ctx,
                     self.unlimited_ocr_page_guard_applies(Some(ctx)),
@@ -4181,15 +4194,8 @@ impl MlxRunner {
                     verify_forward_wall_us,
                 });
             }
-        }
-
-        if rows.len() < 2 {
-            let mut states = self.states.lock();
-            for row in rows {
-                states.insert(row.request_id, row.state);
-            }
-            return Vec::new();
-        }
+            rows
+        };
 
         let group_started = Instant::now();
         let mut owned_targets = Vec::new();
