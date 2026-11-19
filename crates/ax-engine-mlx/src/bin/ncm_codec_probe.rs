@@ -13,7 +13,12 @@ use sha2::{Digest, Sha256};
 
 use ncm_probe::*;
 
-fn execute(model: &Path, trace_path: &Path, reference_path: &Path) -> Result<Value, String> {
+fn execute(
+    model: &Path,
+    trace_path: &Path,
+    reference_path: &Path,
+    attribute_level_zero: bool,
+) -> Result<Value, String> {
     let bytes = read_json(trace_path)?;
     let trace: Trace = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     trace.validate()?;
@@ -55,6 +60,9 @@ fn execute(model: &Path, trace_path: &Path, reference_path: &Path) -> Result<Val
     }
     let codec = Codec::load(model)?;
     let mut latent = zeros(&[1, LENGTH, WIDTH], MlxDtype::Float32, None);
+    let mut matched_level_zero = attribute_level_zero
+        .then(|| reference("accumulated.0").cloned())
+        .transpose()?;
     let mut errors = Vec::new();
     for (level, codes) in trace.codes.iter().enumerate() {
         let contribution = codec.contribution(&codes[0], level);
@@ -66,6 +74,11 @@ fn execute(model: &Path, trace_path: &Path, reference_path: &Path) -> Result<Val
             bounds[2 * level],
         )?);
         latent = add(&latent, &contribution, None);
+        if level > 0
+            && let Some(matched) = &mut matched_level_zero
+        {
+            *matched = add(matched, &contribution, None);
+        }
         let name = format!("accumulated.{level}");
         errors.push(compare(
             &name,
@@ -88,7 +101,7 @@ fn execute(model: &Path, trace_path: &Path, reference_path: &Path) -> Result<Val
         .filter(|(a, b)| a != b)
         .count();
     let numerical_match = errors.iter().all(|value| value["within_bound"] == true);
-    Ok(json!({
+    let mut report = json!({
         "schema_version": "ax.ncm_codec_probe.v1",
         "scope": "native injected-code codec diagnostic only",
         "codec_sha256": CODEC_SHA256, "spec_sha256": SPEC_SHA256,
@@ -102,27 +115,58 @@ fn execute(model: &Path, trace_path: &Path, reference_path: &Path) -> Result<Val
         "passed": mismatches == 0 && numerical_match,
         "all_compared_values_finite": true,
         "comparisons": errors,
-    }))
+    });
+    if let Some(matched) = matched_level_zero {
+        let final_reference = reference("accumulated.11")?;
+        let reference_logits = reference("decoder.logits")?;
+        let decoder_arm = |input| -> Result<Value, String> {
+            let logits = codec.decode_logits(input);
+            let comparison = compare("decoder.logits", &logits, reference_logits, bounds[24])?;
+            let tokens = token_ids(&logits)?;
+            Ok(json!({
+                "logits": comparison,
+                "exact_token_match": tokens == trace.tokens[0],
+                "tokens": [tokens],
+            }))
+        };
+        report["diagnostic_attribution"] = json!({
+            "reference_level_zero": {
+                "final_latent": compare("accumulated.11", &matched, final_reference, bounds[23])?,
+                "decoder": decoder_arm(&matched)?,
+            },
+            "reference_final_latent": {
+                "decoder": decoder_arm(final_reference)?,
+            },
+        });
+    }
+    Ok(report)
 }
 
 fn run() -> Result<bool, String> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: ncm_codec_probe <model-dir> <trace.json> <reference.safetensors> <output.json>"
+            "Usage: ncm_codec_probe [--attribute-level-zero] <model-dir> <trace.json> <reference.safetensors> <output.json>"
         );
         return Ok(true);
     }
-    if args.len() != 4 {
+    let attribute_level_zero = args
+        .first()
+        .is_some_and(|arg| arg == "--attribute-level-zero");
+    let paths = args
+        .into_iter()
+        .skip(usize::from(attribute_level_zero))
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if paths.len() != 4 {
         return Err(
             "expected model directory, trace, reference and output paths; see --help".into(),
         );
     }
-    let paths = args.iter().map(PathBuf::from).collect::<Vec<_>>();
     if paths[3].exists() {
         return Err("output path already exists".into());
     }
-    let report = execute(&paths[0], &paths[1], &paths[2])?;
+    let report = execute(&paths[0], &paths[1], &paths[2], attribute_level_zero)?;
     let bytes = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
     let mut output = OpenOptions::new()
         .write(true)
