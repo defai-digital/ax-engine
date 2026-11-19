@@ -82,6 +82,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 )
             self.assertEqual(metadata["build_profile"], "release-server")
             self.assertEqual(metadata["server_binary"], str(binary))
+            self.assertEqual(metadata["commit"], "unknown")
+            self.assertIsNone(metadata["git_tracked_dirty"])
+            self.assertIn("harness_commit", metadata)
             self.assertEqual(
                 metadata["server_binary_sha256"], hashlib.sha256(b"prebuilt server").hexdigest()
             )
@@ -92,6 +95,83 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             with patch.object(bench, "_command_output_lines", return_value=[]):
                 self.assertEqual(bench.collect_build_metadata(binary=binary)["build_profile"], "unknown")
                 self.assertEqual(bench.collect_build_metadata()["build_profile"], "release")
+
+    def test_prebuilt_build_record_binds_binary_separately_from_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "ax-engine-server"
+            binary.write_bytes(b"prebuilt server")
+            record_path = root / "build.json"
+            record = {
+                "commit": "3" * 40,
+                "engine_version": "8.0.6",
+                "build_profile": "release-server",
+                "git_tracked_dirty": False,
+                "server_binary_sha256": hashlib.sha256(b"prebuilt server").hexdigest(),
+            }
+            record_path.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, "build-profile differs"):
+                bench.read_prebuilt_server_provenance(record_path, binary, "release")
+            checked = bench.read_prebuilt_server_provenance(record_path, binary, None)
+            with (
+                patch.object(bench, "_command_output_lines", return_value=[]),
+                patch.object(bench.subprocess, "check_output", side_effect=["8" * 40, " M script"]),
+            ):
+                metadata = bench.collect_build_metadata(
+                    binary=binary, prebuilt_provenance=checked,
+                )
+            self.assertEqual(metadata["harness_commit"], "8" * 40)
+            self.assertTrue(metadata["harness_git_tracked_dirty"])
+            self.assertEqual(metadata["build_source"], "digest_matched_build_record")
+            for key, value in record.items():
+                self.assertEqual(metadata[key], value)
+
+            binary.write_bytes(b"replacement server")
+            with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
+                bench.read_prebuilt_server_provenance(record_path, binary, None)
+            with (
+                patch.object(bench, "_command_output_lines", return_value=[]),
+                self.assertRaisesRegex(RuntimeError, "SHA-256 changed"),
+            ):
+                bench.collect_build_metadata(binary=binary, prebuilt_provenance=checked)
+
+    def test_prebuilt_build_record_rejects_missing_or_invalid_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "ax-engine-server"
+            binary.write_bytes(b"server")
+            record_path = root / "build.json"
+            record = {
+                "commit": "3" * 40,
+                "engine_version": "8.0.6",
+                "build_profile": "release-server",
+                "git_tracked_dirty": False,
+                "server_binary_sha256": hashlib.sha256(b"server").hexdigest(),
+            }
+            for key, value in (
+                ("commit", "3598abc"),
+                ("engine_version", "unknown"),
+                ("build_profile", ""),
+                ("git_tracked_dirty", 0),
+                ("server_binary_sha256", "x" * 64),
+            ):
+                with self.subTest(key=key):
+                    record_path.write_text(json.dumps({**record, key: value}))
+                    with self.assertRaisesRegex(ValueError, key):
+                        bench.read_prebuilt_server_provenance(record_path, binary, None)
+
+    def test_prebuilt_build_record_requires_explicit_server(self) -> None:
+        argv = [
+            str(SCRIPT_PATH), "--ax-engine-build-provenance", "build.json",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stderr", io.StringIO()) as stderr,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            bench.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--ax-engine-build-provenance requires --ax-engine-server", stderr.getvalue())
 
     def test_explicit_server_cli_skips_cargo_and_checks_the_chosen_binary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

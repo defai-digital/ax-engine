@@ -1061,15 +1061,45 @@ def collect_host_metadata(
     return metadata
 
 
-def collect_build_metadata(
-    *, binary: Path | None = None, declared_profile: str | None = None
+def read_prebuilt_server_provenance(
+    path: Path, binary: Path, declared_profile: str | None
 ) -> dict[str, Any]:
-    """Collect git commit and build profile for artifact provenance."""
+    """Read a build record and check that it describes the selected server bytes."""
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("server build provenance must be a JSON object")
+    for key, length in (("commit", 40), ("server_binary_sha256", 64)):
+        value = record.get(key)
+        if not isinstance(value, str) or re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is None:
+            raise ValueError(f"server build provenance requires a {length}-digit hex {key}")
+    for key in ("engine_version", "build_profile"):
+        value = record.get(key)
+        if not isinstance(value, str) or value.strip() in {"", "unknown"}:
+            raise ValueError(f"server build provenance requires {key}")
+    if not isinstance(record.get("git_tracked_dirty"), bool):
+        raise ValueError("server build provenance requires boolean git_tracked_dirty")
+    if declared_profile is not None and record["build_profile"] != declared_profile:
+        raise ValueError("--ax-engine-build-profile differs from the server build provenance")
+    with binary.open("rb") as server:
+        digest = hashlib.file_digest(server, "sha256").hexdigest()
+    if digest != record["server_binary_sha256"]:
+        raise ValueError("server binary SHA-256 differs from the server build provenance")
+    return record
+
+
+def collect_build_metadata(
+    *,
+    binary: Path | None = None,
+    declared_profile: str | None = None,
+    prebuilt_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Record harness source and the identity available for the measured server."""
+    prebuilt = binary is not None
     if binary is None:
         binary = AX_ENGINE_SERVER
     commit = "unknown"
     engine_version = "unknown"
-    tracked_status: list[str] = []
+    tracked_status: list[str] | None = None
     try:
         commit = subprocess.check_output(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
@@ -1135,8 +1165,8 @@ def collect_build_metadata(
             "release" if binary == REPO_ROOT / "target/release/ax-engine-server" else "unknown"
         ),
         "server_binary": str(binary),
-        "git_tracked_dirty": bool(tracked_status),
-        "git_tracked_status": tracked_status[:50],
+        "git_tracked_dirty": None if tracked_status is None else bool(tracked_status),
+        "git_tracked_status": None if tracked_status is None else tracked_status[:50],
     }
     try:
         with binary.open("rb") as server:
@@ -1149,6 +1179,21 @@ def collect_build_metadata(
         metadata["libmlx_rpaths"] = rpaths
     if resolved_libmlx:
         metadata["resolved_libmlx"] = resolved_libmlx
+    if prebuilt:
+        metadata["harness_commit"] = commit
+        metadata["harness_git_tracked_dirty"] = metadata["git_tracked_dirty"]
+        metadata["git_tracked_status"] = None
+        record = prebuilt_provenance
+        if record is not None and (
+            metadata.get("server_binary_sha256") != record["server_binary_sha256"]
+        ):
+            raise RuntimeError("server binary SHA-256 changed after build provenance validation")
+        metadata["commit"] = record["commit"] if record else "unknown"
+        metadata["engine_version"] = record["engine_version"] if record else "unknown"
+        metadata["git_tracked_dirty"] = record["git_tracked_dirty"] if record else None
+        metadata["build_source"] = "digest_matched_build_record" if record else "unknown"
+        if record:
+            metadata["build_profile"] = record["build_profile"]
     return metadata
 
 
@@ -5653,6 +5698,15 @@ def main() -> None:
         help="Record the Cargo profile used to build the explicit --ax-engine-server binary.",
     )
     parser.add_argument(
+        "--ax-engine-build-provenance",
+        type=Path,
+        help=(
+            "Build record for --ax-engine-server as JSON, with commit, engine_version, "
+            "build_profile, git_tracked_dirty and server_binary_sha256. "
+            "The binary must match the recorded SHA-256."
+        ),
+    )
+    parser.add_argument(
         "--reuse-reference-results-from",
         type=Path,
         help=(
@@ -5966,6 +6020,18 @@ def main() -> None:
         if args.ax_engine_server is not None
         else AX_ENGINE_SERVER
     )
+    server_provenance = None
+    if args.ax_engine_build_provenance is not None:
+        if args.ax_engine_server is None:
+            parser.error("--ax-engine-build-provenance requires --ax-engine-server")
+        try:
+            server_provenance = read_prebuilt_server_provenance(
+                args.ax_engine_build_provenance.expanduser(),
+                ax_engine_server,
+                args.ax_engine_build_profile,
+            )
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     model_dir_explicit = args.model_dir is not None
     try:
         args.model_repo_id = normalize_model_repo_id_for_cache(
@@ -6632,8 +6698,9 @@ def main() -> None:
         "host": collect_host_metadata(performance_conditions_end),
         "benchmark_window": benchmark_window,
         "build": collect_build_metadata(
-            binary=ax_engine_server,
+            binary=ax_engine_server if args.ax_engine_server is not None else None,
             declared_profile=args.ax_engine_build_profile,
+            prebuilt_provenance=server_provenance,
         ),
         "model": args.model,
         "model_repo_id": args.model_repo_id,
