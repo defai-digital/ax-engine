@@ -1714,9 +1714,11 @@ impl MlxKVCache {
     }
 
     pub(crate) fn has_hard_fa_block_cap(&self) -> bool {
-        self.fa_pool
-            .as_ref()
-            .is_some_and(|pool| pool.config().hard_cap)
+        self.hard_capped_fa_pool().is_some()
+    }
+
+    pub(crate) fn hard_capped_fa_pool(&self) -> Option<&SharedFaBlockPool> {
+        self.fa_pool.as_ref().filter(|pool| pool.config().hard_cap)
     }
 
     #[cfg(test)]

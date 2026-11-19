@@ -51,6 +51,14 @@ fn flash_next_prefix_admission_pins_only_complete_greedy_snapshots() {
     request.prefill_hints.semantic_cut_tokens.push(2);
     assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
     request.prefill_hints.semantic_cut_tokens.clear();
+    let previous_pool = runner.fa_block_pool_config.replace(FaBlockPoolConfig {
+        block_size_tokens: 4,
+        max_blocks: 1,
+        hard_cap: true,
+    });
+    assert!(!runner.prepare_prefix_reuse(&request, 4, 4, true));
+    assert!(runner.prepared_prefixes.lock().is_empty());
+    runner.fa_block_pool_config = previous_pool;
     assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
     assert!(runner.prepare_prefix_reuse(&request, 4, 4, true));
     assert_eq!(runner.prepared_prefixes.lock().len(), 1);
@@ -10282,6 +10290,171 @@ fn direct_pipeline_emits_the_token_from_the_last_available_kv_slot() {
             Some(ax_engine_core::StopReason::EosToken)
         );
     }
+}
+
+#[test]
+fn prefill_returns_its_first_token_when_prompt_fills_the_hard_kv_cap() {
+    let mut manifest = dense_manifest();
+    manifest.model_family = "qwen3".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    runner.disable_ngram_acceleration = true;
+    runner.terminal_token_ids = vec![1];
+    let cap = FaBlockPoolConfig {
+        block_size_tokens: 4,
+        max_blocks: 1,
+        hard_cap: true,
+    };
+    runner.fa_block_pool_config = Some(cap);
+    runner.shared_fa_block_pool = None;
+
+    for (id, cached_prefill, ignore_eos) in [
+        (1, false, false),
+        (2, false, true),
+        (3, true, false),
+        (4, true, true),
+    ] {
+        let prompt = vec![2, 3, 4, 5];
+        let mut item = decode_claim(id, 5);
+        let mut ctx = RunnerRequestContext {
+            request_id: item.request_id,
+            prompt_len: 4,
+            processed_prompt_tokens: if cached_prefill { 4 } else { 0 },
+            ignore_eos,
+            ..ctx_with_argmax(true)
+        };
+        if cached_prefill {
+            let mut state = RequestState::new(1, id, Some(cap));
+            let (logits, hidden) = forward_all_positions_with_post_norm(
+                &runner.cfg,
+                &runner.weights,
+                &prompt,
+                &mut state.cache,
+                0,
+            );
+            state.cache.advance(prompt.len());
+            eval(&[&logits, &hidden]);
+            assert!(!state.cache.hard_cap_exhausted());
+            state.cached_prefill_output_token = Some(1);
+            runner.states.lock().insert(item.request_id, state);
+        } else {
+            item.mode = ExecutionMode::Prefill;
+            item.planned_work_unit = ax_engine_core::WorkUnitKind::PrefillChunk;
+            item.input_token_slice = prompt;
+            item.position_range = PositionRange {
+                start: 0,
+                end_exclusive: 4,
+            };
+            item.scheduled_token_count = 4;
+        }
+
+        let result = runner.run_item(&item, Some(&ctx), "qwen3", 4, None, None, None, None, None);
+        assert!(
+            result.update.error.is_none(),
+            "cached={cached_prefill} ignore_eos={ignore_eos}: {:?}",
+            result.update.error
+        );
+        assert_eq!(result.update.output_token, Some(1));
+        assert!(result.update.output_tokens.is_empty());
+        if id <= 2 {
+            assert_eq!(result.prefix_cache.hits, u32::from(id == 2));
+        }
+        if ignore_eos {
+            assert!(result.update.stop_reason.is_none());
+            {
+                let states = runner.states.lock();
+                let state = &states[&item.request_id];
+                assert!(
+                    state.cache.has_hard_fa_block_cap(),
+                    "lost cap with cached={cached_prefill} ignore_eos={ignore_eos}"
+                );
+                assert_eq!(
+                    state.cache.seq_len(),
+                    4,
+                    "cached={cached_prefill} ignore_eos={ignore_eos}"
+                );
+                assert!(!state.cache.hard_cap_exhausted());
+                assert!(state.pending_direct.is_none());
+            }
+            ctx.generated_len = 1;
+            ctx.processed_prompt_tokens = 4;
+            let next = decode_claim(id, 1);
+            let failed =
+                runner.run_item(&next, Some(&ctx), "qwen3", 4, None, None, None, None, None);
+            assert_eq!(failed.update.output_token, None);
+            assert_eq!(
+                failed.update.error.as_deref(),
+                Some(
+                    "FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"
+                )
+            );
+        } else {
+            assert_eq!(
+                result.update.stop_reason,
+                Some(ax_engine_core::StopReason::EosToken)
+            );
+        }
+        assert!(!runner.states.lock().contains_key(&item.request_id));
+    }
+
+    // Rehydrating the cached four-token prefix must not permit the fifth
+    // prompt token to escape the cap.
+    let mut item = decode_claim(5, 6);
+    item.mode = ExecutionMode::Prefill;
+    item.planned_work_unit = ax_engine_core::WorkUnitKind::PrefillChunk;
+    item.input_token_slice = vec![2, 3, 4, 5, 6];
+    item.position_range = PositionRange {
+        start: 0,
+        end_exclusive: 5,
+    };
+    item.scheduled_token_count = 5;
+    let ctx = RunnerRequestContext {
+        request_id: item.request_id,
+        prompt_len: 5,
+        ignore_eos: true,
+        ..ctx_with_argmax(true)
+    };
+    let result = runner.run_item(&item, Some(&ctx), "qwen3", 4, None, None, None, None, None);
+    assert_eq!(result.update.output_token, None);
+    assert_eq!(
+        result.update.error.as_deref(),
+        Some("FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap")
+    );
+
+    // The same input without a cap still primes normally after emitting.
+    runner.fa_block_pool_config = None;
+    item.request_id = RequestId(6);
+    item.block_table_ref = item.request_id;
+    item.input_token_slice.pop();
+    item.position_range.end_exclusive = 4;
+    item.scheduled_token_count = 4;
+    let ctx = RunnerRequestContext {
+        request_id: item.request_id,
+        prompt_len: 4,
+        ..ctx
+    };
+    let result = runner.run_item(&item, Some(&ctx), "qwen3", 4, None, None, None, None, None);
+    assert!(result.update.error.is_none(), "{:?}", result.update.error);
+    assert_eq!(result.update.output_token, Some(1));
+    {
+        let states = runner.states.lock();
+        let state = &states[&item.request_id];
+        assert_eq!(state.cache.seq_len(), 5);
+        assert!(state.pending_direct.is_some());
+    }
+    runner.release_request_state(item.request_id);
 }
 
 #[test]

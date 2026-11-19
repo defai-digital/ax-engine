@@ -5006,7 +5006,13 @@ impl ExecutionRunner for MlxRunner {
         if !self.flash_next_exact_prefix_only() {
             return true;
         }
-        if matched_tokens as usize != request.prompt_tokens.len()
+        // The Flash Next snapshot has recurrent state and cannot be
+        // repaged by the standard FA restore. Schedule the original prompt
+        // when the request must start inside a hard-capped pool.
+        if self
+            .fa_block_pool_config
+            .is_some_and(|config| config.hard_cap)
+            || matched_tokens as usize != request.prompt_tokens.len()
             || request.processed_prompt_tokens != 0
             || !deterministic_output
             || !request.multimodal_inputs.is_empty()
@@ -9019,9 +9025,6 @@ impl MlxRunner {
         )
     }
 
-    /// Restore portable dense snapshots back under the runner-wide physical
-    /// budget. The wire representation remains dense, but an opted-in pure-FA
-    /// runner must not escape its pool merely because native L1 missed.
     /// Exact replay of an unaligned linear-attention prompt: restores the
     /// live end-of-prompt state [`Self::store_prompt_end_state`] kept (the
     /// cold run's own cache and DFlash2 prompt rows) with its greedy prefill
@@ -9075,6 +9078,10 @@ impl MlxRunner {
             telemetry.record_blocked_snapshot_incomplete();
             return false;
         }
+        let Ok(cache) = self.prepare_portable_prefix_restore(cache, &state.cache, telemetry) else {
+            telemetry.record_blocked_restore_error();
+            return false;
+        };
         state.cache = cache;
         if dflash2_eligible {
             self.restore_dflash2_prefix(state, snapshot.dflash2.as_deref());
@@ -9162,20 +9169,30 @@ impl MlxRunner {
             && !cache.has_unserializable_layers()
     }
 
+    /// Bind the dense wire snapshot to any native shared pool or any
+    /// hard-capped pool already owned by the request. Unsupported layouts
+    /// fall back to recomputing the prefix in the original cache.
     fn prepare_portable_prefix_restore(
         &self,
         restored: MlxKVCache,
+        active: &MlxKVCache,
         telemetry: &mut MlxPrefixCacheTelemetry,
     ) -> Result<MlxKVCache, FaBlockPoolError> {
-        if !self.native_fa_prefix_sharing_enabled() {
-            return Ok(restored);
-        }
-        let Some(pool) = self.shared_fa_block_pool.as_ref() else {
+        let native_pool = self
+            .shared_fa_block_pool
+            .as_ref()
+            .filter(|_| self.native_fa_prefix_sharing_enabled());
+        let Some(pool) = active.hard_capped_fa_pool().or(native_pool) else {
             return Ok(restored);
         };
-        let required = restored.fa_blocks_required_for_repage(pool)?;
-        let evictions = self.reclaim_native_prefix_blocks(required, telemetry);
-        telemetry.native_evictions = telemetry.native_evictions.saturating_add(evictions);
+        if restored.uses_fa_block_pool(pool) {
+            return Ok(restored);
+        }
+        if native_pool.is_some_and(|native| native.same_pool(pool)) {
+            let required = restored.fa_blocks_required_for_repage(pool)?;
+            let evictions = self.reclaim_native_prefix_blocks(required, telemetry);
+            telemetry.native_evictions = telemetry.native_evictions.saturating_add(evictions);
+        }
         restored.clone_repage_into_shared_fa_pool(pool.clone())
     }
 
@@ -9965,14 +9982,16 @@ impl MlxRunner {
         let mut cache = snapshot.rehydrate_cache().map_err(|e| e.to_string())?;
         self.verify_restored_prefix_snapshot(&mut cache, snapshot.token_count)
             .map_err(|e| e.to_string())?;
-        state.cache = cache;
-        state.prompt_prefix_tokens = snapshot.tokens.clone();
-        state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
         let mut telemetry = MlxPrefixCacheTelemetry {
             hits: 1,
             reused_tokens: saturating_u32(snapshot.token_count),
             ..MlxPrefixCacheTelemetry::default()
         };
+        state.cache = self
+            .prepare_portable_prefix_restore(cache, &state.cache, &mut telemetry)
+            .map_err(|e| e.to_string())?;
+        state.prompt_prefix_tokens = snapshot.tokens.clone();
+        state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
         telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
         Ok(telemetry)
     }
@@ -10364,8 +10383,11 @@ impl MlxRunner {
                             "L1 prefix-cache payload is structurally incomplete; treating as miss",
                         );
                     } else {
-                        let prepared =
-                            self.prepare_portable_prefix_restore(restored_cache, &mut telemetry);
+                        let prepared = self.prepare_portable_prefix_restore(
+                            restored_cache,
+                            &state.cache,
+                            &mut telemetry,
+                        );
                         match prepared {
                             Ok(restored_cache) => {
                                 // Flash Next session with a stashed draft-cursor
@@ -10435,7 +10457,7 @@ impl MlxRunner {
                                 tracing::warn!(
                                     target: "ax_engine_mlx::prefix_cache",
                                     error = %e,
-                                    "L1 prefix-cache payload could not enter the shared FA pool; treating as miss",
+                                    "L1 prefix-cache payload could not enter the request FA pool; treating as miss",
                                 );
                             }
                         }
@@ -10532,8 +10554,11 @@ impl MlxRunner {
                                  treating as miss and recomputing",
                             );
                         } else {
-                            let prepared = self
-                                .prepare_portable_prefix_restore(restored.cache, &mut telemetry);
+                            let prepared = self.prepare_portable_prefix_restore(
+                                restored.cache,
+                                &state.cache,
+                                &mut telemetry,
+                            );
                             match prepared {
                                 Ok(restored_cache) => {
                                     state.cache = restored_cache;
@@ -10564,7 +10589,7 @@ impl MlxRunner {
                                     tracing::warn!(
                                         target: "ax_engine_mlx::prefix_cache",
                                         error = %e,
-                                        "disk prefix-cache payload could not enter the shared FA pool; recomputing",
+                                        "disk prefix-cache payload could not enter the request FA pool; recomputing",
                                     );
                                     telemetry.record_blocked_restore_error();
                                     telemetry.record_disk_fallback_recompute();
@@ -16750,6 +16775,9 @@ impl MlxRunner {
         // requests often omit `deterministic: true` and inherit a non-det
         // session default while still sending temperature=0).
         //
+        // A hard cap must let the first prefill token reach the caller
+        // before reserving KV for the following decode step.
+        //
         // Sequential-oracle mode retains the direct-pipeline prime. Normal
         // assistant-MTP starts with an S=1 target step so it can retain the
         // post-norm hidden that seeds the first real draft.
@@ -16796,6 +16824,7 @@ impl MlxRunner {
             mtp_uses_direct_pipeline,
             self.mtp_requested,
         ) || gemma_exact_direct_bootstrap)
+            && !state.cache.has_hard_fa_block_cap()
             && !think_single_token_required
             && !gemma_moe_long_mt_singleton
             && !flash_next_cursor_owns_decode
