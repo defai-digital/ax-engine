@@ -58,13 +58,13 @@ impl Owner {
     fn watch_request(
         owner: &Arc<Self>,
         cancellation: NcmCancellation,
-        deadline: Instant,
+        timeout: Duration,
     ) -> Result<(), NcmError> {
         let owner = Arc::downgrade(owner);
         std::thread::Builder::new()
             .name("ax-ncm-watchdog".into())
             .spawn(move || {
-                if cancellation.wait_for_cleanup(deadline.saturating_duration_since(Instant::now()))
+                if cancellation.wait_for_cleanup(timeout)
                     && let Some(owner) = owner.upgrade()
                 {
                     owner
@@ -162,9 +162,7 @@ impl NcmSession {
             return Err(NcmError::Cancelled);
         }
         let started = Instant::now();
-        if let Err(error) =
-            Owner::watch_request(&self.owner, cancellation.clone(), started + self.timeout)
-        {
+        if let Err(error) = Owner::watch_request(&self.owner, cancellation.clone(), self.timeout) {
             core.cancel_ncm();
             return Err(error);
         }
@@ -327,16 +325,26 @@ mod tests {
             );
         }
     }
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct FakeRunner {
         barrier: Option<Arc<std::sync::Barrier>>,
+        admission_delay: Duration,
+        released: Option<std::sync::mpsc::Sender<RequestId>>,
     }
     impl ax_engine_core::ExecutionRunner for FakeRunner {
         fn run(&self, input: ax_engine_core::RunnerInput) -> ax_engine_core::RunnerOutput {
             ax_engine_core::ExecutionRunner::run(&ax_engine_core::DeterministicRunner, input)
         }
         fn begin_ncm(&self, _id: RequestId, _config: NcmRequestConfig) -> Result<(), NcmError> {
+            if !self.admission_delay.is_zero() {
+                std::thread::sleep(self.admission_delay);
+            }
             Ok(())
+        }
+        fn release_request_state(&self, id: RequestId) {
+            if let Some(released) = &self.released {
+                let _ = released.send(id);
+            }
         }
         fn run_ncm(
             &self,
@@ -362,9 +370,15 @@ mod tests {
         }
     }
     fn test_session(barrier: Option<Arc<std::sync::Barrier>>) -> NcmSession {
+        test_session_with_runner(FakeRunner {
+            barrier,
+            ..FakeRunner::default()
+        })
+    }
+    fn test_session_with_runner(runner: FakeRunner) -> NcmSession {
         let mut core = EngineCore::with_runtime_components(
             ax_engine_core::KvManagerConfig::validated(ax_engine_core::CacheGroupId(0), 16, 1),
-            FakeRunner { barrier },
+            runner,
             ax_engine_core::DeterministicSampler,
         );
         core.set_generation_kind(ax_engine_core::GenerationKind::NextConcept);
@@ -431,6 +445,21 @@ mod tests {
         let next = session.generate_unconditional(request()).unwrap();
         assert!(matches!(expired.step(), Err(NcmError::Deadline)));
         assert_eq!(next.finish().unwrap().request_id, 2);
+    }
+
+    #[test]
+    fn idle_deadline_counts_runner_admission() {
+        let timeout = Duration::from_secs(2);
+        let (released, observed) = std::sync::mpsc::channel();
+        let mut session = test_session_with_runner(FakeRunner {
+            admission_delay: timeout,
+            released: Some(released),
+            ..FakeRunner::default()
+        });
+        session.timeout = timeout;
+        let mut expired = session.generate_unconditional(request()).unwrap();
+        assert_eq!(observed.recv_timeout(timeout / 2), Ok(RequestId(1)));
+        assert!(matches!(expired.step(), Err(NcmError::Deadline)));
     }
 
     #[test]

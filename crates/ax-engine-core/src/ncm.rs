@@ -119,8 +119,21 @@ struct RequestState {
 
 /// Cancellation, deadline and visible commit share one terminal transition.
 #[derive(Clone, Debug, Default)]
-pub struct NcmCancellation(Arc<(Mutex<RequestState>, Condvar)>);
+pub struct NcmCancellation {
+    signal: Arc<(Mutex<RequestState>, Condvar)>,
+    deadline: Option<Instant>,
+}
 impl NcmCancellation {
+    fn with_deadline(deadline: Instant) -> Self {
+        Self {
+            deadline: Some(deadline),
+            ..Self::default()
+        }
+    }
+    fn deadline_elapsed(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
     pub fn cancel(&self) -> bool {
         self.transition(Termination::Cancelled)
     }
@@ -128,7 +141,7 @@ impl NcmCancellation {
         self.terminal_error().is_some()
     }
     pub fn terminal_error(&self) -> Option<NcmError> {
-        let (state, _) = self.0.as_ref();
+        let (state, _) = self.signal.as_ref();
         match state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -139,19 +152,22 @@ impl NcmCancellation {
             _ => None,
         }
     }
-    /// Wait for a terminal signal or a watchdog interval. Committed requests need no cleanup.
+    /// Wait for a terminal signal, the request deadline, or the caller interval.
     pub fn wait_for_cleanup(&self, interval: Duration) -> bool {
-        let (state, changed) = self.0.as_ref();
+        let (state, changed) = self.signal.as_ref();
         let guard = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let wait = self.deadline.map_or(interval, |deadline| {
+            interval.min(deadline.saturating_duration_since(Instant::now()))
+        });
         let (state, _) = changed
-            .wait_timeout_while(guard, interval, |state| {
+            .wait_timeout_while(guard, wait, |state| {
                 state.termination == Termination::Active
             })
             .unwrap_or_else(PoisonError::into_inner);
         !state.cleanup_started && state.termination != Termination::Committed
     }
     fn transition(&self, next: Termination) -> bool {
-        let (state, changed) = self.0.as_ref();
+        let (state, changed) = self.signal.as_ref();
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.termination != Termination::Active {
             return false;
@@ -161,7 +177,7 @@ impl NcmCancellation {
         true
     }
     pub(crate) fn begin_cleanup(&self) {
-        let (state, changed) = self.0.as_ref();
+        let (state, changed) = self.signal.as_ref();
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.cleanup_started = true;
         if state.termination == Termination::Active {
@@ -169,14 +185,14 @@ impl NcmCancellation {
         }
         changed.notify_all();
     }
-    fn commit(&self, deadline: Instant) -> Result<(), NcmError> {
-        let (state, changed) = self.0.as_ref();
+    fn commit(&self) -> Result<(), NcmError> {
+        let (state, changed) = self.signal.as_ref();
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         let result = match state.termination {
             Termination::Cancelled => return Err(NcmError::Cancelled),
             Termination::Deadline => return Err(NcmError::Deadline),
             Termination::Committed => return Err(NcmError::NoRequest),
-            Termination::Active if Instant::now() >= deadline => {
+            Termination::Active if self.deadline_elapsed() => {
                 state.termination = Termination::Deadline;
                 Err(NcmError::Deadline)
             }
@@ -252,7 +268,6 @@ pub(crate) struct ConceptRequest {
     pub config: NcmRequestConfig,
     pub progress: ConceptProgress,
     pub cancellation: NcmCancellation,
-    deadline: Instant,
 }
 impl ConceptRequest {
     pub fn new(
@@ -269,18 +284,17 @@ impl ConceptRequest {
             id,
             config,
             progress: ConceptProgress::default(),
-            cancellation: NcmCancellation::default(),
-            deadline: Instant::now() + timeout,
+            cancellation: NcmCancellation::with_deadline(Instant::now() + timeout),
         })
     }
     pub fn check(&self) -> Result<(), NcmError> {
-        if Instant::now() >= self.deadline {
+        if self.cancellation.deadline_elapsed() {
             self.cancellation.transition(Termination::Deadline);
         }
         self.cancellation.terminal_error().map_or(Ok(()), Err)
     }
     pub fn commit(&self) -> Result<(), NcmError> {
-        self.cancellation.commit(self.deadline)
+        self.cancellation.commit()
     }
     pub fn validate(&self, update: &ConceptUpdate) -> Result<(), NcmError> {
         if update.request_id != self.id || update.progress != self.progress.advance()? {
@@ -341,18 +355,18 @@ mod tests {
     #[test]
     fn cancellation_and_commit_are_ordered() {
         let deadline = Instant::now() + Duration::from_secs(60);
-        let c = NcmCancellation::default();
+        let c = NcmCancellation::with_deadline(deadline);
         assert!(c.cancel());
-        assert_eq!(c.commit(deadline), Err(NcmError::Cancelled));
-        let c = NcmCancellation::default();
-        c.commit(deadline).unwrap();
+        assert_eq!(c.commit(), Err(NcmError::Cancelled));
+        let c = NcmCancellation::with_deadline(deadline);
+        c.commit().unwrap();
         assert!(!c.cancel());
         assert!(!c.is_cancelled());
     }
     #[test]
     fn commit_after_the_deadline_preserves_the_deadline_status() {
-        let c = NcmCancellation::default();
-        assert_eq!(c.commit(Instant::now()), Err(NcmError::Deadline));
+        let c = NcmCancellation::with_deadline(Instant::now());
+        assert_eq!(c.commit(), Err(NcmError::Deadline));
         assert_eq!(c.terminal_error(), Some(NcmError::Deadline));
         assert!(!c.cancel());
     }
@@ -386,7 +400,7 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
-        r.deadline = Instant::now();
+        r.cancellation = NcmCancellation::with_deadline(Instant::now());
         assert_eq!(r.check(), Err(NcmError::Deadline));
         assert!(ConceptPhase::Predict(255).completed_levels().is_err());
     }
