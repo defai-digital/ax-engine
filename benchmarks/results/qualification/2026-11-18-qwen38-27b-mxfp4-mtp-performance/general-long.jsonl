@@ -1,0 +1,15 @@
+{"id": "instruction-001", "category": "general-long", "prompt": "Summarize the following in exactly one sentence: 'The quick brown fox jumped over the lazy dog. The dog did not react. The fox ran into the forest.'", "max_tokens": 512}
+{"id": "instruction-002", "category": "general-long", "prompt": "Translate the English phrase 'good morning' into French.", "max_tokens": 512}
+{"id": "instruction-003", "category": "general-long", "prompt": "List three primary colors, one per line, each line prefixed with a dash and a space.", "max_tokens": 512}
+{"id": "instruction-004", "category": "general-long", "prompt": "Rewrite the following sentence entirely in uppercase letters: 'the sun rises in the east'.", "max_tokens": 512}
+{"id": "instruction-005", "category": "general-long", "prompt": "Format these values as a comma-separated line with no spaces: apple, banana, cherry.", "max_tokens": 512}
+{"id": "instruction-006", "category": "general-long", "prompt": "Translate the Spanish word 'gracias' into English.", "max_tokens": 512}
+{"id": "instruction-007", "category": "general-long", "prompt": "Answer the following question with a single word: What is the opposite of hot?", "max_tokens": 512}
+{"id": "instruction-008", "category": "general-long", "prompt": "Repeat the word 'hello' exactly three times, separated by single spaces, with no other text.", "max_tokens": 512}
+{"id": "instruction-009", "category": "general-long", "prompt": "Sort the following words alphabetically and return them as a comma-separated list: banana, apple, cherry.", "max_tokens": 512}
+{"id": "instruction-010", "category": "general-long", "prompt": "Write a sentence that mentions both the words 'mountain' and 'river'.", "max_tokens": 512}
+{"id": "instruction-011", "category": "general-long", "prompt": "Convert the number 5 into its English word form. Answer with a single word.", "max_tokens": 512}
+{"id": "instruction-012", "category": "general-long", "prompt": "Wrap the word 'important' in square brackets and return only that.", "max_tokens": 512}
+{"id": "instruction-013", "category": "general-long", "prompt": "Give the first three letters of the English alphabet as a comma-separated list.", "max_tokens": 512}
+{"id": "instruction-014", "category": "general-long", "prompt": "Reverse the order of these words and return them space-separated: 'one two three'.", "max_tokens": 512}
+{"id": "instruction-015", "category": "general-long", "prompt": "Return the following text exactly, with no changes or additions: 'Copy this line verbatim.'", "max_tokens": 512}

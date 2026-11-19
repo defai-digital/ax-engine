@@ -43,8 +43,32 @@ The benchmark's stability check failed on 15 of 30 prompt-route rows,
 with 12 high-variance rows and three tail regressions. The three tail
 regressions were on the required-MTP route.
 
-The long-form general profile and paired logit replay are pending.
-MTP-P and MTP-D remain open.
+## General instruction fixed-budget timing
+
+The M5 Max ran 15 [general instruction prompts](general-long.jsonl) with
+the same model, binary, warmups, repetitions, and 512-token budget. The
+campaign calls this profile `general-long`. Its prompts request short
+instruction-following responses. Ignoring EOS forces continued generation
+to the fixed budget, so the measurements characterize forced decoding.
+The [summary](m5-general-long-timing.json) and
+[samples](m5-general-long-trials.jsonl) retain all 150 measured intervals.
+
+| Metric | Direct | Required MTP | MTP / direct |
+| --- | ---: | ---: | ---: |
+| Generated tokens | 38,400 | 38,400 | |
+| Token-weighted decode (tok/s) | 31.403 | 56.166 | 1.789× |
+| Ratio of median trial decode rates | | | 1.789× |
+| Median paired per-prompt speed ratio | | | 1.856× |
+
+The routes emitted identical sequences on six of 15 prompts, and every
+repeat within a route produced the same output. The benchmark exceeded
+the two throughput thresholds and flagged 21 of 30 rows for instability.
+There were 11 high-variance rows and ten tail regressions. Three tail
+regressions were on direct and seven were on required MTP.
+
+Both 512-token profiles are diagnostic measurements. A representative
+long-form workload, stable timing and the paired logit replay are still
+needed for the MTP-P decision. MTP-D remains open.
 
 ## Reproduction
 
@@ -79,6 +103,7 @@ bench.main()
   --ax-sampling '{"ignore_eos":false}' --output short-answer-ab.json
 ```
 
-For the coding profile, use `agent-coding.jsonl`, set `--generation-tokens
-512`, and omit `--ax-sampling` to use the harness's default fixed-budget
-behavior. Write the result to `agent-coding-ab.json`.
+For either fixed-budget profile, use `agent-coding.jsonl` or
+`general-long.jsonl`, set `--generation-tokens 512`, and omit
+`--ax-sampling` to use the default fixed-budget behavior. Save the result
+as `agent-coding-ab.json` or `general-long-ab.json` respectively.
