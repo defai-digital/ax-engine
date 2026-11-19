@@ -4067,16 +4067,15 @@ impl MlxRunner {
 
     /// Coalesce independent, exact-greedy Gemma assistant-MTP target verifies.
     ///
-    /// Each row keeps a private batch=1 target graph and KV topology. Only the
-    /// MLX completion barrier is shared, so reduction order, acceptance,
-    /// rollback, and assistant drafting stay identical to the sequential route.
-    /// This is deliberately narrower than tensor batching and fails closed for
-    /// sampled targets, n-gram stacking, skip-state, or adaptive draft gates.
+    /// Each row keeps its own KV state. Multi-token verifies share an MLX
+    /// completion barrier. Sequential oracle rows verify from their committed
+    /// prefix. Admission excludes sampled targets, n-gram stacking, skip-state,
+    /// and adaptive draft gates.
     fn run_gemma4_assistant_mtp_coalesced_group(
         &self,
         group: &[(usize, &ax_engine_core::ExecutionItem)],
         contexts: &[RunnerRequestContext],
-    ) -> Vec<(usize, MlxItemRun)> {
+    ) -> (Vec<(usize, MlxItemRun)>, usize) {
         struct Row {
             item_index: usize,
             request_id: RequestId,
@@ -4091,11 +4090,13 @@ impl MlxRunner {
             pending_sources: Vec<MtpDraftSource>,
             token_offset: usize,
             verify_len: usize,
-            post_norm_all: MlxArray,
-            predicted: MlxArray,
+            target: Option<(MlxArray, MlxArray)>,
             verify_forward_wall_us: u32,
         }
 
+        let oracle_on = crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+        let cycle_guard_on = crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
+        let early_gen_on = crate::fastpath::gemma4_assistant_mtp_early_gen_pure_direct_enabled();
         let rows = {
             let mut states = self.states.lock();
             let mut members = Vec::with_capacity(group.len());
@@ -4131,7 +4132,7 @@ impl MlxRunner {
                 for (_, item, _, state) in members {
                     states.insert(item.request_id, state);
                 }
-                return Vec::new();
+                return (Vec::new(), 0);
             }
 
             let mut rows = Vec::with_capacity(members.len());
@@ -4160,21 +4161,71 @@ impl MlxRunner {
                     .or_else(|| item.input_token_slice.last().copied())
                     .unwrap_or(0);
                 let token_offset = state.cache.seq_len();
-                let mut verify_input = Vec::with_capacity(1 + pending.len());
-                verify_input.push(last_token);
-                verify_input.extend_from_slice(&pending);
-                let verify_len = verify_input.len();
-                let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
-                    &self.cfg,
-                    &self.weights,
-                    &verify_input,
-                    &mut state.cache,
-                    token_offset,
+                let early_gen_force = gemma_early_gen_pure_direct_force(
+                    early_gen_on,
+                    state.generated_tokens.len(),
+                    GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS,
                 );
-                let verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.advance(verify_len);
-                let predicted = argmax(&logits_all, None);
+                let mut cycle_history_buf = [0u32;
+                    GEMMA_CYCLE_GUARD_MAX_PERIOD
+                        .saturating_mul(2)
+                        .saturating_add(1)];
+                let cycle_history_len =
+                    if sampling.temperature <= 0.0 && !oracle_on && cycle_guard_on {
+                        fill_gemma_cycle_history(
+                            &state.generated_tokens,
+                            last_token,
+                            &mut cycle_history_buf,
+                        )
+                    } else {
+                        0
+                    };
+                let cycle_hit = cycle_history_len > 0
+                    && draft_continues_committed_cycle(
+                        &cycle_history_buf[..cycle_history_len],
+                        &pending,
+                    );
+                let cycle_force = cycle_hit || state.gemma_mtp_cycle_latched;
+                let use_sequential_oracle = sampling.temperature <= 0.0
+                    && matches!(
+                        gemma_greedy_verify_route(
+                            oracle_on,
+                            cycle_guard_on,
+                            cycle_force,
+                            early_gen_force,
+                        ),
+                        GemmaGreedyVerifyRoute::SequentialOracle
+                    );
+                if cycle_force && !oracle_on {
+                    if cycle_hit {
+                        state.gemma_mtp_cycle_latched = true;
+                    }
+                    state.mtp_telemetry.record_gemma_cycle_guard();
+                }
+                let verify_len = pending.len() + 1;
+                // The sequential oracle writes only the incoming token and
+                // accepted drafts. Select it before allocating speculative KV.
+                let (target, verify_forward_wall_us) = if use_sequential_oracle {
+                    (None, 0)
+                } else {
+                    let mut verify_input = Vec::with_capacity(verify_len);
+                    verify_input.push(last_token);
+                    verify_input.extend_from_slice(&pending);
+                    let verify_forward_started = Instant::now();
+                    let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    );
+                    state.cache.advance(verify_len);
+                    let predicted = argmax(&logits_all, None);
+                    (
+                        Some((post_norm_all, predicted)),
+                        elapsed_us(verify_forward_started),
+                    )
+                };
                 rows.push(Row {
                     item_index,
                     request_id: item.request_id,
@@ -4189,8 +4240,7 @@ impl MlxRunner {
                     pending_sources,
                     token_offset,
                     verify_len,
-                    post_norm_all,
-                    predicted,
+                    target,
                     verify_forward_wall_us,
                 });
             }
@@ -4199,88 +4249,34 @@ impl MlxRunner {
 
         let group_started = Instant::now();
         let mut owned_targets = Vec::new();
+        let mut target_row_count = 0;
         for row in &rows {
-            owned_targets.push(row.predicted.clone());
-            owned_targets.push(row.post_norm_all.clone());
-            owned_targets.extend(row.state.cache.collect_eval_refs().into_iter().cloned());
+            if let Some((post_norm_all, predicted)) = &row.target {
+                target_row_count += 1;
+                owned_targets.push(predicted.clone());
+                owned_targets.push(post_norm_all.clone());
+                owned_targets.extend(row.state.cache.collect_eval_refs().into_iter().cloned());
+            }
         }
-        let verify_eval_started = Instant::now();
-        let target_refs = owned_targets.iter().collect::<Vec<_>>();
-        eval(&target_refs);
-        let verify_eval_wall_us = elapsed_us(verify_eval_started);
+        let verify_eval_wall_us = if owned_targets.is_empty() {
+            0
+        } else {
+            let verify_eval_started = Instant::now();
+            let target_refs = owned_targets.iter().collect::<Vec<_>>();
+            eval(&target_refs);
+            elapsed_us(verify_eval_started)
+        };
 
         let row_count = rows.len();
+        let mut target_row_ordinal = 0;
         let mut should_clear_cache = false;
         let mut continuing = Vec::with_capacity(row_count);
         let mut runs = Vec::with_capacity(row_count);
         for (row_ordinal, mut row) in rows.into_iter().enumerate() {
-            // Greedy coalesced path: optionally roll back multi-token
-            // teacher-forced KV and re-verify with the sequential production
-            // oracle so accepted drafts match MTP-off greedy (same contract as
-            // single-item run_mtp_decode). Kill-switch
-            // AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0 keeps multi-token
-            // accept decisions (faster; re-check exactness before Tier 2),
-            // except when the cycle-continuation guard forces sequential.
-            let oracle_on = crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
-            let cycle_guard_on = crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
-            let early_gen_on =
-                crate::fastpath::gemma4_assistant_mtp_early_gen_pure_direct_enabled();
-            let early_gen_force = gemma_early_gen_pure_direct_force(
-                early_gen_on,
-                row.state.generated_tokens.len(),
-                GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS,
-            );
-            let mut cycle_history_buf = [0u32;
-                GEMMA_CYCLE_GUARD_MAX_PERIOD
-                    .saturating_mul(2)
-                    .saturating_add(1)];
-            let cycle_history_len =
-                if row.sampling.temperature <= 0.0 && !oracle_on && cycle_guard_on {
-                    fill_gemma_cycle_history(
-                        &row.state.generated_tokens,
-                        row.last_token,
-                        &mut cycle_history_buf,
-                    )
-                } else {
-                    0
-                };
-            let cycle_hit = cycle_history_len > 0
-                && draft_continues_committed_cycle(
-                    &cycle_history_buf[..cycle_history_len],
-                    &row.pending,
-                );
-            let cycle_force = cycle_hit || row.state.gemma_mtp_cycle_latched;
-            let use_sequential_oracle = row.sampling.temperature <= 0.0
-                && matches!(
-                    gemma_greedy_verify_route(
-                        oracle_on,
-                        cycle_guard_on,
-                        cycle_force,
-                        early_gen_force,
-                    ),
-                    GemmaGreedyVerifyRoute::SequentialOracle
-                );
-            if cycle_force && !oracle_on {
-                if cycle_hit {
-                    row.state.gemma_mtp_cycle_latched = true;
-                }
-                row.state.mtp_telemetry.record_gemma_cycle_guard();
-            }
-            let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
-                if use_sequential_oracle {
-                    let accept_started = Instant::now();
-                    let trimmed_back = row.state.cache.trim_to(row.token_offset);
-                    if !trimmed_back {
-                        should_clear_cache = true;
-                        runs.push((
-                            row.item_index,
-                            errored_item_run(
-                                row.request_id,
-                                "coalesced Gemma assistant-MTP sequential rollback was refused",
-                            ),
-                        ));
-                        continue;
-                    }
+            let mut mtp_timings = MtpStepTimings::default();
+            let (accept_count, draft_hidden, tail_token) = match row.target {
+                None => {
+                    let verify_started = Instant::now();
                     let seq = sequential_greedy_mtp_verify(
                         &self.cfg,
                         &self.weights,
@@ -4289,7 +4285,8 @@ impl MlxRunner {
                         &row.pending,
                         row.token_offset,
                     );
-                    let accept_wall_us = elapsed_us(accept_started);
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_started);
+                    let accept_started = Instant::now();
                     let rejected_count = row.pending.len().saturating_sub(seq.accept_count);
                     if rejected_count > 0 {
                         let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
@@ -4298,15 +4295,20 @@ impl MlxRunner {
                         }
                         row.state.mtp_decode_count = new_mtp_len;
                     }
-                    (
-                        seq.accept_count,
-                        seq.draft_hidden,
-                        seq.correction_token,
-                        accept_wall_us,
-                        0,
-                    )
-                } else {
-                    let predicted = row.predicted.data_u32().to_vec();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+                    mtp_timings.verify_tokens = saturating_u32(1 + seq.accept_count);
+                    (seq.accept_count, seq.draft_hidden, seq.correction_token)
+                }
+                Some((post_norm_all, predicted)) => {
+                    mtp_timings.verify_forward_wall_us = row.verify_forward_wall_us;
+                    mtp_timings.verify_tokens = saturating_u32(row.verify_len);
+                    mtp_timings.verify_eval_wall_us = shared_wall_time_share(
+                        verify_eval_wall_us,
+                        target_row_ordinal,
+                        target_row_count,
+                    );
+                    target_row_ordinal += 1;
+                    let predicted = predicted.data_u32().to_vec();
                     let accept_started = Instant::now();
                     let accept_count = row
                         .pending
@@ -4314,7 +4316,7 @@ impl MlxRunner {
                         .zip(predicted.iter())
                         .take_while(|(draft, target)| draft == target)
                         .count();
-                    let accept_wall_us = elapsed_us(accept_started);
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                     let rollback_started = Instant::now();
                     let committed_len = row.token_offset + 1 + accept_count;
@@ -4327,7 +4329,7 @@ impl MlxRunner {
                         }
                         row.state.mtp_decode_count = new_mtp_len;
                     }
-                    let rollback_wall_us = elapsed_us(rollback_started);
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                     if !trimmed {
                         should_clear_cache = true;
                         runs.push((
@@ -4340,22 +4342,14 @@ impl MlxRunner {
                         continue;
                     }
 
-                    let draft_hidden = slice_post_norm_hidden(
-                        &row.post_norm_all,
-                        accept_count,
-                        self.cfg.hidden_size,
-                    );
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, accept_count, self.cfg.hidden_size);
                     let tail_token = predicted.get(accept_count).copied().unwrap_or(0);
-                    (
-                        accept_count,
-                        draft_hidden,
-                        tail_token,
-                        accept_wall_us,
-                        rollback_wall_us,
-                    )
-                };
+                    (accept_count, draft_hidden, tail_token)
+                }
+            };
             let tail_sample_started = Instant::now();
-            let tail_sample_wall_us = elapsed_us(tail_sample_started);
+            mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
             let mut result = row.pending[..accept_count].to_vec();
             result.push(tail_token);
 
@@ -4376,13 +4370,11 @@ impl MlxRunner {
                 None,
                 accept_count,
             );
-            let row_eval_wall_us =
-                shared_wall_time_share(verify_eval_wall_us, row_ordinal, row_count);
             row.state.gemma4_assistant_mtp_telemetry.record_verified(
                 row.pending.len(),
                 accept_count,
-                row.verify_forward_wall_us,
-                row_eval_wall_us,
+                mtp_timings.verify_forward_wall_us,
+                mtp_timings.verify_eval_wall_us,
             );
             row.state.ngram.feed(&result);
 
@@ -4444,18 +4436,9 @@ impl MlxRunner {
                     .gemma4_assistant_mtp_telemetry
                     .record_submitted(row.state.mtp_pending_draft.len(), draft_wall_us);
             }
-            let mtp_timings = MtpStepTimings {
-                verify_forward_wall_us: row.verify_forward_wall_us,
-                verify_eval_wall_us: row_eval_wall_us,
-                accept_wall_us,
-                rollback_wall_us,
-                tail_sample_wall_us,
-                draft_wall_us,
-                assistant_draft_wall_us: draft_wall_us,
-                verify_tokens: saturating_u32(row.verify_len),
-                emitted_tokens: saturating_u32(result.len()),
-                ..MtpStepTimings::default()
-            };
+            mtp_timings.draft_wall_us = draft_wall_us;
+            mtp_timings.assistant_draft_wall_us = draft_wall_us;
+            mtp_timings.emitted_tokens = saturating_u32(result.len());
             row.state.mtp_telemetry.record_timings(mtp_timings);
             row.state
                 .decode_telemetry
@@ -4562,7 +4545,7 @@ impl MlxRunner {
         if should_clear_cache {
             clear_cache();
         }
-        runs
+        (runs, target_row_count)
     }
 
     /// Run one decode step for a group of eligible requests through the shared
@@ -5321,6 +5304,7 @@ impl ExecutionRunner for MlxRunner {
         let mut row_exact_coalesced_rows = 0usize;
         let mut row_exact_coalesced_forward_rows = 0usize;
         let mut gemma4_assistant_mtp_coalesced_rows = 0usize;
+        let mut gemma4_assistant_mtp_coalesced_forward_rows = 0usize;
         let mut mtp_suspended_batched_rows = 0usize;
         let batched_enabled = batched_decode_enabled();
         let decode_candidate_count = input
@@ -5385,9 +5369,10 @@ impl ExecutionRunner for MlxRunner {
                 })
                 .collect::<Vec<_>>();
             if group.len() >= 2 {
-                let runs =
+                let (runs, forward_rows) =
                     self.run_gemma4_assistant_mtp_coalesced_group(&group, &input.request_contexts);
                 gemma4_assistant_mtp_coalesced_rows = runs.len();
+                gemma4_assistant_mtp_coalesced_forward_rows = forward_rows;
                 for (item_index, result) in runs {
                     batched_idx.insert(item_index);
                     ngram_acceleration.merge_from(result.ngram_acceleration);
@@ -5731,11 +5716,11 @@ impl ExecutionRunner for MlxRunner {
                 ));
                 route_metadata.crossover_decisions.push((
                     "ax_mlx_gemma4_assistant_mtp_coalesced_verify_forward_rows".into(),
-                    gemma4_assistant_mtp_coalesced_rows as u32,
+                    saturating_u32(gemma4_assistant_mtp_coalesced_forward_rows),
                 ));
                 route_metadata.crossover_decisions.push((
                     "ax_mlx_gemma4_assistant_mtp_coalesced_verify_eval_barriers".into(),
-                    1,
+                    u32::from(gemma4_assistant_mtp_coalesced_forward_rows > 0),
                 ));
             }
             if mtp_multirow_batch {

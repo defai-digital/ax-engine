@@ -10151,6 +10151,124 @@ fn gemma_temporary_oracle_leaves_cache_at_emitted_boundary() {
 }
 
 #[test]
+fn gemma_coalesced_oracle_does_not_charge_rejected_drafts_to_the_kv_cap() {
+    const CHILD: &str = "AX_MLX_GEMMA_COALESCED_CAP_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for oracle in ["1", "0"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runner::tests::gemma_coalesced_oracle_does_not_charge_rejected_drafts_to_the_kv_cap",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE", oracle)
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT", "1")
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD", "0")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stdout}\n{stderr}");
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+        }
+        return;
+    }
+
+    let mut manifest = dense_manifest();
+    manifest.model_family = "gemma4".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    let mixed_routes = !crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+    let second = if mixed_routes {
+        let history = GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS + 2;
+        (history, [1, 1], (history + 3).div_ceil(4) as u32, Some(3))
+    } else {
+        (3, [2, 3], 1, Some(1))
+    };
+    // A rejected draft must fit in the last slot. An accepted draft that
+    // actually needs a second page still fails under the same hard cap.
+    let cases = [(3, [2, 3], 1, Some(1)), second, (3, [1, 1], 1, None)];
+    let mut items = Vec::new();
+    let mut contexts = Vec::new();
+    for (index, (history, drafts, max_blocks, _)) in cases.into_iter().enumerate() {
+        let mut item = decode_claim(index as u64 + 1, 1);
+        item.position_range = PositionRange {
+            start: history as u32,
+            end_exclusive: history as u32 + 1,
+        };
+        let context = RunnerRequestContext {
+            request_id: item.request_id,
+            prompt_len: 3,
+            processed_prompt_tokens: 3,
+            generated_len: history as u32 - 2,
+            max_output_tokens: 64,
+            ignore_eos: true,
+            ..ctx_with_argmax(true)
+        };
+        let cap = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks,
+            hard_cap: true,
+        };
+        let mut state = RequestState::new(1, 1, Some(cap));
+        let (logits, hidden) = forward_all_positions_with_post_norm(
+            &runner.cfg,
+            &runner.weights,
+            &vec![1; history],
+            &mut state.cache,
+            0,
+        );
+        state.cache.advance(history);
+        eval(&[&logits, &hidden]);
+        assert!(!state.cache.hard_cap_exhausted());
+        state.generated_tokens = vec![1; context.generated_len as usize];
+        state.mtp_pending_draft = drafts.to_vec();
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; 2];
+        runner.states.lock().insert(item.request_id, state);
+        items.push(item);
+        contexts.push(context);
+    }
+
+    let group = items.iter().enumerate().collect::<Vec<_>>();
+    let (runs, forward_rows) = runner.run_gemma4_assistant_mtp_coalesced_group(&group, &contexts);
+    assert_eq!(runs.len(), cases.len());
+    assert_eq!(forward_rows, usize::from(mixed_routes));
+    for (index, run) in runs {
+        if let Some(emitted) = cases[index].3 {
+            assert!(run.update.error.is_none(), "{:?}", run.update.error);
+            assert_eq!(run.update.output_token, Some(1));
+            assert_eq!(run.update.output_tokens, vec![1; emitted - 1]);
+            assert!(run.update.stop_reason.is_none());
+            assert_eq!(run.mtp_telemetry.verify_tokens, emitted as u32);
+            let state = runner.states.lock().remove(&run.update.request_id).unwrap();
+            assert_eq!(state.cache.seq_len(), cases[index].0 + emitted);
+            assert!(!state.cache.hard_cap_exhausted());
+        } else {
+            assert_eq!(
+                run.update.error.as_deref(),
+                Some(
+                    "FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"
+                )
+            );
+            assert!(!runner.states.lock().contains_key(&run.update.request_id));
+        }
+    }
+}
+
+#[test]
 fn gemma_coalesced_verify_leaves_the_surviving_request_at_its_original_cursor() {
     let (runner, artifacts) = tiny_linear_dflash_runner(1);
     let item = decode_claim(1, 5);
@@ -10176,13 +10294,14 @@ fn gemma_coalesced_verify_leaves_the_surviving_request_at_its_original_cursor() 
 
     // The second request lost its state after admission. The surviving
     // request will be processed by ordinary singleton decode.
-    let runs = runner.run_gemma4_assistant_mtp_coalesced_group(
+    let (runs, forward_rows) = runner.run_gemma4_assistant_mtp_coalesced_group(
         &[(0, &item), (1, &removed)],
         &[context, removed_context],
     );
     let survivor = runner.states.lock().remove(&item.request_id).unwrap();
     fs::remove_dir_all(artifacts.root_dir()).unwrap();
     assert!(runs.is_empty());
+    assert_eq!(forward_rows, 0);
     assert_eq!(survivor.cache.seq_len(), 4);
     assert_eq!(survivor.mtp_pending_draft, [7, 8]);
     assert_eq!(
