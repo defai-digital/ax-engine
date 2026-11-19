@@ -1,0 +1,33 @@
+{
+  "schema": "ax.ncm.sdk_watchdog_real_weight.v1",
+  "hardware": "MacBook Pro M5 Max 128 GB",
+  "macos": "27.2.1",
+  "mlx_version": "0.32.4",
+  "environment": {
+    "MLX_ENABLE_TF32": "0"
+  },
+  "model_repo": "janmusic/NCM-TinyStories-89M-Upstream-MLX",
+  "revision": "2d5f137713fe047abb6fcffe780aad419486f3dd",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "source_parent": "c8cdf4defa417c08e1c2c6f44c392421a5de8d69",
+  "source_patch_sha256": "1ee233b099ad0fcd2dedf42a45413e16b3262bf689acf5751ec0742baebfcb0b",
+  "test_executable_sha256": "8def82f6c5568d7be738d58b199d8e9424392f035d52bfe5394ff1b7b785ba7d",
+  "greedy_trace_sha256": "c081f7a2f68a0eca958cac420dccd4652b27b7fdf02867f7cf264d5d6ba312e3",
+  "exit_status": 0,
+  "passed_tests": [
+    "reference_free_identity_and_lifecycle",
+    "seeded_selection_repeats_across_requests_and_after_cancellation"
+  ],
+  "test_log_sha256": "124bfd78e12e4cfbcea97f4f6cc67717d7ff6a6d98893887b7a3b6c9c1b7d2ea",
+  "test_log_lines": [
+    "",
+    "running 2 tests",
+    "test reference_free_identity_and_lifecycle ... ok",
+    "test seeded_selection_repeats_across_requests_and_after_cancellation ... ok",
+    "",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 105.78s",
+    "",
+    ""
+  ],
+  "qualified": false
+}

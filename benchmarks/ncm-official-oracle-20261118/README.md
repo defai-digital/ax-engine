@@ -53,8 +53,22 @@ the retained official greedy run. [Codec precision receipt](cpu-codec-precision.
 
 The first contribution already contains nearly all the maximum difference
 seen in the final latent. This control characterizes arithmetic sensitivity
-within the official CPU implementation. Native comparison with the same two
-captures remains pending.
+within the official CPU implementation.
+
+The native codec on MacBook Pro M5 Max 128 GB used MLX 0.32.4 with
+`MLX_ENABLE_TF32=0` and the same twelve-level input. All 128 BPE IDs match
+both CPU captures. Each comparison meets the existing numerical bounds for
+the eleven individual contributions at levels 1–11. The level-zero
+contribution, all twelve accumulated latents and decoder logits exceed
+their bounds in both comparisons. The probe reports a numerical failure
+for each reference and retains the complete tensor metrics.
+[M5 codec receipt](m5-native-codec-precision.json)
+
+| Native max absolute error | Official CPU F32 | Official CPU F64 exported as F32 |
+| --- | ---: | ---: |
+| Level-zero contribution | 0.001953125 | 0.005161762 |
+| Final accumulated latent | 0.001954079 | 0.005159855 |
+| Decoder logits | 0.001230240 | 0.004121110 |
 
 ## Reproduce
 

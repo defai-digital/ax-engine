@@ -26,6 +26,12 @@ behavior of the experimental typed SDK and CLI.
 - [Mac mini M4 Pro 64 GB receipt](m4-functional.json).
 - [Mac Studio M2 Ultra 192 GB receipt](m2-functional.json).
 
+Both real-weight SDK tests passed again on M5 Max 128 GB after the
+idle deadline and cancellation fix in `d03c11076`. The follow-up
+used `MLX_ENABLE_TF32=0` with MLX 0.32.4 and the same pinned trace.
+Its source patch matches the committed Rust files.
+[Watchdog regression receipt](m5-watchdog-real-weight.json)
+
 Run the [documented functional controls](../../docs/NCM-EXPERIMENTAL.md#reproduce-the-functional-controls)
 against a materialized copy of the pinned artifact. Receipt BPE hashes use
 SHA-256 of compact JSON integer arrays.
