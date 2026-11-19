@@ -10293,6 +10293,107 @@ fn direct_pipeline_emits_the_token_from_the_last_available_kv_slot() {
 }
 
 #[test]
+fn ngram_preserves_the_last_available_hard_capped_kv_slot() {
+    let mut manifest = dense_manifest();
+    manifest.model_family = "qwen3".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    runner.disable_ngram_acceleration = false;
+    runner.terminal_token_ids.clear();
+    runner.shared_fa_block_pool = None;
+
+    for (id, block_size, greedy) in [(1, 8, true), (2, 8, false), (3, 16, true), (4, 16, false)] {
+        runner.fa_block_pool_config = Some(FaBlockPoolConfig {
+            block_size_tokens: block_size,
+            max_blocks: 1,
+            hard_cap: true,
+        });
+        let run = |item: &ax_engine_core::ExecutionItem, ctx: &RunnerRequestContext| {
+            runner.run_item(item, Some(ctx), "qwen3", 8, None, None, None, None, None)
+        };
+        let mut item = decode_claim(id, 1);
+        item.mode = ExecutionMode::Prefill;
+        item.planned_work_unit = ax_engine_core::WorkUnitKind::PrefillChunk;
+        item.input_token_slice = vec![1; 7];
+        item.position_range = PositionRange {
+            start: 0,
+            end_exclusive: 7,
+        };
+        item.scheduled_token_count = 7;
+        let mut ctx = RunnerRequestContext {
+            request_id: item.request_id,
+            prompt_len: 7,
+            max_output_tokens: NGRAM_MIN_OUTPUT_FOR_ACCELERATION,
+            temperature: if greedy { 0.0 } else { 1.0 },
+            top_k: if greedy { 0 } else { 1 },
+            ..ctx_with_argmax(greedy)
+        };
+        assert_eq!(runner.request_sampling(Some(&ctx)).1, greedy);
+        let prefill = run(&item, &ctx);
+        assert!(prefill.update.error.is_none(), "{:?}", prefill.update.error);
+        assert_eq!(prefill.update.output_token, Some(1));
+        {
+            let states = runner.states.lock();
+            let state = &states[&item.request_id];
+            assert_eq!(state.cache.seq_len(), 7);
+            assert!(!state.ngram_acceleration_disabled_for_request);
+            let policy = ngram_acceleration_policy(
+                false,
+                state.ngram_posterior_mean(),
+                runner.ngram_policy_variant,
+                false,
+            );
+            assert!(!state.ngram.predict_with_policy(policy).draft.is_empty());
+        }
+        ctx.generated_len = 1;
+        ctx.processed_prompt_tokens = 7;
+        let mut step = decode_claim(id, 1);
+        step.position_range = PositionRange {
+            start: 7,
+            end_exclusive: 8,
+        };
+        let decoded = run(&step, &ctx);
+        assert!(decoded.update.error.is_none(), "{:?}", decoded.update.error);
+        if block_size == 8 {
+            assert_eq!(decoded.ngram_acceleration.draft_attempts, 0);
+            assert_eq!(decoded.update.output_token, Some(1));
+            assert!(decoded.update.output_tokens.is_empty());
+            assert_eq!(runner.states.lock()[&item.request_id].cache.seq_len(), 8);
+
+            ctx.generated_len = 2;
+            step.position_range = PositionRange {
+                start: 8,
+                end_exclusive: 9,
+            };
+            let exhausted = run(&step, &ctx);
+            assert_eq!(exhausted.update.output_token, None);
+            assert_eq!(
+                exhausted.update.error.as_deref(),
+                Some(
+                    "FA KV block pool exhausted under explicit AX_MLX_FA_KV_BLOCK_POOL_MAX_BLOCKS cap"
+                )
+            );
+        } else {
+            assert_eq!(decoded.ngram_acceleration.draft_attempts, 1);
+            assert!(decoded.ngram_acceleration.accepted_tokens > 0);
+            assert!(runner.states.lock()[&item.request_id].cache.seq_len() > 8);
+        }
+    }
+}
+
+#[test]
 fn prefill_returns_its_first_token_when_prompt_fills_the_hard_kv_cap() {
     let mut manifest = dense_manifest();
     manifest.model_family = "qwen3".into();

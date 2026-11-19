@@ -17000,6 +17000,26 @@ impl MlxRunner {
 
         state.linear_ngram_no_draft_streak = 0;
 
+        // Under a hard cap, draft verification must stay inside the pages
+        // already owned by the request. A singleton can still consume its
+        // current token and emit a prediction without reserving draft KV.
+        if state.cache.has_hard_fa_block_cap()
+            && state
+                .cache
+                .additional_fa_blocks_for_append(draft.len().saturating_add(1))
+                != Some(0)
+        {
+            if is_greedy {
+                return vec![self.run_direct_pipeline_decode(
+                    state,
+                    last_token,
+                    final_by_max_output,
+                    true,
+                )];
+            }
+            return self.run_single_decode(state, last_token, sampling);
+        }
+
         let draft_len = draft.len();
         let branch_started = Instant::now();
         let repetition_history = state.repetition_history(&[], sampling);
