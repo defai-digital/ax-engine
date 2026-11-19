@@ -70,11 +70,13 @@ print!("{}", response.text);
 ```
 
 The session loads once and admits one active generation with no waiting queue.
-A second generation returns `Busy`. For progress/cancellation, retain the
-handle, call `step()`, or obtain its `cancellation()` token. Text is returned
-only after final commit. Dropping an unfinished handle cancels it; closing
-or dropping the session cancels pending work and releases request state at a
-GPU-safe boundary. The same loaded session can be used for later requests.
+A second generation returns `Busy` while the first is active. For progress
+or cancellation, retain the handle, call `step()`, or obtain its
+`cancellation()` token. Text is returned only after final commit. The
+watchdog releases a cancelled or expired request even when polling stops.
+Dropping an unfinished handle cancels its own request. Closing or dropping
+the session cancels pending work. Cleanup waits for any in-flight GPU work
+to reach a safe boundary. An open session can be reused after cleanup.
 
 Select `NcmSamplingMode::SeededV1 { seed: 17 }` for seeded generation.
 JSON requests require an explicit sampling mode, either

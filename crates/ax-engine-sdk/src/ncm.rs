@@ -55,6 +55,29 @@ struct Owner {
     next_id: AtomicU64,
 }
 impl Owner {
+    fn watch_request(
+        owner: &Arc<Self>,
+        cancellation: NcmCancellation,
+        deadline: Instant,
+    ) -> Result<(), NcmError> {
+        let owner = Arc::downgrade(owner);
+        std::thread::Builder::new()
+            .name("ax-ncm-watchdog".into())
+            .spawn(move || {
+                if cancellation.wait_for_cleanup(deadline.saturating_duration_since(Instant::now()))
+                    && let Some(owner) = owner.upgrade()
+                {
+                    owner
+                        .core
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .reap_terminal_ncm();
+                }
+            })
+            .map_err(|error| NcmError::Runtime(format!("could not start NCM watchdog: {error}")))?;
+        Ok(())
+    }
+
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
         if let Some(c) = self
@@ -138,12 +161,20 @@ impl NcmSession {
             core.cancel_ncm();
             return Err(NcmError::Cancelled);
         }
+        let started = Instant::now();
+        if let Err(error) =
+            Owner::watch_request(&self.owner, cancellation.clone(), started + self.timeout)
+        {
+            core.cancel_ncm();
+            return Err(error);
+        }
         Ok(NcmGeneration {
             owner: Arc::clone(&self.owner),
+            request_id: RequestId(id),
             identity: self.identity.clone(),
             cancellation,
             done: false,
-            started: Instant::now(),
+            started,
         })
     }
     pub fn close(&self) {
@@ -159,6 +190,7 @@ impl Drop for NcmSession {
 /// Polling emits progress only; text becomes visible in the final response.
 pub struct NcmGeneration {
     owner: Arc<Owner>,
+    request_id: RequestId,
     identity: String,
     cancellation: NcmCancellation,
     done: bool,
@@ -172,20 +204,18 @@ impl NcmGeneration {
         if self.done {
             return Err(NcmError::NoRequest);
         }
-        if self.cancellation.is_cancelled() {
-            self.owner
-                .core
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .cancel_ncm();
-            self.done = true;
-            return Err(NcmError::Cancelled);
-        }
         let mut core = self
             .owner
             .core
             .lock()
             .map_err(|_| NcmError::Runtime("session lock poisoned".into()))?;
+        if core.active_ncm_request_id() != Some(self.request_id) {
+            self.done = true;
+            return Err(self
+                .cancellation
+                .terminal_error()
+                .unwrap_or(NcmError::NoRequest));
+        }
         match core.step_ncm() {
             Ok(update) => {
                 let response = update.output.map(|out| {
@@ -226,12 +256,14 @@ impl NcmGeneration {
 impl Drop for NcmGeneration {
     fn drop(&mut self) {
         if !self.done {
-            self.cancellation.cancel();
-            self.owner
+            let mut core = self
+                .owner
                 .core
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .cancel_ncm();
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if core.active_ncm_request_id() == Some(self.request_id) {
+                core.cancel_ncm();
+            }
         }
     }
 }
@@ -369,6 +401,47 @@ mod tests {
             .unwrap();
         assert_eq!(first.request_id, 1);
         assert_eq!(next.request_id, 3);
+    }
+
+    fn wait_until_idle(session: &NcmSession) {
+        let give_up = Instant::now() + Duration::from_secs(3);
+        loop {
+            if session
+                .owner
+                .core
+                .lock()
+                .unwrap()
+                .active_ncm_request_id()
+                .is_none()
+            {
+                return;
+            }
+            assert!(Instant::now() < give_up, "watchdog did not release request");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn idle_deadline_releases_without_polling_the_old_handle() {
+        let mut session = test_session(None);
+        session.timeout = Duration::from_millis(30);
+        let mut expired = session.generate_unconditional(request()).unwrap();
+        wait_until_idle(&session);
+        session.timeout = Duration::from_secs(60);
+        let next = session.generate_unconditional(request()).unwrap();
+        assert!(matches!(expired.step(), Err(NcmError::Deadline)));
+        assert_eq!(next.finish().unwrap().request_id, 2);
+    }
+
+    #[test]
+    fn dropping_a_cancelled_handle_cannot_cancel_the_successor() {
+        let session = test_session(None);
+        let stale = session.generate_unconditional(request()).unwrap();
+        assert!(stale.cancellation().cancel());
+        wait_until_idle(&session);
+        let next = session.generate_unconditional(request()).unwrap();
+        drop(stale);
+        assert_eq!(next.finish().unwrap().request_id, 2);
     }
     #[test]
     #[allow(clippy::panic, clippy::unwrap_used)]

@@ -109,6 +109,23 @@ fn cancel_at_every_boundary_releases_and_never_commits() {
     }
     assert_eq!(released.load(Ordering::Relaxed), 14);
 }
+
+#[test]
+fn cancelled_idle_request_does_not_block_next_admission() {
+    let (mut c, leased, released) = setup(false);
+    let first = c
+        .submit_ncm(RequestId(1), config(), Duration::from_secs(60))
+        .unwrap();
+    assert!(first.cancel());
+    c.submit_ncm(RequestId(2), config(), Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(c.active_ncm_request_id(), Some(RequestId(2)));
+    assert!(leased.load(Ordering::Acquire));
+    assert_eq!(released.load(Ordering::Relaxed), 1);
+    c.cancel_ncm();
+    assert!(!leased.load(Ordering::Acquire));
+    assert_eq!(released.load(Ordering::Relaxed), 2);
+}
 #[test]
 fn scheduled_no_op_fails_immediately_and_releases() {
     let (mut c, leased, released) = setup(true);

@@ -458,6 +458,7 @@ impl EngineCore {
         if self.generation_kind != GenerationKind::NextConcept {
             return Err(NcmError::Unsupported);
         }
+        self.reap_terminal_ncm();
         if self.concept_request.is_some() {
             return Err(NcmError::Busy);
         }
@@ -476,9 +477,24 @@ impl EngineCore {
         Ok(cancellation)
     }
 
+    pub fn active_ncm_request_id(&self) -> Option<RequestId> {
+        self.concept_request.as_ref().map(|request| request.id)
+    }
+
+    /// Release an idle cancelled or expired request at a safe execution boundary.
+    pub fn reap_terminal_ncm(&mut self) {
+        if self
+            .concept_request
+            .as_ref()
+            .is_some_and(|request| request.check().is_err())
+        {
+            self.cancel_ncm();
+        }
+    }
+
     pub fn cancel_ncm(&mut self) {
         if let Some(request) = self.concept_request.take() {
-            request.cancellation.cancel();
+            request.cancellation.begin_cleanup();
             self.runner.release_request_state(request.id);
         }
     }
@@ -502,7 +518,7 @@ impl EngineCore {
             request.check()?;
             request.validate(&update)?;
             if update.progress.phase == ConceptPhase::Finished {
-                request.cancellation.commit()?;
+                request.commit()?;
             }
             Ok(update)
         })();
