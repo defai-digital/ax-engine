@@ -1,4 +1,6 @@
-# Qwen 3.8 27B MXFP4 MTP short-answer control
+# Qwen 3.8 27B MXFP4 MTP timing controls
+
+## Short-answer negative control
 
 The M5 Max short-answer control used the pinned [MXFP4 snapshot](../2026-11-18-qwen38-27b-mxfp4-inventory/),
 greedy decoding, and a generation budget of 32 with native EOS handling
@@ -19,9 +21,32 @@ count by the sum of the reported runner decode intervals. The trial median
 uses the five reported decode throughputs for each route. Telemetry counts
 speculative work and the output IDs describe the two visible tokens.
 
-This is the negative control for the short-answer workload. The agent-coding
-and long-form general measurements and the corresponding logit replay are
-required for an MTP-P decision. MTP-D remains open.
+## Agent-coding timing
+
+The same M5 Max and runtime measured 15 [coding prompts](agent-coding.jsonl)
+with two warmups and five measured trials per route and prompt. Each trial
+emitted all 512 tokens. The [summary](m5-agent-coding-timing.json) binds the
+build and pack. The [samples](m5-agent-coding-trials.jsonl) retain all 150
+measured intervals and the exact input and output sequences.
+
+| Metric | Direct | Required MTP | MTP / direct |
+| --- | ---: | ---: | ---: |
+| Generated tokens | 38,400 | 38,400 | |
+| Token-weighted decode (tok/s) | 32.198 | 56.757 | 1.763× |
+| Ratio of median trial decode rates | | | 1.752× |
+| Median paired per-prompt speed ratio | | | 1.753× |
+
+The two routes emitted identical sequences on nine of 15 prompts. Each
+route repeated its sequence exactly in all five trials per prompt. The
+run exceeded the 1.20× weighted and 1.10× median throughput thresholds.
+The benchmark's stability check failed on 15 of 30 prompt-route rows,
+with 12 high-variance rows and three tail regressions. The three tail
+regressions were on the required-MTP route.
+
+The long-form general profile and paired logit replay are pending.
+MTP-P and MTP-D remain open.
+
+## Reproduction
 
 Run from an AX Engine checkout at `21a0c4a9e` with the Python dependencies
 listed in the timing receipt. Set `MODEL_DIR` to the pinned snapshot and
@@ -53,3 +78,7 @@ bench.main()
   --mlx-numerics exact --axengine-port 31441 \
   --ax-sampling '{"ignore_eos":false}' --output short-answer-ab.json
 ```
+
+For the coding profile, use `agent-coding.jsonl`, set `--generation-tokens
+512`, and omit `--ax-sampling` to use the harness's default fixed-budget
+behavior. Write the result to `agent-coding-ab.json`.

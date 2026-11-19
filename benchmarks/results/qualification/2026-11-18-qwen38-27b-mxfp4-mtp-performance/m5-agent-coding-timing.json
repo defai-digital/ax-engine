@@ -1,0 +1,165 @@
+{
+  "artifacts": {
+    "trials": "m5-agent-coding-trials.jsonl",
+    "trials_sha256": "68de1b5e8166321a869eb60836058d3ccee65b22072523d85dcbdb35b76caa30"
+  },
+  "benchmark_window": {
+    "elapsed_seconds": 2934.7,
+    "finished_at": "2026-11-18T20:26:05-0500",
+    "performance_conditions_end": {
+      "load_average": {
+        "fifteen_minutes": 3.374,
+        "five_minutes": 2.684,
+        "one_minute": 2.102
+      },
+      "power_source": "AC Power"
+    },
+    "performance_conditions_start": {
+      "load_average": {
+        "fifteen_minutes": 3.575,
+        "five_minutes": 4.706,
+        "one_minute": 5.839
+      },
+      "power_source": "AC Power"
+    },
+    "started_at": "2026-11-18T19:37:10-0500"
+  },
+  "environment": {
+    "direct": {
+      "AX_ENGINE_PREFIX_REUSE_DISABLED": "1",
+      "AX_GEMMA4_LOOP_DETECTION": "off",
+      "AX_MLX_DFLASH2": "0",
+      "AX_MLX_NATIVE_CONFIRM": "1",
+      "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "1",
+      "AX_MLX_PREFIX_CACHE_MAX_BYTES": "0",
+      "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "0",
+      "AX_MLX_ROTATING_SLIDING_PREFILL": "0",
+      "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY": "0",
+      "AX_NO_SPEC": "1"
+    },
+    "mtp": {
+      "AX_ENGINE_PREFIX_REUSE_DISABLED": "1",
+      "AX_MLX_DFLASH2": "0",
+      "AX_MLX_NATIVE_CONFIRM": "1",
+      "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "1",
+      "AX_MLX_PREFIX_CACHE_MAX_BYTES": "0",
+      "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "0"
+    }
+  },
+  "hardware": {
+    "macos_version": "27.2.1",
+    "model_storage": "NAS-backed pinned snapshot",
+    "power_mode": 0,
+    "power_source": "AC Power",
+    "system": "MacBook Pro M5 Max 128 GB"
+  },
+  "pack": {
+    "native_manifest_sha256": "524163237ca2b879bff41f782a5eee6a1266b4f80f5d2c99e07117b7b899127a",
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "revision": "b2c5354f779e430d0c1733143db848a72b71c16e"
+  },
+  "paired_replay_status": "pending",
+  "profile": {
+    "dataset": "data/eval/coding.jsonl",
+    "ignore_eos": true,
+    "measurements": 5,
+    "output_tokens": 512,
+    "prompt_ids": [
+      "coding-001",
+      "coding-002",
+      "coding-003",
+      "coding-004",
+      "coding-005",
+      "coding-006",
+      "coding-007",
+      "coding-008",
+      "coding-009",
+      "coding-010",
+      "coding-011",
+      "coding-012",
+      "coding-013",
+      "coding-014",
+      "coding-015"
+    ],
+    "source_sha256": "92e9803670152665b81814461460ee8cd33fe3dbd841c8b9eb10a913ffdfcfef",
+    "suite_sha256": "a73c72a73c77bbaee07f8791000a7c361a78f2eb822b0be76d1d370318fc3483",
+    "warmups": 2
+  },
+  "request": {
+    "configured_mtp_max_depth": null,
+    "maximum_observed_mtp_draft_depth": 3,
+    "mlx_numerics": "exact",
+    "prefill_chunk": 2048,
+    "prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+    "sampling": "greedy",
+    "seed": 0,
+    "thinking_enabled": false
+  },
+  "schema": 1,
+  "scope": "agent-coding timing and emitted token evidence",
+  "source": {
+    "axquant_source_commit": "72fd9c758d929ac5c0c56b9e64c7582188fb9b7e",
+    "axquant_version": "2.3.0",
+    "benchmark_python_version": "3.13.18",
+    "build_profile": "release-server",
+    "engine_commit": "21a0c4a9ee06de6f4cb53f2dbfae2bf9bf8504f6",
+    "engine_version": "8.0.7",
+    "python_dependencies": {
+      "jinja2": "3.1.6",
+      "mlx": "0.32.4",
+      "mlx-lm": "0.32.2",
+      "tokenizers": "0.23.3",
+      "transformers": "5.20.2"
+    },
+    "raw_artifact_build_profile_label": "release",
+    "raw_timing_artifact_sha256": "e23eadedb13d44b833ed3682fa62ed1b874ec6a050b3ceda343248580e45c97c",
+    "rust_toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "timing_runtime_files_sha256": {
+      "ax-engine-server": "37bf50bfd4ee7e6e0418b3ce630faec8c731b5fb5b1f445d2ab49a74f446557f",
+      "bench_mlx_inference_stack.py": "c1b4c78056a8a89591f8234b619f24018920e32982dd2dd8569c38a5cf37e984",
+      "libmlx.dylib": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+      "model-manifest.json": "524163237ca2b879bff41f782a5eee6a1266b4f80f5d2c99e07117b7b899127a",
+      "run_campaign.sh": "a0f5e5ee79572da15c222659c133f9152c22d9654faf4599d6da479c8be04dde",
+      "run_profile.py": "1ba6b72e388c60dfafcb2d7cf539e3bd51cd6d7f536765fabc4276ea53774174"
+    }
+  },
+  "stability_counts": {
+    "high_variance": 12,
+    "stable_enough": 15,
+    "tail_regression": 3
+  },
+  "summary": {
+    "decode_totals": {
+      "direct": {
+        "seconds": 1192.6147419999998,
+        "tokens": 38400
+      },
+      "mtp": {
+        "seconds": 676.568502,
+        "tokens": 38400
+      }
+    },
+    "median_paired_prompt_speed_ratio": 1.7526740113856167,
+    "mtp_mode_publication_candidate": true,
+    "paired_exact_count": 9,
+    "paired_exact_rate": 0.6,
+    "prompt_median_speed_ratio": 1.7524937513130325,
+    "qualified_prompt_count": 15,
+    "raw_artifact_sha256": "e23eadedb13d44b833ed3682fa62ed1b874ec6a050b3ceda343248580e45c97c",
+    "required_mtp_counters": {
+      "ax_mtp_accepted_tokens": 26565,
+      "ax_mtp_direct_fallback_steps": 0,
+      "ax_mtp_draft_source_dflash2_tokens": 0,
+      "ax_mtp_draft_source_mtp_tokens": 35040,
+      "ax_mtp_draft_source_ngram_tokens": 0,
+      "ax_mtp_drafted_depth0": 11815,
+      "ax_mtp_drafted_depth1": 11815,
+      "ax_mtp_drafted_depth2": 11410,
+      "ax_mtp_optimistic_steps": 0,
+      "ax_mtp_verify_tokens": 46930
+    },
+    "run_stability_publication_candidate": false,
+    "speed_thresholds_met": true,
+    "token_weighted_speed_ratio": 1.7627405628173922
+  }
+}
