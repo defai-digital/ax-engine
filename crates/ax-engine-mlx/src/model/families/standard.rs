@@ -927,6 +927,10 @@ pub(crate) fn layer_forward_with_mrope(
     )
 }
 
+fn use_row_exact_moe_verify_qkv(model_family: &str, token_offset: usize) -> bool {
+    super::super::is_gemma4_text_target_family(model_family) || token_offset >= 512
+}
+
 #[allow(clippy::too_many_arguments)]
 fn layer_forward_internal(
     cfg: &ModelConfig,
@@ -1581,8 +1585,7 @@ fn layer_forward_internal(
         } else {
             // Normal layer: compute Q, K, V from own projections.
             let qkv_proj_started = profile_forward_layer.then(Instant::now);
-            // MoE multi-token (smokef99/104): pos0 RowExact + rest Shared QKV.
-            // Formal exact at w≈1.016 (smokef99); full Shared breaks exactness.
+            // Match singleton projection arithmetic for retained verify rows.
             let moe_mt_exact = crate::fastpath::moe_mt_bf16_identity_enabled();
             let last_q_proj = fastpath::should_qwen_prefill_last_query_q_proj(
                 &cfg.model_family,
@@ -1610,12 +1613,9 @@ fn layer_forward_internal(
                     cfg.rms_norm_eps,
                 )
             } else if moe_mt_exact {
-                // pos0-RowExact + rest-Shared QKV (smokef99/104 best exact @~1.02).
-                // Full Shared gains speed but breaks formal A/B (smokef81/108).
-                // Long-context agent: full RowExact — hybrid Shared rest drifts
-                // after long prefill (smokef104 agent first_diff@14 @prompt~4k).
-                let long_ctx = token_offset >= 512;
-                if long_ctx {
+                // Gemma's accepted trailing rows become K/V for later decode.
+                // Shared projections can change those rows even in short contexts.
+                if use_row_exact_moe_verify_qkv(&cfg.model_family, token_offset) {
                     qkv_project_row_exact(
                         cfg,
                         w,
@@ -2734,8 +2734,19 @@ pub(crate) fn layer_forward_bidirectional(
 
 #[cfg(test)]
 mod tests {
-    use super::last_layer_residual_and_ffn_norm;
+    use super::{last_layer_residual_and_ffn_norm, use_row_exact_moe_verify_qkv};
     use mlx_sys::{MlxArray, MlxDtype, add, eval, rms_norm, slice};
+
+    #[test]
+    fn gemma_moe_verify_qkv_is_row_exact_at_short_offsets() {
+        for family in ["gemma4", "gemma4_unified"] {
+            for offset in [0, 135, 511, 512] {
+                assert!(use_row_exact_moe_verify_qkv(family, offset));
+            }
+        }
+        assert!(!use_row_exact_moe_verify_qkv("qwen3_moe", 511));
+        assert!(use_row_exact_moe_verify_qkv("qwen3_moe", 512));
+    }
 
     fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
         MlxArray::from_raw_data(

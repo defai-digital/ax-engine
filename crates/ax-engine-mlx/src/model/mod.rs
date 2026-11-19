@@ -2363,8 +2363,8 @@ pub fn forward_all_positions_with_post_norm_greedy(
     // the microbatch. Scope it here so empty-draft S=1 and verify S>1 cannot
     // acquire different arithmetic contracts.
     let _moe_invariant = moe_long_mt.then(|| crate::fastpath::scoped_qwen_linear_mtp_exact(true));
-    // MoE multi-token: per-pos SDPA, pos0-exact/rest-Shared QKV, RowExact
-    // dense/o_proj, batched experts. Empty-draft real post_norm.
+    // MoE multi-token uses per-position SDPA and row-exact dense projections.
+    // Gemma also keeps its retained QKV rows on the singleton arithmetic.
     // Keep multi-token window views ON (default) so long-prompt agent uses
     // window+seq-1 retained K/V matching pure-direct ring geometry. Forcing
     // views OFF (smokef107) still diverged at first_diff@14; identity probe
