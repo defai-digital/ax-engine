@@ -275,6 +275,8 @@ bash scripts/check-qa.sh
   scripts/test_verify_flash_next_runner_states.py \
   scripts/verify_flash_next_mtp_transactions.py \
   scripts/test_verify_flash_next_mtp_transactions.py \
+  scripts/verify_qwen38_27b_mtp_margin_replay.py \
+  scripts/test_verify_qwen38_27b_mtp_margin_replay.py \
   scripts/test_qwen38_primary_alias.py \
   scripts/check_no_turboquant_references.py \
   scripts/test_check_no_turboquant_references.py \
@@ -373,6 +375,7 @@ bash scripts/check-qa.sh
   scripts/test_check_flash_next_release_gates.py \
   scripts/test_verify_flash_next_runner_states.py \
   scripts/test_verify_flash_next_mtp_transactions.py \
+  scripts/test_verify_qwen38_27b_mtp_margin_replay.py \
   scripts/test_qwen38_primary_alias.py \
   scripts/test_check_no_turboquant_references.py \
   scripts/test_check_disk_prefix_cache_promotion.py \

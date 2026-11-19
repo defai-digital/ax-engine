@@ -29,16 +29,26 @@ including 69 accepted drafts over 38 verifier cycles. MTP-P qualification
 and MTP-D promotion remain open.
 
 To replay the included case, convert the receipt to the test input format
-and point the test at the [pinned snapshot](../2026-11-18-qwen38-27b-mxfp4-inventory/):
+and point the test at the [pinned snapshot](../2026-11-18-qwen38-27b-mxfp4-inventory/).
+Run from the repository root and set `RECEIPT` to the path of
+`m5-paired-greedy.json`.
 
 ```bash
 jq '[{case_id, prompt_tokens, max_output_tokens, ignore_eos,
       direct_tokens: .direct.tokens, mtp_tokens: .mtp.tokens}]' \
-  m5-paired-greedy.json > /tmp/qwen27b-mtp-margin-cases.json
+  "$RECEIPT" > /tmp/qwen27b-mtp-margin-cases.json
 
 AX_MLX_DFLASH2=0 \
 AX_QWEN38_27B_MTP_MARGIN_CASE=/tmp/qwen27b-mtp-margin-cases.json \
 AX_QWEN38_27B_MTP_S_MODEL_DIR=/path/to/pinned/snapshot \
 rustup run 1.99.1 cargo test -p ax-engine-mlx --lib \
-  qwen38_27b_ -- --ignored --nocapture --test-threads=1
+  qwen38_27b_report_paired_greedy_logit_margins \
+  -- --ignored --nocapture --test-threads=1 > /tmp/qwen27b-mtp-margin-replay.log 2>&1
+
+python3 scripts/verify_qwen38_27b_mtp_margin_replay.py \
+  /tmp/qwen27b-mtp-margin-cases.json --rust-log /tmp/qwen27b-mtp-margin-replay.log
 ```
+
+For offline validation, use the same case file and
+`--report-json "$RECEIPT"`. For a new timing run, build the case file
+from the measured prompt and output token IDs before running the test.
