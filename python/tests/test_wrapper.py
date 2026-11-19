@@ -3353,9 +3353,12 @@ class WrapperContractTests(unittest.TestCase):
         # reproduce this because it opens a fresh event loop per request.
         openai_server = importlib.import_module("ax_engine.openai_server")
         try:
+            import fastapi  # noqa: F401
             import httpx
         except ModuleNotFoundError as exc:
-            self.skipTest(f"httpx is required for OpenAI shim concurrency tests: {exc}")
+            self.skipTest(
+                f"FastAPI and httpx are required for OpenAI shim concurrency tests: {exc}"
+            )
 
         RecordingShimSession.instances.clear()
         with patch("tokenizers.Tokenizer.from_file", return_value=FakeShimTokenizer()):
@@ -3438,9 +3441,10 @@ class WrapperContractTests(unittest.TestCase):
         # mid-stream, not only when the stream is fully consumed.
         openai_server = importlib.import_module("ax_engine.openai_server")
         try:
+            import fastapi  # noqa: F401
             import httpx
         except ModuleNotFoundError as exc:
-            self.skipTest(f"httpx is required for OpenAI shim HTTP tests: {exc}")
+            self.skipTest(f"FastAPI and httpx are required for OpenAI shim HTTP tests: {exc}")
 
         RecordingShimSession.instances.clear()
         with patch("tokenizers.Tokenizer.from_file", return_value=FakeShimTokenizer()):
