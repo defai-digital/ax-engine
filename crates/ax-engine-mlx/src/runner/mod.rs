@@ -15298,7 +15298,7 @@ impl MlxRunner {
                 accept_count,
                 primary_tok_from_skip.is_some(),
                 optimistic,
-                token_offset,
+                token_offset..state.cache.seq_len(),
             );
             if let Some(ctx) = ctx {
                 let position = (ctx.prompt_len as usize).saturating_sub(1)

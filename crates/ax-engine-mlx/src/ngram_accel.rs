@@ -1433,6 +1433,13 @@ pub(crate) fn recompute_committed_prefix_with_argmax(
         last_logits = forward_argmax(cfg, weights, &[token], cache, token_offset + index + 1);
         cache.advance(1);
     }
+    #[cfg(test)]
+    crate::qwen_mtp_logit_probe::observe(
+        token_offset + accepted_draft.len(),
+        &last_logits,
+        1,
+        crate::qwen_mtp_logit_probe::Source::RollbackReplay,
+    );
     let direct_argmax = argmax(&last_logits, None);
     let kv_refs = cache.collect_eval_refs();
     let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());

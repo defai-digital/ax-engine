@@ -11,11 +11,13 @@ use std::collections::BTreeMap;
 
 /// The verifier observation is tied to committed outputs. Ordinary target
 /// projections can include work later discarded by a pipeline or rollback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// Rollback replay takes precedence where it selected the returned token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Source {
     Target,
     Verifier,
+    RollbackReplay,
 }
 
 struct Observation {
@@ -136,14 +138,11 @@ impl Capture {
             .rows
             .get(&index)
             .ok_or("output index was not requested")?;
-        let source = if observations
+        let source = observations
             .iter()
-            .any(|row| row.source == Source::Verifier)
-        {
-            Source::Verifier
-        } else {
-            Source::Target
-        };
+            .map(|row| row.source)
+            .max()
+            .ok_or("no logit row was captured at the output index")?;
         let mut result = None;
         for row in observations.iter().filter(|row| row.source == source) {
             if let Some(scores) = row.scores(emitted, rival)? {

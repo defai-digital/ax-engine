@@ -930,6 +930,7 @@ fn greedy_linear_mtp_rejection_prefers_recomputed_production_argmax() {
 #[derive(serde::Serialize)]
 struct QwenMtpGreedyCycle {
     token_offset: usize,
+    committed_end: usize,
     drafts: Vec<u32>,
     verifier_tokens: Vec<u32>,
     accepted: usize,
@@ -949,7 +950,7 @@ pub(super) fn record_qwen_mtp_greedy_cycle(
     accepted: usize,
     skip_primary: bool,
     optimistic: bool,
-    token_offset: usize,
+    committed: std::ops::Range<usize>,
 ) {
     QWEN_MTP_GREEDY_CYCLES.with_borrow_mut(|record| {
         let Some(cycles) = record else { return };
@@ -979,7 +980,8 @@ pub(super) fn record_qwen_mtp_greedy_cycle(
             })
             .collect();
         cycles.push(QwenMtpGreedyCycle {
-            token_offset,
+            token_offset: committed.start,
+            committed_end: committed.end,
             drafts: drafts.to_vec(),
             verifier_tokens,
             accepted,
@@ -1114,24 +1116,44 @@ fn qwen38_27b_greedy_mtp_commits_same_state_verifier_choices() {
         pair[0].accepted < pair[0].drafts.len() && pair[1].token_offset > pair[0].token_offset
     }));
     assert!(!eos_cycles.is_empty());
-    for cycle in fixed_cycles.iter().chain(&eos_cycles).chain(&short_cycles) {
-        let expected = cycle
-            .drafts
-            .iter()
-            .zip(&cycle.verifier_tokens)
-            .take_while(|(draft, verifier)| draft == verifier)
-            .count();
-        assert!(
-            cycle.accepted <= expected,
-            "target offset {} accepted {} drafts with only {expected} same-state matches",
-            cycle.token_offset,
-            cycle.accepted
-        );
-        let start = usize::from(cycle.skip_primary);
-        assert_eq!(
-            &cycle.emitted[start..start + cycle.accepted],
-            &cycle.verifier_tokens[..cycle.accepted]
-        );
+    for (output, cycles) in [
+        (&fixed, &fixed_cycles),
+        (&eos, &eos_cycles),
+        (&short, &short_cycles),
+    ] {
+        for cycle in cycles {
+            let expected = cycle
+                .drafts
+                .iter()
+                .zip(&cycle.verifier_tokens)
+                .take_while(|(draft, verifier)| draft == verifier)
+                .count();
+            assert!(
+                cycle.accepted <= expected,
+                "target offset {} accepted {} drafts with only {expected} same-state matches",
+                cycle.token_offset,
+                cycle.accepted
+            );
+            assert_eq!(cycle.committed_end, cycle.token_offset + 1 + cycle.accepted);
+            assert!(
+                !cycle.skip_primary,
+                "audit requires the default cursor policy"
+            );
+            assert_eq!(
+                &cycle.emitted[..cycle.accepted],
+                &cycle.verifier_tokens[..cycle.accepted]
+            );
+            let first_output = cycle.token_offset + 1 - input.len();
+            let visible = output[first_output..].len().min(cycle.emitted.len());
+            assert!(visible > 0);
+            assert_eq!(
+                &output[first_output..first_output + visible],
+                &cycle.emitted[..visible]
+            );
+        }
+        for pair in cycles.windows(2) {
+            assert!(pair[0].committed_end <= pair[1].token_offset);
+        }
     }
     println!(
         "{}",
@@ -1303,6 +1325,28 @@ fn forced_replay_test_model() -> (ModelConfig, ModelWeights) {
     head[4..8].fill(1.0);
     weights.lm_head = dense(&head, &[16, 4]);
     (cfg, weights)
+}
+
+#[test]
+fn paired_logit_probe_attributes_the_actual_rollback_correction() {
+    use crate::qwen_mtp_logit_probe as probe;
+
+    let (cfg, weights) = forced_replay_test_model();
+    let mut cache = MlxKVCache::new_contiguous(1);
+    let mut provisional = [0.0; 16];
+    provisional[2] = 5.0;
+    let verifier = mlx_sys::reshape(&MlxArray::from_f32_slice(&provisional), &[1, 16], None);
+    probe::start(1, &[0]);
+    probe::observe(0, &verifier, 1, probe::Source::Verifier);
+    let correction = recompute_committed_prefix_with_argmax(&cfg, &weights, &mut cache, 4, &[], 0);
+    let capture = probe::finish();
+
+    assert_eq!(correction, 1);
+    assert_eq!(cache.seq_len(), 1);
+    let score = capture.scores(0, correction, 2).unwrap();
+    assert_eq!(score.source, probe::Source::RollbackReplay);
+    assert!(score.paired_gap > 0.0);
+    assert!(capture.scores(0, 2, correction).is_err());
 }
 
 #[test]

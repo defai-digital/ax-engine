@@ -28,6 +28,19 @@ same run also reproduced the [same-state audit](../2026-11-18-qwen38-27b-mxfp4-m
 including 69 accepted drafts over 38 verifier cycles. MTP-P qualification
 and MTP-D promotion remain open.
 
+## Rollback audit
+
+The [M5 rollback audit](m5-rollback-audit.json) passed four synthetic
+controls and two real-weight tests on the same pinned pack. The synthetic
+controls verify that the captured correction comes from the singleton
+replay that selected the emitted token. The real same-state control
+retains committed KV boundaries and visible outputs from 38 verifier
+cycles, including 69 accepted drafts. The independent reader checked all
+119 differences from the paired 128-token pilot. The receipt binds the
+tested binary and source file hashes.
+
+## Reproduce the paired pilot
+
 To replay the included case, convert the receipt to the test input format
 and point the test at the [pinned snapshot](../2026-11-18-qwen38-27b-mxfp4-inventory/).
 Run from the repository root and set `RECEIPT` to the path of
