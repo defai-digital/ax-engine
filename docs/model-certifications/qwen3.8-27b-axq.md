@@ -485,9 +485,9 @@ Not claimed:
 
 ## Qualification
 
-Operator procedure: [Testing](../TESTING.md) and
-`python3 scripts/qualify_qwen38_27b.py --dry-run`. Live 27B runs belong on a
-Mac mini M4 Pro 64 GB host with a clean checkout of the engine under test.
+Operator procedure for the current primary pack: [Testing](../TESTING.md) and
+`python3 scripts/qualify_qwen38_27b.py --dry-run`. Use a clean checkout on
+MacBook Pro M5 Max 128 GB for the current live qualification.
 
 ## Related
 

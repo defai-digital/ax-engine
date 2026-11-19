@@ -36,7 +36,7 @@ def contract() -> dict[str, Any]:
         "mtp_sidecar_required": True,
         "mtp_certification": {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")},
         "inventory_status": "MXFP4 release inventory verified and bound to the pinned revision",
-        "mxfp8_status": "in scope; pack pin and SKU qualification pending",
+        "mxfp8_status": "revision-pinned Candidate; SKU qualification pending",
         "host_class": HOST_CLASS,
         "status": STATUS_SENTENCE,
         "ci": "dry-run only; do not mount 27B weights on CI",

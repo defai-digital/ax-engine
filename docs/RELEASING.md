@@ -8,7 +8,9 @@ execute AX Engine.
 Primary-pack qualification for Qwen 3.8 27B AXQ is in
 [Testing](TESTING.md) and
 [the 3.8 certification record](model-certifications/qwen3.8-27b-axq.md).
-It is operator-run on Mac mini M4 Pro 64 GB; CI never mounts that 27B snapshot.
+Run the current primary-pack qualification on MacBook Pro M5 Max 128 GB.
+Mac mini M4 Pro 64 GB retains the historical supported-tier record. CI runs
+the qualification dry-run without mounting the 27B snapshot.
 
 ## Publish a release
 
