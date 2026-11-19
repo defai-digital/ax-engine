@@ -1201,6 +1201,13 @@ pub(crate) fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             // runs (its GPU-first path may eval the logits again). Nothing
             // is added, removed, or reordered; only the wall is observed,
             // so eval_wait_us stays 0 on this row by construction.
+            #[cfg(test)]
+            crate::qwen_mtp_logit_probe::observe(
+                chunk_offset + chunk.len() - 1,
+                &last_logits,
+                1,
+                crate::qwen_mtp_logit_probe::Source::Target,
+            );
             let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
                 eval_with_kv_refs(&last_logits, cache);
                 sample_prefill_token_gpu_first(

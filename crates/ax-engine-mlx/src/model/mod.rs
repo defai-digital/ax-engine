@@ -1653,6 +1653,13 @@ fn forward_and_logits_mode(
     if profile_prefill {
         record_prefill_profile_step(weights.layers.len() as u32, seq as u32);
     }
+    #[cfg(test)]
+    crate::qwen_mtp_logit_probe::observe(
+        token_offset + seq - 1,
+        &logits,
+        1,
+        crate::qwen_mtp_logit_probe::Source::Target,
+    );
     logits
 }
 
@@ -5062,6 +5069,13 @@ fn forward_lazy_single_argmax_impl(
     let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits = finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::ArgmaxOnly);
+    #[cfg(test)]
+    crate::qwen_mtp_logit_probe::observe(
+        token_offset,
+        &logits,
+        1,
+        crate::qwen_mtp_logit_probe::Source::Target,
+    );
     if let Some(started) = lm_head_started {
         decode_profile_eval_elapsed(
             profile_decode,

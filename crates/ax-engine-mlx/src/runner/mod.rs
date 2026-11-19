@@ -15300,6 +15300,17 @@ impl MlxRunner {
                 optimistic,
                 token_offset,
             );
+            if let Some(ctx) = ctx {
+                let position = (ctx.prompt_len as usize).saturating_sub(1)
+                    + ctx.generated_len as usize
+                    + usize::from(primary_tok_from_skip.is_some());
+                crate::qwen_mtp_logit_probe::observe(
+                    position,
+                    &logits_all,
+                    accept_count + 1,
+                    crate::qwen_mtp_logit_probe::Source::Verifier,
+                );
+            }
         }
         mtp_timings.emitted_tokens = saturating_u32(result.len());
 

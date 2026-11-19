@@ -1,0 +1,61 @@
+{
+  "hardware": {
+    "macos_version": "27.2.1",
+    "model_storage": "NAS-backed snapshot",
+    "system": "MacBook Pro M5 Max 128 GB"
+  },
+  "pack": {
+    "inventory_sha256": "635763473e39744a32478b9b7a5dfd5f137f778557ff26aec9112f9d9ac28122",
+    "native_manifest_sha256": "524163237ca2b879bff41f782a5eee6a1266b4f80f5d2c99e07117b7b899127a",
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "revision": "b2c5354f779e430d0c1733143db848a72b71c16e"
+  },
+  "pilot": {
+    "artifact_sha256": "c0d24fde6cc1e63655e53486ff22be1b739f0ed4d0d242a31b4ab3434793d9e4",
+    "disable_ngram_stacking": true,
+    "engine_commit": "0e97f0056a09b259b8a878d618970e31839fb940",
+    "mlx_numerics": "exact",
+    "model_revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
+    "prefill_step_size": 2048,
+    "prompt_token_ids_sha256": "31aa865b3f5e9eb5448b15091029b26914274802c13ac3d46424a378ff6b8ae7",
+    "raw_model_repo_label": "mlx-community/Qwen3.5-9B-MLX-4bit",
+    "repetitions": 1,
+    "scope": "AX-only, fixed budget, one measured trial per route",
+    "seed": 0,
+    "server_sha256": "725b09d34e5d978d72ea1b896a9210a67e105c919ad641b0de74212f2f73e931",
+    "warmups": 1
+  },
+  "replay": {
+    "changed_source_files_sha256": {
+      "crates/ax-engine-mlx/src/generate.rs": "dd2ad11b24a8a101359fffee0703421c53b10dfffcd199896240937e2b840d64",
+      "crates/ax-engine-mlx/src/lib.rs": "cac0564b4c78e3be251eb7c4049b2b2dae085434854ef91b0d613ba19c1aaadd",
+      "crates/ax-engine-mlx/src/model/mod.rs": "850d0408601e3035243fb87a51e5f9935aace479a2d00f2c722f8374904f4c35",
+      "crates/ax-engine-mlx/src/qwen_mtp_logit_probe_tests.rs": "140a4a3a5cf0d4706c262c034b751da5916470c998505a5c1439b8edc8b67fab",
+      "crates/ax-engine-mlx/src/runner/mod.rs": "aff14ffdf6178e889d64e9661b11e7436e097af094f9b61ca5e9a3785bd25343",
+      "crates/ax-engine-mlx/src/runner/tests.rs": "37fa95382f2491e6df2ab8ce7a04c69ecf568a76759a286187747af1890f51ee"
+    },
+    "direct_policy": "disabled",
+    "ignore_eos": true,
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "max_output_tokens": 128,
+    "mlx_version": "0.32.4",
+    "mtp_policy": "required",
+    "ngram_stacking": false,
+    "passed_ignored_tests": 2,
+    "prefill_chunk": 2048,
+    "runtime_env": {
+      "AX_MLX_DFLASH2": "0"
+    },
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "same_state_control": {
+      "accepted_drafts": 69,
+      "cycles": 38
+    },
+    "sampling": "greedy",
+    "seed": 0,
+    "source_parent": "21a0c4a9ee06de6f4cb53f2dbfae2bf9bf8504f6",
+    "test_executable_sha256": "75e11019e94c89b11a93358ade89dc353ff60e584781aebb427bdc1cc86f89f4"
+  },
+  "report_sha256": "fa6c8cd603ca976c763492089595ae1696ecaec9495dffee3d3c066bbdfc78c3",
+  "schema": 1
+}

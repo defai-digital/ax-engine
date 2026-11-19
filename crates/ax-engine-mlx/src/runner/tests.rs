@@ -989,22 +989,17 @@ pub(super) fn record_qwen_mtp_greedy_cycle(
     });
 }
 
-#[test]
-#[ignore = "requires the pinned Qwen 3.8 27B MXFP4 MTP artifacts and primary-tier hardware"]
-fn qwen38_27b_greedy_mtp_commits_same_state_verifier_choices() {
+fn run_qwen_greedy_arm(
+    runner: &MlxRunner,
+    id: u64,
+    input: &[u32],
+    budget: u32,
+    ignore_eos: bool,
+) -> (Vec<u32>, Option<ax_engine_core::StopReason>) {
     use ax_engine_core::{
-        ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, StopReason,
-        WorkUnitKind,
+        ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, WorkUnitKind,
     };
 
-    let model = std::env::var_os("AX_QWEN38_27B_MTP_S_MODEL_DIR").unwrap();
-    let artifacts = NativeModelArtifacts::from_dir(model).unwrap();
-    assert_eq!(artifacts.manifest().model_family, "qwen3_5");
-    let mut runner = MlxRunner::from_artifacts(&artifacts, 2048, true).unwrap();
-    assert!(runner.has_mtp());
-    runner.set_mtp_requested(true);
-    assert!(runner.mtp_requested());
-    let input: Vec<u32> = (1..=16).collect();
     let execute =
         |context: RunnerRequestContext, tokens: &[u32], mode: ExecutionMode, position: u32| {
             let token_count = tokens.len() as u32;
@@ -1053,40 +1048,58 @@ fn qwen38_27b_greedy_mtp_commits_same_state_verifier_choices() {
             })
         };
 
+    let mut context = ctx_with_argmax(true);
+    context.request_id = RequestId(id);
+    context.prompt_len = input.len() as u32;
+    context.max_output_tokens = budget;
+    context.seed_explicit = true;
+    context.ignore_eos = ignore_eos;
+    let prefill = execute(context, input, ExecutionMode::Prefill, 0);
+    let first = &prefill.request_updates[0];
+    assert!(first.error.is_none(), "{:?}", first.error);
+    let mut output = vec![first.output_token.unwrap()];
+    output.extend_from_slice(&first.output_tokens);
+    let mut stop = first.stop_reason;
+    context.processed_prompt_tokens = context.prompt_len;
+    while stop.is_none() && output.len() < budget as usize {
+        context.generated_len = output.len() as u32;
+        let decoded = execute(
+            context,
+            &[*output.last().unwrap()],
+            ExecutionMode::Decode,
+            context.prompt_len + context.generated_len - 1,
+        );
+        let update = &decoded.request_updates[0];
+        assert!(update.error.is_none(), "{:?}", update.error);
+        output.extend(update.output_token);
+        output.extend_from_slice(&update.output_tokens);
+        stop = update.stop_reason;
+        assert!(
+            stop.is_some() || output.len() > context.generated_len as usize,
+            "decode returned no output and no stop reason"
+        );
+    }
+    assert!(output.len() <= budget as usize);
+    runner.release_request_state(context.request_id);
+    (output, stop)
+}
+
+#[test]
+#[ignore = "requires the pinned Qwen 3.8 27B MXFP4 MTP artifacts and primary-tier hardware"]
+fn qwen38_27b_greedy_mtp_commits_same_state_verifier_choices() {
+    use ax_engine_core::StopReason;
+
+    let model = std::env::var_os("AX_QWEN38_27B_MTP_S_MODEL_DIR").unwrap();
+    let artifacts = NativeModelArtifacts::from_dir(model).unwrap();
+    assert_eq!(artifacts.manifest().model_family, "qwen3_5");
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2048, true).unwrap();
+    assert!(runner.has_mtp());
+    runner.set_mtp_requested(true);
+    assert!(runner.mtp_requested());
+    let input: Vec<u32> = (1..=16).collect();
     let run = |id, budget, ignore_eos| {
-        let mut context = ctx_with_argmax(true);
-        context.request_id = RequestId(id);
-        context.prompt_len = input.len() as u32;
-        context.max_output_tokens = budget;
-        context.seed_explicit = true;
-        context.ignore_eos = ignore_eos;
         QWEN_MTP_GREEDY_CYCLES.set(Some(Vec::new()));
-        let prefill = execute(context, &input, ExecutionMode::Prefill, 0);
-        let first = &prefill.request_updates[0];
-        assert!(first.error.is_none(), "{:?}", first.error);
-        let mut output = vec![first.output_token.unwrap()];
-        output.extend_from_slice(&first.output_tokens);
-        let mut stop = first.stop_reason;
-        context.processed_prompt_tokens = context.prompt_len;
-        while stop.is_none() && output.len() < budget as usize {
-            context.generated_len = output.len() as u32;
-            let decoded = execute(
-                context,
-                &[*output.last().unwrap()],
-                ExecutionMode::Decode,
-                context.prompt_len + context.generated_len - 1,
-            );
-            let update = &decoded.request_updates[0];
-            assert!(update.error.is_none(), "{:?}", update.error);
-            output.extend(update.output_token);
-            output.extend_from_slice(&update.output_tokens);
-            stop = update.stop_reason;
-            assert!(
-                stop.is_some() || output.len() > context.generated_len as usize,
-                "decode returned no output and no stop reason"
-            );
-        }
-        assert!(output.len() <= budget as usize);
+        let (output, stop) = run_qwen_greedy_arm(&runner, id, &input, budget, ignore_eos);
         (output, stop, QWEN_MTP_GREEDY_CYCLES.take().unwrap())
     };
     let (fixed, fixed_stop, fixed_cycles) = run(103, 64, true);
@@ -1129,6 +1142,129 @@ fn qwen38_27b_greedy_mtp_commits_same_state_verifier_choices() {
             "short": {"output": short, "stop": short_stop, "cycles": short_cycles},
         })
     );
+}
+
+#[test]
+#[ignore = "requires the pinned Qwen 3.8 27B MXFP4 MTP artifacts and an explicit paired replay case"]
+fn qwen38_27b_report_paired_greedy_logit_margins() {
+    use crate::qwen_mtp_logit_probe as probe;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Replay {
+        case_id: String,
+        prompt_tokens: Vec<u32>,
+        max_output_tokens: u32,
+        ignore_eos: bool,
+        direct_tokens: Option<Vec<u32>>,
+        mtp_tokens: Option<Vec<u32>>,
+    }
+
+    let model =
+        std::path::PathBuf::from(std::env::var_os("AX_QWEN38_27B_MTP_S_MODEL_DIR").unwrap());
+    let path = std::env::var_os("AX_QWEN38_27B_MTP_MARGIN_CASE").unwrap();
+    let cases: Vec<Replay> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(!cases.is_empty());
+    let manifest_sha256 = {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(model.join("model-manifest.json")).unwrap();
+        format!("{:x}", Sha256::digest(bytes))
+    };
+    let artifacts = NativeModelArtifacts::from_dir(&model).unwrap();
+    assert_eq!(artifacts.manifest().model_family, "qwen3_5");
+    let mut runner =
+        MlxRunner::from_artifacts_with_mtp_options(&artifacts, 2048, true, true).unwrap();
+    assert!(runner.has_mtp());
+
+    for (index, case) in cases.iter().enumerate() {
+        assert!(!case.prompt_tokens.is_empty());
+        assert_ne!(case.max_output_tokens, 0);
+        assert_eq!(case.direct_tokens.is_some(), case.mtp_tokens.is_some());
+        let request_id = 201 + 4 * index as u64;
+        let budget = case.max_output_tokens;
+        let input = &case.prompt_tokens;
+        let mut run = |mtp, request_id| {
+            runner.set_mtp_requested(mtp);
+            run_qwen_greedy_arm(&runner, request_id, input, budget, case.ignore_eos)
+        };
+        let direct = run(false, request_id);
+        let mtp = run(true, request_id + 1);
+        for (output, expected) in [
+            (&direct.0, case.direct_tokens.as_ref()),
+            (&mtp.0, case.mtp_tokens.as_ref()),
+        ] {
+            if let Some(expected) = expected {
+                assert_eq!(output, expected, "replay differs from recorded output");
+            }
+        }
+        let indices: Vec<usize> = direct
+            .0
+            .iter()
+            .zip(&mtp.0)
+            .enumerate()
+            .filter_map(|(index, (left, right))| (left != right).then_some(index))
+            .collect();
+
+        let mut capture = |mtp, request_id, expected| {
+            probe::start(input.len(), &indices);
+            if !indices.is_empty() {
+                assert_eq!(
+                    &run(mtp, request_id),
+                    expected,
+                    "observation changed the output"
+                );
+            }
+            probe::finish()
+        };
+        let direct_rows = capture(false, request_id + 2, &direct);
+        let mtp_rows = capture(true, request_id + 3, &mtp);
+        let (direct, direct_stop) = direct;
+        let (mtp, mtp_stop) = mtp;
+        let mut complete = true;
+        let mut differences = Vec::new();
+        for &index in &indices {
+            let left = direct[index];
+            let right = mtp[index];
+            let direct_score = direct_rows.scores(index, left, right);
+            let mtp_score = mtp_rows.scores(index, right, left);
+            let gap = match (&direct_score, &mtp_score) {
+                (Ok(a), Ok(b)) => Some(a.paired_gap.max(b.paired_gap)),
+                _ => None,
+            };
+            complete &= gap.is_some();
+            differences.push(json!({
+                "index": index,
+                "same_prior_tokens": differences.is_empty(),
+                "direct_token": left,
+                "mtp_token": right,
+                "direct_row": direct_score,
+                "mtp_row": mtp_score,
+                "max_paired_logit_gap": gap,
+            }));
+        }
+        println!(
+            "{}",
+            json!({
+                "case_id": case.case_id,
+                "prompt_tokens": input,
+                "manifest_sha256": manifest_sha256,
+                "max_output_tokens": budget,
+                "ignore_eos": case.ignore_eos,
+                "direct": {"tokens": direct, "stop": direct_stop},
+                "mtp": {"tokens": mtp, "stop": mtp_stop},
+                "bound_to_recorded_outputs": case.direct_tokens.is_some(),
+                "first_unpaired_index": (direct.len() != mtp.len()).then_some(direct.len().min(mtp.len())),
+                "differences": differences,
+                "complete_aligned_margins": complete,
+            })
+        );
+        assert!(
+            complete,
+            "one or more divergences lack attributable logit rows"
+        );
+    }
 }
 
 fn forced_replay_test_model() -> (ModelConfig, ModelWeights) {
