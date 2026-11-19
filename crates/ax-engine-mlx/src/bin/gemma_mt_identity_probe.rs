@@ -175,6 +175,17 @@ fn step_mt_greedy(
     pred.data_u32().to_vec()
 }
 
+fn check_successive_identity(s3_diff: Option<usize>, s2_diff: Option<usize>) -> Result<(), String> {
+    for (width, first_diff) in [(3, s3_diff), (2, s2_diff)] {
+        if let Some(step) = first_diff {
+            return Err(format!(
+                "successive multi-token always-adopt drifted at width {width}, step {step}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let model = args
@@ -438,7 +449,7 @@ fn run() -> Result<(), String> {
         println!("successive_mt_first_diff={succ_diff:?}");
 
         // SUCCESSIVE S=2 (depth-1)
-        {
+        let succ_s2_diff = {
             let (mut cache_pd, boot) = prefill(&cfg, &weights, &ids);
             let (mut cache_mt, boot2) = prefill(&cfg, &weights, &ids);
             let mut last_pd = boot;
@@ -477,11 +488,10 @@ fn run() -> Result<(), String> {
                 last_mt = e1;
             }
             println!("successive_s2_first_diff={succ_diff:?}");
-        }
+            succ_diff
+        };
 
-        if succ_diff.is_some() {
-            return Err("successive multi-token always-adopt drifted".into());
-        }
+        check_successive_identity(succ_diff, succ_s2_diff)?;
     }
 
     // --- COMMIT SEAM: after MT teacher-forced accept of 2 correct tokens, next PD matches ---
@@ -527,5 +537,23 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_successive_identity;
+
+    #[test]
+    fn successive_identity_rejects_a_difference_at_either_width() {
+        assert_eq!(check_successive_identity(None, None), Ok(()));
+        assert_eq!(
+            check_successive_identity(None, Some(7)),
+            Err("successive multi-token always-adopt drifted at width 2, step 7".into())
+        );
+        assert_eq!(
+            check_successive_identity(Some(3), None),
+            Err("successive multi-token always-adopt drifted at width 3, step 3".into())
+        );
     }
 }
