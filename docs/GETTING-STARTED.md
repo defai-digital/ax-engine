@@ -90,9 +90,8 @@ commands to PATH. See the [app guide](MACOS-APP.md) for usage.
 
 ### Advanced CLI and Python channels
 
-These instructions track the latest tagged `7.x` release. Homebrew, the
-standalone download, and the Python wheel are all supported on macOS Apple
-Silicon; **Homebrew is not required**.
+Homebrew, the standalone download, and the Python wheel are available for
+Apple Silicon. **Homebrew is optional.**
 
 NVIDIA/CUDA deployments use AX Serving and are not installed by the AX Engine
 Homebrew or Python package path.
@@ -104,11 +103,12 @@ Homebrew or Python package path.
 | Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment (Python from python.org) |
 | Develop AX Engine or test unreleased changes | Source build |
 
-All paths need **Apple Silicon** (M5 or later recommended; M3–M4 supported; M2 best-effort) and **macOS 26 or newer**:
+Prebuilt packages need **Apple Silicon** (M5 or later recommended, M3–M4
+supported, M2 best-effort) and **macOS 26.2 or later**:
 
 ```bash
 uname -m                 # must print: arm64
-sw_vers -productVersion  # must print 26.0 or higher
+sw_vers -productVersion  # must print 26.2 or higher
 ```
 
 Homebrew is optional. Start from the [macOS app installation](../README.md#install-ax-engine-for-macos)
@@ -350,7 +350,8 @@ channel in each shell to avoid running mismatched versions.
 
 #### Python installation troubleshooting
 
-The wheel requires **Python 3.12+**, macOS 26+, and Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort).
+The wheel requires **Python 3.12+**, macOS 26.2 or later, and Apple Silicon
+(M5 or later recommended, M3–M4 supported, M2 best-effort).
 A generic `python3` command may select an older interpreter, including Python
 3.9.6. Check the interpreter in the active environment:
 
@@ -369,7 +370,8 @@ Common failures and their fixes:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `No matching distribution found for ax-engine` | Python older than 3.12 (macOS ships 3.9), or macOS older than 26 — the wheel is tagged `macosx_26_0_arm64` | Check `python --version` and `sw_vers -productVersion`; recreate the environment with Python 3.13 below |
+| `No matching distribution found for ax-engine` | Python older than 3.12, or macOS older than 26 | Check `python --version` and `sw_vers -productVersion`. Recreate the environment with Python 3.13 below. |
+| pip accepts the wheel on macOS 26.0 or 26.1 | The `macosx_26_0_arm64` wheel tag uses the major macOS version. The bundled AX Engine binaries require 26.2. | Update macOS to 26.2 or later. |
 | `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=8.1.0,<9"` and `huggingface-hub` without the extra |
 | `ax-engine: command not found` in a new Terminal | The virtual environment is not active and not on `PATH` | `source "$HOME/.venvs/ax-engine/bin/activate"`, or add `$HOME/.venvs/ax-engine/bin` to `PATH` |
 | `python3.13: command not found` after the installer | Terminal opened before the install | Quit and reopen Terminal, or call `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` |

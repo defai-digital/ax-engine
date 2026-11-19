@@ -32,7 +32,7 @@ Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper
 MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
-**Requires macOS 26 (Tahoe)+ on Apple Silicon.** Hardware tiers:
+**Prebuilt packages require macOS 26.2 or later on Apple Silicon.** Hardware tiers:
 
 | Tier | Chips | What to expect |
 | --- | --- | --- |
@@ -169,7 +169,7 @@ for usage and [distribution guide](docs/MACOS-DISTRIBUTION.md) for release verif
 The curl command above is the end-user app installation path. The channels below
 are for shell automation, direct API serving or Python development; they do not
 install the GUI app. Native CLI packages require Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort)
-and macOS 26 or newer.
+and macOS 26.2 or later.
 
 | Goal | Channel |
 | --- | --- |
