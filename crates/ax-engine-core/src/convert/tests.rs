@@ -5653,6 +5653,26 @@ fn has_qwen4_role(
 }
 
 #[test]
+fn flash_next_aliases_preserve_the_qwen4_exp_text_type() {
+    for (raw, expected) in [
+        ("qwen4_exp", "qwen4_exp"),
+        ("qwen4_exp_text", "qwen4_exp_text"),
+        ("qwen4-exp", "qwen4_exp"),
+        ("qwen3.8-flash-next", "qwen4_exp"),
+        ("qwen3_8_flash_next", "qwen4_exp"),
+        ("qwen38_flash_next", "qwen4_exp"),
+        ("qwen38-flash-next", "qwen4_exp"),
+    ] {
+        let config = serde_json::json!({ "model_type": raw });
+        assert_eq!(
+            super::resolve_model_type(&config).unwrap(),
+            expected,
+            "{raw}"
+        );
+    }
+}
+
+#[test]
 fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
     for model_type in ["qwen4_exp", "qwen3.8-flash-next", "qwen38_flash_next"] {
         let dir = unique_test_dir(&format!("flash-next-{model_type}"));

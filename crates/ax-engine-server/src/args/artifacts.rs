@@ -131,6 +131,12 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
     let Some(model_type) = config_model_type(&config) else {
         return Ok(None);
     };
+    if ax_engine_core::convert::is_qwen4_exp_family(model_type) {
+        return Ok(
+            ax_engine_core::convert::has_qwen38_flash_next_geometry(&config)
+                .then(|| "qwen3.8-flash-next".to_string()),
+        );
+    }
     let path_label = artifact_model_label(path);
 
     Ok(match model_type {

@@ -92,8 +92,9 @@ pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, C
         "unlimited-ocr" => "unlimited_ocr".to_string(),
         "NemotronH_Nano_Omni_Reasoning_V3" => "nemotron_h_nano_omni".to_string(),
         "nemotron3_embed" | "nemotron_embed" => "nemotron_embed".to_string(),
-        "qwen4-exp" | "qwen3.8-flash-next" | "qwen3_8_flash_next" | "qwen38_flash_next"
-        | "qwen38-flash-next" => "qwen4_exp".to_string(),
+        model_type if model_type != "qwen4_exp_text" && is_qwen4_exp_family(model_type) => {
+            "qwen4_exp".to_string()
+        }
         other => other.to_string(),
     };
     // Nemotron 3 Embed ships as Ministral3Model with encoder-embedding signals.
@@ -242,8 +243,31 @@ pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     )
 }
 
-pub(crate) fn is_qwen4_exp_family(model_type: &str) -> bool {
-    matches!(model_type, "qwen4_exp" | "qwen4_exp_text")
+/// Recognize the Qwen4Exp trunk's canonical and legacy Hugging Face model types.
+pub fn is_qwen4_exp_family(model_type: &str) -> bool {
+    matches!(
+        model_type,
+        "qwen4_exp"
+            | "qwen4_exp_text"
+            | "qwen4-exp"
+            | "qwen3.8-flash-next"
+            | "qwen3_8_flash_next"
+            | "qwen38_flash_next"
+            | "qwen38-flash-next"
+    )
+}
+
+/// Match the published Flash Next text geometry across its MLX weight formats.
+pub fn has_qwen38_flash_next_geometry(config: &serde_json::Value) -> bool {
+    [
+        ("num_hidden_layers", 48),
+        ("hidden_size", 2560),
+        ("num_experts", 512),
+        ("num_experts_per_tok", 10),
+        ("ngram_size", 3),
+    ]
+    .into_iter()
+    .all(|(field, expected)| arch_u64(config, "qwen4_exp", field) == Some(expected))
 }
 
 pub(crate) fn is_qwen_gated_delta_family(model_type: &str) -> bool {

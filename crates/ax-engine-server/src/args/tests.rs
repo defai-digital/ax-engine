@@ -661,6 +661,54 @@ fn inferred_unlimited_ocr_id_uses_the_sparse_attention_contract() {
 }
 
 #[test]
+fn inferred_flash_next_id_uses_qwen4_exp_geometry() {
+    let root = unique_test_dir("infer-flash-next");
+    // The explicit directory can have an arbitrary name.
+    let artifact_dir = write_artifact_dir(&root.join("converted"), "qwen4_exp");
+    let args = ServerArgs {
+        model_id: String::new(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+        ..base_args()
+    };
+    let mut geometry = serde_json::json!({
+        "model_type": "qwen4_exp_text",
+        "num_hidden_layers": 48,
+        "hidden_size": 2560,
+        "num_experts": 512,
+        "num_experts_per_tok": 10,
+        "ngram_size": 3,
+    });
+    let config_path = artifact_dir.join("config.json");
+    for config in [
+        serde_json::json!({"model_type": "qwen4_exp", "text_config": geometry}),
+        serde_json::json!({"model_type": "qwen3.8-flash-next", "text_config": geometry}),
+        geometry.clone(),
+    ] {
+        fs::write(&config_path, config.to_string()).unwrap();
+        assert_eq!(args.effective_model_id().unwrap(), "qwen3.8-flash-next");
+    }
+
+    let conflicting_root = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "hidden_size": 4096,
+        "text_config": geometry,
+    });
+    geometry.as_object_mut().unwrap().remove("ngram_size");
+    let incomplete_alias =
+        serde_json::json!({"model_type": "qwen3.8-flash-next", "text_config": geometry});
+    for config in [conflicting_root, incomplete_alias] {
+        fs::write(&config_path, config.to_string()).unwrap();
+        assert!(
+            args.effective_model_id()
+                .unwrap_err()
+                .contains("--model-id")
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
     // AutomatosX org packs (https://huggingface.co/AutomatosX) resolve to
     // the same product model ids as the unbranded artifact layouts.
