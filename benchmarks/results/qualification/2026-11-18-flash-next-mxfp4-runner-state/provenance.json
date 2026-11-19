@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "hardware": {
+    "system": "MacBook Pro M5 Max 128 GB",
+    "macos": "27.2.1",
+    "model_storage": "local SSD"
+  },
+  "pack": {
+    "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "native_manifest_sha256": "06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76",
+    "inventory_check": "inventory-check.json"
+  },
+  "runtime": {
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "mlx": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6"
+  },
+  "trained": {
+    "source_parent": "a79c73207e4f25e35199db8b4ea1b3a57370608a",
+    "patch_sha256": "1bdd78671e29802631f5ec9e6ff6439986d672526f38a105c5795ab2b94f5ccd",
+    "test_executable_sha256": "8eaa8fa8e0ad3bb69cee41083cfbd96650c3c5bf9f8ef141e3fc63238be4a73b"
+  },
+  "aligned_and_permuted": {
+    "source_parent": "a34882ed59a7f1e18bb870020264dd0a8a790dc1",
+    "patch_sha256": "3bbb95f99d764687ff0504a55d2bb0a0b65a65a0f6710f9d5a47e27c58271aff",
+    "test_executable_sha256": "d0b0e060758d1a652bf7615ac5ec7f8548eb171e7bacb61fd975dedd0690cf5a",
+    "aligned_env": {
+      "AX_FLASH_NEXT_MTP_COST": "0"
+    },
+    "default_cost_rust_exit": 101,
+    "permuted_rust_exit": 0,
+    "permuted_reader_exit": 0,
+    "aligned_rust_exit": 0,
+    "aligned_reader_exit": 0
+  },
+  "reader_sha256": {
+    "scripts/verify_flash_next_runner_states.py": "3e90f58be44cd8abb8277e1c53b4e6e523c359445bc25b9e094dd344899b2fe5",
+    "scripts/verify_flash_next_mtp_transactions.py": "744f07b0f9572d9bd6adfb8c4bf1e648383b0234ce5dc26392ab18019a2ac5db"
+  },
+  "uncompressed_report_sha256": {
+    "aligned.json": "2455a91a9cadd0d552b7c5a8b3c350d4dd65e189a2a78cd04cba76c7afe00c15",
+    "default-cost.json": "1c0f718d93fda3f48054ba277ddc04bdb8019ef59df6cda7541abf200b2ad136",
+    "permuted.json": "22166ab61b74305263d3cbfafde1b0a80c3f15e059f0331a043859e0fb8dbe08",
+    "trained.json": "69bd8be69cfdbd7df05bddb20c2705689bd46cb3e3f25a31e395504a9b6bd485"
+  },
+  "artifact_sha256": {
+    "aligned-reader.json": "453534c9ae618e39792f50442960f93ee6464a7d5921058c4727290858557bd5",
+    "aligned.json.gz": "27d22fffb2b307df0f5d8e5db0515121b42574366ab5f06f3945c5afb7826bee",
+    "default-cost.json.gz": "1ea6b60f7575a658d90eb33eb4651c529786024fd0e947e21dc8b36647524021",
+    "inventory-check.json": "750aa083ff9bafbc09c5f663e748cb7b36a3d198bc45cdfead3a770e653e8a7b",
+    "permuted-reader.json": "c72ec78266a95a31733a0253cbc9fb42f6135743ad5b4fd770332247daf15b9a",
+    "permuted.json.gz": "87195113f9046f46ab3ea8f7c2a1241bba7a58cb2bafeb991c846a4de0e530ad",
+    "prompt.json": "ecca5217680a4a88745a401bfa3c1861fdc214e48dcba0f6b605f0adf77232e4",
+    "trained-reader.json": "ac8d446a67164e6606d168b6e7a59d36007a629000fa0943308f859451fd5feb",
+    "trained.json.gz": "fc8db35796f6d6cd64020cab56d83b940118b52cfa58b0dd62fceab0db4b1e04"
+  }
+}

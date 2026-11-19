@@ -59,6 +59,7 @@ fn collect(runner: &mut MlxRunner, prompt: &[u32], root: &Path) -> serde_json::V
         Qwen4ExpTargetSchedule::CanonicalSingleton
     ));
     std::fs::create_dir(root).unwrap();
+    let layers = runner.weights.qwen4_exp.as_ref().unwrap().layers.len();
     let mut snapshots = [BTreeMap::new(), BTreeMap::new()];
     let mut runs = Vec::new();
     for (mode, states) in snapshots.iter_mut().enumerate() {
@@ -71,6 +72,7 @@ fn collect(runner: &mut MlxRunner, prompt: &[u32], root: &Path) -> serde_json::V
             max_entries: 128,
         });
         runner.set_mtp_requested(mode == 1);
+        let mut observations = Vec::new();
         runs.push(generate_observed(
             runner,
             prompt,
@@ -79,10 +81,26 @@ fn collect(runner: &mut MlxRunner, prompt: &[u32], root: &Path) -> serde_json::V
             4,
             |state| {
                 if state.position() >= prompt.len() {
-                    assert!(states.insert(state.position(), state.clone()).is_none());
+                    observations.push(state.clone());
                 }
             },
         ));
+        for state in observations {
+            let position = state.position();
+            if let Some((previous_position, previous)) = states.last_key_value() {
+                assert!(position >= *previous_position, "trunk position regressed");
+                // Draining a pending direct token can emit without advancing the trunk.
+                if position == *previous_position {
+                    assert!(
+                        flash_runner_state_bytes(previous, layers)
+                            == flash_runner_state_bytes(&state, layers),
+                        "trunk state changed at the same consumed position {position} in arm {mode}"
+                    );
+                    continue;
+                }
+            }
+            states.insert(position, state);
+        }
     }
     let trunk = runner.weights.qwen4_exp.as_ref().unwrap();
     let mut pairs = Vec::new();
