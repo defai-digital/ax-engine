@@ -602,7 +602,7 @@ fn sampling_context_honors_explicit_zero_seed() {
     assert_eq!(sampling_params_from_context(&ctx, false).seed, None);
 }
 
-fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext {
+pub(super) fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext {
     RunnerRequestContext {
         request_id: RequestId(1),
         prompt_len: 8,
@@ -12002,7 +12002,7 @@ fn live_prefix_snapshot_restores_an_independent_clone_without_a_payload() {
     assert_eq!(again.usage_snapshot().logical_bytes, logical);
 }
 
-fn tiny_qwen_hybrid_runner() -> (MlxRunner, NativeModelArtifacts) {
+pub(super) fn tiny_qwen_hybrid_runner() -> (MlxRunner, NativeModelArtifacts) {
     let (mut runner, artifacts) = tiny_linear_dflash_runner(2);
     runner
         .cfg

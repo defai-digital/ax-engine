@@ -1798,8 +1798,9 @@ impl MlxRunner {
             verify_cache.clear_linear_prefix_checkpoint();
             state.cache = verify_cache;
         } else {
-            // Rebuild the emitted prefix one token at a time on the
-            // untouched cache. Drafts past the budget or EOS stay out.
+            // Release the verifier's pages before rebuilding the emitted
+            // prefix in the live cache's shared physical budget.
+            drop(verify_cache);
             let kept = keep.saturating_sub(1).min(accepted).min(drafts.len());
             let after = recompute_committed_prefix_with_argmax(
                 &self.cfg,
@@ -2953,6 +2954,7 @@ impl MlxRunner {
             verify_cache.clear_linear_prefix_checkpoint();
             (verify_cache, false)
         } else {
+            drop(verify_cache);
             let mut rebuilt = source;
             let kept = cache_draft_rows.min(drafts.len());
             let _after = recompute_committed_prefix_with_argmax(
@@ -2972,6 +2974,126 @@ impl MlxRunner {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dflash2_replay_reuses_the_abandoned_verifier_page() {
+        use crate::kv_block_pool::FaBlockPoolConfig;
+        use crate::model::forward_all_positions_with_post_norm;
+        use crate::runner::tests::{ctx_with_argmax, tiny_qwen_hybrid_runner};
+
+        let (mut runner, artifacts) = tiny_qwen_hybrid_runner();
+        let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+        let width = drafter.config().target_hidden_width();
+        runner.dflash2 = Some(drafter.clone());
+        std::fs::remove_dir_all(artifacts.root_dir()).unwrap();
+
+        let cap = FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2,
+            hard_cap: true,
+        };
+        let anchor = 3;
+        let seed = |cache: &mut MlxKVCache| {
+            let (logits, hidden) = forward_all_positions_with_post_norm(
+                &runner.cfg,
+                &runner.weights,
+                &[1, 2, 3, 4],
+                cache,
+                0,
+            );
+            cache.advance(4);
+            mlx_sys::eval(&[&logits, &hidden]);
+        };
+        let mut direct = MlxKVCache::new(2);
+        seed(&mut direct);
+        let expected = recompute_committed_prefix_with_argmax(
+            &runner.cfg,
+            &runner.weights,
+            &mut direct,
+            anchor,
+            &[],
+            4,
+        );
+        let bad_draft = (expected + 1) % 16;
+
+        for tree in [false, true] {
+            let mut state = RequestState::new(2, 41, Some(cap));
+            seed(&mut state.cache);
+            assert_eq!(state.cache.fa_block_pool_available(), Some(1));
+            let mut trial = state.cache.clone();
+            // This copy has full verified K/V but no usable recurrent prefix
+            // checkpoint or replay tape. Commit must rebuild the anchor on the
+            // pre-round cache without keeping the speculative page reserved.
+            let (logits, hidden) = forward_all_positions_with_post_norm(
+                &runner.cfg,
+                &runner.weights,
+                &[anchor, bad_draft],
+                &mut trial,
+                4,
+            );
+            trial.advance(2);
+            mlx_sys::eval(&[&logits, &hidden]);
+            assert_eq!(trial.fa_block_pool_available(), Some(0));
+            assert!(!trial.hard_cap_exhausted());
+            assert!(!trial.restore_linear_prefix_checkpoint());
+            assert!(!runner.dflash2_replay_prefix(&state.cache, &mut trial, 1));
+
+            let committed = if tree {
+                let (committed, failed) = runner.commit_tree_branch(
+                    state.cache,
+                    trial,
+                    anchor,
+                    &[bad_draft],
+                    0,
+                    4,
+                    &RefCell::new(None),
+                );
+                assert!(!failed);
+                committed
+            } else {
+                let dflash = Dflash2RequestState::new(drafter.clone());
+                let cursor = dflash.drafter.snapshot_cursor();
+                state.dflash2 = Some(dflash);
+                let ctx = ctx_with_argmax(true);
+                let staged = Dflash2StagedVerify {
+                    plan: Dflash2RoundPlan {
+                        primary: anchor,
+                        token_offset: 4,
+                        window: 2,
+                        remaining: 16,
+                    },
+                    cursor,
+                    draft_wall_us: 0,
+                    clone_wall_us: 0,
+                    verify_wall_us: 0,
+                    verify_build_us: 0,
+                    eval_wall_us: 0,
+                    predrafted: false,
+                    verify_cache: trial,
+                    predicted: vec![expected; 2],
+                    drafts: vec![bad_draft],
+                    hidden_all: mlx_sys::zeros(&[1, 2, width], MlxDtype::Bfloat16, None),
+                    post_norm: None,
+                };
+                let options = DecodeOneOptions {
+                    terminal_token_ids: &[],
+                    final_by_max_output: false,
+                    request_context: Some(&ctx),
+                };
+                assert_eq!(
+                    runner.commit_dflash2_round(&mut state, staged, &options),
+                    Some(vec![expected])
+                );
+                state.cache
+            };
+            assert_eq!(committed.seq_len(), 5);
+            assert!(
+                !committed.hard_cap_exhausted(),
+                "tree={tree} lost the committed slot"
+            );
+            assert_eq!(committed.fa_block_pool_available(), Some(0));
+        }
+    }
 
     #[test]
     fn failed_first_draft_restores_the_preseed_cursor() {
