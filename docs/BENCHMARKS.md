@@ -452,7 +452,16 @@ AX-ready artifact directory. Legacy `.internal/models/<name>` symlinks are
 acceptable for older commands, but the benchmark source of truth should be the
 repo id plus the resolved cache snapshot.
 
-The reference contract is:
+Use `--ax-engine-server /path/to/ax-engine-server` to run an existing server
+binary. The harness skips the Cargo build and records the executable SHA-256.
+Add `--ax-engine-build-profile release-server` when that profile built the
+executable. The Git fields describe the benchmark checkout.
+
+For AX-only workload comparisons, pass `--prompt-source real`,
+`--real-prompt-suite /path/to/suite.jsonl` and `--skip-mlx-lm`. The artifact
+records the model-tokenized prompt suite and its input token hashes.
+
+The random-token reference contract is:
 
 1. `mlx_lm.benchmark` is mandatory and is the canonical upstream Python MLX
    baseline.

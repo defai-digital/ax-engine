@@ -282,7 +282,9 @@ def infer_hf_repo_id_from_path(path: Path) -> str | None:
     return None
 
 
-def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
+def ensure_ax_engine_server_binary(*, build: bool = True, binary: Path | None = None) -> None:
+    if binary is None:
+        binary = AX_ENGINE_SERVER
     if build:
         # Repo-pinned toolchain (Homebrew cargo on PATH shadows the pin).
         cmd = [
@@ -305,9 +307,11 @@ def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
                 f"cargo build -p ax-engine-server --release failed with exit={error.returncode}"
             ) from error
 
-    if not AX_ENGINE_SERVER.exists():
+    if not binary.is_file():
+        if binary != AX_ENGINE_SERVER:
+            raise RuntimeError(f"ax-engine-server not found at {binary}")
         raise RuntimeError(
-            f"ax-engine-server not found at {AX_ENGINE_SERVER}. "
+            f"ax-engine-server not found at {binary}. "
             "Run: cargo build -p ax-engine-server --release"
         )
 
@@ -1057,8 +1061,12 @@ def collect_host_metadata(
     return metadata
 
 
-def collect_build_metadata() -> dict[str, Any]:
+def collect_build_metadata(
+    *, binary: Path | None = None, declared_profile: str | None = None
+) -> dict[str, Any]:
     """Collect git commit and build profile for artifact provenance."""
+    if binary is None:
+        binary = AX_ENGINE_SERVER
     commit = "unknown"
     engine_version = "unknown"
     tracked_status: list[str] = []
@@ -1100,7 +1108,7 @@ def collect_build_metadata() -> dict[str, Any]:
 
     linked_libraries = [
         line
-        for line in _command_output_lines(["otool", "-L", str(AX_ENGINE_SERVER)])
+        for line in _command_output_lines(["otool", "-L", str(binary)])
         if any(token in line for token in ("libmlx", "libmlxc", "Metal.framework"))
     ]
     # An `@rpath/libmlx.dylib` load command says nothing about which libmlx
@@ -1109,7 +1117,7 @@ def collect_build_metadata() -> dict[str, Any]:
     # differ by several times in prefill throughput on the same machine).
     rpaths = [
         match.group(1)
-        for line in _command_output_lines(["otool", "-l", str(AX_ENGINE_SERVER)])
+        for line in _command_output_lines(["otool", "-l", str(binary)])
         if (match := re.match(r"\s*path (.+) \(offset ", line))
     ]
     resolved_libmlx = next(
@@ -1123,11 +1131,18 @@ def collect_build_metadata() -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "commit": commit,
         "engine_version": engine_version,
-        "build_profile": "release",
-        "server_binary": str(AX_ENGINE_SERVER),
+        "build_profile": declared_profile or (
+            "release" if binary == REPO_ROOT / "target/release/ax-engine-server" else "unknown"
+        ),
+        "server_binary": str(binary),
         "git_tracked_dirty": bool(tracked_status),
         "git_tracked_status": tracked_status[:50],
     }
+    try:
+        with binary.open("rb") as server:
+            metadata["server_binary_sha256"] = hashlib.file_digest(server, "sha256").hexdigest()
+    except OSError:
+        pass  # The AX server is optional for reference-only runs.
     if linked_libraries:
         metadata["linked_libraries"] = linked_libraries
     if rpaths:
@@ -2320,6 +2335,56 @@ def build_real_prompts(
 
 def without_inline_tokens(prompt_doc: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in prompt_doc.items() if key != "token_ids"}
+
+
+def build_reference_contract(
+    prompt_source: str,
+    prompts: list[dict[str, Any]],
+    warmup_repetitions: int,
+    repetitions: int,
+) -> dict[str, Any]:
+    artifacts = [without_inline_tokens(prompt) for prompt in prompts]
+    if prompt_source == "real":
+        return {
+            "primary_reference": None,
+            "primary_reference_required": False,
+            "comparison_policy": (
+                "AX-only route comparisons use matching tokenized prompts and generation budgets."
+            ),
+            "prompt_contract": {
+                "source": "ax_real_prompt_suite",
+                "batch_size": 1,
+                "artifacts": artifacts,
+            },
+            "strictness": "real_prompts_tokenized_by_model",
+        }
+    return {
+        "primary_reference": "mlx_lm.benchmark",
+        "primary_reference_required": True,
+        "mlx_lm_warmup_contract": {
+            "requested_warmup_repetitions": warmup_repetitions,
+            "upstream_builtin_warmup_repetitions": 1,
+            "additional_discarded_trial_count": max(warmup_repetitions - 1, 0),
+            "measurement_repetitions": repetitions,
+        },
+        "retired_reference": "SwiftLM application server",
+        "comparison_policy": (
+            "Every non-baseline row is compared against the matching "
+            "mlx_lm.benchmark row for the same random-token prompt and "
+            "generation shape. ax_engine_mlx is the direct same-policy "
+            "comparison baseline; ax_engine_mlx_ngram_accel rows are AX "
+            "default n-gram policy rows whose ax_decode_claim_status "
+            "distinguishes effective acceleration from no-draft fallback."
+        ),
+        "prompt_contract": {
+            "source": "mlx_lm.benchmark",
+            "random_seed": MLX_LM_RANDOM_SEED,
+            "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+            "batch_size": 1,
+            "artifacts": artifacts,
+        },
+        "strictness": "mlx_lm_prompt_algorithm_reproduced",
+    }
 
 
 def validate_prompt_doc(
@@ -5556,6 +5621,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-engine-server",
+        type=Path,
+        help="Use this prebuilt ax-engine-server executable and skip the Cargo build.",
+    )
+    parser.add_argument(
+        "--ax-engine-build-profile",
+        help="Record the Cargo profile used to build the explicit --ax-engine-server binary.",
+    )
+    parser.add_argument(
         "--reuse-reference-results-from",
         type=Path,
         help=(
@@ -5856,6 +5930,19 @@ def main() -> None:
     model_arg_explicit = arg_was_provided(sys.argv[1:], "--model")
     model_repo_id_arg_explicit = arg_was_provided(sys.argv[1:], "--model-repo-id")
     args = parser.parse_args()
+    if args.ax_engine_build_profile is not None:
+        if args.ax_engine_server is None:
+            parser.error("--ax-engine-build-profile requires --ax-engine-server")
+        args.ax_engine_build_profile = args.ax_engine_build_profile.strip()
+        if not args.ax_engine_build_profile:
+            parser.error("--ax-engine-build-profile must be nonempty")
+    if args.ax_engine_server is not None and args.skip_ax_engine:
+        parser.error("--ax-engine-server requires AX rows")
+    ax_engine_server = (
+        args.ax_engine_server.expanduser().resolve()
+        if args.ax_engine_server is not None
+        else AX_ENGINE_SERVER
+    )
     model_dir_explicit = args.model_dir is not None
     try:
         args.model_repo_id = normalize_model_repo_id_for_cache(
@@ -6122,7 +6209,10 @@ def main() -> None:
 
     if not args.skip_ax_engine:
         try:
-            ensure_ax_engine_server_binary(build=not args.no_build_ax_engine)
+            ensure_ax_engine_server_binary(
+                build=not args.no_build_ax_engine and args.ax_engine_server is None,
+                binary=ax_engine_server,
+            )
         except RuntimeError as error:
             print(f"ERROR: {error}", file=sys.stderr)
             sys.exit(1)
@@ -6324,7 +6414,7 @@ def main() -> None:
                     bool(args.ax_mtp_disable_ngram_stacking) and not direct_mode
                 )
                 proc = start_axengine(
-                    AX_ENGINE_SERVER,
+                    ax_engine_server,
                     args.model_dir,
                     args.axengine_port,
                     model_id=args.model,
@@ -6510,43 +6600,19 @@ def main() -> None:
             "performance_conditions_start": performance_conditions_start,
             "performance_conditions_end": performance_conditions_end,
         },
-        "build": collect_build_metadata(),
+        "build": collect_build_metadata(
+            binary=ax_engine_server,
+            declared_profile=args.ax_engine_build_profile,
+        ),
         "model": args.model,
         "model_repo_id": args.model_repo_id,
         "model_dir": str(args.model_dir),
         "model_dir_source": "explicit" if model_dir_explicit else "huggingface_cache",
         "hf_cache_root": str(args.hf_cache_root) if args.hf_cache_root else None,
         "model_config": model_metadata,
-        "reference_contract": {
-            "primary_reference": "mlx_lm.benchmark",
-            "primary_reference_required": True,
-            "mlx_lm_warmup_contract": {
-                "requested_warmup_repetitions": args.warmup_repetitions,
-                "upstream_builtin_warmup_repetitions": 1,
-                "additional_discarded_trial_count": max(
-                    args.warmup_repetitions - 1,
-                    0,
-                ),
-                "measurement_repetitions": args.repetitions,
-            },
-            "retired_reference": "SwiftLM application server",
-            "comparison_policy": (
-                "Every non-baseline row is compared against the matching "
-                "mlx_lm.benchmark row for the same random-token prompt and "
-                "generation shape. ax_engine_mlx is the direct same-policy "
-                "comparison baseline; ax_engine_mlx_ngram_accel rows are AX "
-                "default n-gram policy rows whose ax_decode_claim_status "
-                "distinguishes effective acceleration from no-draft fallback."
-            ),
-            "prompt_contract": {
-                "source": "mlx_lm.benchmark",
-                "random_seed": MLX_LM_RANDOM_SEED,
-                "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
-                "batch_size": 1,
-                "artifacts": [without_inline_tokens(prompt) for prompt in prompts],
-            },
-            "strictness": "mlx_lm_prompt_algorithm_reproduced",
-        },
+        "reference_contract": build_reference_contract(
+            args.prompt_source, prompts, args.warmup_repetitions, args.repetitions
+        ),
         "prompt_tokens": prompt_lengths,
         "generation_tokens": args.generation_tokens,
         "seed": args.seed,

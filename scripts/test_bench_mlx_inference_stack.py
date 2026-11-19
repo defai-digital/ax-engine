@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import importlib.util
 import json
@@ -70,6 +71,69 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
     def test_default_repetition_and_cooldown_contract_matches_docs(self) -> None:
         self.assertEqual(bench.DEFAULT_REPETITIONS, 5)
         self.assertEqual(bench.DEFAULT_COOLDOWN, 15.0)
+
+    def test_prebuilt_server_metadata_records_profile_and_binary_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "ax-engine-server"
+            binary.write_bytes(b"prebuilt server")
+            with patch.object(bench, "_command_output_lines", return_value=[]) as otool:
+                metadata = bench.collect_build_metadata(
+                    binary=binary, declared_profile="release-server"
+                )
+            self.assertEqual(metadata["build_profile"], "release-server")
+            self.assertEqual(metadata["server_binary"], str(binary))
+            self.assertEqual(
+                metadata["server_binary_sha256"], hashlib.sha256(b"prebuilt server").hexdigest()
+            )
+            self.assertEqual(
+                otool.call_args_list,
+                [call(["otool", "-L", str(binary)]), call(["otool", "-l", str(binary)])],
+            )
+            with patch.object(bench, "_command_output_lines", return_value=[]):
+                self.assertEqual(bench.collect_build_metadata(binary=binary)["build_profile"], "unknown")
+                self.assertEqual(bench.collect_build_metadata()["build_profile"], "release")
+
+    def test_explicit_server_cli_skips_cargo_and_checks_the_chosen_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = (root / "ax-engine-server").resolve()
+            argv = [
+                str(SCRIPT_PATH),
+                "--model-dir", str(root),
+                "--prompt-artifact-root", str(root),
+                "--ax-engine-server", str(binary),
+                "--ax-engine-build-profile", "release-server",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(sys, "stderr", io.StringIO()),
+                patch.object(bench, "collect_benchmark_boundary_performance_conditions", return_value={}),
+                patch.object(bench, "collect_model_metadata", return_value={}),
+                patch.object(bench, "ensure_ax_engine_server_binary", side_effect=RuntimeError("stop")) as check,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                bench.main()
+            self.assertEqual(raised.exception.code, 1)
+            check.assert_called_once_with(build=False, binary=binary)
+
+    def test_real_prompt_contract_records_ax_only_workload_sources(self) -> None:
+        prompt = {"token_ids": [11, 12], "token_ids_sha256": "digest", "prompt_case_id": "example"}
+        real = bench.build_reference_contract("real", [prompt], 2, 5)
+        self.assertIsNone(real["primary_reference"])
+        self.assertFalse(real["primary_reference_required"])
+        self.assertNotIn("mlx_lm_warmup_contract", real)
+        self.assertEqual(real["prompt_contract"]["source"], "ax_real_prompt_suite")
+        self.assertNotIn("random_seed", real["prompt_contract"])
+        self.assertEqual(
+            real["prompt_contract"]["artifacts"],
+            [{"token_ids_sha256": "digest", "prompt_case_id": "example"}],
+        )
+
+        random = bench.build_reference_contract("random", [prompt], 2, 5)
+        self.assertTrue(random["primary_reference_required"])
+        self.assertEqual(random["primary_reference"], "mlx_lm.benchmark")
+        self.assertEqual(random["prompt_contract"]["random_seed"], bench.MLX_LM_RANDOM_SEED)
+        self.assertEqual(random["mlx_lm_warmup_contract"]["additional_discarded_trial_count"], 1)
 
     def test_default_on_env_enabled_matches_runtime_kill_switch(self) -> None:
         name = bench.QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV
