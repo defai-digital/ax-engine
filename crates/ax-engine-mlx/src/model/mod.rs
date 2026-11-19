@@ -2369,8 +2369,14 @@ pub fn forward_all_positions_with_post_norm_greedy(
     // window+seq-1 retained K/V matching pure-direct ring geometry. Forcing
     // views OFF (smokef107) still diverged at first_diff@14; identity probe
     // without rings is exact — formal A/B uses bounded rings after long prefill.
-    let _moe_bf16 = (cfg.moe_expert_count > 0 && seq > 1)
-        .then(|| crate::fastpath::scoped_moe_mt_bf16_identity(true));
+    let _moe_bf16 = (cfg.moe_expert_count > 0 && seq > 1).then(|| {
+        let mode = if cfg.gemma4_moe_router {
+            crate::fastpath::MoeMtBf16Identity::Gemma
+        } else {
+            crate::fastpath::MoeMtBf16Identity::Folded
+        };
+        crate::fastpath::scoped_moe_mt_bf16_identity(mode)
+    });
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
         std::mem::size_of_val(token_ids),

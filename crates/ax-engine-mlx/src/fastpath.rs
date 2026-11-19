@@ -2808,22 +2808,22 @@ pub(crate) fn multi_token_window_views_enabled() -> bool {
     multi_token_window_views_enabled_env()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MoeMtBf16Identity {
+    Folded,
+    Gemma,
+}
+
 thread_local! {
-    static MOE_MT_BF16_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static MOE_MT_BF16_IDENTITY: std::cell::Cell<Option<MoeMtBf16Identity>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// MoE multi-token identity: keep SDPA/projections on bf16 singleton-compatible
 /// path (no f32 multi-token upcast) so teacher-forced matches pure-direct.
 #[must_use]
 pub(crate) struct MoeMtBf16IdentityScope {
-    prev: bool,
-}
-
-impl MoeMtBf16IdentityScope {
-    pub(crate) fn new(enabled: bool) -> Self {
-        let prev = MOE_MT_BF16_IDENTITY.with(|c| c.replace(enabled));
-        Self { prev }
-    }
+    prev: Option<MoeMtBf16Identity>,
 }
 
 impl Drop for MoeMtBf16IdentityScope {
@@ -2832,12 +2832,17 @@ impl Drop for MoeMtBf16IdentityScope {
     }
 }
 
-pub(crate) fn scoped_moe_mt_bf16_identity(enabled: bool) -> MoeMtBf16IdentityScope {
-    MoeMtBf16IdentityScope::new(enabled)
+pub(crate) fn scoped_moe_mt_bf16_identity(mode: MoeMtBf16Identity) -> MoeMtBf16IdentityScope {
+    let prev = MOE_MT_BF16_IDENTITY.with(|current| current.replace(Some(mode)));
+    MoeMtBf16IdentityScope { prev }
 }
 
 pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
-    MOE_MT_BF16_IDENTITY.with(|c| c.get())
+    MOE_MT_BF16_IDENTITY.with(|current| current.get().is_some())
+}
+
+pub(crate) fn gemma_moe_mt_bf16_identity_enabled() -> bool {
+    MOE_MT_BF16_IDENTITY.with(|current| current.get() == Some(MoeMtBf16Identity::Gemma))
 }
 
 env_flag!(

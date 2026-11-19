@@ -925,22 +925,26 @@ pub(crate) fn full_precision_attention_with_window(
             let hk = k_shape.get(1).copied().unwrap_or(hq);
             let key_len = k_shape.get(2).copied().unwrap_or(1) as usize;
             let hist = key_len.saturating_sub(seq);
-            // Fold query positions into the batch dimension so MLX dispatches
-            // its singleton-query reduction for every row in one call. A
-            // native q_len=seq dispatch uses a different bf16 reduction and
-            // accumulates small KV/residual drift; the formal Gemma 26B long
-            // loop eventually flips an EOS near-tie. Separate singleton calls
-            // are exact but lose the multi-token speedup.
+            // Fold query positions into the batch with a per-row mask when
+            // possible. Gemma's ordered global layers need the same unmasked
+            // K/V prefix per position as singleton decode. Padding the prefix
+            // and applying an array mask can change its BF16 reduction.
+            let ordered_gemma_global = sliding_window.is_none()
+                && ring_layout.is_none()
+                && fastpath::gemma_moe_mt_bf16_identity_enabled();
             let generated_mask;
             debug_assert!(ring_layout.is_none() || mask_opt.is_some());
-            let position_mask = if let Some(mask) = mask_opt.as_ref() {
-                mask
+            let position_mask = if ordered_gemma_global {
+                None
+            } else if let Some(mask) = mask_opt.as_ref() {
+                Some(mask)
             } else {
                 generated_mask = create_causal_mask(seq, hist, sliding_window);
-                &generated_mask
+                Some(&generated_mask)
             };
             if b == 1
                 && k_shape.first().copied() == Some(1)
+                && let Some(position_mask) = position_mask
                 && position_mask.shape() == vec![seq as i32, key_len as i32]
             {
                 if let Some(window) = sliding_window
@@ -2351,6 +2355,104 @@ mod tests {
                 "27B-shaped reused rope must match mlx_fast_rope: {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn moe_global_verify_attention_matches_unmasked_singleton_prefixes() {
+        use crate::fastpath::{MoeMtBf16Identity, scoped_moe_mt_bf16_identity};
+        use mlx_sys::{concatenate, reshape, slice};
+
+        let (heads, kv_heads, dim) = (16i32, 2i32, 512i32);
+        let bf16 = |shape: &[i32], phase: f32| {
+            let count = shape.iter().product::<i32>() as usize;
+            let values: Vec<f32> = (0..count)
+                .map(|i| {
+                    let position = i as f32;
+                    (position * 0.071 + phase).sin() * (position * 0.109 + phase).cos()
+                })
+                .collect();
+            reshape(
+                &astype(&MlxArray::from_f32_slice(&values), MlxDtype::Bfloat16, None),
+                shape,
+                None,
+            )
+        };
+        let identity = scoped_moe_mt_bf16_identity(MoeMtBf16Identity::Gemma);
+        for (history, seq) in [(1022i32, 2i32), (1037, 3), (1319, 3)] {
+            let key_len = history + seq;
+            let q = bf16(&[1, heads, seq, dim], 0.1);
+            let k = bf16(&[1, kv_heads, key_len, dim], 0.4);
+            let v = bf16(&[1, kv_heads, key_len, dim], 0.9);
+            let causal_mask =
+                crate::attention_mask::create_causal_mask(seq as usize, history as usize, None);
+            let mask = Some(causal_mask.clone());
+            let folded = {
+                let _folded = scoped_moe_mt_bf16_identity(MoeMtBf16Identity::Folded);
+                full_precision_attention(&q, &k, &v, 1.0, seq as usize, &mask)
+            };
+            let fold_q = reshape(
+                &mlx_sys::transpose(&q, &[0, 2, 1, 3], None),
+                &[seq, heads, 1, dim],
+                None,
+            );
+            let fold_mask = reshape(&causal_mask, &[seq, 1, 1, key_len], None);
+            let reference_fold = scaled_dot_product_attention_with_mask(
+                &fold_q,
+                &mlx_sys::broadcast_to(&k, &[seq, kv_heads, key_len, dim], None),
+                &mlx_sys::broadcast_to(&v, &[seq, kv_heads, key_len, dim], None),
+                1.0,
+                ScaledDotProductAttentionMask::Array(&fold_mask),
+                None,
+            );
+            let reference_fold = mlx_sys::transpose(
+                &reshape(&reference_fold, &[1, seq, heads, dim], None),
+                &[0, 2, 1, 3],
+                None,
+            );
+            let folded = mlx_sys::contiguous(&astype(&folded, MlxDtype::Float32, None), None);
+            let reference_fold =
+                mlx_sys::contiguous(&astype(&reference_fold, MlxDtype::Float32, None), None);
+            eval(&[&folded, &reference_fold]);
+            assert!(
+                folded.data_f32() == reference_fold.data_f32(),
+                "generic MoE verify did not preserve folded attention at history {history}, width {seq}"
+            );
+            assert!(crate::fastpath::gemma_moe_mt_bf16_identity_enabled());
+
+            let verify = full_precision_attention(&q, &k, &v, 1.0, seq as usize, &mask);
+            let rows: Vec<_> = (0..seq)
+                .map(|row| {
+                    let q = slice(
+                        &q,
+                        &[0, 0, row, 0],
+                        &[1, heads, row + 1, dim],
+                        &[1; 4],
+                        None,
+                    );
+                    let prefix = |kv: &MlxArray| {
+                        slice(
+                            kv,
+                            &[0; 4],
+                            &[1, kv_heads, history + row + 1, dim],
+                            &[1; 4],
+                            None,
+                        )
+                    };
+                    full_precision_attention(&q, &prefix(&k), &prefix(&v), 1.0, 1, &None)
+                })
+                .collect();
+            let row_refs: Vec<_> = rows.iter().collect();
+            let direct = concatenate(&row_refs, 2, None);
+            let verify = astype(&verify, MlxDtype::Float32, None);
+            let direct = astype(&direct, MlxDtype::Float32, None);
+            eval(&[&verify, &direct]);
+            assert!(
+                verify.data_f32() == direct.data_f32(),
+                "global verify SDPA differed from singleton prefix SDPA at history {history}, width {seq}"
+            );
+        }
+        drop(identity);
+        assert!(!crate::fastpath::moe_mt_bf16_identity_enabled());
     }
 
     #[test]
