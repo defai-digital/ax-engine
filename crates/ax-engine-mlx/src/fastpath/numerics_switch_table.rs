@@ -142,6 +142,8 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_MULTI_TOKEN_WINDOW_VIEWS", shipped: "on", class: SwitchClass::NonNumeric("placement") },
     SwitchRow { env: "AX_MLX_GEMMA4_VERIFY_QMM_LM_HEAD", shipped: "off", class: SwitchClass::Token("gemma4_verify_qmm") },
     SwitchRow { env: "AX_MLX_GEMMA_MT_PERPOS_FFN", shipped: "off", class: SwitchClass::Token("gemma_mt_perpos") },
+    SwitchRow { env: "AX_MLX_GEMMA_DENSE_VERIFY_AFFINE", shipped: "off", class: SwitchClass::Token("gemma_dense_affine") },
+    SwitchRow { env: "AX_MLX_GEMMA_DENSE_VERIFY_AFFINE_FFN", shipped: "off", class: SwitchClass::Token("gemma_dense_affine_ffn") },
     SwitchRow { env: "AX_MLX_MULTI_TOKEN_F32_ATTENTION", shipped: "on", class: SwitchClass::Token("mt_f32=0") },
     SwitchRow { env: "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_F32_SDPA", shipped: "on", class: SwitchClass::Token("gemma4_prefill_f32=0") },
     SwitchRow { env: "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_EMBED_CLIP", shipped: "on", class: SwitchClass::NonNumeric("scheduling") },
@@ -503,6 +505,14 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_GEMMA_MT_PERPOS_FFN" => {
             switches.gemma_mt_perpos_ffn = true;
+            true
+        }
+        "AX_MLX_GEMMA_DENSE_VERIFY_AFFINE" => {
+            switches.gemma_dense_affine = true;
+            true
+        }
+        "AX_MLX_GEMMA_DENSE_VERIFY_AFFINE_FFN" => {
+            switches.gemma_dense_affine_ffn = true;
             true
         }
         "AX_MLX_MULTI_TOKEN_F32_ATTENTION" => {

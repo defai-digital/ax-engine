@@ -14641,11 +14641,35 @@ impl MlxRunner {
                         &pending,
                     );
                 let cycle_force = cycle_hit || state.gemma_mtp_cycle_latched;
+                let ring_slack = state.cache.rotating_sliding_slack();
+                let dense_force_singletons = gemma_assistant_draft
+                    && self.cfg.gemma4_moe_router
+                    && self.cfg.moe_expert_count == 0
+                    && (verify_len > 8
+                        || (ring_slack > 0
+                            && self
+                                .cfg
+                                .layer_configs
+                                .iter()
+                                .map(|layer| layer.sliding_window)
+                                .chain(
+                                    self.cfg
+                                        .layer_configs
+                                        .is_empty()
+                                        .then_some(self.cfg.global_sliding_window),
+                                )
+                                .flatten()
+                                .any(|window| {
+                                    window > 0
+                                        && token_offset.saturating_add(verify_len) > window
+                                        && (token_offset < window || verify_len > ring_slack)
+                                })));
                 let verify_route = gemma_greedy_verify_route(
                     force_pure_direct,
                     cycle_guard_on && gemma_assistant_draft,
                     cycle_force,
                     early_gen_force
+                        || dense_force_singletons
                         || (gemma_cap_guard
                             && state.cache.additional_fa_blocks_for_append(verify_len) != Some(0)),
                 );

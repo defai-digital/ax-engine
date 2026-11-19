@@ -641,10 +641,13 @@ fn layer_shell_post_attention(
         // 4-bit multi-token short verify: per-position FFN (smokef12 cut 12b4
         // div 3→1; 6-bit keeps batched FFN for formal4 ≥1.20× speed).
         let dense_seq = normed2.shape().get(1).copied().unwrap_or(1) as usize;
-        if crate::fastpath::gemma_mt_perpos_ffn_enabled()
-            && dense_seq > 1
+        if (2..=4).contains(&dense_seq) && fastpath::gemma_dense_verify_affine_ffn_enabled() {
+            ffn_swiglu_row_exact(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
+        } else if dense_seq > 1
             && dense_seq <= 8
-            && crate::fastpath::multi_token_f32_attention_enabled()
+            && (fastpath::gemma_dense_verify_identity_enabled()
+                || (fastpath::gemma_mt_perpos_ffn_enabled()
+                    && fastpath::multi_token_f32_attention_enabled()))
         {
             use mlx_sys::{concatenate, slice};
             let hs = cfg.hidden_size as i32;
@@ -1079,7 +1082,9 @@ fn layer_forward_internal(
     // run. Exact / moe-mt identity skip the fuse and still need `normed`.
     // The exact contract only constrains decode shapes (seq <= 4); prefill
     // keeps the fused path (fastpath::qwen_linear_mtp_exact_for_seq).
-    let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_for_seq(seq as i32)
+    let dense_verify_exact = fastpath::gemma_dense_verify_identity_enabled();
+    let skip_qkv_fuse = dense_verify_exact
+        || crate::fastpath::qwen_linear_mtp_exact_for_seq(seq as i32)
         || crate::fastpath::moe_mt_bf16_identity_enabled();
     let fuse_attn_norm_qkv = fastpath::should_call_attn_norm_qkv_fuse(
         fastpath::should_attn_norm_qkv_fuse(&cfg.model_family, seq as i32),
@@ -1116,7 +1121,8 @@ fn layer_forward_internal(
     // portable path below.
     let fused_prefill = 'fused: {
         let dbg = fastpath::prefill_time_debug_env();
-        if !fastpath::fused_prefill_attention_should_try_for_seq(&cfg.model_family, seq as i32)
+        if dense_verify_exact
+            || !fastpath::fused_prefill_attention_should_try_for_seq(&cfg.model_family, seq as i32)
             || seq <= 1
         {
             break 'fused None;
@@ -1500,9 +1506,14 @@ fn layer_forward_internal(
             let normed = normed
                 .as_ref()
                 .expect("KV-shared path keeps portable attn_norm");
-            let q_raw = qw(
+            let q_raw = super::super::shared::utils::qw_with_policy(
                 normed,
                 w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
+                if dense_verify_exact {
+                    ProjectionBatchPolicy::RowExact
+                } else {
+                    ProjectionBatchPolicy::Shared
+                },
             );
             let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
             let (rope_base, rope_freqs_ref) = rope_freqs
@@ -1612,10 +1623,12 @@ fn layer_forward_internal(
                     Some(&w.attn_norm),
                     cfg.rms_norm_eps,
                 )
-            } else if moe_mt_exact {
+            } else if moe_mt_exact || dense_verify_exact {
                 // Gemma's accepted trailing rows become K/V for later decode.
                 // Shared projections can change those rows even in short contexts.
-                if use_row_exact_moe_verify_qkv(&cfg.model_family, token_offset) {
+                if dense_verify_exact
+                    || use_row_exact_moe_verify_qkv(&cfg.model_family, token_offset)
+                {
                     qkv_project_row_exact(
                         cfg,
                         w,
@@ -2048,10 +2061,10 @@ fn layer_forward_internal(
         let attn_flat = qwen_prefill_maybe_last_token_flat(&attn_flat, last_token_o_proj);
         // RowExact o_proj under moe_mt (smokef99 exact). Shared o_proj broke
         // formal identity (smokef100).
-        let o_policy = if crate::fastpath::moe_mt_bf16_identity_enabled() {
-            crate::model::shared::utils::ProjectionBatchPolicy::RowExact
+        let o_policy = if dense_verify_exact || crate::fastpath::moe_mt_bf16_identity_enabled() {
+            ProjectionBatchPolicy::RowExact
         } else {
-            crate::model::shared::utils::ProjectionBatchPolicy::Shared
+            ProjectionBatchPolicy::Shared
         };
         let attn_proj = attention_output_projection_with_post_norm_policy(
             &attn_flat,

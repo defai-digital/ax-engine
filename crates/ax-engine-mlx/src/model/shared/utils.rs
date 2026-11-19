@@ -897,6 +897,25 @@ pub(crate) fn qw_with_policy(
     qw: &QuantizedWeight,
     policy: ProjectionBatchPolicy,
 ) -> MlxArray {
+    if policy == ProjectionBatchPolicy::RowExact
+        && fastpath::gemma_dense_verify_affine_enabled()
+        && matches!(qw.bits, 6 | 8)
+        && qw.group_size == 32
+        && x.dtype() == MlxDtype::Bfloat16
+        && x.shape().last().is_some_and(|width| width % 256 == 0)
+        && qw.weight.shape().first().is_some_and(|rows| rows % 8 == 0)
+        && qw
+            .scales
+            .as_ref()
+            .is_some_and(|scales| scales.dtype() == MlxDtype::Bfloat16)
+        && qw
+            .biases
+            .as_ref()
+            .is_some_and(|biases| biases.dtype() == MlxDtype::Bfloat16)
+        && let Some(window) = invariant_affine_projection_window(x, qw)
+    {
+        return window;
+    }
     // Under an invariant projection scope, the S=1 baseline uses this same
     // kernel through Shared and S>1 RowExact must use it too. The scope owner
     // is responsible for applying the arithmetic contract symmetrically.
@@ -1709,6 +1728,10 @@ pub(crate) fn invariant_projection_window(x: &MlxArray, qw: &QuantizedWeight) ->
     if !fastpath::qwen_linear_mtp_exact_enabled() {
         return None;
     }
+    invariant_affine_projection_window(x, qw)
+}
+
+fn invariant_affine_projection_window(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {
     let shape = x.shape();
     if shape.len() != 3 || shape[0] != 1 || !(2..=4).contains(&shape[1]) {
         return None;

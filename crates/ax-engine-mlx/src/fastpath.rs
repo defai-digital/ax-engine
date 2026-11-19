@@ -2810,6 +2810,7 @@ pub(crate) fn multi_token_window_views_enabled() -> bool {
 pub(crate) enum MoeMtBf16Identity {
     Folded,
     Gemma,
+    DenseGemma,
 }
 
 thread_local! {
@@ -2836,11 +2837,40 @@ pub(crate) fn scoped_moe_mt_bf16_identity(mode: MoeMtBf16Identity) -> MoeMtBf16I
 }
 
 pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
-    MOE_MT_BF16_IDENTITY.with(|current| current.get().is_some())
+    MOE_MT_BF16_IDENTITY.with(|current| {
+        matches!(
+            current.get(),
+            Some(MoeMtBf16Identity::Folded | MoeMtBf16Identity::Gemma)
+        )
+    })
 }
 
 pub(crate) fn gemma_moe_mt_bf16_identity_enabled() -> bool {
     MOE_MT_BF16_IDENTITY.with(|current| current.get() == Some(MoeMtBf16Identity::Gemma))
+}
+
+pub(crate) fn gemma_dense_verify_identity_enabled() -> bool {
+    MOE_MT_BF16_IDENTITY.with(|current| current.get() == Some(MoeMtBf16Identity::DenseGemma))
+}
+
+env_flag!(
+    /// Opt in to affine projection kernels in the dense Gemma verifier.
+    gemma_dense_verify_affine_requested,
+    "AX_MLX_GEMMA_DENSE_VERIFY_AFFINE"
+);
+
+env_flag!(
+    /// Also use affine FFN projections where the dense verifier supports them.
+    gemma_dense_verify_affine_ffn_requested,
+    "AX_MLX_GEMMA_DENSE_VERIFY_AFFINE_FFN"
+);
+
+pub(crate) fn gemma_dense_verify_affine_enabled() -> bool {
+    gemma_dense_verify_identity_enabled() && gemma_dense_verify_affine_requested()
+}
+
+pub(crate) fn gemma_dense_verify_affine_ffn_enabled() -> bool {
+    gemma_dense_verify_affine_enabled() && gemma_dense_verify_affine_ffn_requested()
 }
 
 env_flag!(
@@ -7609,6 +7639,8 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) gemma_cycle_guard: bool,
     pub(crate) gemma_early_direct: bool,
     pub(crate) gemma_mt_perpos_ffn: bool,
+    pub(crate) gemma_dense_affine: bool,
+    pub(crate) gemma_dense_affine_ffn: bool,
     pub(crate) invariant_mxfp4: bool,
     pub(crate) dense_weight_t_gemv: bool,
     pub(crate) relaxed_mtp: bool,
@@ -7757,6 +7789,8 @@ impl Default for NumericsTierSwitches {
             gemma_cycle_guard: true,
             gemma_early_direct: false,
             gemma_mt_perpos_ffn: false,
+            gemma_dense_affine: false,
+            gemma_dense_affine_ffn: false,
             invariant_mxfp4: false,
             dense_weight_t_gemv: true,
             relaxed_mtp: true,
@@ -7911,6 +7945,8 @@ impl NumericsTierSwitches {
             gemma_cycle_guard: gemma4_assistant_mtp_cycle_guard_enabled(),
             gemma_early_direct: gemma4_assistant_mtp_early_gen_pure_direct_enabled(),
             gemma_mt_perpos_ffn: gemma_mt_perpos_ffn_enabled(),
+            gemma_dense_affine: gemma_dense_verify_affine_requested(),
+            gemma_dense_affine_ffn: gemma_dense_verify_affine_ffn_requested(),
             invariant_mxfp4: invariant_mxfp4_qmv_fast_enabled(),
             dense_weight_t_gemv: exact_dense_weight_t_gemv_enabled(),
             relaxed_mtp: mtp_relaxed_target_verify_enabled(),
@@ -8208,6 +8244,12 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if switches.gemma_mt_perpos_ffn {
         tokens.push("gemma_mt_perpos".to_string());
+    }
+    if switches.gemma_dense_affine {
+        tokens.push("gemma_dense_affine".to_string());
+    }
+    if switches.gemma_dense_affine_ffn {
+        tokens.push("gemma_dense_affine_ffn".to_string());
     }
     if switches.invariant_mxfp4 {
         tokens.push("invariant_mxfp4".to_string());

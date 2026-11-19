@@ -914,7 +914,8 @@ pub(crate) fn full_precision_attention_with_window(
     // with per-pos FFN for gen exactness (smokef51); dual-edge keep_start fixes
     // successive long-prefill drift (rows 1+ must not attend expired left keys).
     let nax_native_verify = seq > 1 && seq <= 8 && fastpath::nax_verify_native_sdpa_active();
-    if fastpath::moe_mt_bf16_identity_enabled() && !nax_native_verify {
+    let dense_verify_exact = fastpath::gemma_dense_verify_identity_enabled();
+    if dense_verify_exact || (fastpath::moe_mt_bf16_identity_enabled() && !nax_native_verify) {
         if seq > 1 && seq <= 8 {
             use mlx_sys::{concatenate, slice};
             let q_shape = q_rope.shape();
@@ -934,7 +935,7 @@ pub(crate) fn full_precision_attention_with_window(
                 && fastpath::gemma_moe_mt_bf16_identity_enabled();
             let generated_mask;
             debug_assert!(ring_layout.is_none() || mask_opt.is_some());
-            let position_mask = if ordered_gemma_global {
+            let position_mask = if ordered_gemma_global || dense_verify_exact {
                 None
             } else if let Some(mask) = mask_opt.as_ref() {
                 Some(mask)
@@ -1026,6 +1027,26 @@ pub(crate) fn full_precision_attention_with_window(
                     &[1, 1, 1, 1],
                     None,
                 );
+                if dense_verify_exact && let Some(ring) = ring_layout {
+                    let row_mask = slice(
+                        mask_opt
+                            .as_ref()
+                            .expect("bounded verify ring has an attention mask"),
+                        &[t_idx as i32, 0],
+                        &[(t_idx + 1) as i32, ring.capacity as i32],
+                        &[1, 1],
+                        None,
+                    );
+                    rows.push(scaled_dot_product_attention_with_mask(
+                        &q_t,
+                        cached_k,
+                        cached_v,
+                        query_scale,
+                        ScaledDotProductAttentionMask::Array(&row_mask),
+                        None,
+                    ));
+                    continue;
+                }
                 let allow = hist + t_idx + 1;
                 // A retained multi-token view has `window + seq - 1` keys.
                 // Move both edges for each query; moving only the causal
@@ -2453,6 +2474,69 @@ mod tests {
         }
         drop(identity);
         assert!(!crate::fastpath::moe_mt_bf16_identity_enabled());
+    }
+
+    #[test]
+    fn dense_gemma_verify_attention_matches_singletons_across_ring_wrap() {
+        use super::{
+            SlidingRingLayout, create_ring_sliding_mask, full_precision_attention_with_window,
+        };
+        use crate::fastpath::{MoeMtBf16Identity, scoped_moe_mt_bf16_identity};
+        use mlx_sys::{concatenate, reshape, slice};
+
+        let ring = SlidingRingLayout {
+            window: 7,
+            capacity: 10,
+            write_start: 18,
+        };
+        let seq = 3;
+        let array = |shape: &[i32], phase: f32| {
+            let values: Vec<_> = (0..shape.iter().product::<i32>())
+                .map(|i| (i as f32 * 0.116 + phase).sin())
+                .collect();
+            reshape(
+                &astype(&MlxArray::from_f32_slice(&values), MlxDtype::Bfloat16, None),
+                shape,
+                None,
+            )
+        };
+        let q = array(&[1, 4, seq as i32, 64], 0.1);
+        let k = array(&[1, 2, ring.capacity as i32, 64], 0.4);
+        let v = array(&[1, 2, ring.capacity as i32, 64], 0.9);
+        let mask = create_ring_sliding_mask(seq, ring.window, ring.capacity, ring.write_start);
+        let verify = {
+            let _identity = scoped_moe_mt_bf16_identity(MoeMtBf16Identity::DenseGemma);
+            full_precision_attention_with_window(
+                &q,
+                &k,
+                &v,
+                0.125,
+                seq,
+                &Some(mask),
+                None,
+                Some(ring),
+            )
+        };
+        let rows: Vec<_> = (0..seq)
+            .map(|pos| {
+                let q = slice(
+                    &q,
+                    &[0, 0, pos as i32, 0],
+                    &[1, 4, pos as i32 + 1, 64],
+                    &[1; 4],
+                    None,
+                );
+                let mask =
+                    create_ring_sliding_mask(1, ring.window, ring.capacity, ring.write_start + pos);
+                full_precision_attention(&q, &k, &v, 0.125, 1, &Some(mask))
+            })
+            .collect();
+        let row_refs: Vec<_> = rows.iter().collect();
+        let direct = concatenate(&row_refs, 2, None);
+        let verify = mlx_sys::contiguous(&astype(&verify, MlxDtype::Float32, None), None);
+        let direct = mlx_sys::contiguous(&astype(&direct, MlxDtype::Float32, None), None);
+        eval(&[&verify, &direct]);
+        assert!(verify.data_f32() == direct.data_f32());
     }
 
     #[test]
