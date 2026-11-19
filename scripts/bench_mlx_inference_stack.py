@@ -4551,8 +4551,11 @@ def bench_axengine(
 
     runs = []
     for index in range(repetitions):
+        load_conditions = None
         if load_gate is not None:
-            load_gate(f"{engine_key} measured rep {index + 1}/{repetitions}")
+            load_conditions = load_gate(
+                f"{engine_key} measured rep {index + 1}/{repetitions}"
+            )
         if gpu_wake:
             axengine_gpu_wake(port)
         run = axengine_one_run(
@@ -4568,6 +4571,24 @@ def bench_axengine(
         run["random_seed"] = seed
         run["seed"] = seed
         run["gpu_wake_before_rep"] = bool(gpu_wake)
+        if load_conditions is not None:
+            run["performance_conditions_before_rep"] = {
+                "one_minute_load_average": one_minute_load_average(load_conditions),
+                "max_non_server_process_cpu_percent": max_top_process_cpu_percent(
+                    load_conditions,
+                    excluded_pids=() if server_pid is None else (server_pid,),
+                ),
+                **{
+                    key: load_conditions[key]
+                    for key in (
+                        "power_source",
+                        "thermal_warning_recorded",
+                        "performance_warning_recorded",
+                        "cpu_power_status_recorded",
+                    )
+                    if key in load_conditions
+                },
+            }
         prefill_label = (
             f"{run['prefill_tok_s']:.1f} tok/s"
             if run.get("prefill_tok_s") is not None
@@ -6588,18 +6609,26 @@ def main() -> None:
         "%Y-%m-%dT%H:%M:%S%z",
         time.localtime(benchmark_finished),
     )
+    benchmark_window = {
+        "started_at": benchmark_started_at,
+        "finished_at": benchmark_finished_at,
+        "elapsed_seconds": round(benchmark_finished - benchmark_started, 1),
+        "performance_conditions_start": performance_conditions_start,
+        "performance_conditions_end": performance_conditions_end,
+    }
+    if args.max_load_average is not None or args.max_top_process_cpu_percent is not None:
+        benchmark_window["performance_gate"] = {
+            "max_one_minute_load_average": args.max_load_average,
+            "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
+            "wait_timeout_seconds": args.load_average_wait_timeout,
+            "poll_interval_seconds": args.load_average_poll_interval,
+        }
 
     doc = {
         "schema_version": MLX_INFERENCE_STACK_SCHEMA_VERSION,
         "claim_gate": build_public_claim_gate(),
         "host": collect_host_metadata(performance_conditions_end),
-        "benchmark_window": {
-            "started_at": benchmark_started_at,
-            "finished_at": benchmark_finished_at,
-            "elapsed_seconds": round(benchmark_finished - benchmark_started, 1),
-            "performance_conditions_start": performance_conditions_start,
-            "performance_conditions_end": performance_conditions_end,
-        },
+        "benchmark_window": benchmark_window,
         "build": collect_build_metadata(
             binary=ax_engine_server,
             declared_profile=args.ax_engine_build_profile,

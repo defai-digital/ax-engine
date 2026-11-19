@@ -1016,6 +1016,71 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["ax_decode_row_identity"]["seed"], 44)
         self.assertEqual(row["trials"][0]["random_seed"], 44)
         self.assertEqual(row["trials"][0]["seed"], 44)
+        self.assertNotIn("performance_conditions_before_rep", row["trials"][0])
+
+    def test_bench_axengine_records_the_accepted_load_for_each_trial(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 30.0,
+            "output_tokens": 3.0,
+        }
+        samples = [
+            {
+                "load_average": {"one_minute": load},
+                "top_processes_cpu": [
+                    {"pid": 123, "cpu_percent": 99.0, "command": "server"},
+                    {"pid": 456, "cpu_percent": cpu, "command": "editor"},
+                ],
+                "power_source": "AC Power",
+                "thermal_warning_recorded": False,
+                "performance_warning_recorded": False,
+                "cpu_power_status_recorded": False,
+            }
+            for load, cpu in ((1.0, 10.0), (1.5, 20.0), (1.8, 30.0))
+        ]
+        gate = MagicMock(side_effect=samples)
+        with patch.object(
+            bench, "axengine_one_run", side_effect=[dict(run) for _ in samples]
+        ):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                2,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                server_pid=123,
+                load_gate=gate,
+                gpu_wake=False,
+            )
+
+        self.assertEqual(
+            gate.call_args_list,
+            [
+                call("ax_engine_mlx warmup 1/1"),
+                call("ax_engine_mlx measured rep 1/2"),
+                call("ax_engine_mlx measured rep 2/2"),
+            ],
+        )
+        self.assertEqual(
+            [trial["performance_conditions_before_rep"] for trial in row["trials"]],
+            [
+                {
+                    "one_minute_load_average": load,
+                    "max_non_server_process_cpu_percent": cpu,
+                    "power_source": "AC Power",
+                    "thermal_warning_recorded": False,
+                    "performance_warning_recorded": False,
+                    "cpu_power_status_recorded": False,
+                }
+                for load, cpu in ((1.5, 20.0), (1.8, 30.0))
+            ],
+        )
 
     def test_bench_axengine_reports_interim_summary_before_cooldown(self) -> None:
         runs = [

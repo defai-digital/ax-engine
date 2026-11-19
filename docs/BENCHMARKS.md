@@ -461,6 +461,12 @@ For AX-only workload comparisons, pass `--prompt-source real`,
 `--real-prompt-suite /path/to/suite.jsonl` and `--skip-mlx-lm`. The artifact
 records the model-tokenized prompt suite and its input token hashes.
 
+When a benchmark uses `--max-load-average` or
+`--max-top-process-cpu-percent`, its artifact records the configured limits
+and the host sample accepted before each measured AX trial. The sample
+includes the one-minute load, highest non-server process CPU percentage,
+and available power and warning indicators.
+
 The random-token reference contract is:
 
 1. `mlx_lm.benchmark` is mandatory and is the canonical upstream Python MLX
