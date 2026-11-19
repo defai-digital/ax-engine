@@ -32,10 +32,11 @@ and template: [docs/releases/](releases/README.md).
 
 The publisher performs this sequence:
 
-1. Verify the tag/version contract, clean worktree, and successful `CI` run for
-   the exact 40-character source commit.
+1. Validate and snapshot the release notes. Verify the tag/version contract,
+   clean worktree, and successful `CI` run for the exact 40-character source commit.
 2. Reuse an unexpired release candidate for that commit or dispatch
-   `.github/workflows/release-candidate.yml` and wait for it.
+   `.github/workflows/release-candidate.yml` from a GitHub branch whose tip is
+   that commit and wait for it.
 3. Verify the candidate manifest and SHA-256 digest of every standalone binary,
    the pinned `libmlx.dylib` / `libjaccl.dylib`, `mlx.metallib`, and the MLX
    license. Runtime acquisition also requires matching pinned `mlx` and
@@ -53,7 +54,7 @@ The publisher performs this sequence:
    clean-environment `ax-engine doctor` must report ready on the release host.
    Real publishes notarize the complete payload; dry-runs use ad-hoc signatures
    and skip notarization.
-5. Push the tag, create the GitHub release as a **draft**, upload assets, then
+5. Create and push the tag, create the GitHub release as a **draft**, upload assets, then
    independently re-download and verify checksum / minisign / runtime digests /
    rpaths / clean-environment startup / codesign / notarization on the uploaded
    bytes before flipping draft → published.

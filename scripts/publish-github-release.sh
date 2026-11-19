@@ -50,6 +50,7 @@ SKIP_NOTARIZATION=false
 ARTIFACT_DIR=""
 TITLE=""
 NOTES_FILE=""
+RELEASE_NOTES_TEMP=""
 DRAFT=false
 PRERELEASE=false
 CLOBBER_ASSETS=false
@@ -64,6 +65,9 @@ CANDIDATE_WORKFLOW="release-candidate.yml"
 cleanup() {
     if [[ -n "$APPLE_API_KEY_TEMP" ]]; then
         rm -f "$APPLE_API_KEY_TEMP"
+    fi
+    if [[ -n "$RELEASE_NOTES_TEMP" ]]; then
+        rm -f "$RELEASE_NOTES_TEMP"
     fi
 }
 
@@ -199,18 +203,29 @@ prepare_release_candidate() {
     local artifact_name="ax-engine-release-candidate-${head_commit}"
     local candidate_dir="$ARTIFACT_DIR/release-candidate"
     local candidate_run_id
+    local candidate_refs
+    local candidate_ref
     local request_id
     local run_info
     local run_title
     local run_url
+    local run_sha
 
     candidate_run_id="$(find_candidate_run "$artifact_name")"
     if [[ -z "$candidate_run_id" ]]; then
+        # The dispatch ref sets the run's head SHA even when the workflow checks out another commit.
+        candidate_refs="$(gh api --paginate --method GET "repos/${MAIN_REPO}/branches" \
+            -F per_page=100 --jq ".[] | select(.commit.sha == \"$head_commit\") | .name")"
+        IFS= read -r candidate_ref <<<"$candidate_refs"
+        [[ -n "$candidate_ref" ]] || die "no GitHub branch points at release commit $head_commit"
+        if grep -Fxq main <<<"$candidate_refs"; then
+            candidate_ref=main
+        fi
         request_id="${head_commit:0:12}-$(date -u +%Y%m%d%H%M%S)-$$"
         run_title="Release candidate $TAG [$request_id]"
         run gh workflow run "$CANDIDATE_WORKFLOW" \
             --repo "$MAIN_REPO" \
-            --ref main \
+            --ref "$candidate_ref" \
             -f tag="$TAG" \
             -f git_commit="$head_commit" \
             -f request_id="$request_id"
@@ -221,15 +236,16 @@ prepare_release_candidate() {
                 --workflow "$CANDIDATE_WORKFLOW" \
                 --event workflow_dispatch \
                 --limit 30 \
-                --json databaseId,displayTitle,url \
-                --jq "map(select(.displayTitle == \"$run_title\")) | first | if . == null then empty else [.databaseId, .url] | @tsv end")"
+                --json databaseId,displayTitle,url,headSha \
+                --jq "map(select(.displayTitle == \"$run_title\")) | first | if . == null then empty else [.databaseId, .url, .headSha] | @tsv end")"
             if [[ -n "$run_info" ]]; then
                 break
             fi
             sleep 2
         done
         [[ -n "$run_info" ]] || die "could not locate dispatched release-candidate workflow"
-        IFS=$'\t' read -r candidate_run_id run_url <<<"$run_info"
+        IFS=$'\t' read -r candidate_run_id run_url run_sha <<<"$run_info"
+        [[ "$run_sha" == "$head_commit" ]] || die "candidate dispatch resolved to $run_sha, expected $head_commit"
         echo "Waiting for release candidate: $run_url"
         run gh run watch "$candidate_run_id" --repo "$MAIN_REPO" --exit-status
 
@@ -911,6 +927,19 @@ ARTIFACT_DIR="${ARTIFACT_DIR:-$ROOT_DIR/target/release-artifacts/$TAG}"
 
 cd "$ROOT_DIR"
 
+if [[ "$DRY_RUN" = false ]]; then
+    [[ -n "$NOTES_FILE" ]] || die "real publishes require --notes-file (see docs/releases/README.md). Auto-generated compare-only bodies are not allowed."
+    [[ -f "$NOTES_FILE" ]] || die "release notes file not found: $NOTES_FILE"
+    RELEASE_NOTES_TEMP="$(mktemp "${TMPDIR:-/tmp}/ax-engine-release-notes.XXXXXX")"
+    cp -- "$NOTES_FILE" "$RELEASE_NOTES_TEMP"
+    if ! grep -qE '[[:alnum:]]' "$RELEASE_NOTES_TEMP"; then
+        die "release notes file is empty: $NOTES_FILE"
+    fi
+    if ! grep -qiE "what's new|full changelog|### " "$RELEASE_NOTES_TEMP"; then
+        echo "warning: notes file may be too thin (expected a What's New lead-in or section headings): $NOTES_FILE" >&2
+    fi
+fi
+
 check_cmd git "install Git"
 check_cmd gh "install GitHub CLI: brew install gh"
 check_cmd cargo "install Rust: https://rustup.rs"
@@ -974,12 +1003,8 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         die "tag $TAG points at $tag_commit, not current HEAD $head_commit"
     }
     echo "Tag verified at HEAD: $TAG"
-else
-    if [[ "$DRY_RUN" = true ]]; then
-        echo "dry-run: would create annotated tag $TAG at $head_commit"
-    else
-        run git tag -a "$TAG" -m "Release $TAG"
-    fi
+elif [[ "$DRY_RUN" = true ]]; then
+    echo "dry-run: would create annotated tag $TAG at $head_commit"
 fi
 
 if [[ "$SKIP_CHECKS" = false && ( "$DRY_RUN" = true || "$FULL_LOCAL_CHECKS" = true ) ]]; then
@@ -1258,6 +1283,11 @@ if [[ "$DRY_RUN" = true ]]; then
     exit 0
 fi
 
+if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    run git tag -a "$TAG" "$head_commit" -m "Release $TAG"
+fi
+[[ "$(git rev-list -n 1 "$TAG")" == "$head_commit" ]] || die "tag $TAG does not point at release commit $head_commit"
+
 if [[ "$SKIP_TAG_PUSH" = false ]]; then
     remote_tag_commit="$(git ls-remote --tags origin "refs/tags/$TAG^{}" | awk '{print $1}')"
     remote_tag_ref="$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')"
@@ -1274,23 +1304,7 @@ else
     echo "warning: skipping tag push (--skip-tag-push)" >&2
 fi
 
-release_args=("$TAG" --repo "$MAIN_REPO" --title "$TITLE")
-if [[ -n "$NOTES_FILE" ]]; then
-    [[ -f "$NOTES_FILE" ]] || die "release notes file not found: $NOTES_FILE"
-    # Reject placeholder-only notes that reintroduce the empty auto-changelog problem.
-    if ! grep -qE '[[:alnum:]]' "$NOTES_FILE"; then
-        die "release notes file is empty: $NOTES_FILE"
-    fi
-    if ! grep -qiE "what's new|full changelog|### " "$NOTES_FILE"; then
-        echo "warning: notes file may be too thin (expected a What's New lead-in or section headings): $NOTES_FILE" >&2
-    fi
-    release_args+=(--notes-file "$NOTES_FILE")
-elif [[ "$DRY_RUN" = true ]]; then
-    echo "warning: --notes-file omitted on dry-run; using gh --generate-notes (not for real publishes)" >&2
-    release_args+=(--generate-notes)
-else
-    die "real publishes require --notes-file (see docs/releases/README.md). Auto-generated compare-only bodies are not allowed."
-fi
+release_args=("$TAG" --repo "$MAIN_REPO" --title "$TITLE" --notes-file "$RELEASE_NOTES_TEMP")
 # Assemble every release as a draft. It is published only after the uploaded
 # bytes pass independent Minisign, checksum, Developer ID, and notarization checks.
 release_args+=(--draft)
