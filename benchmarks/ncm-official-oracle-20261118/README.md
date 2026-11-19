@@ -36,6 +36,26 @@ all 128 positions and the text between M5 Max and M4 Pro when both
 processes use the full-F32 profile. These fixed-input controls leave default
 precision, normal admission, HTTP service and qualification open.
 
+### CPU codec precision control
+
+The two official CPU passes consumed the same twelve levels of unigram-greedy
+concept codes, starting with code 3479. The F64 pass was rounded to F32 when
+exporting the tensors. An offline comparison on M5 Max verified the source
+trace and checked 25 tensors. Both passes produced the same 128 BPE IDs as
+the retained official greedy run. [Codec precision receipt](cpu-codec-precision.json)
+
+| Tensor | CPU F32 vs. exported F64 max absolute error |
+| --- | ---: |
+| Level-zero contribution | 0.005161762 |
+| Largest individual contribution over levels 1–11 | 0.000004292 |
+| Final accumulated latent | 0.005159855 |
+| Decoder logits | 0.004097626 |
+
+The first contribution already contains nearly all the maximum difference
+seen in the final latent. This control characterizes arithmetic sensitivity
+within the official CPU implementation. Native comparison with the same two
+captures remains pending.
+
 ## Reproduce
 
 Use an unmodified checkout of the pinned upstream source. Materialize the

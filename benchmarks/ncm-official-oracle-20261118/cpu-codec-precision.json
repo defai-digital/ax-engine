@@ -1,0 +1,125 @@
+{
+  "scope": "fixed-input codec attribution",
+  "level_zero_code": 3479,
+  "precision_note": "The official F64 pass was rounded to F32 when exporting the retained tensors.",
+  "cpu_f32": {
+    "trace_sha256": "7937c948d6e38b3d9687aa778506292f0c1b7518bc9219d09015e1851b237ceb",
+    "reference_sha256": "6694dfd3d7e761be577e61306311d9f3db6831c7dde2a6838eeba974d94cf544"
+  },
+  "cpu_f64_exported_f32": {
+    "trace_sha256": "7937c948d6e38b3d9687aa778506292f0c1b7518bc9219d09015e1851b237ceb",
+    "reference_sha256": "2e6f87b72292fe0a4bbcff56d16f4ebdccb2e9484812f2c010fba96933394da2"
+  },
+  "cpu_f32_vs_exported_f64": {
+    "contribution.0": {
+      "max_abs_error": 0.005161762237548828,
+      "rmse": 7.975607335422097e-05
+    },
+    "contribution.1": {
+      "max_abs_error": 2.5331974029541016e-07,
+      "rmse": 2.0073777509822636e-08
+    },
+    "contribution.2": {
+      "max_abs_error": 5.960464477539062e-07,
+      "rmse": 2.4995076966457394e-08
+    },
+    "contribution.3": {
+      "max_abs_error": 1.430511474609375e-06,
+      "rmse": 3.804548780814461e-08
+    },
+    "contribution.4": {
+      "max_abs_error": 1.430511474609375e-06,
+      "rmse": 6.393975160685845e-08
+    },
+    "contribution.5": {
+      "max_abs_error": 1.9073486328125e-06,
+      "rmse": 5.25585081415063e-08
+    },
+    "contribution.6": {
+      "max_abs_error": 3.814697265625e-06,
+      "rmse": 6.701368445933135e-08
+    },
+    "contribution.7": {
+      "max_abs_error": 3.814697265625e-06,
+      "rmse": 1.4914339447801995e-07
+    },
+    "contribution.8": {
+      "max_abs_error": 1.1920928955078125e-06,
+      "rmse": 7.145784197755237e-08
+    },
+    "contribution.9": {
+      "max_abs_error": 4.291534423828125e-06,
+      "rmse": 8.15343754277829e-08
+    },
+    "contribution.10": {
+      "max_abs_error": 3.337860107421875e-06,
+      "rmse": 6.548527115041768e-08
+    },
+    "contribution.11": {
+      "max_abs_error": 2.1457672119140625e-06,
+      "rmse": 1.7465699104908738e-07
+    },
+    "accumulated.0": {
+      "max_abs_error": 0.005161762237548828,
+      "rmse": 7.975607335422097e-05
+    },
+    "accumulated.1": {
+      "max_abs_error": 0.005161285400390625,
+      "rmse": 7.975533831003337e-05
+    },
+    "accumulated.2": {
+      "max_abs_error": 0.005161285400390625,
+      "rmse": 7.975478120925506e-05
+    },
+    "accumulated.3": {
+      "max_abs_error": 0.005161285400390625,
+      "rmse": 7.975502817211477e-05
+    },
+    "accumulated.4": {
+      "max_abs_error": 0.005160331726074219,
+      "rmse": 7.975385592041598e-05
+    },
+    "accumulated.5": {
+      "max_abs_error": 0.005161285400390625,
+      "rmse": 7.975379950136906e-05
+    },
+    "accumulated.6": {
+      "max_abs_error": 0.005160331726074219,
+      "rmse": 7.97515050348916e-05
+    },
+    "accumulated.7": {
+      "max_abs_error": 0.005160331726074219,
+      "rmse": 7.97532697375528e-05
+    },
+    "accumulated.8": {
+      "max_abs_error": 0.005160331726074219,
+      "rmse": 7.975209471817828e-05
+    },
+    "accumulated.9": {
+      "max_abs_error": 0.005159854888916016,
+      "rmse": 7.975088530570181e-05
+    },
+    "accumulated.10": {
+      "max_abs_error": 0.0051593780517578125,
+      "rmse": 7.97508854093656e-05
+    },
+    "accumulated.11": {
+      "max_abs_error": 0.005159854888916016,
+      "rmse": 7.975319538981019e-05
+    },
+    "decoder.logits": {
+      "max_abs_error": 0.0040976256132125854,
+      "rmse": 0.00027510968233758097
+    }
+  },
+  "cpu_bpe_differences": [],
+  "reference": {
+    "official_source_commit": "c70274273f489abc73832b2b98584a8483b6b203",
+    "official_checkpoint_revision": "d342ce8aaea58830eef3b8ad473664673e41f692",
+    "upstream_execution_hardware": "Mac Studio M2 Ultra 192 GB",
+    "upstream_framework": "PyTorch 2.15.0 CPU",
+    "offline_comparison_hardware": "MacBook Pro M5 Max 128 GB",
+    "official_unigram_trace_sha256": "18aead38ff969b7f2cfa5908aaa0bef6334ea8a34effd3c717d895f57e7dfe15",
+    "matches_official_unigram_greedy_concept_and_bpe_ids": true
+  }
+}
