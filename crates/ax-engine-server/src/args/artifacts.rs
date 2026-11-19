@@ -343,16 +343,18 @@ fn looks_like_artifact_dir(path: &Path) -> bool {
     path.join("config.json").is_file()
 }
 
-/// Use the repository name for a Hub snapshot and the artifact directory
+/// Use the repository name within a Hub snapshot and the artifact directory
 /// name for a local pack. Cache roots, organizations, and snapshot revisions
 /// can reuse product or MTP labels without identifying the pack.
 fn artifact_model_label(path: &Path) -> String {
-    let cached_repo = path
-        .parent()
-        .filter(|dir| dir.file_name().is_some_and(|name| name == "snapshots"))
-        .and_then(Path::parent)
-        .and_then(Path::file_name)
-        .filter(|name| name.to_string_lossy().starts_with("models--"));
+    let cached_repo = path.ancestors().find_map(|ancestor| {
+        ancestor
+            .parent()
+            .filter(|dir| dir.file_name().is_some_and(|name| name == "snapshots"))
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .filter(|name| name.to_string_lossy().starts_with("models--"))
+    });
     let directory = cached_repo
         .or_else(|| path.file_name())
         .map(|name| name.to_string_lossy())

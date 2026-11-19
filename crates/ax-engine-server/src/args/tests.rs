@@ -564,16 +564,20 @@ fn inferred_model_id_uses_pack_label_without_cache_root_or_revision() {
         .join(format!("models--holo3-mtp--{no_mtp}"))
         .join("snapshots")
         .join("repacked-mtp");
+    let nested_cached = cached.join("weights").join("text");
     let local = root.join(no_mtp);
     let with_mtp = root
         .join("models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP")
         .join("snapshots")
         .join("v1");
+    let nested_mtp = with_mtp.join("converted");
 
     for (path, expected) in [
         (cached, "qwen3.8-27b"),
+        (nested_cached, "qwen3.8-27b"),
         (local, "qwen3.8-27b"),
         (with_mtp, "qwen3.8-27b-mtp"),
+        (nested_mtp, "qwen3.8-27b-mtp"),
     ] {
         write_artifact_dir(&path, "qwen3_5");
         let args = ServerArgs {
