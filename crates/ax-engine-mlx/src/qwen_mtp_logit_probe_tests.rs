@@ -26,7 +26,7 @@ struct Observation {
     source: Source,
 }
 
-pub(crate) struct Capture {
+pub struct Capture {
     first_position: usize,
     rows: BTreeMap<usize, Vec<Observation>>,
 }
@@ -35,7 +35,7 @@ thread_local! {
     static ACTIVE: std::cell::RefCell<Option<Capture>> = const { std::cell::RefCell::new(None) };
 }
 
-pub(crate) fn start(prompt_len: usize, indices: &[usize]) {
+pub fn start(prompt_len: usize, indices: &[usize]) {
     assert!(prompt_len > 0);
     ACTIVE.with_borrow_mut(|active| {
         assert!(active.is_none(), "a logit replay is already active");
@@ -46,7 +46,7 @@ pub(crate) fn start(prompt_len: usize, indices: &[usize]) {
     });
 }
 
-pub(crate) fn finish() -> Capture {
+pub fn finish() -> Capture {
     ACTIVE.take().expect("active logit replay")
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn observe(position: usize, logits: &MlxArray, count: usize, source: 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub(crate) struct Scores {
+pub struct Scores {
     pub(crate) source: Source,
     pub(crate) emitted_logit: f32,
     pub(crate) rival_logit: f32,
@@ -133,7 +133,7 @@ impl Observation {
 }
 
 impl Capture {
-    pub(crate) fn scores(&self, index: usize, emitted: u32, rival: u32) -> Result<Scores, String> {
+    pub fn scores(&self, index: usize, emitted: u32, rival: u32) -> Result<Scores, String> {
         let observations = self
             .rows
             .get(&index)

@@ -1201,7 +1201,7 @@ pub(crate) fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             // runs (its GPU-first path may eval the logits again). Nothing
             // is added, removed, or reordered; only the wall is observed,
             // so eval_wait_us stays 0 on this row by construction.
-            #[cfg(test)]
+            #[cfg(any(test, feature = "qwen-replay-diagnostics"))]
             crate::qwen_mtp_logit_probe::observe(
                 chunk_offset + chunk.len() - 1,
                 &last_logits,

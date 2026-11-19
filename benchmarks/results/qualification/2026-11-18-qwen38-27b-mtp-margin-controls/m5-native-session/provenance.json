@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "hardware": {
+    "macos_version": "27.2.1",
+    "model_storage": "NAS-backed snapshot",
+    "system": "MacBook Pro M5 Max 128 GB"
+  },
+  "pack": {
+    "inventory_sha256": "635763473e39744a32478b9b7a5dfd5f137f778557ff26aec9112f9d9ac28122",
+    "native_manifest_sha256": "524163237ca2b879bff41f782a5eee6a1266b4f80f5d2c99e07117b7b899127a",
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "revision": "b2c5354f779e430d0c1733143db848a72b71c16e"
+  },
+  "timing_case": {
+    "case_id": "coding-003",
+    "relative_path": "../../2026-11-18-qwen38-27b-mxfp4-mtp-performance/m5-agent-coding-trials.jsonl",
+    "artifact_sha256": "68de1b5e8166321a869eb60836058d3ccee65b22072523d85dcbdb35b76caa30",
+    "prompt_token_ids_sha256": "8316b8d7105f67716424bee4c3177dcab80628e85ac9c2d2200ccf87e16db69c",
+    "direct_token_ids_sha256": "dd2f29c0887cfc46a1da0a70c228f5c92d9aaa4afb4c6d6de06363f38805bfe8",
+    "mtp_token_ids_sha256": "f52b27360d7d75c59a108e0573d103c87e087855ee7a41d603c20a534c28e44e"
+  },
+  "replay": {
+    "source_parent": "a34882ed59a7f1e18bb870020264dd0a8a790dc1",
+    "source_patch_sha256": "13a4390c3ee1f48a33311698f341c3d1a6059410e1ff7a9fa143b9a99b6374cd",
+    "source_file_sha256": {
+      "crates/ax-engine-mlx/Cargo.toml": "ca547d4a4937ae49fd45a186d21cbe98f2fffa1323dff7982d94a29701586e51",
+      "crates/ax-engine-mlx/src/generate.rs": "f01d20461d6259c94179caa0a61e099bd91a783e8885f466a1365565a14855d1",
+      "crates/ax-engine-mlx/src/lib.rs": "9b624131d65fac61f30dcfe7aa7f341cf75a7e146c975602265f6076aa834f2e",
+      "crates/ax-engine-mlx/src/model/mod.rs": "fd8b14c140adeed6989ab8a3e08ed4e5b78ba2173ccc9378f4c54dbb82a03cb3",
+      "crates/ax-engine-mlx/src/ngram_accel.rs": "f6756b990fa67612535299ebbb8f65814473a7fdea0e637c57077254f1aac59f",
+      "crates/ax-engine-mlx/src/qwen_mtp_logit_probe_tests.rs": "bdfb77ecf4240b0ddb210c99204ff36ee016c3f219265c1f41de4ec0a26c44eb",
+      "crates/ax-engine-mlx/src/runner/mod.rs": "928d059048035d63b4297f7971308c76731f6779e793be2370c38496ddef448e",
+      "crates/ax-engine-sdk/Cargo.toml": "d6a3eb94b6ee59f2280d6cd029ad3b7d45df737918bf762b77d69da9f438dd78",
+      "crates/ax-engine-sdk/tests/qwen38_mtp_replay.rs": "2380c3b1e654767ce7ec18245933297022e1453320bafd686f82b57782ca6330"
+    },
+    "test_executable_sha256": "a3c7a08bad84937b801d48ee15687a53223e56a36e035c888fac08799c3f0b5d",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "rust_distribution": "Homebrew",
+    "build_profile": "release-server",
+    "mlx_version": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "seed": 0,
+    "ignore_eos": true,
+    "max_output_tokens": 512,
+    "prefill_chunk": 2048,
+    "direct_policy": "disabled",
+    "mtp_policy": "required",
+    "dflash2": false,
+    "ngram_stacking": false,
+    "prefix_reuse": false,
+    "passed_ignored_tests": 2,
+    "paired_verifier_exit_status": 0
+  },
+  "artifact_sha256": {
+    "paired.json": "87264288c749be79c859adcb2e27b23a009119be919d516f2cd0efb5468a015b",
+    "focused-cases.json": "9089d3afbd1cb167ccb3abf95169918cd7818d5cb1df01a7f39cfca6740df586",
+    "replay-summary.json": "6bd4df695cf7dba7942dea1a057c88f87af7c50ad9aedbf72b1f9fea366ab9a1",
+    "direct.log.gz": "b08789a49368b4c92e8ca0c0e1079c3bd1bc1187d6f9905ddc345a46a04b7abe",
+    "mtp.log.gz": "ba3813e21397661bb0891d972da119c0cf3d042cbeaa31ab721d852ad73b2db1"
+  },
+  "raw_log_sha256": {
+    "direct.log": "785865afeba11d73743ccf1427bdbf882f2d8011023797696b68d9cf545ab886",
+    "mtp.log": "069e29c7f21754300a727eae0bff3593f0a1b6acac5a93c1ec9ed897c4feba63"
+  }
+}

@@ -1433,7 +1433,7 @@ pub(crate) fn recompute_committed_prefix_with_argmax(
         last_logits = forward_argmax(cfg, weights, &[token], cache, token_offset + index + 1);
         cache.advance(1);
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "qwen-replay-diagnostics"))]
     crate::qwen_mtp_logit_probe::observe(
         token_offset + accepted_draft.len(),
         &last_logits,

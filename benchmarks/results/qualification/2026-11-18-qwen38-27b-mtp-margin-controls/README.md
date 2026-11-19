@@ -39,6 +39,24 @@ cycles, including 69 accepted drafts. The independent reader checked all
 119 differences from the paired 128-token pilot. The receipt binds the
 tested binary and source file hashes.
 
+## Native SDK session replay
+
+On MacBook Pro M5 Max 128 GB, the native inference session reproduced the
+recorded 512-token output for each route on the measured `coding-003`
+prompt. Direct and required MTP ran in separate processes. Both reached
+the fixed output budget and produced the same output with logit capture
+enabled. The [measured token IDs](../2026-11-18-qwen38-27b-mxfp4-mtp-performance/m5-agent-coding-trials.jsonl)
+and [build and runtime provenance](m5-native-session/provenance.json)
+bind the replay to the original timing case.
+
+There were 193 differences. The first was at zero-based index 319 with
+the same prior tokens. The direct target chose `886` in a tie at 30.625.
+The MTP verifier chose `4307` with a 0.125 logit advantage. The remaining
+192 comparisons use the prefixes generated independently by each route.
+All 193 pairs are in the [replay receipt](m5-native-session/paired.json).
+This is an untimed, fixed-budget diagnostic for one request. MTP
+qualification remains open.
+
 ## Reproduce the paired pilot
 
 To replay the included case, convert the receipt to the test input format
@@ -65,3 +83,33 @@ python3 scripts/verify_qwen38_27b_mtp_margin_replay.py \
 For offline validation, use the same case file and
 `--report-json "$RECEIPT"`. For a new timing run, build the case file
 from the measured prompt and output token IDs before running the test.
+
+## Reproduce the SDK replay
+
+Set `RECEIPT_DIR` to the path of `m5-native-session` and `MODEL_DIR` to
+the path of the pinned snapshot. Run from the repository root with the
+pinned MLX runtime. Each arm runs in a separate process so cached runtime
+switches cannot cross between them.
+
+```bash
+export AX_MLX_NATIVE_CONFIRM=1 AX_MLX_DFLASH2=0
+export AX_ENGINE_PREFIX_REUSE_DISABLED=1 AX_MLX_PREFIX_CACHE_DISK_DISABLED=1
+export AX_MLX_PREFIX_CACHE_MAX_BYTES=0 AX_MLX_PREFIX_CACHE_MAX_ENTRIES=0
+export AX_QWEN38_27B_MTP_S_MODEL_DIR="$MODEL_DIR"
+export AX_QWEN38_27B_MTP_MARGIN_CASE="$RECEIPT_DIR/focused-cases.json"
+unset AX_NO_SPEC
+
+AX_QWEN38_REPLAY_ARM=direct AX_NO_SPEC=1 AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY=0 \
+AX_MLX_ROTATING_SLIDING_PREFILL=0 AX_GEMMA4_LOOP_DETECTION=off \
+rustup run 1.99.1 cargo test --profile release-server -p ax-engine-sdk \
+  --features qwen-replay-diagnostics --test qwen38_mtp_replay \
+  qwen38_27b_replay_native_session_arm -- --exact --ignored --nocapture --test-threads=1
+
+AX_QWEN38_REPLAY_ARM=mtp \
+rustup run 1.99.1 cargo test --profile release-server -p ax-engine-sdk \
+  --features qwen-replay-diagnostics --test qwen38_mtp_replay \
+  qwen38_27b_replay_native_session_arm -- --exact --ignored --nocapture --test-threads=1
+
+python3 scripts/verify_qwen38_27b_mtp_margin_replay.py \
+  "$RECEIPT_DIR/focused-cases.json" --report-json "$RECEIPT_DIR/paired.json"
+```

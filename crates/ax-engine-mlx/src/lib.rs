@@ -30,9 +30,10 @@ pub mod ngram_table;
 pub mod qwen3_vl;
 pub mod qwen4_exp_ngram;
 pub mod qwen4_exp_qsa;
-#[cfg(test)]
+#[cfg(any(test, feature = "qwen-replay-diagnostics"))]
+#[doc(hidden)]
 #[path = "qwen_mtp_logit_probe_tests.rs"]
-mod qwen_mtp_logit_probe;
+pub mod qwen_mtp_logit_probe;
 pub mod unlimited_ocr;
 pub mod unlimited_ocr2;
 mod unlimited_ocr_page_guard;

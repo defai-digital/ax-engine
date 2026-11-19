@@ -8,6 +8,9 @@ publish = false
 [lints.rust]
 unsafe_code = "allow"
 
+[features]
+qwen-replay-diagnostics = []
+
 [dependencies]
 mlx-sys = { path = "../mlx-sys" }
 ax-engine-core = { path = "../ax-engine-core" }

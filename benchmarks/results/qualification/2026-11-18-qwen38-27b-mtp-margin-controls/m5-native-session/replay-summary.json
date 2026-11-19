@@ -1,0 +1,13 @@
+{
+  "case_id": "coding-003",
+  "paired_exact": false,
+  "first_differing_index": 319,
+  "first_difference_same_prefix_gap": 0.125,
+  "largest_aligned_gap": 41.03125,
+  "aligned_differences": 193,
+  "first_unpaired_index": null,
+  "row_sources": {
+    "direct:target": 193,
+    "mtp:verifier": 193
+  }
+}

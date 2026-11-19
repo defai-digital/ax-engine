@@ -15285,12 +15285,13 @@ impl MlxRunner {
             primary_tok_from_skip,
             accept_count
         );
-        #[cfg(test)]
+        #[cfg(any(test, feature = "qwen-replay-diagnostics"))]
         if has_linear_attention
             && pure_qwen_mtp_pending
             && sampling.temperature == 0.0
             && !sampling.uses_logits_processors()
         {
+            #[cfg(test)]
             tests::record_qwen_mtp_greedy_cycle(
                 &logits_all,
                 &pending,

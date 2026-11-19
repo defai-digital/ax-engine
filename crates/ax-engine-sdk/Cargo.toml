@@ -9,6 +9,7 @@ version.workspace = true
 # mlx-sys rides along so build.rs receives DEP_MLX_LIB_DIR and can embed the
 # libmlx rpath in this package's test binaries when mlx linkage is active.
 mlx-native = ["dep:ax-engine-mlx", "dep:mlx-sys"]
+qwen-replay-diagnostics = ["mlx-native", "ax-engine-mlx/qwen-replay-diagnostics"]
 tokenizer = ["dep:tokenizers"]
 
 [dependencies]
