@@ -94,8 +94,8 @@ use crate::mtp_adaptive_gate::{
 };
 use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
-    THINK_SOFT_CLOSE_PROBE_RANK, ThinkSoftCloseProbe, classify_prompt_class,
-    ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
+    SequentialGreedyMtpVerify, THINK_SOFT_CLOSE_PROBE_RANK, ThinkSoftCloseProbe,
+    classify_prompt_class, ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
     recompute_committed_prefix_with_argmax, revalidate_greedy_prefix_with_argmax,
     sequential_greedy_mtp_verify, single_decode_with_sampling_buffers_capturing,
 };
@@ -4061,7 +4061,8 @@ impl MlxRunner {
             assistant_only_draft,
             state.mtp_adaptive_gate.is_some(),
         ) && !state.mtp_bypassed
-            && state.pending_direct.is_none()
+            && (state.pending_direct.is_none()
+                || crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled())
             && state.bonus_queue.is_empty()
             && state.diffusion_block_queue.is_empty()
     }
@@ -4118,7 +4119,10 @@ impl MlxRunner {
                         .iter()
                         .all(|source| *source == MtpDraftSource::Gemma4Assistant)
                     && !state.mtp_bypassed
-                    && state.pending_direct.is_none()
+                    && (state.pending_direct.is_none()
+                        || (oracle_on
+                            && ctx.deterministic_argmax_sampling
+                            && ctx.temperature <= 0.0))
                     && state.bonus_queue.is_empty()
                     && state.diffusion_block_queue.is_empty();
                 if !valid {
@@ -4291,14 +4295,26 @@ impl MlxRunner {
             let (accept_count, draft_hidden, tail_token) = match row.target {
                 None => {
                     let verify_started = Instant::now();
-                    let seq = sequential_greedy_mtp_verify(
-                        &self.cfg,
-                        &self.weights,
-                        &mut row.state.cache,
-                        row.last_token,
-                        &row.pending,
-                        row.token_offset,
-                    );
+                    let seq = if row.state.pending_direct.is_some() {
+                        // Prefill already cached the last emitted token. Read
+                        // its pending prediction through the same pipeline as
+                        // singleton verification, which owns the next write.
+                        self.run_gemma_assistant_pipeline_verify(
+                            &mut row.state,
+                            row.last_token,
+                            &row.pending,
+                            false,
+                        )
+                    } else {
+                        sequential_greedy_mtp_verify(
+                            &self.cfg,
+                            &self.weights,
+                            &mut row.state.cache,
+                            row.last_token,
+                            &row.pending,
+                            row.token_offset,
+                        )
+                    };
                     mtp_timings.verify_forward_wall_us = elapsed_us(verify_started);
                     let accept_started = Instant::now();
                     let rejected_count = row.pending.len().saturating_sub(seq.accept_count);
@@ -12626,6 +12642,43 @@ impl MlxRunner {
         (tok, consumed)
     }
 
+    fn run_gemma_assistant_pipeline_verify(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        drafts: &[u32],
+        finish_without_lookahead: bool,
+    ) -> SequentialGreedyMtpVerify {
+        let mut token = last_token;
+        let mut predicted = Vec::with_capacity(drafts.len() + 1);
+        let mut accept_count = 0;
+        // When bootstrapping, the next forward must consume the prediction
+        // from the previous iteration. A pending value already includes that
+        // input in KV and the pipeline advances directly from its result.
+        for &draft in drafts {
+            token = self.run_direct_pipeline_decode(state, token, finish_without_lookahead, false);
+            predicted.push(token);
+            if token != draft {
+                break;
+            }
+            accept_count += 1;
+        }
+        if accept_count == drafts.len() {
+            token = self.run_direct_pipeline_decode(state, token, finish_without_lookahead, false);
+            predicted.push(token);
+        }
+        SequentialGreedyMtpVerify {
+            accept_count,
+            correction_token: token,
+            draft_hidden: mlx_sys::zeros(
+                &[1_i32, 1, self.cfg.hidden_size as i32],
+                crate::fastpath::activation_dtype_for_family(&self.cfg.model_family),
+                None,
+            ),
+            predicted,
+        }
+    }
+
     fn run_direct_pipeline_bootstrap(
         &self,
         state: &mut RequestState,
@@ -14556,43 +14609,18 @@ impl MlxRunner {
                     // on the next round. Finish each token without lookahead
                     // so that handoff sees the committed cache boundary.
                     let finish_singleton = !force_pure_direct && !(cycle_guard_on && cycle_force);
-                    let mut ac = 0usize;
-                    let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
-                    let mut correction = 0u32;
-                    // The pipeline (re)bootstrap treats `last_token` as the
-                    // one emitted token not yet in the KV cache, so it must
-                    // track the token the previous iteration emitted. Re-passing
-                    // `verify_input[0]` after a fresh bootstrap would append the
-                    // same token twice and corrupt every later step of the
-                    // request (the stale-latch hazard run_direct_pipeline_decode
-                    // documents for the n-gram feed).
-                    let mut verify_last_token = verify_input[0];
-                    for &draft in &pending {
-                        let tok = self.run_direct_pipeline_decode(
-                            state,
-                            verify_last_token,
-                            finish_singleton,
-                            false,
-                        );
-                        verify_last_token = tok;
-                        predicted.push(tok);
-                        if tok != draft {
-                            correction = tok;
-                            break;
-                        }
-                        ac += 1;
-                        correction = tok;
-                    }
+                    let SequentialGreedyMtpVerify {
+                        accept_count: ac,
+                        correction_token: correction,
+                        draft_hidden,
+                        predicted,
+                    } = self.run_gemma_assistant_pipeline_verify(
+                        state,
+                        verify_input[0],
+                        &pending,
+                        finish_singleton,
+                    );
                     let all_accepted = ac == pending.len();
-                    if all_accepted {
-                        correction = self.run_direct_pipeline_decode(
-                            state,
-                            verify_last_token,
-                            finish_singleton,
-                            false,
-                        );
-                        predicted.push(correction);
-                    }
                     mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                     mtp_timings.verify_eval_wall_us = 0;
                     let accept_started = Instant::now();
@@ -14611,12 +14639,6 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = 0;
-                    let hidden_size = self.cfg.hidden_size;
-                    let draft_hidden = mlx_sys::zeros(
-                        &[1_i32, 1, hidden_size as i32],
-                        crate::fastpath::activation_dtype_for_family(&self.cfg.model_family),
-                        None,
-                    );
                     let logits_all =
                         mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
                     (

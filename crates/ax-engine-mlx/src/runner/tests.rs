@@ -10556,6 +10556,203 @@ fn gemma_coalesced_and_singleton_verify_preserve_the_last_kv_slot() {
 }
 
 #[test]
+fn gemma_coalesced_oracle_reuses_primed_direct_predictions() {
+    use ax_engine_core::{ExecutionBatch, RouteMetadata, StepId};
+
+    const CHILD: &str = "AX_MLX_GEMMA_PRIMED_GROUP_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for oracle in ["1", "0"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runner::tests::gemma_coalesced_oracle_reuses_primed_direct_predictions",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("AX_MLX_BATCHED_DECODE", "1")
+                .env("AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY", "0")
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_COALESCED_VERIFY", "1")
+                .env("AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE", oracle)
+                .env("AX_MLX_MTP_SKIP_STATE", "0")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stdout}\n{stderr}");
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+        }
+        return;
+    }
+
+    let mut manifest = dense_manifest();
+    manifest.model_family = "gemma4".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    let (_, weights) = forced_replay_test_model();
+    shared_weights.publish(Arc::new(weights));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .unwrap();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    runner.gemma4_assistant_mtp_status.enabled = true;
+    runner.mtp_requested = true;
+
+    let primed_state = |drafts: &[u32]| {
+        let mut state = RequestState::new(1, 1, None);
+        let (logits, hidden) = forward_all_positions_with_post_norm(
+            &runner.cfg,
+            &runner.weights,
+            &[2, 3, 4],
+            &mut state.cache,
+            0,
+        );
+        state.cache.advance(3);
+        eval(&[&logits, &hidden]);
+        state.generated_tokens = vec![5];
+        state.next_model_last_token = Some(5);
+        state.pending_direct = Some(start_direct_pipeline(
+            &runner.cfg,
+            &runner.weights,
+            5,
+            &mut state.cache,
+        ));
+        state.direct_pipeline_emitted_tokens = 1;
+        state.mtp_pending_draft = drafts.to_vec();
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafts.len()];
+        assert_eq!(state.cache.seq_len(), 4);
+        state
+    };
+
+    let items = vec![decode_claim(1, 5), decode_claim(2, 5)];
+    let contexts: Vec<_> = items
+        .iter()
+        .zip([16, 2])
+        .map(|(item, max_output_tokens)| RunnerRequestContext {
+            request_id: item.request_id,
+            prompt_len: 3,
+            processed_prompt_tokens: 3,
+            generated_len: 1,
+            max_output_tokens,
+            ignore_eos: true,
+            ..ctx_with_argmax(true)
+        })
+        .collect();
+    runner
+        .states
+        .lock()
+        .insert(RequestId(1), primed_state(&[1, 2]));
+    runner
+        .states
+        .lock()
+        .insert(RequestId(2), primed_state(&[2, 1]));
+    if !crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled() {
+        for (item, context) in items.iter().zip(&contexts) {
+            assert!(!runner.gemma4_assistant_mtp_coalesced_item_eligible(item, Some(context)));
+        }
+        let group: Vec<_> = items.iter().enumerate().collect();
+        let (runs, forward_rows) =
+            runner.run_gemma4_assistant_mtp_coalesced_group(&group, &contexts);
+        assert!(runs.is_empty());
+        assert_eq!(forward_rows, 0);
+        for state in runner.states.lock().values() {
+            assert_eq!(state.cache.seq_len(), 4);
+            assert!(state.pending_direct.is_some());
+        }
+        return;
+    }
+
+    let mut singleton = primed_state(&[1, 2]);
+    let expected = runner.run_mtp_decode(
+        &mut singleton,
+        5,
+        MlxSamplingParams::greedy(),
+        contexts.first(),
+    );
+    assert_eq!(expected, [1, 1]);
+
+    let output = runner.run(RunnerInput {
+        block_size_tokens: 8,
+        memory_pressure: None,
+        block_tables: Vec::new(),
+        request_contexts: contexts,
+        request_multimodal_inputs: Vec::new(),
+        request_logit_biases: Vec::new(),
+        request_json_grammars: Vec::new(),
+        request_prefill_hints: Vec::new(),
+        execution_batch: ExecutionBatch {
+            step_id: StepId(1),
+            model_id: "gemma4".into(),
+            execution_plan_ref: None,
+            items,
+            total_scheduled_tokens: 2,
+            route_metadata: RouteMetadata {
+                execution_plan: None,
+                attention_route: None,
+                kv_mode: None,
+                prefix_cache_path: None,
+                barrier_mode: None,
+                crossover_decisions: Vec::new(),
+            },
+        },
+    });
+
+    let decision = |name: &str| {
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, count)| *count)
+    };
+    assert_eq!(
+        decision("ax_mlx_gemma4_assistant_mtp_coalesced_verify_rows"),
+        Some(2)
+    );
+    assert_eq!(
+        decision("ax_mlx_gemma4_assistant_mtp_coalesced_verify_forward_rows"),
+        Some(0)
+    );
+    assert_eq!(
+        decision("ax_mlx_gemma4_assistant_mtp_coalesced_verify_eval_barriers"),
+        Some(0)
+    );
+    assert_eq!(output.request_updates.len(), 2);
+    let longer = &output.request_updates[0];
+    let shorter = &output.request_updates[1];
+    assert!(longer.error.is_none() && shorter.error.is_none());
+    assert_eq!(longer.output_token, Some(expected[0]));
+    assert_eq!(longer.output_tokens, expected[1..]);
+    assert_eq!(longer.stop_reason, None);
+    assert_eq!(shorter.output_token, Some(1));
+    assert!(shorter.output_tokens.is_empty());
+    assert_eq!(
+        shorter.stop_reason,
+        Some(ax_engine_core::StopReason::MaxOutputTokens)
+    );
+
+    let mut states = runner.states.lock();
+    assert!(!states.contains_key(&RequestId(2)));
+    let mut active = states.remove(&RequestId(1)).unwrap();
+    drop(states);
+    assert_eq!(active.cache.seq_len(), singleton.cache.seq_len());
+    assert_eq!(
+        active.next_model_last_token,
+        singleton.next_model_last_token
+    );
+    assert!(active.pending_direct.is_some());
+    let token = runner.run_direct_pipeline_decode(&mut active, 1, true, false);
+    let reference = runner.run_direct_pipeline_decode(&mut singleton, 1, true, false);
+    assert_eq!(token, reference);
+    assert_eq!(active.cache.seq_len(), singleton.cache.seq_len());
+}
+
+#[test]
 fn gemma_coalesced_verify_leaves_the_surviving_request_at_its_original_cursor() {
     let (runner, artifacts) = tiny_linear_dflash_runner(1);
     let item = decode_claim(1, 5);
