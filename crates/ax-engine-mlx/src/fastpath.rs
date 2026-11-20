@@ -1337,6 +1337,23 @@ env_flag_default_on!(
     "AX_MLX_DFLASH2_FUSED_GDN_VERIFY"
 );
 
+/// `AX_MLX_FUSED_GDN_VERIFY_MAX_SEQ`: experimental. Widest verify window the
+/// fused gated-delta verify kernels admit (8 to 32 rows; threadgroup memory is
+/// `2 * rows * Dk` bf16, 16 KiB at 32 rows of 128 dims). Unset keeps
+/// [`QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ`]. A measurement switch for the
+/// lattice-tree port (verify cost of 16- and 32-node windows), not a tuned mode.
+/// Read once per process.
+pub(crate) fn fused_gdn_verify_max_seq() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_FUSED_GDN_VERIFY_MAX_SEQ")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|rows| (QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ..=32).contains(rows))
+            .unwrap_or(QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ)
+    })
+}
+
 /// Whether the fused gated-delta verify kernels admit a `seq`-row window.
 pub(crate) fn qwen_linear_fused_gdn_verify_seq_contains(seq: i64) -> bool {
     qwen_linear_fused_gdn_verify_seq_contains_for(
@@ -1353,7 +1370,7 @@ pub(crate) fn qwen_linear_fused_gdn_verify_seq_contains_for(
     wide: bool,
 ) -> bool {
     let max = if wide {
-        mtp_max_verify_seq.max(QWEN_LINEAR_FUSED_GDN_VERIFY_MAX_SEQ)
+        mtp_max_verify_seq.max(fused_gdn_verify_max_seq())
     } else {
         mtp_max_verify_seq
     };
@@ -1978,6 +1995,21 @@ pub(crate) fn dflash2_window_override() -> Option<usize> {
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .filter(|rows| *rows >= 3)
+    })
+}
+
+/// `AX_MLX_DFLASH2_BLOCK`: experimental. Draft and verify this many rows per
+/// round (anchor plus drafts, 4 to 32) instead of the block size the drafter
+/// checkpoint records (8). The drafter was trained at the recorded size; longer
+/// blocks are a measurement switch for the lattice-tree port, not a tuned mode.
+/// Unset or `0` keeps the checkpoint's block. Read once per process.
+pub(crate) fn dflash2_block_override() -> Option<i32> {
+    static CACHED: OnceLock<Option<i32>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_BLOCK")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|rows| (4..=32).contains(rows))
     })
 }
 

@@ -91,6 +91,8 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_DFLASH2_PROBE", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_UNLIMITED_OCR_PAGE_GUARD", shipped: "on", class: SwitchClass::NonNumeric("sampling") },
     SwitchRow { env: "AX_MLX_DFLASH2_WINDOW", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
+    SwitchRow { env: "AX_MLX_DFLASH2_BLOCK", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
+    SwitchRow { env: "AX_MLX_FUSED_GDN_VERIFY_MAX_SEQ", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_PREFIX_BOUNDARY_REPLAY", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_PREFIX_LIVE_SNAPSHOT", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_DFLASH2_COHORT_WINDOW", shipped: "on", class: SwitchClass::NonNumeric("draft") },
