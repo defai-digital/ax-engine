@@ -618,17 +618,19 @@ struct ModelsPage: View {
                     }
                     Text(item.alias + " · " + item.repoId + (!item.isOfficial && item.revision == nil ? " · publisher's latest revision" : ""))
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    HStack(spacing: 6) {
+                    // Wraps: a narrow card has no room for every pill on one line.
+                    WrapLayout(spacing: 6) {
                         if !item.isOfficial {
                             PillBadge(text: LibraryScope.unofficialTag, systemImage: "person.2", tint: .orange).fixedSize()
                                 .help(LibraryScope.unofficialNote)
                         }
                         if let size = item.approxSizeBytes { PillBadge(text: "about " + bytes(size), systemImage: "internaldrive").fixedSize() }
-                        if item.mtpIncluded == true { PillBadge(text: "MTP included", systemImage: "bolt") }
-                        if item.isOfficial, let certification = item.certification { PillBadge(text: certification.capitalized, systemImage: "checkmark.seal") }
-                        // Community entries say "publisher's latest revision" on the line above; this row has no room.
+                        if item.mtpIncluded == true { PillBadge(text: "MTP included", systemImage: "bolt").fixedSize() }
+                        if item.isOfficial, let certification = item.certification { PillBadge(text: certification.capitalized, systemImage: "checkmark.seal").fixedSize() }
+                        // Community entries say "publisher's latest revision" on the line above.
                         if item.isOfficial || item.revision != nil {
-                            Text(item.revision.map { "Revision " + String($0.prefix(12)) } ?? "Unpinned runtime profile").font(.caption).foregroundStyle(.secondary)
+                            Text(item.revision.map { "Revision " + String($0.prefix(12)) } ?? "Unpinned runtime profile")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize().padding(.vertical, 3)
                         }
                     }
                 }
