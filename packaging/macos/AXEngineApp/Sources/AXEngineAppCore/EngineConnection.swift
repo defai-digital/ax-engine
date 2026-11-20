@@ -9,12 +9,12 @@ private final class RejectRedirects: NSObject, URLSessionTaskDelegate, Sendable 
     }
 }
 
-public struct RunningModel: Decodable, Identifiable, Sendable {
+public struct RunningModel: Decodable, Equatable, Identifiable, Sendable {
     public let id: String
     public let ownedBy: String?
     public let contextLength: Int?
     public let capabilities: Capabilities?
-    public struct Capabilities: Decodable, Sendable {
+    public struct Capabilities: Decodable, Equatable, Sendable {
         public let temperature: Bool?
         public let reasoning: Bool?
         public let attachment: Bool?
@@ -63,12 +63,17 @@ public struct EngineConnection: Sendable, Identifiable, CustomStringConvertible,
             throw AppFailure.message("Service response exceeds the display limit.")
         }
         // `timeoutInterval` only bounds inactivity; a slow drip would reset it.
+        // Check the clock once per 4 KiB, not per byte: a /metrics body is
+        // tens of KiB and is read every poll.
         let deadline = Date().addingTimeInterval(timeout)
         var data = Data()
+        if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
         for try await byte in bytes {
-            guard Date() < deadline else { throw URLError(.timedOut) }
-            guard data.count < limit else {
-                throw AppFailure.message("Service response exceeds the display limit.")
+            if data.count & 0xFFF == 0 {
+                guard Date() < deadline else { throw URLError(.timedOut) }
+                guard data.count < limit else {
+                    throw AppFailure.message("Service response exceeds the display limit.")
+                }
             }
             data.append(byte)
         }

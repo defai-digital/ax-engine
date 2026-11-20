@@ -82,7 +82,9 @@ public final class RuntimeController: ObservableObject {
                     let result = try await job.run(executable: executable,
                         arguments: Self.launchArguments(model: model, settings: settings),
                         environment: ["AX_ENGINE_API_KEY": key]) { [weak self] value in
-                            self?.logs = redact(String(value.stderr.suffix(32_768)))
+                            guard let self else { return }
+                            let next = redact(String(value.stderr.suffix(32_768)))
+                            if next != self.logs { self.logs = next }
                         }
                     guard generation == identity else { return }
                     let detail = Self.lastDiagnostic(redact(result.stderr))
@@ -146,7 +148,8 @@ public final class RuntimeController: ObservableObject {
                 let latest = try await client.metrics()
                 let discovered = try await client.models()
                 guard !Task.isCancelled, generation == identity else { return }
-                if models.map(\.id).sorted() != discovered.map(\.id).sorted() {
+                let modelsChanged = models != discovered
+                if modelsChanged && models.map(\.id).sorted() != discovered.map(\.id).sorted() {
                     history = MetricHistory(); mtpWindow.reset(); tokenRate.reset()
                 }
                 let checked = Date()
@@ -154,7 +157,14 @@ public final class RuntimeController: ObservableObject {
                 plotted["mtpAcceptedPercent"] = mtpWindow.observe(latest, at: checked)
                 plotted[Self.tokenRateKey] = tokenRate.observe(latest, at: checked)
                 history.append(plotted, at: checked)
-                metrics = latest; models = discovered; error = nil; state = owned ? "Running" : "Attached"; lastSuccessfulCheck = checked
+                // Each @Published write notifies every observer, so write
+                // only what changed; the steady-state poll stays one update.
+                if metrics != latest { metrics = latest }
+                if modelsChanged { models = discovered }
+                if error != nil { error = nil }
+                let healthy = owned ? "Running" : "Attached"
+                if state != healthy { state = healthy }
+                lastSuccessfulCheck = checked
             } catch {
                 guard !Task.isCancelled, generation == identity else { return }
                 // A busy, unauthorized or changed-schema service is not dead.

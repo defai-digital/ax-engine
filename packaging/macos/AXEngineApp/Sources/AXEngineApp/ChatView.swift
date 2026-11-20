@@ -41,29 +41,11 @@ struct ChatView: View {
                                 description: Text("Send a prompt to inspect response quality and inference speed. History stays on this Mac."))
                                 .frame(maxWidth: .infinity).padding(.vertical, 45)
                         }
+                        // Equatable rows: a streaming flush or a poll re-renders
+                        // only the row that changed, so settled replies are not
+                        // re-parsed as Markdown 20 times a second.
                         ForEach(chat.messages) { message in
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Label(message.role == "user" ? "You" : "AX Engine", systemImage: message.role == "user" ? "person.crop.circle" : "sparkle")
-                                        .font(.headline)
-                                    Spacer()
-                                    if message.state != "Complete" { Text(message.state).font(.caption).foregroundStyle(.secondary) }
-                                    CopyButton(text: message.content, label: "Copy message")
-                                }
-                                if !message.reasoning.isEmpty {
-                                    DisclosureGroup("Reasoning") { Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                                }
-                                if message.content.isEmpty && message.state == "Streaming" { ProgressView("Waiting for the model…") }
-                                else if message.state == "Streaming" { Text(message.content).textSelection(.enabled) }
-                                else { MarkdownMessage(text: message.content) }
-                                if message.role == "assistant" {
-                                    ChatSpeedSummary(message: message)
-                                }
-                            }
-                            .padding(18)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(message.role == "user" ? Brand.accent.opacity(0.06) : Brand.cardSurface,
-                                        in: RoundedRectangle(cornerRadius: 14))
+                            MessageRow(message: message).equatable()
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(26)
@@ -211,6 +193,34 @@ struct ChatView: View {
         guard canSend, let connection = runtime.connection else { return }
         chat.send(chat.draft, model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
         if chat.generating { chat.draft = "" }
+    }
+}
+
+private struct MessageRow: View, Equatable {
+    let message: ChatMessage
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(message.role == "user" ? "You" : "AX Engine", systemImage: message.role == "user" ? "person.crop.circle" : "sparkle")
+                    .font(.headline)
+                Spacer()
+                if message.state != "Complete" { Text(message.state).font(.caption).foregroundStyle(.secondary) }
+                CopyButton(text: message.content, label: "Copy message")
+            }
+            if !message.reasoning.isEmpty {
+                DisclosureGroup("Reasoning") { Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+            }
+            if message.content.isEmpty && message.state == "Streaming" { ProgressView("Waiting for the model…") }
+            else if message.state == "Streaming" { Text(message.content).textSelection(.enabled) }
+            else { MarkdownMessage(text: message.content) }
+            if message.role == "assistant" {
+                ChatSpeedSummary(message: message)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(message.role == "user" ? Brand.accent.opacity(0.06) : Brand.cardSurface,
+                    in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

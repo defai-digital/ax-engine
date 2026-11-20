@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import AxEngine
 
-public struct ChatMessage: Codable, Identifiable, Sendable {
+public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public let role: String
     public var content: String
@@ -77,10 +77,27 @@ struct ConversationReplyBudget {
         let bytes = text.utf8.count
         guard bytes <= remainingTextBytes,
               bytes <= ConversationLimits.replyBytes - replyBytes else { return false }
-        let encodedBytes = try JSONEncoder().encode(text).count - 2
+        let encodedBytes = Self.encodedJSONBytes(text)
         guard encodedBytes <= remainingArchiveBytes else { return false }
         remainingTextBytes -= bytes; remainingArchiveBytes -= encodedBytes; replyBytes += bytes
         return true
+    }
+
+    /// Bytes of `text` inside a Foundation `JSONEncoder` string literal,
+    /// without its quotes. This runs once per streamed delta, so it counts
+    /// instead of allocating an encoder per token. Foundation writes `"`,
+    /// `\`, `/`, `\b \t \n \f \r` as two bytes and other C0
+    /// controls as six (`\u00XX`); everything else is plain UTF-8.
+    static func encodedJSONBytes(_ text: String) -> Int {
+        var total = 0
+        for byte in text.utf8 {
+            switch byte {
+            case 0x22, 0x2F, 0x5C, 0x08, 0x09, 0x0A, 0x0C, 0x0D: total += 2
+            case 0x00..<0x20: total += 6
+            default: total += 1
+            }
+        }
+        return total
     }
 }
 
@@ -101,6 +118,8 @@ public final class ChatStore: ObservableObject {
     public let storage: URL
     @Published public private(set) var recoveryRequired = false
     private var content = "", reasoning = ""
+    /// Set when a delta arrives; the 50 ms flush publishes only then.
+    private var pendingFlush = false
     private var conversationModel: String?
     private var flushTask: Task<Void, Never>?
 
@@ -170,7 +189,7 @@ public final class ChatStore: ObservableObject {
         conversationModel = model
         let client = connection.sdk
         activeConnection = connection; requestID = nil; error = nil
-        firstTokenSeconds = nil; elapsedSeconds = nil; content = ""; reasoning = ""
+        firstTokenSeconds = nil; elapsedSeconds = nil; content = ""; reasoning = ""; pendingFlush = false
         // Failed/stopped turns are visible locally but must not leave orphaned
         // user prompts in the next request's history.
         var history: [OpenAiChatMessage] = []
@@ -218,11 +237,11 @@ public final class ChatStore: ObservableObject {
                         if let delta = choice.delta.content, !delta.isEmpty {
                             if firstTokenSeconds == nil { firstTokenSeconds = Date().timeIntervalSince(started) }
                             guard try replyBudget.admit(delta) else { throw AppFailure.message("Conversation memory limit reached. Export it, then clear it to continue.") }
-                            content += delta
+                            content += delta; pendingFlush = true
                         }
                         if let delta = choice.delta.reasoningContent {
                             guard try replyBudget.admit(delta) else { throw AppFailure.message("Conversation memory limit reached. Export it, then clear it to continue.") }
-                            reasoning += delta
+                            reasoning += delta; pendingFlush = true
                         }
                         if choice.finishReason == "error" { throw AppFailure.message("The runtime reported a generation error.") }
                         if choice.finishReason == "tool_calls" { throw AppFailure.message("This conversation requested tools. Tool execution is not enabled in AX Engine GUI.") }
@@ -238,10 +257,13 @@ public final class ChatStore: ObservableObject {
         }
     }
     private func flush() {
+        guard pendingFlush else { return }
+        pendingFlush = false
         guard let last = messages.indices.last, messages[last].role == "assistant" else { return }
-        if messages[last].content != content || messages[last].reasoning != reasoning {
-            messages[last].content = content; messages[last].reasoning = reasoning
-        }
+        // One array write is one publish, not one per field.
+        var message = messages[last]
+        message.content = content; message.reasoning = reasoning
+        messages[last] = message
     }
     public func stop() async {
         let id = requestID, connection = activeConnection

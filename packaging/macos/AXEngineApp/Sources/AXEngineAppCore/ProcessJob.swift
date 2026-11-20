@@ -11,14 +11,17 @@ public struct ProcessResult: Sendable {
 
 // Pipe reads occur off the main actor. The lock protects the bounded byte stores;
 // a polling consumer coalesces UI notifications instead of scheduling per line.
-private final class CapturedOutput: @unchecked Sendable {
+final class CapturedOutput: @unchecked Sendable {
     private let lock = NSLock()
     private var stdout = Data()
     private var stderr = Data()
     private var overflow = false
     private let limit = 4 * 1024 * 1024
+    /// Bumped on every append so a poller can skip unchanged output.
+    private(set) var version = 0
     func append(_ data: Data, isError: Bool) {
         lock.lock(); defer { lock.unlock() }
+        version &+= 1
         if isError {
             stderr.append(data)
             if stderr.count > limit { stderr.removeFirst(stderr.count - limit); overflow = true }
@@ -31,6 +34,22 @@ private final class CapturedOutput: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return ProcessResult(status: status, stdout: String(decoding: stdout, as: UTF8.self),
                              stderr: String(decoding: stderr, as: UTF8.self), truncated: overflow)
+    }
+    /// The last `bytes` of each stream, or nil when nothing was appended since
+    /// `seen`. Live updates decode only this tail instead of the whole 4 MiB
+    /// stores, ten times a second, on the main actor.
+    func tail(_ bytes: Int, since seen: Int) -> (version: Int, result: ProcessResult)? {
+        lock.lock(); defer { lock.unlock() }
+        guard version != seen else { return nil }
+        return (version, ProcessResult(status: -1, stdout: Self.decodeTail(stdout, bytes),
+                                       stderr: Self.decodeTail(stderr, bytes), truncated: overflow || stdout.count > bytes || stderr.count > bytes))
+    }
+    static func decodeTail(_ data: Data, _ bytes: Int) -> String {
+        guard data.count > bytes else { return String(decoding: data, as: UTF8.self) }
+        var start = data.endIndex - bytes
+        // Do not begin inside a multi-byte UTF-8 sequence.
+        while start < data.endIndex, data[start] & 0xC0 == 0x80 { start += 1 }
+        return String(decoding: data[start...], as: UTF8.self)
     }
 }
 
@@ -47,6 +66,10 @@ public final class ProcessJob: ObservableObject {
     public var terminationGrace: TimeInterval
 
     public init(terminationGrace: TimeInterval = 2) { self.terminationGrace = terminationGrace }
+
+    /// Bytes of each stream carried by a live `update`. The final update and
+    /// the returned result carry the full bounded output.
+    public nonisolated static let liveTailBytes = 65_536
 
     public func run(executable: URL, arguments: [String], environment: [String: String] = [:],
                     timeout: TimeInterval? = nil,
@@ -97,12 +120,17 @@ public final class ProcessJob: ObservableObject {
         }
         let started = Date()
         var timedOut = false
+        var seen = 0
         while child.isRunning {
             if Task.isCancelled { cancel() }
             if let timeout, Date().timeIntervalSince(started) > timeout { timedOut = true; cancel() }
-            let value = capture.snapshot()
-            output = String((value.stderr + "\n" + value.stdout).suffix(32_768))
-            update?(value)
+            // Publish only when the child wrote something: an idle server
+            // must not re-render every observer ten times a second.
+            if let (version, value) = capture.tail(Self.liveTailBytes, since: seen) {
+                seen = version
+                output = String((value.stderr + "\n" + value.stdout).suffix(32_768))
+                update?(value)
+            }
             // Cancellation is handled explicitly above; do not spin on a cancelled Task.sleep.
             await Task.detached { try? await Task.sleep(for: .milliseconds(100)) }.value
         }
