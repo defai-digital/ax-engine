@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import AXEngineAppCore
 
 @MainActor
@@ -59,6 +60,18 @@ final class ApplicationModel: ObservableObject {
     @Published var recentModels = UserDefaults.standard.stringArray(forKey: "recentModels") ?? [] {
         didSet { UserDefaults.standard.set(recentModels, forKey: "recentModels") }
     }
+    /// Which discovered models every chooser lists: AutomatosX packs, or every
+    /// model folder found on disk. Narrowing never stops or hides the serving
+    /// model; a hidden selection falls back and pins return with the scope.
+    @Published var libraryScope = LibraryScope(rawValue: UserDefaults.standard.string(forKey: "libraryScope") ?? "") ?? .automatosX {
+        didSet {
+            guard libraryScope != oldValue else { return }
+            UserDefaults.standard.set(libraryScope.rawValue, forKey: "libraryScope")
+            models.scope = libraryScope
+            preselectModel()
+        }
+    }
+    private var servedModelSync: AnyCancellable?
     func toggleFavoriteModel(_ path: String) { favoriteModels = ModelPicker.toggling(path, in: favoriteModels) }
     func recordRecentModel(_ path: String) { recentModels = ModelPicker.recording(path, in: recentModels) }
     let updates = AppUpdateController()
@@ -74,6 +87,11 @@ final class ApplicationModel: ObservableObject {
         do { settings = try AppSettings.load(from: settingsURL) }
         catch { settingsError = error.localizedDescription }
         settingsDraft = settings
+        models.scope = libraryScope
+        servedModelSync = runtime.$selectedModel.combineLatest(runtime.$owned).sink { [models] path, owned in
+            let served = owned ? path : ""
+            if models.servedPath != served { models.servedPath = served }
+        }
     }
     var hasSettingsChanges: Bool { settingsDraft != settings }
     var quitWarning: String? {

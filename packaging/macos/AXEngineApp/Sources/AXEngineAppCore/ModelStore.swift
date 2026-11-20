@@ -15,6 +15,20 @@ public struct CatalogModel: Decodable, Identifiable, Sendable, Equatable {
     public var folderName: String { repoId.replacingOccurrences(of: "/", with: "--") + (revision.map { "--" + $0 } ?? "") }
 }
 
+/// Which discovered models the GUI lists and serves. Catalog downloads and
+/// removal stay with AutomatosX packs in both scopes.
+public enum LibraryScope: String, CaseIterable, Sendable {
+    case automatosX, all
+    public var title: String { self == .automatosX ? "AutomatosX" : "All models" }
+    public static let thirdPartyNote = "Not published by AutomatosX; compatibility is checked at start and starting may fail."
+
+    /// Rows listed under this scope. `keeping` is a path that stays listed
+    /// whatever the scope: the model the app is serving.
+    public func visible(_ library: [LocalModel], keeping: String = "") -> [LocalModel] {
+        self == .all ? library : library.filter { $0.isAutomatosX || (!keeping.isEmpty && $0.path == keeping) }
+    }
+}
+
 public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public let path: String
     public let ready: Bool
@@ -45,6 +59,19 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
             return url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent.hasPrefix("models--AutomatosX--")
         }
         return managed && url.lastPathComponent.hasPrefix("AutomatosX--")
+    }
+
+    /// Publishing organization, when the folder name records one (a hub cache
+    /// repository or an app-managed "Org--Repo" folder).
+    public var organization: String? {
+        let url = URL(fileURLWithPath: path)
+        if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
+            let parts = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+                .replacingOccurrences(of: "models--", with: "").components(separatedBy: "--")
+            return parts.count > 1 && !parts[0].isEmpty ? parts[0] : nil
+        }
+        guard managed, let range = url.lastPathComponent.range(of: "--"), range.lowerBound != url.lastPathComponent.startIndex else { return nil }
+        return String(url.lastPathComponent[..<range.lowerBound])
     }
 
     public func isCatalogAssociated(_ catalog: [CatalogModel]) -> Bool {
@@ -175,7 +202,15 @@ public struct DownloadProgress: Equatable, Sendable {
 public final class ModelStore: ObservableObject {
     @Published public private(set) var catalog: [CatalogModel] = []
     @Published public private(set) var supportsNativeDownloads = false
-    public var productLibrary: [LocalModel] { library.filter(\.isAutomatosX) }
+    /// Which discovered models are listed; the app persists the choice.
+    @Published public var scope: LibraryScope = .automatosX
+    /// The model the app is serving. It stays listed under the narrow scope so
+    /// switching back never hides a running model.
+    @Published public var servedPath = ""
+    /// Models the GUI lists, selects and serves under the current scope.
+    public var productLibrary: [LocalModel] { scope.visible(library, keeping: servedPath) }
+    /// Discovered models the current scope leaves out.
+    public var hiddenCount: Int { library.count - productLibrary.count }
     public func canSelectInGUI(_ path: String) -> Bool {
         productLibrary.contains { $0.path == path && $0.ready && checkedPaths.contains(path) }
     }

@@ -67,6 +67,10 @@ struct RuntimeIssuePanel: View {
             if let hint = memoryHint {
                 Text(hint).font(.system(size: 11.5)).foregroundStyle(Brand.text3)
             }
+            if models.library.contains(where: { $0.path == runtime.selectedModel && !$0.isAutomatosX }) {
+                Text("This model was not published by AutomatosX. The runtime checks compatibility at start, so complete files can still be refused; the files stay on disk.")
+                    .font(.system(size: 11.5)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

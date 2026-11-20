@@ -98,7 +98,8 @@ private struct FactsPanel: View {
                 fact("macOS", HostInfo.macOS)
                 fact("AX Engine", HostInfo.version ?? "Development")
                 fact("Models", models.lastScanAt == nil && models.productLibrary.isEmpty ? "—" : "\(inventory.complete) ready")
-                    .help("\(inventory.complete) ready · \(inventory.incomplete) incomplete · \(inventory.unchecked) unchecked")
+                    .help("\(inventory.complete) ready · \(inventory.incomplete) incomplete · \(inventory.unchecked) unchecked"
+                          + (models.hiddenCount > 0 ? " · \(models.hiddenCount) other on disk not listed (Models › All models)" : ""))
                 fact("Pressure", monitor.pressure ?? "Not reported", tint: pressureTint)
                     .help("macOS memory pressure from the last system event; none has arrived yet when it says Not reported.")
             }
@@ -132,7 +133,8 @@ private struct FactsPanel: View {
     private var diagnostics: String {
         ["AX Engine " + (HostInfo.version ?? "development"), HostInfo.chip, HostInfo.memory + " unified memory",
          "macOS " + HostInfo.macOS, "Memory pressure: " + (monitor.pressure ?? "not reported"),
-         "Models: \(models.productLibrary.count) discovered"].joined(separator: "\n")
+         "Models: \(models.productLibrary.count) listed (\(models.scope.title))"
+            + (models.hiddenCount > 0 ? ", \(models.hiddenCount) other on disk not listed" : "")].joined(separator: "\n")
     }
     private func fact(_ title: String, _ value: String, tint: Color = Brand.text1) -> some View {
         VStack(alignment: .leading, spacing: 5) {

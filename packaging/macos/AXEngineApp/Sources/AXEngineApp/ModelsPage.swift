@@ -230,6 +230,17 @@ struct ModelsPage: View {
                         Button("Retry scan") { Task { await models.scan(settings: model.settings) } }.disabled(models.scanning)
                     }.padding(16)
                 }
+                // Inside the table, not the page bar: the bar has no room at the minimum width.
+                HStack(spacing: 10) {
+                    AXSegmented(options: LibraryScope.allCases.map { ($0, $0.title) }, selection: $model.libraryScope, compact: true)
+                        .accessibilityLabel("Models shown")
+                    Text(model.libraryScope == .automatosX ? "Packs published by AutomatosX."
+                         : "Every model folder found on this Mac. The runtime checks compatibility at start.")
+                        .font(.system(size: 11.5)).foregroundStyle(Brand.text3).lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20).padding(.top, 12)
+                .help("Catalog downloads and removal stay AutomatosX-only in both views.")
                 HStack(spacing: 0) {
                     Text("Model").frame(maxWidth: .infinity, alignment: .leading)
                     if format { Text("Format").frame(width: 120, alignment: .leading) }
@@ -243,9 +254,12 @@ struct ModelsPage: View {
                     ContentUnavailableView {
                         Label("No models yet", systemImage: "square.stack.3d.up")
                     } description: {
-                        Text("Download a public AutomatosX model from the Catalog. No account or token needed.")
+                        Text(models.hiddenCount > 0
+                             ? "Download a public AutomatosX model from the Catalog, or show the \(models.hiddenCount) other model\(models.hiddenCount == 1 ? "" : "s") found on this Mac."
+                             : "Download a public AutomatosX model from the Catalog. No account or token needed.")
                     } actions: {
                         Button("Browse Catalog") { model.catalogSearch = ""; model.modelsSection = "catalog" }.buttonStyle(.axPrimary)
+                        if models.hiddenCount > 0 { Button("Show All Models") { model.libraryScope = .all }.buttonStyle(.ax(.secondary)) }
                     }.padding(.vertical, 30)
                 }
                 if matches.isEmpty && !filter.isEmpty {
@@ -261,6 +275,11 @@ struct ModelsPage: View {
                 HStack {
                     Text(libraryFooter).font(.system(size: 11.5)).foregroundStyle(Brand.text3)
                     Spacer()
+                    if models.hiddenCount > 0 {
+                        Button("\(models.hiddenCount) other model\(models.hiddenCount == 1 ? "" : "s") on disk hidden · Show") { model.libraryScope = .all }
+                            .buttonStyle(.axLink)
+                            .help("Model folders found on this Mac that AutomatosX did not publish")
+                    }
                     if !models.partialDownloads.isEmpty {
                         Button("\(models.partialDownloads.count) interrupted download\(models.partialDownloads.count == 1 ? "" : "s") on disk") {
                             model.modelsSection = "transfers"
@@ -308,8 +327,9 @@ struct ModelsPage: View {
                         if model.favoriteModels.contains(item.path) {
                             Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Brand.accent)
                         }
+                        if !item.isAutomatosX { Tag("Third-party").help(LibraryScope.thirdPartyNote) }
                     }
-                    Text(item.source).font(.system(size: 11.5)).foregroundStyle(Brand.text3).lineLimit(1)
+                    Text(sourceLine(item)).font(.system(size: 11.5)).foregroundStyle(Brand.text3).lineLimit(1)
                 }
             }
             .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
@@ -334,7 +354,7 @@ struct ModelsPage: View {
         .contentShape(Rectangle())
         .onTapGesture { inspected = item.path }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(item.label.title + ", " + status.0)
+        .accessibilityLabel(item.label.title + (item.isAutomatosX ? "" : ", third-party") + ", " + status.0)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityAction(named: "Inspect") { inspected = item.path }
         .contextMenu {
@@ -349,6 +369,12 @@ struct ModelsPage: View {
         }
     }
 
+    /// Source plus the publishing organization for rows AutomatosX did not publish.
+    private func sourceLine(_ item: LocalModel) -> String {
+        guard !item.isAutomatosX, let organization = item.organization else { return item.source }
+        return item.source + " · " + organization
+    }
+
     private func libraryInspector(_ item: LocalModel) -> some View {
         let checked = models.checkedPaths.contains(item.path)
         let status = libraryStatus(item)
@@ -361,6 +387,7 @@ struct ModelsPage: View {
                 WrapLayout(spacing: 6) {
                     StatusPill(text: status.0, tint: status.1)
                     ForEach(item.label.tags, id: \.self) { Tag($0, tint: $0 == "MTP" ? Brand.boost : nil) }
+                    if !item.isAutomatosX { Tag("Third-party") }
                     if let certification = catalogEntry?.certification { Tag(certification.capitalized, tint: Brand.accent) }
                 }
             }
@@ -385,11 +412,12 @@ struct ModelsPage: View {
             VStack(spacing: 9) {
                 detail("Repository", item.repositoryName)
                 if let revision = catalogEntry?.revision { detail("Revision", String(revision.prefix(8))) }
-                detail("Source", item.source)
+                detail("Source", sourceLine(item))
                 detail("Files", checked ? (item.ready ? "Complete" : "Incomplete") : "Not checked")
                 detail("Location", (item.path as NSString).abbreviatingWithTildeInPath)
             }
-            Text("File completeness does not establish compatibility. AX Engine validates the model when you start it.")
+            Text(item.isAutomatosX ? "File completeness does not establish compatibility. AX Engine validates the model when you start it."
+                                   : LibraryScope.thirdPartyNote + " Its files are never deleted by AX Engine.")
                 .font(.system(size: 11)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
             Divider().overlay(Brand.hairlineColor)
             HStack(spacing: 4) {
@@ -467,7 +495,7 @@ struct ModelsPage: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("No Hugging Face account or token required", systemImage: "arrow.down.circle").font(.headline)
-                    Text("Downloads connect to Hugging Face and its delivery hosts. Use other models through the AX Engine CLI.")
+                    Text("Downloads connect to Hugging Face and its delivery hosts. Models from other publishers that are already on this Mac appear under Your Models › All models.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()

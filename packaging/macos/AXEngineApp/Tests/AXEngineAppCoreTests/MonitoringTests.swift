@@ -184,3 +184,58 @@ import Testing
     #expect(!store.canSelectInGUI("/downloads/other-model"))
     await store.shutdown()
 }
+
+@Test func libraryScopeListsPublisherModelsUnlessWidened() {
+    let own = LocalModel(path: "/cache/models--AutomatosX--Pack/snapshots/rev", ready: true, managed: false)
+    let other = LocalModel(path: "/cache/models--mlx-community--Pack/snapshots/rev", ready: true, managed: false)
+    let imported = LocalModel(path: "/downloads/other-model", ready: true, managed: false, source: "Imported")
+    let library = [own, other, imported]
+    #expect(LibraryScope.automatosX.visible(library) == [own])
+    #expect(LibraryScope.all.visible(library) == library)
+    // The serving model stays listed when the scope narrows; nothing else does.
+    #expect(LibraryScope.automatosX.visible(library, keeping: imported.path) == [own, imported])
+    #expect(LibraryScope.automatosX.visible(library, keeping: "/missing") == [own])
+    #expect(own.organization == "AutomatosX")
+    #expect(other.organization == "mlx-community")
+    #expect(imported.organization == nil)
+    #expect(LocalModel(path: "/models/AutomatosX--Pack--abc1234", ready: true, managed: true).organization == "AutomatosX")
+}
+
+@Test @MainActor func widenedScopeServesThirdPartyModelsButNeverRemovesThem() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let cache = root.appendingPathComponent("cache")
+    func snapshot(_ repository: String) throws -> String {
+        let url = cache.appendingPathComponent(repository).appendingPathComponent("snapshots/rev1")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: url.appendingPathComponent("config.json"))
+        try Data("w".utf8).write(to: url.appendingPathComponent("model.safetensors"))
+        return url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+    let own = try snapshot("models--AutomatosX--Pack"), other = try snapshot("models--mlx-community--Pack")
+    var settings = AppSettings(); settings.modelsDirectory = root.appendingPathComponent("models").path
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: testScannerURL(),
+                           scanEnvironment: ["HF_HUB_CACHE": cache.path])
+    await store.scan(settings: settings)
+    #expect(store.library.count == 2)
+    #expect(store.productLibrary.map(\.path) == [own])
+    #expect(store.hiddenCount == 1)
+    #expect(store.canSelectInGUI(own) && !store.canSelectInGUI(other))
+
+    store.scope = .all
+    #expect(store.productLibrary.count == 2 && store.hiddenCount == 0)
+    #expect(store.canSelectInGUI(other))
+    let row = try #require(store.productLibrary.first { $0.path == other })
+    #expect(store.removalTarget(for: row, settings: settings) == nil)
+    let removed = await store.remove(row, settings: settings)
+    #expect(!removed)
+    #expect(FileManager.default.fileExists(atPath: other))
+
+    // Narrowing keeps only the model being served.
+    store.servedPath = other
+    store.scope = .automatosX
+    #expect(store.canSelectInGUI(other) && store.hiddenCount == 0)
+    store.servedPath = ""
+    #expect(!store.canSelectInGUI(other) && store.hiddenCount == 1)
+    await store.shutdown()
+}
