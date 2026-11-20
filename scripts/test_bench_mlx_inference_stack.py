@@ -361,7 +361,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             del cmd, text, stderr
             return (
                 "  PID STAT  %CPU COMM\n"
-                "54054 T     99.9 Qoder\n"
+                "54054 T     99.9 Editor\n"
                 "54055 T+    88.8 Code Helper (Renderer)\n"
                 "  615 Ss    15.8 WindowServer\n"
             )
