@@ -24,4 +24,3 @@ public enum MarkdownBlocks: Equatable, Sendable {
         return blocks
     }
 }
-
