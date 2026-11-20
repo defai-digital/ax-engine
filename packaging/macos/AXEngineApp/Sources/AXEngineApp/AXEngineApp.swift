@@ -67,6 +67,7 @@ final class ApplicationModel: ObservableObject {
     let runtime = RuntimeController()
     let models = ModelStore()
     let chat = ChatStore()
+    let compare = CompareStore()
     private let settingsURL: URL
     init(settingsURL: URL = AppPaths.settings) {
         self.settingsURL = settingsURL
@@ -183,16 +184,176 @@ final class ApplicationModel: ObservableObject {
         Task { await chat.stop(); await runtime.restart(model: path, settings: settings) }
     }
     func stopServer() {
+        cancelPendingStop()
         Task { await chat.stop(); if runtime.owned { await runtime.stop() } else { runtime.detach() } }
     }
+    // MARK: - A/B compare
+
+    /// Why Compare cannot run now, or nil.
+    func compareBlockReason(bPath: String) -> String? {
+        if !runtime.owned { return attachedToService ? "Compare restarts the server, so it needs a server this app started."
+                                                     : "Start the server on model A first." }
+        if !runtime.ready || runtime.busy { return "Wait until the server is ready." }
+        if chat.generating { return "Wait for the Playground reply to finish." }
+        if stopPending { return "The server stops after the current reply." }
+        if settings.servingMode != runtime.servingMode || settings.concurrentRequests != runtime.concurrentRequests
+            || settings.requireAPIKey != runtime.requiresAPIKey {
+            return "Restart to apply the saved serving options first, so A and B run with the same options."
+        }
+        if bPath.isEmpty { return "Choose model B." }
+        if bPath == runtime.selectedModel { return "Choose a different model for B." }
+        if !models.canSelectInGUI(bPath) { return "Model B is not ready to serve." }
+        if compare.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Enter a prompt." }
+        return nil
+    }
+
+    /// Runs the prompt on the serving model (A), restarts the server on B,
+    /// runs it again, then optionally restarts on A. Each restart reloads a
+    /// model and cuts off other clients, so it asks first. Settings are
+    /// snapshotted so both runs and every launch use the same values.
+    func runCompare(bPath: String, confirmed: Bool = false) {
+        guard compareBlockReason(bPath: bPath) == nil, !compare.running else { return }
+        let aPath = runtime.selectedModel
+        let title = { (path: String) in self.models.productLibrary.first { $0.path == path }?.label.title ?? (path as NSString).lastPathComponent }
+        let inFlight = Int(runtime.metrics["ax_engine_http_requests_in_flight"] ?? 0)
+        guard confirmed || confirm("Run A/B compare?",
+                      "AX Engine runs the prompt on \(title(aPath)), restarts the server on \(title(bPath)) and runs it again"
+                      + (compare.returnToA ? ", then restarts on \(title(aPath))." : ".")
+                      + " Loading a model can take a minute or more."
+                      + (inFlight > 0 ? " \(inFlight) request\(inFlight == 1 ? " is" : "s are") in flight and will be cut off." : " Other apps lose their connection during each restart."),
+                      action: "Run Compare") else { return }
+        compare.resetSides(aPath: aPath, aTitle: title(aPath), bPath: bPath, bTitle: title(bPath))
+        compareTakenOver = false
+        let prompt = compare.prompt, system = chat.systemPrompt, returnToA = compare.returnToA
+        let snapshot = settings
+        compare.begin { [self] in
+            for (isA, path) in [(true, aPath), (false, bPath)] {
+                guard !Task.isCancelled else { break }
+                if runtime.selectedModel != path || !runtime.ready {
+                    compare.update(isA) { $0.phase = .loading }
+                    compare.status = "Loading \(title(path))…"
+                    guard await switchServer(to: path, settings: snapshot) else {
+                        compare.update(isA) { $0.phase = Task.isCancelled ? .stopped : .failed(self.runtime.error ?? "The server did not become ready.") }
+                        break
+                    }
+                }
+                guard let connection = runtime.connection, let id = runtime.models.first?.id else {
+                    compare.update(isA) { $0.phase = .failed("The server is not reachable.") }; break
+                }
+                compare.status = "Running \(isA ? "A" : "B")…"
+                let temperature = runtime.models.first(where: { $0.id == id })?.capabilities?.temperature == true
+                await compare.stream(isA: isA, prompt: prompt, system: system, model: id, connection: connection,
+                                     settings: snapshot, supportsTemperature: temperature)
+                if compare.a.phase != .done && isA { break }
+            }
+            if compare.a.phase == .waiting { compare.a.phase = .stopped }
+            if compare.b.phase == .waiting { compare.b.phase = .stopped }
+            // Restore A even after a failed B load or a cancel, unless the
+            // user took over the server (Stop, Start, Restart or Serve).
+            if returnToA && !compareTakenOver && !(runtime.ready && runtime.selectedModel == aPath) {
+                compare.status = "Restoring \(title(aPath))…"
+                // An unstructured task does not inherit this task's cancellation.
+                let restored = await Task { await self.switchServer(to: aPath, settings: snapshot) }.value
+                if !restored && !compareTakenOver {
+                    compare.notice = "Could not restart on \(title(aPath)): " + (runtime.error ?? "the server did not become ready.") + " Start it from Home."
+                }
+            } else if !(runtime.ready && runtime.selectedModel == aPath) && !compareTakenOver {
+                compare.notice = runtime.ready ? "The server is now serving \(title(runtime.selectedModel))." : "The server is stopped."
+            }
+            if !compareTakenOver { selectedPath = runtime.owned ? runtime.selectedModel : aPath }
+            compare.status = nil
+        }
+    }
+
+    /// Set when the user starts, stops, restarts or switches the server while
+    /// a compare runs; the compare is cancelled and does not restore A.
+    private var compareTakenOver = false
+    /// Every user-initiated server action calls this first.
+    private func takeOverFromCompare() {
+        guard compare.running else { return }
+        compareTakenOver = true
+        compare.cancel()
+    }
+
+    /// Starts (or restarts) the app-owned server on `path` and waits until it
+    /// is ready. Selection and recent models change only after success.
+    private func switchServer(to path: String, settings snapshot: AppSettings) async -> Bool {
+        guard models.canSelectInGUI(path), runtime.owned || runtime.connection == nil else { return false }
+        await chat.stop()
+        // A cancel or takeover during either await must not launch the next model.
+        guard !Task.isCancelled, !compareTakenOver else { return false }
+        if runtime.owned {
+            await runtime.stop()
+            guard !Task.isCancelled, !compareTakenOver else { return false }
+        }
+        runtime.start(model: path, settings: snapshot)
+        // A cold load of a large pack can take several minutes.
+        let deadline = Date().addingTimeInterval(900)
+        while Date() < deadline && !Task.isCancelled && !compareTakenOver {
+            if runtime.ready && runtime.selectedModel == path {
+                selectedPath = path; recordRecentModel(path)
+                return true
+            }
+            if !runtime.owned && !runtime.busy { return false }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        // Cancelled or timed out: do not leave a load running that nobody
+        // asked for. A user takeover owns the server now, so leave it alone.
+        if !compareTakenOver && runtime.owned { await runtime.stop() }
+        return false
+    }
+
     /// Menu and shortcut entry points: confirm before ending a reply in progress.
     func requestStopServer() {
         if connecting { runtime.detach(); return }
+        takeOverFromCompare()
         guard runtime.owned || runtime.connection != nil else { return }
-        if inferenceActive && !confirm("Stop the server?", "A reply is being generated. Stopping ends it.", action: "Stop") { return }
-        stopServer()
+        guard inferenceActive, runtime.owned else {
+            if inferenceActive && !confirm("Stop the server?", "A reply is being generated. Stopping ends it.", action: "Stop") { return }
+            stopServer(); return
+        }
+        // 12-states.svg "Stop with apps connected": finish, stop now or keep serving.
+        let streams = Int(runtime.metrics["ax_engine_generation_active_streams"] ?? (chat.generating ? 1 : 0))
+        let title = models.productLibrary.first { $0.path == runtime.selectedModel }?.label.title ?? "the model"
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Stop serving \(title)?"
+        alert.informativeText = (streams > 1 ? "\(streams) replies are streaming. Stopping now ends them."
+                                             : "A reply is streaming. Stopping now ends it.")
+            + " Finish Reply, Then Stop waits up to 10 minutes."
+            + (stopPending ? " A stop is already scheduled; Keep Serving cancels it." : "")
+        alert.addButton(withTitle: "Keep Serving")
+        alert.addButton(withTitle: "Finish Reply, Then Stop")
+        alert.addButton(withTitle: "Stop Now")
+        switch alert.runModal() {
+        case .alertSecondButtonReturn: stopWhenIdle()
+        case .alertThirdButtonReturn: stopServer()
+        default: cancelPendingStop()
+        }
+    }
+    /// Stops once no reply is streaming (up to ten minutes), so connected
+    /// apps get their current answer. New requests are still accepted meanwhile.
+    @Published private(set) var stopPending = false
+    /// Replaced to disarm a scheduled stop.
+    private var stopToken = UUID()
+    private func cancelPendingStop() { stopToken = UUID(); stopPending = false }
+    private func stopWhenIdle() {
+        guard !stopPending else { return }
+        stopPending = true
+        let server = runtime.startedAt, token = UUID()
+        stopToken = token
+        Task {
+            defer { if stopToken == token { stopPending = false } }
+            let deadline = Date().addingTimeInterval(600)
+            while Date() < deadline && stopToken == token && runtime.owned && runtime.startedAt == server && inferenceActive {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            if stopToken == token && runtime.owned && runtime.startedAt == server { stopServer() }
+        }
     }
     func requestStartOrRestart() {
+        takeOverFromCompare()
+        cancelPendingStop()
         if runtime.owned {
             guard canRestartServer else { return }
             if inferenceActive && !confirm("Restart the server?", "A reply is being generated. Restarting ends it.", action: "Restart") { return }
@@ -215,6 +376,7 @@ final class ApplicationModel: ObservableObject {
     /// server is never replaced silently; Home offers the restart.
     func serve(_ path: String) {
         guard models.canSelectInGUI(path), !attachedToService, !connecting else { return }
+        takeOverFromCompare()
         selectedPath = path
         page = .home
         if canStartServer { startServer() }
@@ -241,6 +403,8 @@ final class ApplicationModel: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: ApplicationModel?
     private let quitCoordinator = AppQuitCoordinator()
+    static let quitCountdownSeconds = 30
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         return quitCoordinator.request(
@@ -249,8 +413,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let alert = NSAlert()
                 alert.messageText = "Quit AX Engine?"
                 alert.informativeText = model.quitWarning ?? ""
-                alert.addButton(withTitle: "Stop and Quit"); alert.addButton(withTitle: "Cancel")
-                return alert.runModal() == .alertFirstButtonReturn
+                // 12-states.svg "Quit while serving": the menu bar keeps the server reachable.
+                let canKeep = model.runtime.owned && model.showsMenuBarItem
+                if canKeep { alert.addButton(withTitle: "Keep Serving in Menu Bar") }
+                alert.addButton(withTitle: canKeep ? "Stop Server and Quit" : "Stop and Quit")
+                alert.addButton(withTitle: "Cancel")
+                // Unattended quits (logout, scripts, nobody at the Mac) must
+                // not hold the model in memory forever: quit after 30 s unless
+                // someone chooses Cancel or Keep Serving.
+                let quitResponse: NSApplication.ModalResponse = canKeep ? .alertSecondButtonReturn : .alertFirstButtonReturn
+                let countdown = QuitCountdown(seconds: Self.quitCountdownSeconds, response: quitResponse)
+                alert.accessoryView = countdown.label
+                countdown.start()
+                let choice = alert.runModal()
+                countdown.stop()
+                if canKeep && choice == .alertFirstButtonReturn { NSApp.hide(nil); return false }
+                return choice == (canKeep ? .alertSecondButtonReturn : .alertFirstButtonReturn)
             }, shutdown: {
                 await model.hostMonitor.shutdown()
                 await model.storageMonitor.shutdown()
@@ -258,6 +436,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await model.models.shutdown()
                 await model.runtime.stop()
             }, reply: { sender.reply(toApplicationShouldTerminate: true) })
+    }
+}
+
+/// The quit dialog's countdown: a label that ticks once a second and, at
+/// zero, ends the modal alert with the quit response.
+@MainActor
+final class QuitCountdown {
+    let label: NSTextField
+    private let seconds: Int
+    private var deadline = Date()
+    private let response: NSApplication.ModalResponse
+    private var timer: Timer?
+    /// Keeps App Nap from stretching the timer while the app is in the background.
+    private var activity: NSObjectProtocol?
+
+    init(seconds: Int, response: NSApplication.ModalResponse) {
+        self.seconds = seconds
+        self.response = response
+        label = NSTextField(labelWithString: "")
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        label.frame = NSRect(x: 0, y: 0, width: 260, height: 18)
+        label.stringValue = "Quitting automatically in \(seconds) s…"
+    }
+
+    private var remaining: Int { max(0, Int(deadline.timeIntervalSinceNow.rounded(.up))) }
+
+    func start() {
+        deadline = Date().addingTimeInterval(TimeInterval(seconds))
+        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Quit countdown")
+        render()
+        // Ticks often; the label and the deadline come from the clock, not the tick count.
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        // .modalPanel keeps it firing while runModal() owns the run loop.
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate(); timer = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
+    }
+
+    private func tick() {
+        render()
+        if remaining == 0 { stop(); NSApp.stopModal(withCode: response) }
+    }
+
+    private func render() {
+        let text = "Quitting automatically in \(remaining) s…"
+        if label.stringValue != text { label.stringValue = text }
     }
 }
 

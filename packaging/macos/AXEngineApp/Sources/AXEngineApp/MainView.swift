@@ -7,7 +7,7 @@ enum Page: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Playground", models = "Models", api = "API & Logs", system = "System"
     var id: String { rawValue }
     static var launchPage: Page? {
-        switch UserDefaults.standard.string(forKey: "AXOpenPage") {
+        switch QALaunch.enabled ? UserDefaults.standard.string(forKey: "AXOpenPage") : nil {
         case "home": .home
         case "chat": .chat
         case "models": .models
@@ -98,6 +98,9 @@ struct MainView: View {
         .onChange(of: model.servableModels.map(\.path)) { _, _ in model.preselectModel() }
         .onAppear { model.preselectModel() }
         .onChange(of: model.settingsRequests) { _, _ in openSettings() }
+        // `-AXOpenSettings YES` opens Settings at launch (QA screenshots).
+        .task { if QALaunch.enabled && UserDefaults.standard.bool(forKey: "AXOpenSettings") { try? await Task.sleep(for: .seconds(1)); openSettings() } }
+        .task { await QALaunch.run(model) }
         .sheet(isPresented: $model.showsOnboarding, onDismiss: { model.onboardingCompleted = true }) {
             OnboardingView(model: model, models: models, runtime: runtime) {
                 model.onboardingCompleted = true; model.showsOnboarding = false

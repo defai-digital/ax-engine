@@ -139,7 +139,7 @@ Getting Started**.
    batched-decode cohort limit. While running, the options show the runtime's
    batch slots in use from its own gauges. Serving mode, request cap and API
    key save as soon as they change, on Home, API & Logs or Settings
-   › Runtime, without touching other unsaved Settings edits, and apply at the
+   › Server, without touching other unsaved Settings edits, and apply at the
    next start or restart. When the running server differs from them, Restart
    names the change (**Restart with Selected Model**, **Restart in Coding
    Mode**, **Restart with New Request Cap**, **Restart to Apply API Key
@@ -150,11 +150,16 @@ Getting Started**.
    offline resolution and loopback only, and refuses up front when the
    configured port is already in use instead of failing after the model has
    loaded. Runtime MTP and expert-streaming defaults remain unchanged. Stop
-   and Restart ask for confirmation only while a reply is being generated.
-   Stop gives the runtime eight seconds to drain before it is force-killed.
-   When the runtime exits on its own, the error shows its last diagnostic line
-   with **Start Again** and **Copy Diagnostics** (the bounded runtime output,
-   with the API key redacted). Logs can be filtered by text, narrowed to
+   and Restart ask for confirmation only while a reply is being generated;
+   Stop then offers **Keep Serving**, **Finish Reply, Then Stop** (waits up to
+   10 minutes for streams to end; choosing Keep Serving later cancels it) and
+   **Stop Now**. Stop gives the runtime eight seconds to drain before it is
+   force-killed. When the runtime exits on its own, Home shows its last
+   problem lines with **Start Again**, **Copy Report** and **Open Logs**, plus
+   a memory hint when the Mac is above 70% in use. When the port is taken,
+   Home offers **Attach** (use that server; the app never stops it) or
+   **Change Port…**. A memory-pressure banner appears on Home and System only
+   while macOS reports Warning or Critical pressure. Logs can be filtered by text, narrowed to
    warnings and errors, and limited to the last 100 or 500 lines; filters
    change the view only, and **Copy** copies the whole bounded output. Runtime metrics
    and history appear only while something is serving; Mac CPU, GPU and memory
@@ -241,7 +246,7 @@ Getting Started**.
    server runs. Missing measurements appear as unavailable. Counters are not a
    benchmark or a throughput certification.
 6. **Menu bar and Server menu:** the menu-bar item (on by default; Settings ›
-   Runtime › Menu bar) shows the server state, with the live token rate next to its icon
+   General) shows the server state, with the live token rate next to its icon
    while one is reported. Its panel shows the state and address, the model with
    its tags and uptime, the live token rate with a sparkline and MTP draft
    acceptance, Start, Stop or Restart, a **Switch model** list of up to five
@@ -250,25 +255,50 @@ Getting Started**.
    (Shift-Command-R), Stop Server (Shift-Command-Period), Copy API URL and
    Open Playground.
 
+7. **Compare A/B:** Playground's **Compare A/B** mode runs one prompt on the
+   serving model (A), restarts the app-owned server on model B, runs it again
+   and, with **Return to A**, restarts on A. Both runs use the same settings,
+   snapshotted at the start. It asks first, because each restart reloads a
+   model and cuts off other clients. Each side shows decode rate, time to
+   first text, MTP draft acceptance (from server-wide counters, so other
+   traffic during the run counts) and total time; a token-over-time chart and
+   result rows appear after both runs finish. It is one run per side, not a
+   benchmark. Starting, stopping or switching the server during a compare
+   cancels it and skips the return to A.
+
 Connect attaches to an existing AX Engine service on the configured local port.
 Its API key stays in memory. Disconnect and app quit do not stop an attached
-service. Quit asks before stopping app-owned inference or downloads. Closing a
+service. Quit asks before stopping app-owned inference or downloads; with the
+menu-bar item on it also offers **Keep Serving in Menu Bar**. The dialog quits
+on its own after 30 seconds, stopping the server and freeing its memory, so
+an unattended quit (logout, a script) does not hold the model; choose
+**Cancel** within that time to keep running. Closing a
 window follows macOS app conventions; use Quit to stop app-owned work.
+
+Source builds (`scripts/build-macos-app.sh` without `--distribution`) accept
+QA launch arguments for screenshots and end-to-end checks:
+`-AXOpenPage home|chat|models|api|system`, `-AXOpenSettings YES`,
+`-AXSettingsPane <tab>`, `-AXStartServer YES`, `-AXShowMenuPanel YES`, and
+`-AXCompareModelB <path substring>` with `-AXComparePrompt <text>`.
+Distribution builds ignore them.
 
 ## Settings navigation
 
-Settings is a page in the main workspace. Use its sidebar row, the AX Engine
-menu or Command-Comma; all three routes open the same page without a separate
-settings window. The command also reopens the main window if it was closed.
-Draft edits survive page switches. Save validates and persists them; Revert
-restores the saved values. Runtime and model operations lock runtime locations
-and the port while busy. Generation-only changes remain editable and apply to
-the next Chat request without restarting the server or rescanning models.
-Third-party notices remain available from Settings and the app menu.
+Settings is a standard window (Command-Comma, the AX Engine menu or the
+sidebar's Settings row). Its tabs are **General** (menu bar, updates,
+privacy), **Server** (port, loopback listen address, serving mode, request
+cap, API key), **Models** (download folder), **Playground** (request
+profiles) and **Advanced** (runtime executable, version and open-source
+licenses). Draft edits survive tab switches. Save validates and persists
+them; Revert restores the saved values. Runtime and model operations lock
+the runtime location, download folder and port while busy. Playground-only
+changes remain editable and apply to the next Playground request without
+restarting the server or rescanning models. Serving options save as soon
+as they change.
 
 ## Playground profiles
 
-Settings › Generation opens with **Coding**, **Chatbot**, **Media**, and **Custom**. Profiles
+Settings › Playground opens with **Coding**, **Chatbot**, **Media**, and **Custom**. Profiles
 set a response ceiling and use runtime sampling defaults (no temperature, top-p,
 top-k, or penalty overrides). These are app starting points, not model-specific
 quality or performance qualifications:

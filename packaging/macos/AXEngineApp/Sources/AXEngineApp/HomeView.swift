@@ -18,7 +18,8 @@ struct HomeView: View {
             let wide = geometry.size.width >= 760
             let threeUp = geometry.size.width >= 940
             PageScroll {
-                if let error = runtime.error { errorBanner(error) }
+                if let error = runtime.error { RuntimeIssuePanel(model: model, runtime: runtime, error: error) }
+                MemoryPressureBanner(model: model, monitor: model.hostMonitor, runtime: runtime)
                 TimelineView(.periodic(from: .now, by: 2)) { context in
                     VStack(spacing: 16) {
                         HeroPanel(model: model, models: models, runtime: runtime, chat: chat, clipboard: clipboard,
@@ -46,12 +47,6 @@ struct HomeView: View {
         }
     }
 
-    private func errorBanner(_ error: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            ErrorBanner(text: error)
-            Button("Details") { model.page = .api }.buttonStyle(.axLink)
-        }
-    }
 }
 
 // MARK: - Hero
@@ -126,7 +121,7 @@ private struct HeroPanel: View {
                     .textSelection(.enabled)
                 tags
                 HStack(spacing: 12) {
-                    CodeField(text: endpoint).frame(minWidth: 250, maxWidth: 400).layoutPriority(1)
+                    CodeField(text: endpoint).frame(minWidth: 220, maxWidth: 400).layoutPriority(1)
                     Text("OpenAI · Anthropic compatible").font(.system(size: 12)).foregroundStyle(Brand.text3)
                         .lineLimit(1)
                 }
@@ -137,6 +132,26 @@ private struct HeroPanel: View {
                     ClientCopyButtons(runtime: runtime, clipboard: clipboard, notice: $copyNotice).controlSize(.small)
                 }
                 if let notice { Label(notice, systemImage: "info.circle").font(Brand.Font.caption).foregroundStyle(Brand.text3) }
+                if runtime.state == "Starting" {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView().progressViewStyle(.linear).tint(Brand.accent)
+                        HStack {
+                            Text("Large models can take a minute or more from a cold start.")
+                            Spacer()
+                            Text("Other pages stay usable")
+                        }
+                        .font(.system(size: 11.5)).foregroundStyle(Brand.text3)
+                    }
+                    .frame(maxWidth: 520)
+                }
+                if kind == .external {
+                    Text("Managed elsewhere: speed and requests show here; this app never stops or restarts a server it did not start, and its serving options are read-only.")
+                        .font(.system(size: 11.5)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 520, alignment: .leading)
+                }
+                if model.stopPending {
+                    Label("Stopping after the current reply finishes.", systemImage: "hourglass").font(.system(size: 11.5)).foregroundStyle(Brand.warn)
+                }
                 if runtime.state == "Starting", let line = RuntimeController.lastDiagnostic(runtime.logs) {
                     Text(line).font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.text3)
                         .lineLimit(1).truncationMode(.middle)
@@ -175,7 +190,7 @@ private struct HeroPanel: View {
     }
 
     private var tags: some View {
-        HStack(spacing: 6) {
+        WrapLayout(spacing: 6) {
             if let shown {
                 ForEach(shown.label.tags, id: \.self) { tag in Tag(tag, tint: tag == "MTP" ? Brand.boost : nil) }
                 if let size = shown.sizeBytes { Tag(TransferFormat.bytes(size)) }
@@ -190,7 +205,7 @@ private struct HeroPanel: View {
     }
 
     @ViewBuilder private var actions: some View {
-        HStack(spacing: 10) {
+        WrapLayout(spacing: 10) {
             if runtime.owned {
                 if runtime.ready {
                     Button { model.page = .chat } label: {
@@ -275,10 +290,11 @@ private struct HeroPanel: View {
                       start: now.addingTimeInterval(-300), end: now)
                 .frame(height: 50)
                 .accessibilityLabel("Token speed, last five minutes")
-            HStack(alignment: .top, spacing: 18) {
-                StatReading(title: "First text", value: chat.firstTokenSeconds.map { String(format: "%.0f", $0 * 1000) }, unit: "ms",
+            // Wraps instead of widening the page when the column is narrow.
+            WrapLayout(spacing: 18) {
+                StatReading(title: "Reply TTFT", value: chat.firstTokenSeconds.map { String(format: "%.0f", $0 * 1000) }, unit: "ms",
                             help: "Last Playground reply: time from Send to the first visible text.")
-                StatReading(title: "Prefill", value: last.flatMap { $0.promptFullyCached ? "Cached" : Format.rate($0.prefillTokensPerSecond) },
+                StatReading(title: "Reply prefill", value: last.flatMap { $0.promptFullyCached ? "Cached" : Format.rate($0.prefillTokensPerSecond) },
                             unit: last?.promptFullyCached == true ? nil : "tok/s",
                             help: "Last Playground reply, native prefill average.")
                 StatReading(title: "Draft accepted", value: acceptance.map { String(format: "%.0f", $0) }, unit: "%",

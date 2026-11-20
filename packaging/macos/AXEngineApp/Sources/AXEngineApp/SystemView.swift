@@ -38,6 +38,7 @@ struct SystemView: View {
                     .help("Refresh storage and model inventory").accessibilityLabel("Refresh storage and model inventory")
                     .disabled(storage.refreshing || models.scanning)
                 }
+                MemoryPressureBanner(model: model, monitor: monitor, runtime: model.runtime, showsSystemLink: false)
                 TimelineView(.periodic(from: .now, by: 2)) { context in
                     let grid = wide ? [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)] : [GridItem(.flexible())]
                     LazyVGrid(columns: grid, spacing: 16) {

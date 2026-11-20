@@ -72,7 +72,7 @@ struct OnboardingView: View {
                 }
             }
             if models.catalog.isEmpty && !models.refreshing {
-                Text("The catalog comes from your AX Engine runtime. Check Settings › Runtime, then try again.")
+                Text("The catalog comes from your AX Engine runtime. Check Settings › Advanced, then try again.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack {

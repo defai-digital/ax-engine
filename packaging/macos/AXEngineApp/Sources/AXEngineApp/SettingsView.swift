@@ -2,13 +2,17 @@ import SwiftUI
 import AppKit
 import AXEngineAppCore
 
-private enum SettingsPane: Hashable {
-    case generation, runtime, updates, privacy, licenses
-    var editable: Bool { self == .generation || self == .runtime }
+/// Tabs follow `.internal/ui/13-settings.svg`.
+private enum SettingsPane: String, Hashable {
+    case general, server, models, playground, advanced
+    /// Panes with fields that wait for Save.
+    var editable: Bool { self != .general }
 }
 
 struct SettingsView: View {
-    @State private var pane: SettingsPane = .generation
+    // QA launch value (source builds only) picks the first tab for screenshots.
+    @State private var pane: SettingsPane = QALaunch.enabled
+        ? SettingsPane(rawValue: UserDefaults.standard.string(forKey: "AXSettingsPane") ?? "") ?? .server : .server
     @State private var advancedGeneration = false
     @State private var copiedDefaults = false
     @ObservedObject var model: ApplicationModel
@@ -27,28 +31,36 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             if let error = model.settingsError { ErrorBanner(text: error).padding([.horizontal, .top], 26) }
             TabView(selection: $pane) {
-                Tab("Generation", systemImage: "slider.horizontal.3", value: SettingsPane.generation) {
-                    settingsForm { generationSection }
-                }
-                Tab("Runtime", systemImage: "cpu", value: SettingsPane.runtime) {
+                Tab("General", systemImage: "gearshape", value: SettingsPane.general) {
                     settingsForm {
-                        runtimeSection
-                        servingSection
-                        Section("Menu bar") {
+                        Section("Running in the background") {
                             Toggle("Show AX Engine in the menu bar", isOn: $model.showsMenuBarItem)
-                            Text("Start, restart or stop the server and copy its URL without opening the window.")
-                                .font(.caption).foregroundStyle(.secondary)
+                            Text("The menu bar shows live speed and lets you start, stop, switch models and copy the URL without the window. Quit offers to keep serving there.")
+                                .font(.caption).foregroundStyle(Brand.text3)
                         }
+                        AppUpdatesSettings(updates: model.updates)
+                        privacySection
                     }
                 }
-                Tab("Updates", systemImage: "arrow.down.circle", value: SettingsPane.updates) {
-                    settingsForm { AppUpdatesSettings(updates: model.updates) }
-                }
-                Tab("Privacy", systemImage: "hand.raised", value: SettingsPane.privacy) {
-                    settingsForm { privacySection }
-                }
-                Tab("Licenses", systemImage: "doc.text", value: SettingsPane.licenses) {
+                Tab("Server", systemImage: "powerplug", value: SettingsPane.server) {
                     settingsForm {
+                        networkSection
+                        servingSection
+                    }
+                }
+                Tab("Models", systemImage: "shippingbox", value: SettingsPane.models) {
+                    settingsForm { storageSection }
+                }
+                Tab("Playground", systemImage: "bubble.left", value: SettingsPane.playground) {
+                    settingsForm { generationSection }
+                }
+                Tab("Advanced", systemImage: "terminal", value: SettingsPane.advanced) {
+                    settingsForm {
+                        runtimeSection
+                        Section("About") {
+                            LabeledContent("AX Engine", value: HostInfo.version ?? "development")
+                            LabeledContent("This Mac", value: HostInfo.chip + " · " + HostInfo.memory + " · macOS " + HostInfo.macOS)
+                        }
                         Section("Open-source licenses") {
                             Text("AX Engine uses selected open-source components. These acknowledgements identify their authors and licenses.")
                             ThirdPartyCreditsView()
@@ -65,17 +77,29 @@ struct SettingsView: View {
             } else if model.hasSettingsChanges {
                 Divider()
                 HStack {
-                    Text("Unsaved Generation or Runtime changes").foregroundStyle(.secondary)
+                    Text("Unsaved changes on another tab").foregroundStyle(Brand.text3)
                     Spacer()
-                    Button("Review Changes") { pane = runtimeChanged ? .runtime : .generation }
+                    Button("Review Changes") { pane = changedPane }
                 }.padding(26)
             }
         }
+        .background(Brand.canvas)
+    }
+
+    /// The first tab with an unsaved field.
+    private var changedPane: SettingsPane {
+        let draft = model.settingsDraft, saved = model.settings
+        if draft.port != saved.port { return .server }
+        if draft.modelsDirectory != saved.modelsDirectory { return .models }
+        if draft.executable != saved.executable { return .advanced }
+        return .playground
     }
 
     private func settingsForm<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         Form { content() }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .background(Brand.canvas)
             .scrollBounceBehavior(.basedOnSize)
     }
 
@@ -124,26 +148,50 @@ struct SettingsView: View {
         }
     }
 
+    private var lockNote: some View {
+        Label("Unlocks after the server stops and model operations finish.", systemImage: "lock")
+            .font(.caption).foregroundStyle(Brand.text3)
+    }
+
+    private var networkSection: some View {
+        Section("Network") {
+            TextField("Port", value: $model.settingsDraft.port, format: .number.grouping(.never))
+                .disabled(locked)
+            Text(verbatim: "Apps connect to http://127.0.0.1:\(String(model.settingsDraft.port))/v1").font(.caption).foregroundStyle(Brand.text3)
+            LabeledContent("Listen address") {
+                Label("127.0.0.1", systemImage: "lock").font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Brand.serve)
+            }
+            Text("Loopback only. Other devices cannot connect.").font(.caption).foregroundStyle(Brand.text3)
+            if locked { lockNote }
+        }
+    }
+
+    private var storageSection: some View {
+        Section("Model storage") {
+            HStack {
+                TextField("Download folder", text: $model.settingsDraft.modelsDirectory)
+                Button("Choose…") { choose(directory: true) }
+            }
+            .disabled(locked)
+            Text("New downloads go here. The library also lists AutomatosX models in the Hugging Face cache; that cache is read-only to the app except when you remove a model explicitly.")
+                .font(.caption).foregroundStyle(Brand.text3)
+            if locked { lockNote }
+        }
+    }
+
     private var runtimeSection: some View {
         Section("Runtime") {
             HStack {
                 TextField("Executable (automatic if empty)", text: $model.settingsDraft.executable)
                 Button("Choose…") { choose(directory: false) }
             }
-            HStack {
-                TextField("Download folder", text: $model.settingsDraft.modelsDirectory)
-                Button("Choose…") { choose(directory: true) }
-            }
-            TextField("Local port", value: $model.settingsDraft.port, format: .number.grouping(.never))
-            if locked {
-                Label("Runtime, download folder and port unlock after the server stops and model operations finish.", systemImage: "lock")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            .disabled(locked)
             if let executable = try? model.settings.runtime() {
                 LabeledContent("Current runtime", value: executable.path)
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .font(.caption).foregroundStyle(Brand.text3).textSelection(.enabled)
             }
-        }.disabled(locked)
+            if locked { lockNote }
+        }
     }
 
     private var servingSection: some View {
@@ -186,7 +234,7 @@ struct SettingsView: View {
     private var settingsFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
             if locked {
-                Label("Runtime location and port are locked during server or model operations. Profile changes apply to the next Playground request.", systemImage: "lock")
+                Label("Port, download folder and runtime are locked during server or model operations. Playground changes apply to the next request.", systemImage: "lock")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -195,7 +243,7 @@ struct SettingsView: View {
                 } else if model.settingsSaved {
                     Label("Saved", systemImage: "checkmark.circle").foregroundStyle(.green)
                 } else {
-                    Text("Generation and Runtime changes apply when you save.").foregroundStyle(.secondary)
+                    Text("Changes on this tab apply when you save.").foregroundStyle(Brand.text3)
                 }
                 Spacer()
                 Button("Revert") { model.revertSettings() }

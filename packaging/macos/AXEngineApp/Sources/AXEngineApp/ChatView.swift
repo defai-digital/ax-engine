@@ -10,11 +10,26 @@ struct ChatView: View {
     private var settings: AppSettings { model.settings }
     @State private var clearConfirmation = false
     @State private var systemPromptOpen = false
+    @AppStorage("playgroundMode") private var mode = "single"
     private var modelID: String { runtime.models.contains(where: { $0.id == chat.selectedModel }) ? chat.selectedModel : runtime.models.first?.id ?? "" }
     private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
-    private var canSend: Bool { !chat.generating && !chat.recoveryRequired && runtime.ready && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { !chat.generating && !chat.recoveryRequired && runtime.ready && !model.compare.running && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
+        Group {
+            if mode == "compare" {
+                CompareView(model: model, runtime: runtime, compare: model.compare, mode: $mode)
+            } else {
+                single
+            }
+        }
+        .inspector(isPresented: $model.showsTelemetry) {
+            TelemetryInspector(runtime: runtime, chat: chat)
+                .inspectorColumnWidth(min: 300, ideal: 330, max: 400)
+        }
+    }
+
+    private var single: some View {
         VStack(spacing: 0) {
             topBar.padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 10)
             if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 24).padding(.bottom, 8) }
@@ -48,10 +63,6 @@ struct ChatView: View {
                 .frame(maxWidth: 900).frame(maxWidth: .infinity)
         }
         .background(Brand.canvas)
-        .inspector(isPresented: $model.showsTelemetry) {
-            TelemetryInspector(runtime: runtime, chat: chat)
-                .inspectorColumnWidth(min: 300, ideal: 330, max: 400)
-        }
         .onChange(of: runtime.models.map(\.id)) { _, ids in
             if !ids.contains(chat.selectedModel) { chat.selectedModel = "" }
         }
@@ -63,7 +74,7 @@ struct ChatView: View {
 
     private var lastAssistantID: UUID? { chat.messages.last { $0.role == "assistant" }?.id }
     private var retryAction: (() -> Void)? {
-        guard runtime.ready, runtime.connection != nil else { return nil }
+        guard runtime.ready, runtime.connection != nil, !model.compare.running else { return nil }
         // Rows are Equatable and keep this closure across re-renders, so it
         // reads the connection (per-launch key), model and settings on click.
         return {
@@ -75,6 +86,8 @@ struct ChatView: View {
     /// Model chip, then conversation actions, as on the board.
     private var topBar: some View {
         HStack(spacing: 10) {
+            AXSegmented(options: [("single", "Single"), ("compare", "Compare A/B")], selection: $mode, compact: true)
+                .disabled(chat.generating)
             HStack(spacing: 8) {
                 Circle().fill(Brand.tint(.from(state: runtime.state, owned: runtime.owned, ready: runtime.ready))).frame(width: 7, height: 7)
                 if runtime.ready && runtime.models.count > 1 {
