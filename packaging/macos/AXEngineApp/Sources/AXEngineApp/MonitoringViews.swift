@@ -10,7 +10,7 @@ struct MetricHistoryChart: View {
     var percent = false
     var divisor: Double = 1
     var unit = ""
-    var tint: Color = Brand.accentChrome
+    var tint: Color = Brand.accent
     var symbol = "waveform.path"
     var detail = "Runtime measurement"
     var emptyDetail = "Awaiting measurements"

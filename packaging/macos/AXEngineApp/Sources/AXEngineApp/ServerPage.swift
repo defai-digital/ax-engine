@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 import AXEngineAppCore
 
-/// Server Settings: the app-owned server in detail (lifecycle, serving
-/// options, API key, client connection), attaching to an existing service,
+/// API & Logs: how apps connect (endpoint, ready-to-paste snippets, API
+/// key), the app-owned server in detail, attaching to an existing service,
 /// and runtime metrics and output once something is serving.
 struct ServerPage: View {
     @ObservedObject var model: ApplicationModel
@@ -26,6 +26,7 @@ struct ServerPage: View {
         ScrollView {
             VStack(spacing: 18) {
                 if let error = runtime.error { errorCard(error) }
+                if let connection = runtime.connection { ConnectAppsCard(connection: connection, runtime: runtime) }
                 serverCard
                 if runtime.connection == nil && !runtime.owned { connectCard }
                 if runtime.connection != nil {
@@ -33,10 +34,10 @@ struct ServerPage: View {
                     RuntimeHistoryView(runtime: runtime)
                 } else {
                     Card {
-                        Label("Runtime metrics and history appear here while a server is running. Mac CPU, GPU and memory charts are on Dashboard.",
+                        Label("Runtime metrics and history appear here while a server is running. Mac CPU, GPU and memory charts are on System.",
                               systemImage: "chart.xyaxis.line")
                             .font(.callout).foregroundStyle(.secondary)
-                        Button("Open Dashboard") { model.page = .overview }.buttonStyle(.link)
+                        Button("Open System") { model.page = .system }.buttonStyle(.link)
                     }
                 }
                 if !runtime.logs.isEmpty { outputCard }
@@ -62,7 +63,7 @@ struct ServerPage: View {
                         diagnosticsNotice = "Diagnostics copied. They contain no API key."
                     }
                 }
-                Button("Review Settings") { model.page = .settings }
+                Button("Review Settings") { model.openSettings() }
             }
             if !diagnosticsNotice.isEmpty { Text(diagnosticsNotice).font(.caption).foregroundStyle(.secondary) }
         }
@@ -191,4 +192,42 @@ struct ServerPage: View {
         return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
     }
     private func metric(_ key: String) -> String { runtime.metrics[key].map { String(format: "%.0f", $0) } ?? "—" }
+}
+
+/// Ready-to-paste setups for OpenAI-compatible clients. Snippets reference
+/// $AX_ENGINE_API_KEY instead of embedding a key.
+private struct ConnectAppsCard: View {
+    let connection: EngineConnection
+    @ObservedObject var runtime: RuntimeController
+    @State private var snippet: ClientSnippet = .curl
+    var body: some View {
+        let url = connection.apiURL.absoluteString
+        let text = snippet.text(apiURL: url, model: runtime.models.first?.id ?? "", requiresKey: connection.hasAPIKey)
+        Card("Connect your apps", subtitle: "OpenAI-compatible endpoint on this Mac only", trailing: {
+            Button("Copy URL", systemImage: "doc.on.doc") { copyText(url) }.controlSize(.small)
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill").foregroundStyle(.secondary).font(.caption)
+                Text(url).font(.system(.title3, design: .monospaced).weight(.medium)).textSelection(.enabled)
+                Spacer()
+                PillBadge(text: connection.hasAPIKey ? "API key required" : "No API key", systemImage: "key",
+                          tint: connection.hasAPIKey ? Brand.warn : .secondary)
+            }
+            Picker("Client", selection: $snippet) {
+                ForEach(ClientSnippet.allCases) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented).labelsHidden()
+            ZStack(alignment: .topTrailing) {
+                ScrollView(.horizontal) {
+                    Text(text).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                CopyButton(text: text, label: "Copy snippet").padding(8)
+            }
+            Text(connection.hasAPIKey
+                 ? "Set AX_ENGINE_API_KEY from Copy API Key below. Snippets never contain the key."
+                 : "Any OpenAI-compatible client works: point its base URL here. Other devices cannot connect.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
 }

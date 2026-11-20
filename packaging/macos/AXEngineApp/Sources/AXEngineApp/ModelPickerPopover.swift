@@ -32,7 +32,7 @@ struct ModelPickerPopover: View {
             Button(action: browseCatalog) {
                 Label("Download more models", systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain).foregroundStyle(Brand.accentChrome).font(.callout.weight(.medium))
+            .buttonStyle(.plain).foregroundStyle(Brand.accent).font(.callout.weight(.medium))
             .padding(.horizontal, 14).padding(.vertical, 10)
             Divider()
             HStack(spacing: 8) {
@@ -91,7 +91,7 @@ struct ModelPickerPopover: View {
                 if isCollapsed { collapsed.remove(key) } else { collapsed.insert(key) }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: symbol).foregroundStyle(key == "favorites" ? Brand.accentChrome : .secondary)
+                    Image(systemName: symbol).foregroundStyle(key == "favorites" ? Brand.accent : .secondary)
                     Text(title.uppercased()).font(.caption.weight(.semibold)).tracking(0.6).foregroundStyle(.secondary)
                     Spacer()
                     Image(systemName: isCollapsed ? "chevron.right" : "chevron.down").font(.caption).foregroundStyle(.secondary)
@@ -117,14 +117,14 @@ struct ModelPickerPopover: View {
                         Text(TransferFormat.bytes(size)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 4)
-                    if selected { Image(systemName: "checkmark").foregroundStyle(Brand.accentChrome) }
+                    if selected { Image(systemName: "checkmark").foregroundStyle(Brand.accent) }
                 }.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(item.name + "\n" + item.path)
             Button { toggleFavorite(item.path) } label: {
                 Image(systemName: favorite ? "star.fill" : "star")
-                    .foregroundStyle(favorite ? Brand.accentChrome : .secondary)
+                    .foregroundStyle(favorite ? Brand.accent : .secondary)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(favorite ? "Remove \(item.displayName) from favorites" : "Add \(item.displayName) to favorites")
@@ -132,7 +132,7 @@ struct ModelPickerPopover: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 7).fill(
-            highlighted == item.path ? Brand.accentChrome.opacity(0.14) : Color.clear))
+            highlighted == item.path ? Brand.accent.opacity(0.14) : Color.clear))
         .onHover { if $0 { highlighted = item.path } }
         .id(item.path)
     }
@@ -163,7 +163,7 @@ struct ModelTitle: View {
             ForEach(label.tags, id: \.self) { tag in
                 Text(tag).font(.caption2.weight(.semibold)).monospaced()
                     .padding(.horizontal, 5).padding(.vertical, 1)
-                    .foregroundStyle(tag == "MTP" ? Brand.accentChrome : .secondary)
+                    .foregroundStyle(tag == "MTP" ? Brand.boost : .secondary)
                     .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                     .fixedSize().layoutPriority(1)
             }

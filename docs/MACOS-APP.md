@@ -66,6 +66,20 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
 
 ## Workflow
 
+**Layout.** The sidebar holds **Home** (Command-1), **Playground**
+(Command-2), **Models** (Command-3), **API & Logs** (Command-4) and **System**
+(Command-5), then **Pinned** models: starred models that serve in one click
+(while a server runs, a pinned model is selected on Home, where Restart
+switches to it). The toolbar carries one **server capsule** on every page:
+state, model, endpoint, live token rate, a copy-URL button and the single
+lifecycle action that applies (Start, Stop, Cancel or Disconnect). Green
+means this app's own server is serving; blue marks an attached service the
+app did not start, and speculative-decoding readings; indigo is the accent
+for actions and selection. The toolbar also has a **Downloads** popover and
+the **command palette** (Command-K), which jumps to a page, serves a
+downloaded model or runs a server action through the same gates as the
+buttons. **Settings** is a standard window (Command-Comma).
+
 **First run.** When a complete library scan finds no models, a short guide
 opens: what AX Engine does, a list of catalog models (download size within
 this Mac's memory first, smallest first; a size comparison, not a fit
@@ -73,8 +87,8 @@ claim), the download with live progress, and **Start Server**. Closing it
 keeps any download running. It is offered once; reopen it from **Help ›
 Getting Started**.
 
-1. **Start serving (Dashboard):** the **Inference service** card at the top of
-   Dashboard is the quickest way to serve: pick a downloaded model and press
+1. **Start serving (Home):** the **Serve a model** card on Home (or the
+   toolbar capsule) is the quickest way to serve: pick a downloaded model and press
    **Start Server** (or Shift-Command-R, or the menu-bar item). With nothing
    downloaded yet, the card says so and offers **Download a Model**, which
    opens the Catalog. The model picker is searchable and groups models under
@@ -92,8 +106,18 @@ Getting Started**.
    Playground**. **Serving options** folds the serving mode and request cap
    behind a one-line summary such as "Automatic mode · up to 4 requests · no
    API key". By default the server needs no API key: it listens on 127.0.0.1
-   only, so local clients can call it directly.
-2. **Server Settings:** the same status, model picker and lifecycle buttons,
+   only, so local clients can call it directly. While something is serving,
+   Home leads with **Live speed**: tokens the runtime scheduled per second
+   (prompt and output together) between two-second polls of `/metrics`,
+   active and completed requests, interval MTP draft acceptance and the model
+   context, with a five-minute history. **Model memory** shows the MLX active,
+   cache, prefix-cache and peak bytes the runtime reports, and **Last
+   Playground reply** repeats the newest completed reply's native decode and
+   prefill rates. Missing counters show a dash; none of these is a benchmark.
+2. **API & Logs:** **Connect your apps** shows the endpoint with ready-to-paste
+   curl, Python (OpenAI SDK) and environment-variable setups; when a key is
+   required they reference `$AX_ENGINE_API_KEY` and never contain the key.
+   Below it are the same status, model picker and lifecycle buttons,
    with the serving options and API key always visible. **Require an API key**
    gives each later launch a fresh in-memory key, copied with **Copy API
    Key**; while a server is running the toggle shows **Restart required** and
@@ -108,7 +132,7 @@ Getting Started**.
    request near full speed on batched models; 8 is the runtime's
    batched-decode cohort limit. While running, the options show the runtime's
    batch slots in use from its own gauges. Serving mode, request cap and API
-   key save as soon as they change, on Dashboard, Server Settings or Settings
+   key save as soon as they change, on Home, API & Logs or Settings
    › Runtime, without touching other unsaved Settings edits, and apply at the
    next start or restart. When the running server differs from them, Restart
    names the change (**Restart with Selected Model**, **Restart in Coding
@@ -129,7 +153,7 @@ Getting Started**.
    the last 100 or 500 lines; filters change the view only, and **Copy All**
    copies the whole bounded output. Runtime metrics
    and history appear only while something is serving; Mac CPU, GPU and memory
-   charts are on Dashboard. **Already running AX Engine on this Mac? Connect to
+   charts are on System. **Already running AX Engine on this Mac? Connect to
    it** (collapsed) attaches to a service on the configured port; a key you
    enter is held in memory for that connection only.
    **Copy API URL** copies the actual connected endpoint, and **Copy API Key**
@@ -147,7 +171,7 @@ Getting Started**.
    **Selected** and **Serving** model. One snapshot per cached repository is
    shown, preferring complete weights before the newest revision. **Serve**
    on a ready row starts the server on it when nothing is serving; while a
-   server runs, **Select on Dashboard** selects it there so Restart switches
+   server runs, **Select on Home** selects it there so Restart switches
    to it. The same action is on downloaded Catalog rows and finished
    downloads. **Catalog** lists public AutomatosX packs (no Hugging Face
    account or token) grouped into those that fit this Mac's unified memory and
@@ -194,12 +218,18 @@ Getting Started**.
    block new sends; **Reveal Saved Conversation** opens their location before
    an explicit **Clear** replaces them. These are storage/display limits, not
    a model token-context limit; the server still validates the model context.
+   The **Telemetry** inspector (toolbar button or Option-Command-I) shows the
+   live token rate, active requests and MTP draft acceptance; for the current
+   or last reply the first-text time, elapsed time, native decode and prefill
+   rates and token counts; prefix-cache hit rate and reused tokens since the
+   server started; and the model context and serving mode.
 
-5. **Server metrics:** inspect live runtime counters on Server Settings while a
+5. **Server metrics:** inspect live runtime counters on API & Logs while a
    server runs. Missing measurements appear as unavailable. Counters are not a
    benchmark or a throughput certification.
 6. **Menu bar and Server menu:** the menu-bar item (on by default; Settings ›
-   Runtime › Menu bar) shows the server state and offers Start Server, Start
+   Runtime › Menu bar) shows the server state, with the live token rate next to its icon
+   while one is reported, and offers Start Server, Start
    with… (any downloaded model), Restart, Stop, Copy API URL, Open Playground
    and Open AX Engine. The **Server** menu has Start/Restart Server
    (Shift-Command-R), Stop Server (Shift-Command-Period), Copy API URL and
@@ -295,18 +325,17 @@ icons and the About panel use AX Engine branding; upstream acknowledgements
 are collected in that dedicated notices window.
 AX Engine provides inference; MTPLX inference code and model assets are not bundled.
 
-## Dashboard and discovery
+## System and discovery
 
-Dashboard is a resource overview, with charts for RAM usage, available disk space,
-CPU/GPU activity and your models on disk, under the **Inference service**
-card that starts, restarts and stops the app-owned server on a downloaded
-model. Downloads stay in Models; authentication, attach and runtime metrics
-stay in Server Settings.
+System is the host overview, with charts for RAM usage, available disk space,
+CPU/GPU activity and your models on disk. Serving lives on Home and in the
+toolbar capsule; downloads stay in Models; authentication, attach and runtime
+metrics stay in API & Logs.
 
 The disk-space ring shows the volume containing the configured model download
 folder, not the size of model files. Used/reserved includes other files and APFS
 allocations. Imported models and caches may be on other volumes. A metadata helper
-reads capacity with a three-second deadline, once when Dashboard becomes active
+reads capacity with a three-second deadline, once when System becomes active
 and every minute while it stays active. Missing volumes and broken links remain
 unavailable. No weights are read or directories sized for this chart. A local
 privacy manifest declares the disk-capacity API's display-only usage.
@@ -330,20 +359,20 @@ inference performance. OS memory pressure remains unknown until a public system
 event arrives. Missing, stale and interrupted samples leave gaps instead of zeros.
 
 RAM shows estimated GB used with the percentage and total memory alongside it.
-Select **1 min, 5 min, 15 min, 30 min, 1 hour, or 4 hours** from the Dashboard
+Select **1 min, 5 min, 15 min, 30 min, 1 hour, or 4 hours** from the System
 range menu; changing the range does not change sampling or discard history.
 History retains at most 6,000 samples within four hours. Each plot renders at
 most 600 original samples, preserving first/last and low/high values per time
 bucket and keeping gaps between disconnected segments. Hover inspection uses
 the original history. A newly opened app shows only the history collected so far. Each trend has a fixed 0–100% scale. Hover
 over a plot to inspect an actual sample and its timestamp; empty intervals stay
-unavailable. Source explanations are under **How these measurements work** on Dashboard. The
+unavailable. Source explanations are under **How these measurements work** on System. The
 native Swift Charts plot uses SwiftUI's Metal-backed offscreen composition, while
 labels and controls remain native. This is a rendering choice, not a measured
 performance claim. Chart appearance adapts to light/dark mode, increased contrast
 and reduced motion; metric names and symbols supplement color.
 
-Server's collapsed **Runtime history** uses existing service polls for MLX active
+API & Logs' collapsed **Runtime history** uses existing service polls for MLX active
 memory, active streams and interval MTP draft acceptance. Idle intervals, counter
 resets and probe failures leave gaps; acceptance is not a speedup measurement.
 History resets when the connection or reported model changes. All measurement
@@ -369,10 +398,11 @@ download to Downloads.
 The app performs compatibility validation when the operator explicitly starts a
 model. Models from other tools are not silently deleted or hidden.
 
-Use Command-1 through Command-5 to navigate Dashboard, Models, Server Settings, Chat and
-Settings; Command-F focuses model search, Command-R refreshes models,
-Shift-Command-R starts or restarts the server and Shift-Command-Period stops it.
-Command-Comma still opens inline Settings. Search, selection and chat drafts
+Use Command-1 through Command-5 to navigate Home, Playground, Models, API & Logs
+and System; Command-K opens the command palette, Command-F focuses model
+search, Command-R refreshes models, Shift-Command-R starts or restarts the
+server, Shift-Command-Period stops it and Command-Period stops a reply.
+Command-Comma opens the Settings window. Search, selection and chat drafts
 survive page switches and main-window reopening for the current app session.
 API credentials remain in memory, and starting/connecting never happens merely
 because a page was opened. Attached services retain Disconnect-only ownership.

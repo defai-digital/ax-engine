@@ -12,8 +12,7 @@ struct ServerStatusRow: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : transitioning ? "clock" : "circle",
-                          tint: runtime.ready ? Brand.accentChrome
-                              : runtime.state == "Failed" || runtime.state == "Connection degraded" ? .orange : .secondary,
+                          tint: Brand.tint(.from(state: runtime.state, owned: runtime.owned, ready: runtime.ready)),
                           emphasized: runtime.ready || transitioning)
                 if transitioning { ProgressView().controlSize(.small) }
                 if let detail = ServerGate.stateDetail(state: runtime.state, startedAt: runtime.startedAt, now: context.date) {

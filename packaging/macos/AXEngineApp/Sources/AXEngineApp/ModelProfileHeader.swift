@@ -3,7 +3,7 @@ import AXEngineAppCore
 
 /// Playground's context bar: the running model and the request profile,
 /// which only shapes Playground requests. Server-level options (serving mode,
-/// request cap) live in the server card on Dashboard and Server Settings.
+/// request cap) live in the server card on Home and API & Logs.
 struct ModelProfileHeader: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
@@ -29,13 +29,13 @@ struct ModelProfileHeader: View {
                 }
                 Spacer(minLength: 0)
                 if runtime.owned {
-                    PillBadge(text: runtime.servingMode.badge, systemImage: "bolt")
+                    PillBadge(text: runtime.servingMode.badge, systemImage: "bolt", tint: Brand.boost)
                         .help("Speculative-decode posture the running app-owned server was started with.")
                     PillBadge(text: "Up to \(runtime.concurrentRequests) requests", systemImage: "person.2")
                         .help("Requests the running server decodes at once before new ones receive 429.")
                 }
                 PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle",
-                          tint: runtime.ready ? Brand.accentChrome : .secondary)
+                          tint: Brand.tint(.from(state: runtime.state, owned: runtime.owned, ready: runtime.ready)))
             }
             selectorRow("Playground profile", chips: profiles)
             Text(guidance).font(.caption).foregroundStyle(.secondary)
@@ -82,7 +82,7 @@ struct ModelProfileHeader: View {
 }
 
 /// Serving mode chips and the request cap. Both save at once and apply at the
-/// next start or restart. Shared by the Dashboard card and Server Settings.
+/// next start or restart. Shared by the Home card and API & Logs.
 struct ServingOptions: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController

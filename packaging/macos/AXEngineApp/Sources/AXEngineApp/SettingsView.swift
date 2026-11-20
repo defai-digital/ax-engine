@@ -165,7 +165,7 @@ struct SettingsView: View {
             Toggle("Require an API key", isOn: Binding(get: { model.settings.requireAPIKey }, set: { model.selectRequireAPIKey($0) }))
             Text(model.attachedToService
                  ? "An attached service keeps its own options. Disconnect to change the options for your own server."
-                 : "Serving options save as soon as you change them, here or on Dashboard and Server Settings, and apply at the next start or restart.")
+                 : "Serving options save as soon as you change them, here or on Home and API & Logs, and apply at the next start or restart.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .disabled(model.attachedToService)

@@ -16,9 +16,9 @@ struct SelectionChip: View {
             }
             .font(.callout.weight(selected ? .semibold : .regular))
             .padding(.horizontal, 12).padding(.vertical, 6)
-            .foregroundStyle(selected ? Brand.accentChrome : Color.primary)
-            .background(selected ? Brand.accentChrome.opacity(0.14) : Color.secondary.opacity(0.08), in: Capsule())
-            .overlay(Capsule().strokeBorder(selected ? Brand.accentChrome.opacity(0.5) : Color.clear))
+            .foregroundStyle(selected ? Brand.accent : Color.primary)
+            .background(selected ? Brand.accent.opacity(0.14) : Color.secondary.opacity(0.08), in: Capsule())
+            .overlay(Capsule().strokeBorder(selected ? Brand.accent.opacity(0.5) : Color.clear))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

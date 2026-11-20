@@ -2,13 +2,11 @@ import SwiftUI
 import Charts
 import AXEngineAppCore
 
-struct DashboardView: View {
+/// System: this Mac's memory, CPU and GPU history, model storage and the
+/// model inventory. Moved off Home so Home can lead with the model's speed.
+struct SystemView: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var models: ModelStore
-    @ObservedObject var runtime: RuntimeController
-    @ObservedObject var chat: ChatStore
-    let clipboard: SensitiveClipboard
-    @Binding var copyNotice: String
     @ObservedObject var monitor: HostMonitor
     @ObservedObject var storage: StorageMonitor
     @Environment(\.scenePhase) private var scenePhase
@@ -18,7 +16,6 @@ struct DashboardView: View {
         GeometryReader { geometry in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                InferenceServiceCard(model: model, runtime: runtime, models: models, chat: chat, clipboard: clipboard, copyNotice: $copyNotice)
                 HStack {
                     Label("This Mac", systemImage: "desktopcomputer").font(.headline)
                     Text(memoryTotal + " unified memory").font(.callout).foregroundStyle(.secondary)
@@ -56,15 +53,15 @@ struct DashboardView: View {
                     }
                     if geometry.size.width >= 720 {
                         HStack(alignment: .top, spacing: 14) {
-                            activityChart("CPU", key: "cpu", tint: Brand.accentChrome, symbol: "cpu", at: context.date).frame(minWidth: 180)
-                            activityChart("GPU", key: "gpu", tint: .blue, symbol: "square.3.layers.3d", at: context.date).frame(minWidth: 180)
+                            activityChart("CPU", key: "cpu", tint: Brand.accent, symbol: "cpu", at: context.date).frame(minWidth: 180)
+                            activityChart("GPU", key: "gpu", tint: .teal, symbol: "square.3.layers.3d", at: context.date).frame(minWidth: 180)
                             ModelInventoryCard(models: models).frame(minWidth: 210)
                         }
                     } else {
                         VStack(spacing: 14) {
                             HStack(spacing: 14) {
-                                activityChart("CPU", key: "cpu", tint: Brand.accentChrome, symbol: "cpu", at: context.date)
-                                activityChart("GPU", key: "gpu", tint: .blue, symbol: "square.3.layers.3d", at: context.date)
+                                activityChart("CPU", key: "cpu", tint: Brand.accent, symbol: "cpu", at: context.date)
+                                activityChart("GPU", key: "gpu", tint: .teal, symbol: "square.3.layers.3d", at: context.date)
                             }
                             ModelInventoryCard(models: models)
                         }
@@ -73,7 +70,7 @@ struct DashboardView: View {
                 }
                 HStack(spacing: 7) {
                     Image(systemName: monitor.active ? "circle.fill" : "pause.circle")
-                        .foregroundStyle(monitor.active ? Brand.accentChrome : .secondary)
+                        .foregroundStyle(monitor.active ? Brand.accent : .secondary)
                     Text(model.hostMonitoringEnabled
                          ? monitor.active ? "Live activity · last \(historyRange.label)" : "Activity monitoring paused"
                          : "Activity monitoring is off")
@@ -129,41 +126,6 @@ struct DashboardView: View {
     }
 }
 
-/// One-click serving: pick a downloaded model, then Start, Restart or Stop.
-/// Serving options fold away; authentication and attach live on Server Settings.
-private struct InferenceServiceCard: View {
-    @ObservedObject var model: ApplicationModel
-    @ObservedObject var runtime: RuntimeController
-    @ObservedObject var models: ModelStore
-    @ObservedObject var chat: ChatStore
-    let clipboard: SensitiveClipboard
-    @Binding var copyNotice: String
-
-    var body: some View {
-        Card("Inference service", subtitle: "Serve a downloaded model to apps on this Mac.", trailing: {
-            Button("Server Settings", systemImage: "gearshape") { model.page = .server }.controlSize(.small)
-                .help("API key, connect to an existing service, metrics and runtime output")
-        }) {
-            ServerStatusRow(model: model, runtime: runtime)
-            if let error = runtime.error {
-                HStack(alignment: .firstTextBaseline) {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                        .lineLimit(3).textSelection(.enabled)
-                    Spacer()
-                    Button("Details") { model.page = .server }.buttonStyle(.link).font(.caption)
-                }
-            }
-            ServerControls(model: model, runtime: runtime, models: models, chat: chat, showsPath: false)
-            ClientCopyButtons(runtime: runtime, clipboard: clipboard, notice: $copyNotice,
-                              showsPlayground: true, openPlayground: { model.page = .chat })
-            if !model.servableModels.isEmpty || runtime.owned {
-                Divider()
-                ServingOptionsDisclosure(model: model, runtime: runtime)
-            }
-        }
-    }
-}
-
 private struct StorageCapacityCard: View {
     @ObservedObject var storage: StorageMonitor
     var body: some View {
@@ -181,7 +143,7 @@ private struct StorageCapacityCard: View {
                         .foregroundStyle(Color.secondary.opacity(0.25))
                         .accessibilityLabel("Used or reserved").accessibilityValue(bytes(value.usedBytes))
                     SectorMark(angle: .value("Bytes", value.availableBytes), innerRadius: .ratio(0.74), angularInset: 2)
-                        .foregroundStyle(Color.teal)
+                        .foregroundStyle(Brand.accent)
                         .accessibilityLabel("Available disk space").accessibilityValue(bytes(value.availableBytes))
                 }
                 .chartPlotStyle { $0.drawingGroup(opaque: false, colorMode: .linear) }
@@ -231,10 +193,10 @@ private struct ModelInventoryCard: View {
             if hasInventory {
                 Chart {
                 BarMark(x: .value("Folders", inventory.complete), y: .value("Status", "Ready to serve"))
-                    .foregroundStyle(Brand.accentChrome).cornerRadius(3)
+                    .foregroundStyle(Brand.accent).cornerRadius(3)
                     .annotation(position: .trailing) { Text(String(inventory.complete)).font(.caption.monospacedDigit()) }
                 BarMark(x: .value("Folders", inventory.incomplete), y: .value("Status", "Incomplete"))
-                    .foregroundStyle(Color.orange).cornerRadius(3)
+                    .foregroundStyle(Brand.warn).cornerRadius(3)
                     .annotation(position: .trailing) { Text(String(inventory.incomplete)).font(.caption.monospacedDigit()) }
                 BarMark(x: .value("Folders", inventory.unchecked), y: .value("Status", "Unchecked"))
                     .foregroundStyle(Color.secondary).cornerRadius(3)

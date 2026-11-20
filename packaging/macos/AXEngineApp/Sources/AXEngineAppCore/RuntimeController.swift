@@ -24,6 +24,10 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var requiresAPIKey = false
     @Published public private(set) var history = MetricHistory()
     private var mtpWindow = MTPCounterWindow()
+    private var tokenRate = CounterRate(key: "ax_engine_scheduled_tokens_total")
+    /// History key for tokens the runtime scheduled per second (prompt and
+    /// output together) between successful polls.
+    public nonisolated static let tokenRateKey = "scheduledTokensPerSecond"
     public let job = ProcessJob(terminationGrace: 8)
     private let logStore = BoundedLogStore(capacity: 250)
     private var generation = UUID()
@@ -64,7 +68,7 @@ public final class RuntimeController: ObservableObject {
                 throw AppFailure.message("Port \(settings.port) is already in use, possibly by another AX Engine service. Connect to it below, stop that service, or choose another port in Settings.")
             }
             let identity = UUID(); generation = identity
-            history = MetricHistory(); mtpWindow.reset()
+            history = MetricHistory(); mtpWindow.reset(); tokenRate.reset()
             // Empty disables auth on the runtime and overrides any inherited key.
             let key = settings.requireAPIKey ? UUID().uuidString + UUID().uuidString : ""
             let redact: (String) -> String = { key.isEmpty ? $0 : $0.replacingOccurrences(of: key, with: "[redacted]") }
@@ -91,7 +95,7 @@ public final class RuntimeController: ObservableObject {
                 }
                 guard generation == identity else { return }
                 polling?.cancel(); connection = nil; models = []; metrics = [:]
-                history.append([:]); mtpWindow.reset()
+                history.append([:]); mtpWindow.reset(); tokenRate.reset()
                 busy = false; owned = false; state = error == nil ? "Stopped" : "Failed"
             }
             polling = Task {
@@ -121,7 +125,7 @@ public final class RuntimeController: ObservableObject {
         guard !busy, !owned, connection == nil else { return }
         guard (1024...65535).contains(port) else { error = "Choose a port between 1024 and 65535."; return }
         let identity = UUID(); generation = identity
-        history = MetricHistory(); mtpWindow.reset()
+        history = MetricHistory(); mtpWindow.reset(); tokenRate.reset()
         busy = true; state = "Connecting"; error = nil
         startedAt = Date(); lastSuccessfulCheck = nil; selectedModel = ""
         let candidate = EngineConnection(port: port, apiKey: apiKey)
@@ -143,18 +147,19 @@ public final class RuntimeController: ObservableObject {
                 let discovered = try await client.models()
                 guard !Task.isCancelled, generation == identity else { return }
                 if models.map(\.id).sorted() != discovered.map(\.id).sorted() {
-                    history = MetricHistory(); mtpWindow.reset()
+                    history = MetricHistory(); mtpWindow.reset(); tokenRate.reset()
                 }
                 let checked = Date()
                 var plotted = latest
                 plotted["mtpAcceptedPercent"] = mtpWindow.observe(latest, at: checked)
+                plotted[Self.tokenRateKey] = tokenRate.observe(latest, at: checked)
                 history.append(plotted, at: checked)
                 metrics = latest; models = discovered; error = nil; state = owned ? "Running" : "Attached"; lastSuccessfulCheck = checked
             } catch {
                 guard !Task.isCancelled, generation == identity else { return }
                 // A busy, unauthorized or changed-schema service is not dead.
                 // Never auto-kill a serving model on a probe failure.
-                metrics = [:]; history.append([:]); mtpWindow.reset()
+                metrics = [:]; history.append([:]); mtpWindow.reset(); tokenRate.reset()
                 state = "Connection degraded"; self.error = error.localizedDescription
             }
             try? await Task.sleep(for: .seconds(2))
@@ -165,7 +170,7 @@ public final class RuntimeController: ObservableObject {
         guard owned else { detach(); return }
         generation = UUID(); polling?.cancel(); polling = nil
         state = "Stopping"; busy = true
-        history.append([:]); mtpWindow.reset()
+        history.append([:]); mtpWindow.reset(); tokenRate.reset()
         launch?.cancel(); job.cancel()
         await launch?.value
         await logStore.append(logs, stream: .stderr)
@@ -185,7 +190,7 @@ public final class RuntimeController: ObservableObject {
     public func detach() {
         guard !owned else { return }
         generation = UUID(); polling?.cancel(); polling = nil
-        history.append([:]); mtpWindow.reset()
+        history.append([:]); mtpWindow.reset(); tokenRate.reset()
         connection = nil; models = []; metrics = [:]; busy = false; state = "Stopped"; error = nil; lastSuccessfulCheck = nil; startedAt = nil
     }
 }

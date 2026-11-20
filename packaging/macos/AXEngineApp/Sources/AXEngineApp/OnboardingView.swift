@@ -97,13 +97,13 @@ struct OnboardingView: View {
         return Button { chosen = item } label: {
             HStack(spacing: 10) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected ? Brand.accentChrome : .secondary)
+                    .foregroundStyle(selected ? Brand.accent : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     ModelTitle(label: label, font: .callout.weight(.medium))
                     Text(item.alias).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if downloaded { PillBadge(text: "Downloaded", systemImage: "checkmark.circle.fill", tint: Brand.accentChrome) }
+                if downloaded { PillBadge(text: "Downloaded", systemImage: "checkmark.circle.fill", tint: Brand.accent) }
                 if let size = item.approxSizeBytes {
                     Text("about " + TransferFormat.bytes(size)).font(.caption.monospacedDigit())
                         .foregroundStyle(larger ? Color.orange : Color.secondary)
@@ -111,7 +111,7 @@ struct OnboardingView: View {
                 }
             }
             .padding(10).contentShape(Rectangle())
-            .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Brand.accentChrome.opacity(0.1) : Color.secondary.opacity(0.05)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Brand.accent.opacity(0.1) : Color.secondary.opacity(0.05)))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
@@ -144,7 +144,7 @@ struct OnboardingView: View {
                 Text("Waiting for the download to start…").foregroundStyle(.secondary)
             }
             if installed != nil {
-                Text("Start Server loads the model and listens on http://127.0.0.1:\(String(model.settings.port))/v1. No API key is needed unless you turn one on in Server Settings.")
+                Text("Start Server loads the model and listens on http://127.0.0.1:\(String(model.settings.port))/v1. No API key is needed unless you turn one on in API & Logs.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
@@ -152,13 +152,13 @@ struct OnboardingView: View {
                 Button("Back") { step = 1 }
                 Spacer()
                 if installed == nil { Button("Close and Keep Downloading") { finish(); model.modelsSection = "transfers"; model.page = .models } }
-                Button(runtime.owned ? "Select on Dashboard" : "Start Server", systemImage: "play.fill") {
+                Button(runtime.owned ? "Select on Home" : "Start Server", systemImage: "play.fill") {
                     if let installed { model.serve(installed.path) }
                     finish()
                 }
                 .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 .disabled(installed.map { !models.canSelectInGUI($0.path) } ?? true || model.attachedToService || model.connecting)
-                .help(runtime.owned ? "A server is already running; Dashboard's Restart switches it to this model." : "Start serving this model")
+                .help(runtime.owned ? "A server is already running; Home's Restart switches it to this model." : "Start serving this model")
             }
         }
     }

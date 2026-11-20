@@ -15,6 +15,8 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            ModelProfileHeader(model: model, runtime: runtime, chat: chat)
+                .padding(.horizontal, 26).padding(.top, 16)
             HStack {
                 Spacer()
                 Toggle("Follow output", isOn: $chat.followOutput).toggleStyle(.checkbox)
@@ -60,7 +62,7 @@ struct ChatView: View {
                             }
                             .padding(18)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(message.role == "user" ? Brand.accentChrome.opacity(0.06) : Brand.cardSurface,
+                            .background(message.role == "user" ? Brand.accent.opacity(0.06) : Brand.cardSurface,
                                         in: RoundedRectangle(cornerRadius: 14))
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -108,6 +110,10 @@ struct ChatView: View {
                 }
             }.padding(20)
         }
+        .inspector(isPresented: $model.showsTelemetry) {
+            TelemetryInspector(runtime: runtime, chat: chat)
+                .inspectorColumnWidth(min: 240, ideal: 270, max: 340)
+        }
         .onChange(of: runtime.models.map(\.id)) { _, ids in
             if !ids.contains(chat.selectedModel) { chat.selectedModel = "" }
         }
@@ -134,7 +140,7 @@ struct ChatView: View {
             ContentUnavailableView {
                 Label("The server is not available", systemImage: "exclamationmark.triangle")
             } description: { Text(error) } actions: {
-                Button("Review Server") { model.page = .server }.buttonStyle(.borderedProminent)
+                Button("Review Server") { model.page = .api }.buttonStyle(.borderedProminent)
             }
         } else if model.attachedToService {
             ContentUnavailableView {
@@ -142,7 +148,7 @@ struct ChatView: View {
             } description: {
                 Text("AX Engine is attached to a service it did not start. Playground opens once that service reports ready.")
             } actions: {
-                Button("Review Server Settings") { model.page = .server }
+                Button("Review API & Logs") { model.page = .api }
             }
         } else if model.models.scanning && model.servableModels.isEmpty {
             ContentUnavailableView {
@@ -162,12 +168,12 @@ struct ChatView: View {
                 Label("Start the server to try your model", systemImage: "play.circle")
             } description: {
                 Text(model.models.productLibrary.first { $0.path == model.selectedPath }.map { "Starts " + $0.displayName + " on this Mac." }
-                     ?? "Choose a downloaded model on Dashboard.")
+                     ?? "Choose a downloaded model on Home.")
             } actions: {
                 if model.canStartServer {
                     Button("Start Server", systemImage: "play.fill") { model.startServer() }.buttonStyle(.borderedProminent)
                 }
-                Button("Choose Model") { model.page = .overview }
+                Button("Choose Model") { model.page = .home }
             }
         }
     }
@@ -182,11 +188,11 @@ struct ChatView: View {
                 .font(.callout).foregroundStyle(runtime.error == nil ? Color.secondary : Color.orange).lineLimit(2)
             Spacer()
             if runtime.error != nil {
-                Button("Review Server") { model.page = .server }
+                Button("Review Server") { model.page = .api }
             } else if model.canStartServer {
                 Button("Start Server", systemImage: "play.fill") { model.startServer() }.buttonStyle(.borderedProminent)
             } else if runtime.state != "Starting" {
-                Button("Open Dashboard") { model.page = .overview }
+                Button("Open Home") { model.page = .home }
             }
         }
         .padding(10)
@@ -288,5 +294,56 @@ enum CodeFence {
         let info = String(fenced[..<newline])
         let isLanguageTag = info.count <= 24 && info.range(of: #"^[A-Za-z0-9+#._-]*$"#, options: .regularExpression) != nil
         return isLanguageTag ? String(fenced[fenced.index(after: newline)...]) : fenced
+    }
+}
+
+/// Playground's right inspector: live runtime speed, the last reply's
+/// native timings and prefix-cache reuse. A dash means "not reported".
+private struct TelemetryInspector: View {
+    @ObservedObject var runtime: RuntimeController
+    @ObservedObject var chat: ChatStore
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 2)) { context in
+            let last = chat.messages.last { $0.role == "assistant" }
+            let performance = last?.state == "Complete" ? last?.performance : nil
+            Form {
+                Section("Live") {
+                    row("Speed", TokenRateFormat.short(runtime.history.latest(RuntimeController.tokenRateKey, now: context.date)),
+                        help: "Tokens the runtime scheduled per second, prompt and output together.")
+                    row("Active requests", runtime.metrics["ax_engine_generation_active_streams"].map { String(format: "%.0f", $0) })
+                    row("MTP drafts accepted", runtime.history.latest("mtpAcceptedPercent", now: context.date).map { String(format: "%.0f%%", $0) },
+                        tint: Brand.boost, help: "Accepted share of speculative draft tokens in the last poll interval. Not a speedup measurement.")
+                }
+                Section(chat.generating ? "This reply" : "Last reply") {
+                    row("First text", chat.firstTokenSeconds.map { String(format: "%.2f s", $0) },
+                        help: "Time from Send to the first visible text, including network and display.")
+                    row("Elapsed", chat.elapsedSeconds.map { String(format: "%.1f s", $0) })
+                    row("Decode", performance.flatMap(\.decodeTokensPerSecond).map(TokenRateFormat.short),
+                        help: "Native decode average; excludes the first output batch.")
+                    row("Prefill", performance.map { $0.promptFullyCached ? "Cached" : TokenRateFormat.short($0.prefillTokensPerSecond) })
+                    row("Prompt tokens", performance?.prefillTokens.map { "\($0) uncached" })
+                    row("Output tokens", performance?.decodeTokens.map(String.init))
+                    if chat.generating { Text("Rates appear when the reply completes.").font(.caption).foregroundStyle(.secondary) }
+                }
+                Section("Prefix cache") {
+                    let hits = runtime.metrics["ax_engine_mlx_prefix_cache_hits_total"]
+                    let misses = runtime.metrics["ax_engine_mlx_prefix_cache_misses_total"]
+                    row("Hit rate", hits.flatMap { h in misses.flatMap { m in h + m > 0 ? String(format: "%.0f%%", 100 * h / (h + m)) : nil } },
+                        help: "Since the server started. Reused prompt prefixes skip prefill.")
+                    row("Reused tokens", runtime.metrics["ax_engine_mlx_prefix_cache_reused_tokens_total"].map { $0.formatted(.number.precision(.fractionLength(0))) })
+                }
+                Section("Model") {
+                    row("Context", runtime.models.first?.contextLength.map { $0.formatted() + " tokens" })
+                    if runtime.owned { row("Serving mode", runtime.servingMode.badge, tint: Brand.boost) }
+                }
+            }
+            .formStyle(.grouped)
+        }
+    }
+    private func row(_ title: String, _ value: String?, tint: Color = .primary, help: String? = nil) -> some View {
+        LabeledContent(title) {
+            Text(value ?? "—").monospacedDigit().foregroundStyle(value == nil ? .secondary : tint)
+        }
+        .help(help ?? title)
     }
 }

@@ -15,7 +15,7 @@ import SwiftUI
 struct MetricRow: View {
     let label: String
     let value: String
-    var valueTint: Color = Brand.accentChrome
+    var valueTint: Color = Brand.accent
 
     var body: some View {
         HStack {

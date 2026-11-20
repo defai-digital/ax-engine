@@ -22,7 +22,7 @@ private func tempSettings() throws -> (URL, URL) {
     app.selectConcurrentRequests(6)
     app.selectRequireAPIKey(true)
     // No page bounce, and the server options are saved without the pending edits.
-    #expect(app.page == .overview)
+    #expect(app.page == .home)
     let saved = try AppSettings.load(from: file)
     #expect(saved.servingMode == .coding && saved.concurrentRequests == 6 && saved.requireAPIKey)
     #expect(saved.port == AppSettings().port && saved.maxTokens == AppSettings().maxTokens)

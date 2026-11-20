@@ -77,7 +77,7 @@ footprint, first-token latency, and decode throughput.
 
 The macOS Playground separately bounds conversation text, message count, and
 archive size. Export/clear a long conversation to release its visible history.
-Dashboard history is already bounded by age and sample count.
+System history is already bounded by age and sample count.
 
 ## Swift streaming receive limits
 

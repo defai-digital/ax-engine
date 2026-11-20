@@ -23,7 +23,7 @@ import AXEngineAppCore
     }
     let saved = app.settings
     app.selectPlaygroundProfile(.custom)
-    #expect(app.page == .settings)
+    #expect(app.settingsRequests > 0)
     #expect(app.settingsDraft.generationProfile == .custom)
     #expect(app.settingsDraft.maxTokens == saved.maxTokens)
     #expect(try AppSettings.load(from: file) == saved)
@@ -40,7 +40,7 @@ import AXEngineAppCore
     app.settingsDraft.port = 32002
     let draft = app.settingsDraft
     app.selectPlaygroundProfile(.coding)
-    #expect(app.page == .settings)
+    #expect(app.settingsRequests > 0)
     #expect(app.settingsDraft == draft)
     #expect(app.settings == original)
     #expect(try AppSettings.load(from: file) == original)

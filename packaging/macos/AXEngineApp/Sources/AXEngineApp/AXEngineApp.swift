@@ -10,7 +10,15 @@ final class ApplicationModel: ObservableObject {
     }
     @Published var settingsSaved = false
     @Published var settingsError: String?
-    @Published var page: Page? = .overview
+    @Published var page: Page? = .home
+    /// Each increment asks the window to open the Settings window; the model
+    /// cannot call `openSettings` itself.
+    @Published var settingsRequests = 0
+    @Published var showsPalette = false
+    @Published var showsTelemetry = UserDefaults.standard.object(forKey: "showsTelemetry") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showsTelemetry, forKey: "showsTelemetry") }
+    }
+    func openSettings() { settingsRequests += 1 }
     @Published var selectedPath = ""
     @Published var modelSearch = ""
     @Published var catalogSearch = ""
@@ -87,10 +95,10 @@ final class ApplicationModel: ObservableObject {
     func selectPlaygroundProfile(_ profile: GenerationProfile) {
         guard !chat.generating else { return }
         // Keep pending edits intact; Settings owns their save/revert flow.
-        guard !hasSettingsChanges else { page = .settings; return }
+        guard !hasSettingsChanges else { openSettings(); return }
         if profile == .custom {
             settingsDraft.apply(.custom)
-            page = .settings
+            openSettings()
             return
         }
         var updated = settings
@@ -191,7 +199,7 @@ final class ApplicationModel: ObservableObject {
         } else if canStartServer {
             startServer()
         } else {
-            page = .overview
+            page = .home
         }
     }
     private func confirm(_ title: String, _ message: String, action: String) -> Bool {
@@ -202,12 +210,12 @@ final class ApplicationModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
     /// One action for "use this model": select it, start it when nothing is
-    /// serving, and show Dashboard where the server is controlled. A running
-    /// server is never replaced silently; Dashboard offers the restart.
+    /// serving, and show Home where the server is controlled. A running
+    /// server is never replaced silently; Home offers the restart.
     func serve(_ path: String) {
         guard models.canSelectInGUI(path), !attachedToService, !connecting else { return }
         selectedPath = path
-        page = .overview
+        page = .home
         if canStartServer { startServer() }
     }
 
@@ -247,7 +255,7 @@ struct AXEngineApplication: App {
     var body: some Scene {
         Window("AX Engine", id: "main") {
             MainView(model: model, runtime: model.runtime, models: model.models, chat: model.chat)
-                .tint(Brand.accentChrome)
+                .tint(Brand.accent)
                 .frame(minWidth: 940, minHeight: 680)
                 .onAppear {
                     delegate.model = model
@@ -264,7 +272,6 @@ struct AXEngineApplication: App {
                 CheckForAppUpdates(updates: model.updates)
             }
             ThirdPartyNoticeCommands()
-            SettingsNavigationCommands(model: model)
             NavigationCommands(model: model)
             ServerCommands(model: model, runtime: model.runtime)
             CommandGroup(replacing: .help) {
@@ -276,6 +283,11 @@ struct AXEngineApplication: App {
         } label: {
             MenuBarLabel(runtime: model.runtime)
         }
+        Settings {
+            SettingsView(model: model)
+                .tint(Brand.accent)
+                .frame(width: 720, height: 620)
+        }
         Window("Third-Party Notices", id: "third-party-notices") {
             ThirdPartyNoticesView()
         }
@@ -284,20 +296,6 @@ struct AXEngineApplication: App {
     private func showAbout() {
         let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and test responses in Playground. This app sends no analytics or telemetry.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
-    }
-}
-
-struct SettingsNavigationCommands: Commands {
-    @Environment(\.openWindow) private var openWindow
-    @ObservedObject var model: ApplicationModel
-    var body: some Commands {
-        CommandGroup(replacing: .appSettings) {
-            Button("Settings…") {
-                model.page = .settings
-                openWindow(id: "main")
-            }
-            .keyboardShortcut(",", modifiers: .command)
-        }
     }
 }
 
@@ -320,6 +318,10 @@ struct NavigationCommands: Commands {
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
             }
             Divider()
+            Button("Command Palette…") { model.showsPalette = true; openWindow(id: "main") }
+                .keyboardShortcut("k", modifiers: .command)
+            Button(model.showsTelemetry ? "Hide Telemetry" : "Show Telemetry") { model.showsTelemetry.toggle() }
+                .keyboardShortcut("i", modifiers: [.command, .option])
             Button("Search Models") {
                 model.page = .models
                 if model.modelsSection == "transfers" { model.modelsSection = "library" }
@@ -354,13 +356,18 @@ struct ServerCommands: Commands {
     }
 }
 
-/// Status glyph in the menu bar: filled while serving, outlined otherwise.
+/// Status glyph in the menu bar, plus the live token rate while the
+/// runtime reports one (Settings can hide the item entirely).
 struct MenuBarLabel: View {
     @ObservedObject var runtime: RuntimeController
     var body: some View {
-        Image(systemName: runtime.ready ? "bolt.horizontal.circle.fill"
-              : ["Starting", "Stopping", "Connecting"].contains(runtime.state) ? "hourglass.circle" : "bolt.horizontal.circle")
-            .accessibilityLabel("AX Engine, " + runtime.state)
+        let rate = runtime.ready ? runtime.history.latest(RuntimeController.tokenRateKey) : nil
+        HStack(spacing: 3) {
+            Image(systemName: runtime.ready ? "bolt.horizontal.circle.fill"
+                  : ["Starting", "Stopping", "Connecting"].contains(runtime.state) ? "hourglass.circle" : "bolt.horizontal.circle")
+            if let rate, rate >= 1 { Text(TokenRateFormat.short(rate)).monospacedDigit() }
+        }
+        .accessibilityLabel("AX Engine, " + runtime.state)
     }
 }
 

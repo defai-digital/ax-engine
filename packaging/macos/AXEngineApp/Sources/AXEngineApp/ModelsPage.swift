@@ -25,7 +25,7 @@ struct ModelsPage: View {
                 if let error = models.error {
                     ErrorBanner(text: error)
                     HStack {
-                        Button("Review runtime settings") { model.page = .settings }
+                        Button("Review runtime settings") { model.openSettings() }
                         Button("Dismiss") { models.dismissError() }
                     }
                 }
@@ -85,7 +85,7 @@ struct ModelsPage: View {
         }
         .alert("Probably not enough free space", isPresented: Binding(get: { spaceWarning != nil }, set: { if !$0 { spaceWarning = nil } })) {
             Button("Download Anyway") { if let item = spaceWarning { startDownload(item) }; spaceWarning = nil }
-            Button("Change Download Folder…") { spaceWarning = nil; model.page = .settings }
+            Button("Change Download Folder…") { spaceWarning = nil; model.openSettings() }
             Button("Cancel", role: .cancel) { spaceWarning = nil }
         } message: { Text(spaceWarning.map(spaceMessage) ?? "") }
         .alert(cancelTarget.map { "Stop downloading \($0.model.alias)?" } ?? "Stop download?",
@@ -163,22 +163,22 @@ struct ModelsPage: View {
 
     /// The single "use this model" action shared by Library, Catalog and
     /// Downloads. Starts at once when nothing is serving; otherwise selects the
-    /// model on Dashboard, where Restart switches to it.
+    /// model on Home, where Restart switches to it.
     private func serveButton(path: String, ready: Bool, prominent: Bool = false) -> some View {
         let busy = runtime.owned
         let reason: String? = !ready ? "Weights are incomplete or not checked yet. Refresh, or download it again from Catalog."
-            : model.attachedToService ? "Disconnect from the attached service on Server Settings to serve your own model."
+            : model.attachedToService ? "Disconnect from the attached service on API & Logs to serve your own model."
             : model.connecting ? "Wait for the connection to the existing service to finish."
             : model.models.canSelectInGUI(path) ? nil : "The library scan has not checked this model yet."
         return Group {
             if prominent {
-                Button(busy ? "Select on Dashboard" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.borderedProminent)
+                Button(busy ? "Select on Home" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.borderedProminent)
             } else {
-                Button(busy ? "Select on Dashboard" : "Serve", systemImage: "play.fill") { model.serve(path) }
+                Button(busy ? "Select on Home" : "Serve", systemImage: "play.fill") { model.serve(path) }
             }
         }
         .disabled(reason != nil)
-        .help(reason ?? (busy ? "Select this model on Dashboard; Restart there switches the server to it." : "Start the server on this model"))
+        .help(reason ?? (busy ? "Select this model on Home; Restart there switches the server to it." : "Start the server on this model"))
         .accessibilityHint(reason ?? "")
     }
 
@@ -246,7 +246,7 @@ struct ModelsPage: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         ModelTitle(label: item.label, font: .headline).help(item.name)
-                        if running { PillBadge(text: "Serving", systemImage: "circle.fill", tint: Brand.accentChrome, emphasized: true) }
+                        if running { PillBadge(text: "Serving", systemImage: "circle.fill", tint: Brand.serve, emphasized: true) }
                         else if model.selectedPath == item.path { PillBadge(text: "Selected", systemImage: "checkmark") }
                     }
                     Text(item.source + (item.sizeBytes.map { " · " + bytes($0) } ?? "")).font(.caption).foregroundStyle(.secondary)
@@ -363,7 +363,7 @@ struct ModelsPage: View {
                     Text("The catalog comes from your installed AX Engine runtime. Check the runtime location in Settings, then refresh.")
                 } actions: {
                     HStack {
-                        Button("Open Settings") { model.page = .settings }
+                        Button("Open Settings") { model.openSettings() }
                         Button("Refresh Catalog") { Task { await models.refresh(settings: model.settings) } }.buttonStyle(.borderedProminent)
                     }
                 }
@@ -423,7 +423,7 @@ struct ModelsPage: View {
                     }
                 } else if let installed {
                     HStack(spacing: 8) {
-                        PillBadge(text: "Downloaded", systemImage: "checkmark.circle.fill", tint: Brand.accentChrome, emphasized: true)
+                        PillBadge(text: "Downloaded", systemImage: "checkmark.circle.fill", tint: Brand.accent, emphasized: true)
                         serveButton(path: installed.path, ready: models.canSelectInGUI(installed.path))
                         Menu {
                             Button("Show in Your Models") { model.modelSearch = installed.repositoryName; model.modelsSection = "library" }
@@ -495,7 +495,7 @@ struct ModelsPage: View {
 
     private func transferTint(_ state: String) -> Color {
         switch state {
-        case "Ready", "Downloading": Brand.accentChrome
+        case "Ready", "Downloading": Brand.accent
         case "Failed": .orange
         default: .secondary
         }

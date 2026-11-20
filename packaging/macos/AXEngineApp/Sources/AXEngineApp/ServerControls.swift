@@ -2,7 +2,7 @@ import SwiftUI
 import AXEngineAppCore
 
 /// Installed-model picker plus Start / Restart / Stop for the app-owned
-/// server. Shared by Dashboard and Server so both pages drive the same
+/// server. Shared by Home and Server so both pages drive the same
 /// lifecycle with the same gates and confirmations.
 struct ServerControls: View {
     @ObservedObject var model: ApplicationModel
@@ -86,7 +86,7 @@ struct ServerControls: View {
                 Button { pickerOpen.toggle() } label: {
                     HStack(spacing: 6) {
                         if model.favoriteModels.contains(model.selectedPath) {
-                            Image(systemName: "star.fill").foregroundStyle(Brand.accentChrome)
+                            Image(systemName: "star.fill").foregroundStyle(Brand.accent)
                         }
                         if let selectedModel {
                             ModelTitle(label: selectedModel.label)
