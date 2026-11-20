@@ -1,13 +1,24 @@
 # Performance Results
 
-Canonical public **tables and charts** for AX Engine, grouped by session mode.
+Canonical public **dated tables and charts** for AX Engine, grouped by session
+mode. The newest retained snapshot is not a standing product-performance
+claim: every number applies only to the exact artifact, runtime, host, and
+workload recorded with it.
+
+> [!IMPORTANT]
+> **Historical evidence, not a current ranking.** Most tables on this page
+> record 2026-08 through 2026-10 environments and may use retired pack
+> formats, superseded binaries, or older MLX releases. The current runtime pin
+> is MLX 0.32.4. For current Qwen 3.8 status, use the certification records and
+> their 2026-11-18 receipts; no archived table qualifies another pack or
+> release.
 
 | Need | Read |
 | --- | --- |
 | Claim boundaries and promotion rules | [Performance Docs Map](performance/README.md) |
 | How to interpret a row / what it does not prove | [Performance](PERFORMANCE.md) |
 | How to reproduce or classify evidence | [Benchmarks](BENCHMARKS.md) |
-| Root README headline numbers | [Root README: Performance](../README.md#performance) |
+| Current qualification status and archive entry point | [Root README: Performance](../README.md#performance) |
 | Serving peer detail (AX vs peer MLX server) | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 
 ## On this page

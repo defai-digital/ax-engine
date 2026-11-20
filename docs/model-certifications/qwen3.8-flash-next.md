@@ -11,9 +11,9 @@ unsupported; MXFP8 pack audit and native admission are pending. Receipts of
 one format do not qualify another.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
-Status: **Candidate; direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open**
+Status: **Candidate; MTP gates open**
 
-Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open).
+Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending.
 
 Standard host: **MacBook Pro M5 Max 128 GB** (ADR-049, 2026-10-23). ADR-037
 had corrected the target from this machine to Mac Studio, Ultra-class Apple
@@ -21,9 +21,10 @@ Silicon (M2 Ultra or newer), 192 GB+; ADR-049 restores this machine as the
 qualification and certification standard, inside the single-stream resident
 envelope. Target pack: **MXFP4 MTP**. Historical affine real-pack evidence is
 from **Apple M2 Ultra, 192 GB**. The 2026-10-05 direct-default release gates
-were measured on that larger host and stay bound to it; the gates were re-run on
-the standard host on 2026-10-23 and pass there (below). Last reviewed:
-**2026-10-23**.
+were measured on that larger host and stay bound to it. The M5 Max
+[release record for signed v7.9.0](../../benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)
+is a separate run and applies to that release and pack revision. Last reviewed:
+**2026-11-20**.
 
 **MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
 pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
@@ -200,8 +201,9 @@ per-tensor affine8/group32 overrides and an affine8/group64 output head;
 the protected MTP sidecar is BF16.
 Storage medium and connection must be recorded for each campaign; older
 NAS/SMB receipts do not qualify external USB or internal NVMe runs.
-MXFP4/group32 loads without an environment opt-in — the certification record (Candidate; direct-default release gates passed, MTP gates open) tracks
-its experimental status. Affine 6-bit/group64 is admitted (ADR-050); other
+MXFP4/group32 loads without an environment opt-in. The Candidate certification
+record tracks the open MTP gates separately from the direct-default release
+evidence. Affine 6-bit/group64 is admitted (ADR-050); other
 standalone affine widths, including 2-bit, stay rejected regardless of
 experimental flags. Small generated-tensor controls
 cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed

@@ -8,9 +8,10 @@ Current primary selector: `qwen3.8-27b:axq` (also `qwen3.8-27b:axq-mxfp4`)
 loads `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` at
 `b2c5354f779e430d0c1733143db848a72b71c16e`.
 
-The product scope is MLX AXQ MXFP4 / MXFP8 with MTP sidecars. Standalone
-6-bit, affine4/8 and non-MTP variants are retired. The MXFP4 pack's protected
-affine8 embeddings and output head remain intact. The explicit MXFP8
+The product scope is MLX AXQ MXFP4 / MXFP8 with MTP sidecars plus
+affine 6-bit/group64 MTP. Standalone affine 4-bit and 8-bit and non-MTP
+variants are unsupported. The MXFP4 pack's protected affine8 embeddings and
+output head remain intact. The explicit MXFP8
 Candidate `qwen3.8-27b:mxfp8` loads
 `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP` at
 `11d81dd63869cc80be5c541520071aa9192192b6`. Its separate SKU qualification

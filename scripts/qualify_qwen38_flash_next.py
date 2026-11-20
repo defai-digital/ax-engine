@@ -38,9 +38,8 @@ STATUS_OPEN = (
 STATUS_RELEASED = (
     "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
     "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
-    "MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; "
-    "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
-    "AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open)."
+    "MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. "
+    "AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending."
 )
 RELEASE_SCOPE = (
     "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in "
@@ -193,7 +192,7 @@ def _print_contract(as_json: bool) -> None:
     print(f"repo:   {payload['repo_id']}")
     print(f"host:   {payload['host_class']}")
     print("target admission: MXFP4/group32 loads without an env var; certification stays Candidate "
-          f"({'direct-default release gates passed; MTP gates open' if payload['release_ready'] else 'gates open'})")
+          f"({'v7.9.0 direct-default release gates passed; MTP gates open' if payload['release_ready'] else 'gates open'})")
     print(f"release scope: {payload['release_scope']}")
     print("affine 6-bit MTP supported but not qualified by this record; other affine widths unsupported; MXFP8 pack audit and admission pending")
     print("fail-closed: convert must not remap onto qwen3_5")

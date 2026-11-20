@@ -35,9 +35,8 @@ FLASH_NEXT_STATUS_OPEN = (
 FLASH_NEXT_STATUS_RELEASED = (
     "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
     "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
-    "MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; "
-    "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
-    "AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open)."
+    "MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. "
+    "AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending."
 )
 FLASH_NEXT_RELEASE_VERDICT = (
     "benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/release-verdict.json"

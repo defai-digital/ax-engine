@@ -13,10 +13,10 @@ extend the Mac-first Apple Silicon inference runtime.
 
 | Surface | What it is | Start here if you want… |
 | --- | --- | --- |
-| Root [README](../README.md) | Short product entry point | Install, first request, headline performance numbers |
+| Root [README](../README.md) | Short product entry point | Install, first request, and current qualification status |
 | This hub | Navigation by task and area | The right deep page without guessing layout |
-| [Performance Results](PERFORMANCE-RESULTS.md) | Full public tables and charts | Numbers, charts, session-mode evidence |
-| [AX vs peer MLX serving](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) | Latest single-client peer (Qwen 3.6) | Serving-path decode / TTFT vs peer MLX server |
+| [Performance Results](PERFORMANCE-RESULTS.md) | Dated public tables and charts | Historical numbers, charts, and session-mode evidence |
+| [AX vs peer MLX serving](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) | Historical single-client peer (Qwen 3.6) | Recorded serving-path decode / TTFT vs peer MLX server |
 | [Performance](PERFORMANCE.md) | Interpretation and claim context | What a row does *and does not* prove |
 | [Benchmarks](BENCHMARKS.md) | How to run and classify evidence | Reproduction commands and artifact contracts |
 
@@ -35,7 +35,7 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Need | Start here | Then read |
 | --- | --- | --- |
 | Install and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) — default pack is `qwen3.8-27b:axq` |
-| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md), [Flash Next (`qwen3.8-flash-next:axq`)](model-certifications/qwen3.8-flash-next.md), [Testing](TESTING.md). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; Flash Next also supports affine 6-bit MTP (`qwen3.8-flash-next:axq-6bit`); other standalone affine formats are not supported. MXFP8 MTP admission is pending. |
+| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md), [Flash Next (`qwen3.8-flash-next:axq`)](model-certifications/qwen3.8-flash-next.md), [Testing](TESTING.md). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending. |
 | Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
 | Use DFlash2 on greedy Qwen text | [MTP Docs: DFlash2](mtp/README.md#dflash2) | [MLX Backend: DFlash2 artifact selection](MLX-BACKEND.md#dflash2-artifact-selection) |
@@ -118,7 +118,7 @@ history, or out of scope for a claim.
 ### Performance and benchmarks
 
 - [Performance Docs Map](performance/README.md) — navigation, claim boundaries, promotion rules
-- [Performance Results](PERFORMANCE-RESULTS.md) — full tables and charts (MTP, direct, embeddings)
+- [Performance Results](PERFORMANCE-RESULTS.md) — dated tables and charts (MTP, direct, embeddings)
 - [Performance](PERFORMANCE.md) — interpretation, long-context notes, MTP mode policy
 - [Benchmarks](BENCHMARKS.md) — methodology, commands, evidence classification
 - [Benchmark Design](BENCH-DESIGN.md) — workload-contract CLI and artifact design
