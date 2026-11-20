@@ -174,6 +174,7 @@ final class ApplicationModel: ObservableObject {
 
     func startServer() {
         guard canStartServer else { return }
+        takeOverFromCompare()
         recordRecentModel(selectedPath)
         runtime.start(model: selectedPath, settings: settings)
     }
@@ -306,11 +307,10 @@ final class ApplicationModel: ObservableObject {
     /// Menu and shortcut entry points: confirm before ending a reply in progress.
     func requestStopServer() {
         if connecting { runtime.detach(); return }
-        takeOverFromCompare()
         guard runtime.owned || runtime.connection != nil else { return }
         guard inferenceActive, runtime.owned else {
             if inferenceActive && !confirm("Stop the server?", "A reply is being generated. Stopping ends it.", action: "Stop") { return }
-            stopServer(); return
+            takeOverFromCompare(); stopServer(); return
         }
         // 12-states.svg "Stop with apps connected": finish, stop now or keep serving.
         let streams = Int(runtime.metrics["ax_engine_generation_active_streams"] ?? (chat.generating ? 1 : 0))
@@ -326,8 +326,9 @@ final class ApplicationModel: ObservableObject {
         alert.addButton(withTitle: "Finish Reply, Then Stop")
         alert.addButton(withTitle: "Stop Now")
         switch alert.runModal() {
-        case .alertSecondButtonReturn: stopWhenIdle()
-        case .alertThirdButtonReturn: stopServer()
+        // Keep Serving leaves a running compare alone; the stop choices take over.
+        case .alertSecondButtonReturn: takeOverFromCompare(); stopWhenIdle()
+        case .alertThirdButtonReturn: takeOverFromCompare(); stopServer()
         default: cancelPendingStop()
         }
     }
@@ -337,7 +338,12 @@ final class ApplicationModel: ObservableObject {
     /// Replaced to disarm a scheduled stop.
     private var stopToken = UUID()
     private func cancelPendingStop() { stopToken = UUID(); stopPending = false }
-    private func stopWhenIdle() {
+    func prepareForQuit() {
+        if compare.running { compareTakenOver = true; compare.cancel() }
+        cancelPendingStop()
+    }
+    /// "Finish Reply, Then Stop". Internal so source-build QA can drive it.
+    func stopWhenIdle() {
         guard !stopPending else { return }
         stopPending = true
         let server = runtime.startedAt, token = UUID()
@@ -386,10 +392,20 @@ final class ApplicationModel: ObservableObject {
     /// running model while the app owns a server, otherwise the most recently
     /// served, a favorite, or the first downloaded model. An explicit valid
     /// choice is never replaced.
+    /// While the library scan runs, only a recent or favorite model that is
+    /// already confirmed servable is picked; the first-model fallback waits
+    /// for the full list so it does not pick an arbitrary early result.
     func preselectModel() {
-        guard !models.scanning, selectedPath.isEmpty || !models.canSelectInGUI(selectedPath) else { return }
-        if runtime.owned, models.canSelectInGUI(runtime.selectedModel) { selectedPath = runtime.selectedModel }
-        else if let preferred = ModelPicker.preferred(models: servableModels, favorites: favoriteModels, recent: recentModels) {
+        guard selectedPath.isEmpty || !models.canSelectInGUI(selectedPath) else { return }
+        if runtime.owned, models.canSelectInGUI(runtime.selectedModel) { selectedPath = runtime.selectedModel; return }
+        if models.scanning {
+            if let known = ModelPicker.preferred(models: servableModels, favorites: favoriteModels, recent: recentModels),
+               recentModels.contains(known.path) || favoriteModels.contains(known.path) {
+                selectedPath = known.path
+            }
+            return
+        }
+        if let preferred = ModelPicker.preferred(models: servableModels, favorites: favoriteModels, recent: recentModels) {
             selectedPath = preferred.path
         }
     }
@@ -422,7 +438,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // not hold the model in memory forever: quit after 30 s unless
                 // someone chooses Cancel or Keep Serving.
                 let quitResponse: NSApplication.ModalResponse = canKeep ? .alertSecondButtonReturn : .alertFirstButtonReturn
-                let countdown = QuitCountdown(seconds: Self.quitCountdownSeconds, response: quitResponse)
+                let countdown = QuitCountdown(seconds: Self.quitCountdownSeconds, response: quitResponse,
+                                      action: model.runtime.owned ? "Stopping the server and quitting" : "Quitting")
                 alert.accessoryView = countdown.label
                 countdown.start()
                 let choice = alert.runModal()
@@ -430,6 +447,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if canKeep && choice == .alertFirstButtonReturn { NSApp.hide(nil); return false }
                 return choice == (canKeep ? .alertSecondButtonReturn : .alertFirstButtonReturn)
             }, shutdown: {
+                // No compare restart or scheduled stop may act after this.
+                model.prepareForQuit()
                 await model.hostMonitor.shutdown()
                 await model.storageMonitor.shutdown()
                 await model.chat.stop()
@@ -445,26 +464,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class QuitCountdown {
     let label: NSTextField
     private let seconds: Int
-    private var deadline = Date()
+    /// System uptime, which a wall-clock change does not move.
+    private var deadline: TimeInterval = 0
     private let response: NSApplication.ModalResponse
     private var timer: Timer?
     /// Keeps App Nap from stretching the timer while the app is in the background.
     private var activity: NSObjectProtocol?
 
-    init(seconds: Int, response: NSApplication.ModalResponse) {
+    /// What happens at zero, named on the label.
+    private let action: String
+
+    init(seconds: Int, response: NSApplication.ModalResponse, action: String) {
         self.seconds = seconds
+        self.action = action
         self.response = response
         label = NSTextField(labelWithString: "")
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         label.textColor = .secondaryLabelColor
-        label.frame = NSRect(x: 0, y: 0, width: 260, height: 18)
-        label.stringValue = "Quitting automatically in \(seconds) s…"
+        label.frame = NSRect(x: 0, y: 0, width: 300, height: 18)
+        label.stringValue = "\(action) in \(seconds) s…"
     }
 
-    private var remaining: Int { max(0, Int(deadline.timeIntervalSinceNow.rounded(.up))) }
+    private var remaining: Int { max(0, Int((deadline - ProcessInfo.processInfo.systemUptime).rounded(.up))) }
 
     func start() {
-        deadline = Date().addingTimeInterval(TimeInterval(seconds))
+        deadline = ProcessInfo.processInfo.systemUptime + TimeInterval(seconds)
         activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Quit countdown")
         render()
         // Ticks often; the label and the deadline come from the clock, not the tick count.
@@ -489,7 +513,7 @@ final class QuitCountdown {
     }
 
     private func render() {
-        let text = "Quitting automatically in \(remaining) s…"
+        let text = "\(action) in \(remaining) s…"
         if label.stringValue != text { label.stringValue = text }
     }
 }

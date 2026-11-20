@@ -123,30 +123,39 @@ public final class CompareStore: ObservableObject {
         update(isA) { $0.phase = .running; $0.text = ""; $0.samples = []; $0.firstTextSeconds = nil
             $0.totalSeconds = nil; $0.performance = nil; $0.draftAcceptedPercent = nil }
         let before = try? await connection.metrics()
+        // Cancelled while reading the counters: do not send the prompt.
+        if Task.isCancelled { update(isA) { $0.phase = .stopped }; return }
         var messages: [OpenAiChatMessage] = []
         if !systemPrompt.isEmpty { messages.append(.init(role: "system", content: systemPrompt)) }
         messages.append(.init(role: "user", content: prompt))
         var request = settings.chatRequest(model: model, messages: messages, supportsTemperature: supportsTemperature)
         request.streamOptions = .init(includeUsage: true)
-        let started = Date()
-        var text = "", samples: [CompareSide.Sample] = [], requestID: Int?
+        // Monotonic, so a wall-clock change cannot skew either run.
+        let clock = ContinuousClock(), started = clock.now
+        func elapsed() -> Double { let d = clock.now - started; return Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18 }
+        var text = "", samples: [CompareSide.Sample] = [], requestID: Int?, characters = 0
         var lastPublish = Date.distantPast
         do {
             for try await chunk in connection.sdk.streamChatCompletion(request) {
-                try Task.checkCancellation()
+                // Record the id first so a cancel on this chunk can still cancel it.
                 if requestID == nil { requestID = EngineConnection.requestID(chunk.id) }
+                try Task.checkCancellation()
                 if let measurement = chunk.usage?.axEngine, let performance = ChatPerformance(measurement) {
                     update(isA) { $0.performance = performance }
                 }
                 for choice in chunk.choices {
                     if let delta = choice.delta.content, !delta.isEmpty {
-                        let now = Date().timeIntervalSince(started)
+                        let now = elapsed()
                         if samples.isEmpty { update(isA) { $0.firstTextSeconds = now } }
                         guard text.utf8.count + delta.utf8.count <= 512 * 1024 else {
                             throw AppFailure.message("The reply exceeded 512 KiB; compare stopped.")
                         }
                         text += delta
-                        samples.append(.init(seconds: now, characters: (samples.last?.characters ?? 0) + delta.count))
+                        characters += delta.count
+                        // One point per 50 ms is enough for the chart.
+                        if samples.isEmpty || now - (samples.last?.seconds ?? 0) >= 0.05 {
+                            samples.append(.init(seconds: now, characters: characters))
+                        }
                     }
                     if choice.finishReason == "error" { throw AppFailure.message("The runtime reported a generation error.") }
                     if choice.finishReason == "tool_calls" { throw AppFailure.message("The model requested tools; compare does not run tools.") }
@@ -159,8 +168,10 @@ public final class CompareStore: ObservableObject {
                 }
             }
             try Task.checkCancellation()
-            let total = Date().timeIntervalSince(started)
+            let total = elapsed()
+            if samples.last?.characters != characters { samples.append(.init(seconds: total, characters: characters)) }
             let after = try? await connection.metrics()
+            try Task.checkCancellation()
             let draft = Self.draftAcceptance(before: before, after: after)
             update(isA) { $0.text = text; $0.samples = samples; $0.totalSeconds = total; $0.draftAcceptedPercent = draft; $0.phase = .done }
         } catch {

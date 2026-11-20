@@ -7,6 +7,8 @@ public struct ProcessResult: Sendable {
     public let stdout: String
     public let stderr: String
     public let truncated: Bool
+    /// True when `status` is the signal that killed the process, not an exit code.
+    public var signaled = false
 }
 
 // Pipe reads occur off the main actor. The lock protects the bounded byte stores;
@@ -150,7 +152,8 @@ public final class ProcessJob: ObservableObject {
             try? out.fileHandleForReading.close(); try? err.fileHandleForReading.close()
         }
         stopTask?.cancel(); stopTask = nil
-        let result = capture.snapshot(status: child.terminationStatus)
+        var result = capture.snapshot(status: child.terminationStatus)
+        result.signaled = child.terminationReason == .uncaughtSignal
         output = String((result.stderr + "\n" + result.stdout).suffix(32_768))
         update?(result)
         running = false; process = nil; processID = nil

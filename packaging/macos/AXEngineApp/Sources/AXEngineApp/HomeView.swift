@@ -186,7 +186,7 @@ private struct HeroPanel: View {
     private var title: String {
         if let shown { return shown.label.title }
         if runtime.connection != nil { return runtime.models.first?.id ?? "External service" }
-        return model.servableModels.isEmpty ? "Checking your models…" : "Choose a model"
+        return model.servableModels.isEmpty || models.scanning ? "Checking your models…" : "Choose a model"
     }
 
     private var tags: some View {

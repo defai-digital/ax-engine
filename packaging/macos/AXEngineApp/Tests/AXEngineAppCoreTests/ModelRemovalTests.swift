@@ -271,3 +271,13 @@ private func emptyScanner(in root: URL) throws -> URL {
     #expect(RuntimeController.lastDiagnostic(" \n") == nil)
     #expect(RuntimeController.lastDiagnostic(String(repeating: "x", count: 500))?.count == 401)
 }
+
+@Test func runtimeExitMessageNamesSignalsAndSkipsRoutineLines() {
+    let routine = "loading\npreview listening on http://127.0.0.1:31418\n"
+    #expect(RuntimeController.exitMessage(status: 9, signaled: true, stderr: routine)
+        == "The runtime was killed by signal 9 (SIGKILL), without an error message. Another process or macOS stopped it.")
+    #expect(RuntimeController.exitMessage(status: 6, signaled: true, stderr: routine + "error: Metal allocation failed\nlistening\n")
+        == "The runtime was killed by signal 6 (SIGABRT): error: Metal allocation failed")
+    #expect(RuntimeController.exitMessage(status: 1, signaled: false, stderr: "error: model is not supported\n")
+        == "Runtime exited (1): error: model is not supported")
+}

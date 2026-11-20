@@ -40,6 +40,24 @@ public final class RuntimeController: ObservableObject {
     }
 
     /// The last meaningful runtime diagnostic line, for an exit message.
+    /// The Home error line for a runtime that exited on its own.
+    public nonisolated static func exitMessage(status: Int32, signaled: Bool, stderr: String) -> String {
+        let head: String
+        if signaled {
+            let name = status == SIGKILL ? " (SIGKILL)" : status == SIGTERM ? " (SIGTERM)" : status == SIGSEGV ? " (SIGSEGV)" : status == SIGABRT ? " (SIGABRT)" : ""
+            head = "The runtime was killed by signal \(status)\(name)"
+        } else {
+            head = "Runtime exited (\(status))"
+        }
+        // A killed runtime's last line is usually routine ("listening on ..."),
+        // so quote only a problem line; an exit code keeps the last line.
+        let diagnostic = signaled
+            ? stderr.split(whereSeparator: \.isNewline).last(where: LogFilter.isProblem).map(String.init).flatMap(lastDiagnostic)
+            : lastDiagnostic(stderr)
+        if let diagnostic { return head + ": " + diagnostic }
+        return head + (signaled ? ", without an error message. Another process or macOS stopped it." : ". Check the runtime output.")
+    }
+
     public nonisolated static func lastDiagnostic(_ stderr: String) -> String? {
         let lines = stderr.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         guard let line = lines.last(where: { !$0.isEmpty }) else { return nil }
@@ -87,8 +105,7 @@ public final class RuntimeController: ObservableObject {
                             if next != self.logs { self.logs = next }
                         }
                     guard generation == identity else { return }
-                    let detail = Self.lastDiagnostic(redact(result.stderr))
-                    error = "Runtime exited (\(result.status))" + (detail.map { ": " + $0 } ?? ". Check the runtime output.")
+                    error = Self.exitMessage(status: result.status, signaled: result.signaled, stderr: redact(result.stderr))
                 } catch is CancellationError {
                     guard generation == identity else { return }
                 } catch {

@@ -60,7 +60,7 @@ struct RuntimeIssuePanel: View {
                     copyText("AX Engine runtime error: " + error + "\n\n" + runtime.logs)
                     copied = true
                 }
-                .buttonStyle(.axSecondary).disabled(runtime.logs.isEmpty)
+                .buttonStyle(.axSecondary)
                 .help("Copies the error and the bounded runtime output. It contains no API key.")
                 Button("Open Logs") { model.page = .api }.buttonStyle(.axLink)
             }
@@ -141,7 +141,7 @@ struct MemoryPressureBanner: View {
                     Text("AX Engine reports \(engine) of MLX memory.").font(.system(size: 11.5)).foregroundStyle(Brand.text3)
                 }
                 HStack(spacing: 8) {
-                    Button("Serve a smaller model") { model.modelsSection = "library"; model.page = .models }.buttonStyle(.axSecondary)
+                    Button("Choose a Smaller Model") { model.modelsSection = "library"; model.page = .models }.buttonStyle(.axSecondary)
                     if showsSystemLink { Button("See memory on System") { model.page = .system }.buttonStyle(.axLink) }
                 }
             }

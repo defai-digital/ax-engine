@@ -72,6 +72,9 @@ public final class HostMonitor: ObservableObject {
     @Published public private(set) var collecting = false
     @Published public private(set) var pressure: String?
     @Published public private(set) var pressureAt: Date?
+    /// Source-build QA only: records a pressure level as if macOS had sent it,
+    /// since a real trigger (`memory_pressure -S`) needs root.
+    public func simulatePressure(_ level: String) { pressure = level; pressureAt = Date() }
     private var task: Task<Void, Never>?
     private var jobs: [ProcessJob] = []
     private var generation = 0

@@ -330,7 +330,7 @@ public final class ModelStore: ObservableObject {
             guard generation == scanGeneration else { return }
             libraryIssue = error is CancellationError
                 ? "Scan stopped. Results already found are kept; some folders have not been checked."
-                : "Scan incomplete. A folder may be slow or unavailable. Results already found are kept. Retry to check remaining folders."
+                : "Scan incomplete. A folder may be slow or unavailable, or macOS may be asking to allow access to an external drive. Results already found are kept. Retry to check remaining folders."
         }
     }
 

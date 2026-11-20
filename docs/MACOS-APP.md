@@ -154,8 +154,8 @@ Getting Started**.
    Stop then offers **Keep Serving**, **Finish Reply, Then Stop** (waits up to
    10 minutes for streams to end; choosing Keep Serving later cancels it) and
    **Stop Now**. Stop gives the runtime eight seconds to drain before it is
-   force-killed. When the runtime exits on its own, Home shows its last
-   problem lines with **Start Again**, **Copy Report** and **Open Logs**, plus
+   force-killed. When the runtime exits on its own (a signal such as SIGKILL
+   is named as one), Home shows its last problem lines with **Start Again**, **Copy Report** and **Open Logs**, plus
    a memory hint when the Mac is above 70% in use. When the port is taken,
    Home offers **Attach** (use that server; the app never stops it) or
    **Change Port…**. A memory-pressure banner appears on Home and System only
@@ -278,8 +278,10 @@ window follows macOS app conventions; use Quit to stop app-owned work.
 Source builds (`scripts/build-macos-app.sh` without `--distribution`) accept
 QA launch arguments for screenshots and end-to-end checks:
 `-AXOpenPage home|chat|models|api|system`, `-AXOpenSettings YES`,
-`-AXSettingsPane <tab>`, `-AXStartServer YES`, `-AXShowMenuPanel YES`, and
-`-AXCompareModelB <path substring>` with `-AXComparePrompt <text>`.
+`-AXSettingsPane <tab>`, `-AXStartServer YES`, `-AXShowMenuPanel YES`,
+`-AXFinishThenStop YES` (chooses Finish Reply, Then Stop once a request
+streams), `-AXSimulatePressure Warning|Critical` (a real trigger needs root),
+and `-AXCompareModelB <path substring>` with `-AXComparePrompt <text>`.
 Distribution builds ignore them.
 
 ## Settings navigation
