@@ -271,6 +271,10 @@ import Testing
     let installed = try #require(store.installedModel(for: entry))
     #expect(!installed.isAutomatosX && installed.organization == "mlx-community")
     #expect(store.canSelectInGUI(installed.path))
+    // The server is told which model a community folder holds; it cannot infer every family.
+    #expect(store.servingModelID(forPath: installed.path) == "fixture-preset")
+    #expect(RuntimeController.launchArguments(model: installed.path, settings: settings, modelID: "fixture-preset").suffix(2) == ["--model-id", "fixture-preset"])
+    #expect(RuntimeController.launchArguments(model: installed.path, settings: settings).contains("--model-id") == false)
     // App-downloaded folders are removable whoever published them.
     guard case .managedFolder = store.removalTarget(for: installed, settings: settings) else {
         Issue.record("community download is not removable"); return

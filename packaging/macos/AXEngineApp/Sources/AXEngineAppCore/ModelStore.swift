@@ -6,6 +6,8 @@ public struct CatalogModel: Decodable, Identifiable, Sendable, Equatable {
     public let repoId: String
     public let revision: String?
     public let mtpIncluded: Bool?
+    /// The runtime's serve preset for this entry, when it has one.
+    public var preset: String?
     /// Point-in-time catalog estimate of the whole pack; not a memory-fit claim.
     public var approxSizeBytes: Int64?
     /// Runtime certification word such as "candidate"; nil when unrecorded.
@@ -212,6 +214,13 @@ public final class ModelStore: ObservableObject {
     @Published public private(set) var communityCatalog: [CatalogModel] = []
     /// Community entries offered under the current scope.
     public var visibleCommunityCatalog: [CatalogModel] { scope == .all ? communityCatalog : [] }
+    /// The runtime model id for a community model's folder. The runtime
+    /// identifies AutomatosX packs and several families from the files, but a
+    /// community folder such as a Llama pack needs its catalog preset named.
+    public func servingModelID(forPath path: String) -> String? {
+        guard let row = library.first(where: { $0.path == path }), !row.isAutomatosX else { return nil }
+        return communityCatalog.first { $0.preset != nil && row.isCatalogAssociated([$0]) }?.preset
+    }
     @Published public private(set) var supportsNativeDownloads = false
     /// Which discovered models are listed; the app persists the choice.
     @Published public var scope: LibraryScope = .automatosX

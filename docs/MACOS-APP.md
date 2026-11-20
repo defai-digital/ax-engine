@@ -215,6 +215,10 @@ Getting Started**.
    carry the **Unofficial** tag, the first such download asks once for
    confirmation, and they use the same anonymous, checksum-verified download
    path. AutomatosX has not tested them; the runtime may refuse one at start.
+   When the app serves one it passes the entry's runtime preset as
+   `--model-id`, because the server cannot identify every community family
+   from the folder alone; an entry without a preset relies on the runtime's
+   own identification.
    A runtime that predates `community_targets` lists none. Repositories the
    runtime does not list are not offered in the GUI: download them with the
    CLI, after which they appear under **Your Models › All models**.

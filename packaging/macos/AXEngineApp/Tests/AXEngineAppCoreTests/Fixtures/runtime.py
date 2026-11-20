@@ -18,7 +18,7 @@ if sys.argv[1:3] == ['download', '--list']:
          'approx_size_bytes': 4096, 'certification': 'candidate'}],
           'community_targets': [
         {'alias': 'Community model', 'repo_id': 'mlx-community/Fixture-4bit', 'revision': None, 'mtp_included': False,
-         'approx_size_bytes': 4096, 'certification': None, 'support': 'community'},
+         'approx_size_bytes': 4096, 'certification': None, 'support': 'community', 'preset': 'fixture-preset'},
         {'alias': 'Mislabelled', 'repo_id': 'AutomatosX/NotCommunity', 'revision': None, 'mtp_included': False}]})
     sys.exit(0)
 if sys.argv[1:2] == ['download']:

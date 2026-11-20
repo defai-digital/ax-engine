@@ -88,6 +88,7 @@ final class ApplicationModel: ObservableObject {
         catch { settingsError = error.localizedDescription }
         settingsDraft = settings
         models.scope = libraryScope
+        runtime.modelIDResolver = { [models] path in models.servingModelID(forPath: path) }
         servedModelSync = runtime.$selectedModel.combineLatest(runtime.$owned).sink { [models] path, owned in
             let served = owned ? path : ""
             if models.servedPath != served { models.servedPath = served }

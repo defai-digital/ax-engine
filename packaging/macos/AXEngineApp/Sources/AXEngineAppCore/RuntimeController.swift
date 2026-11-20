@@ -66,8 +66,13 @@ public final class RuntimeController: ObservableObject {
 
     /// The `ax-engine serve` argument list for one launch. Loopback and offline
     /// are fixed; the serving mode and request cap are forwarded after `--`.
-    public nonisolated static func launchArguments(model: String, settings: AppSettings) -> [String] {
-        let options = settings.serverOptions
+    /// Names the model for a folder the runtime cannot identify by itself.
+    /// The app sets it for community models, whose folders carry no AX
+    /// manifest identity; nil leaves identification to the runtime.
+    public var modelIDResolver: ((String) -> String?)?
+
+    public nonisolated static func launchArguments(model: String, settings: AppSettings, modelID: String? = nil) -> [String] {
+        let options = settings.serverOptions + (modelID.map { ["--model-id", $0] } ?? [])
         return ["serve", model, "--offline", "--host", "127.0.0.1", "--port", String(settings.port)]
             + (options.isEmpty ? [] : ["--"] + options)
     }
@@ -98,7 +103,7 @@ public final class RuntimeController: ObservableObject {
             launch = Task { [self] in
                 do {
                     let result = try await job.run(executable: executable,
-                        arguments: Self.launchArguments(model: model, settings: settings),
+                        arguments: Self.launchArguments(model: model, settings: settings, modelID: modelIDResolver?(model)),
                         environment: ["AX_ENGINE_API_KEY": key]) { [weak self] value in
                             guard let self else { return }
                             let next = redact(String(value.stderr.suffix(32_768)))
