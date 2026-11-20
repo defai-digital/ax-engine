@@ -201,14 +201,28 @@ fn anonymous_download_checks_git_and_lfs_digests_and_pins_all_files() {
     assert_eq!(events[0].phase, Phase::Inventory);
 }
 #[test]
-fn third_party_and_force_offline_fail_before_network() {
+fn malformed_repository_and_force_offline_fail_before_network() {
     let temp = Temp::new();
     let mut options = temp.options();
-    options.repository = "other/model".into();
-    assert_eq!(
-        download(&options, prepare, |_| {}).unwrap_err().code,
-        "UNSUPPORTED_REPOSITORY"
-    );
+    for repository in [
+        "model",
+        "other/",
+        "/model",
+        "other/../model",
+        "a/b/c",
+        "o r/model",
+    ] {
+        options.repository = repository.into();
+        assert_eq!(
+            download(&options, prepare, |_| {}).unwrap_err().code,
+            "UNSUPPORTED_REPOSITORY",
+            "{repository}"
+        );
+    }
+    assert!(supported_repository("mlx-community/gemma-4-12B-it-4bit"));
+    assert!(!official_repository("mlx-community/gemma-4-12B-it-4bit"));
+    assert!(official_repository("AutomatosX/model"));
+    assert!(!official_repository("AutomatosX/"));
     options.repository = "AutomatosX/model".into();
     options.force = true;
     options.local_only = true;

@@ -14,6 +14,8 @@ struct ModelsPage: View {
     @State private var discardTarget: PartialDownload?
     @State private var spaceWarning: CatalogModel?
     @State private var redownloadTarget: CatalogModel?
+    @State private var communityWarning: CatalogModel?
+    @AppStorage("communityDownloadAcknowledged") private var communityAcknowledged = false
     @State private var cancelTarget: DownloadItem?
     @State private var largerExpanded = false
     @State private var inspected: String?
@@ -33,7 +35,7 @@ struct ModelsPage: View {
                 }
                 HStack(spacing: 12) {
                     AXSegmented(options: [("library", "Your Models \(models.productLibrary.count)"),
-                                          ("catalog", models.catalog.isEmpty ? "Catalog" : "Catalog \(models.catalog.count)"),
+                                          ("catalog", models.catalog.isEmpty ? "Catalog" : "Catalog \(models.catalog.count + models.visibleCommunityCatalog.count)"),
                                           ("transfers", models.activeDownloadCount > 0 ? "Downloads \(models.activeDownloadCount)" : "Downloads")],
                                 selection: $model.modelsSection)
                     Spacer()
@@ -99,6 +101,17 @@ struct ModelsPage: View {
             Button("Change Download Folder…") { spaceWarning = nil; model.openSettings() }
             Button("Cancel", role: .cancel) { spaceWarning = nil }
         } message: { Text(spaceWarning.map(spaceMessage) ?? "") }
+        .alert("Download a model without official support?", isPresented: Binding(get: { communityWarning != nil }, set: { if !$0 { communityWarning = nil } })) {
+            Button("Download") {
+                communityAcknowledged = true
+                if let item = communityWarning { requestDownload(item) }
+                communityWarning = nil
+            }
+            Button("Cancel", role: .cancel) { communityWarning = nil }
+        } message: {
+            Text((communityWarning.map { "\($0.repoId) is published by \($0.repoId.components(separatedBy: "/").first ?? "another publisher"), not AutomatosX. " } ?? "")
+                 + "AutomatosX has not tested it. The download is anonymous and every file is checksum-verified; the runtime checks compatibility when you start the model and may refuse it. You can remove it from Your Models. This is asked once.")
+        }
         .alert(cancelTarget.map { "Stop downloading \($0.model.alias)?" } ?? "Stop download?",
                isPresented: Binding(get: { cancelTarget != nil }, set: { if !$0 { cancelTarget = nil } })) {
             Button("Stop Download", role: .destructive) { if let item = cancelTarget { models.cancel(item.id) }; cancelTarget = nil }
@@ -160,6 +173,7 @@ struct ModelsPage: View {
     }
 
     private func requestDownload(_ item: CatalogModel) {
+        if !item.isOfficial && !communityAcknowledged { communityWarning = item; return }
         if spaceShortfall(item) != nil { spaceWarning = item } else { startDownload(item) }
     }
 
@@ -180,7 +194,11 @@ struct ModelsPage: View {
         let reason: String? = !ready ? "Weights are incomplete or not checked yet. Refresh, or download it again from Catalog."
             : model.attachedToService ? "Disconnect from the attached service on API & Logs to serve your own model."
             : model.connecting ? "Wait for the connection to the existing service to finish."
-            : model.models.canSelectInGUI(path) ? nil : "The library scan has not checked this model yet."
+            : model.models.canSelectInGUI(path) ? nil
+            : models.scope == .automatosX && !models.productLibrary.contains(where: { $0.path == path })
+                && models.library.contains(where: { $0.path == path && $0.ready }) && models.checkedPaths.contains(path)
+                ? "Switch Your Models to All models to serve a model without official support."
+            : "The library scan has not checked this model yet."
         return Group {
             if prominent {
                 Button(busy ? "Select" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.ax(.serve))
@@ -240,7 +258,7 @@ struct ModelsPage: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 20).padding(.top, 12)
-                .help("Catalog downloads and removal stay AutomatosX-only in both views.")
+                .help("All models also lists models AutomatosX did not publish, and the Catalog adds community models. AX Engine removes only folders it downloaded and AutomatosX repositories in the Hugging Face cache.")
                 HStack(spacing: 0) {
                     Text("Model").frame(maxWidth: .infinity, alignment: .leading)
                     if format { Text("Format").frame(width: 120, alignment: .leading) }
@@ -327,7 +345,7 @@ struct ModelsPage: View {
                         if model.favoriteModels.contains(item.path) {
                             Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Brand.accent)
                         }
-                        if !item.isAutomatosX { Tag("Third-party").help(LibraryScope.thirdPartyNote) }
+                        if !item.isAutomatosX { Tag(LibraryScope.unofficialTag).help(LibraryScope.unofficialNote) }
                     }
                     Text(sourceLine(item)).font(.system(size: 11.5)).foregroundStyle(Brand.text3).lineLimit(1)
                 }
@@ -354,7 +372,7 @@ struct ModelsPage: View {
         .contentShape(Rectangle())
         .onTapGesture { inspected = item.path }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(item.label.title + (item.isAutomatosX ? "" : ", third-party") + ", " + status.0)
+        .accessibilityLabel(item.label.title + (item.isAutomatosX ? "" : ", not officially supported") + ", " + status.0)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityAction(named: "Inspect") { inspected = item.path }
         .contextMenu {
@@ -387,7 +405,7 @@ struct ModelsPage: View {
                 WrapLayout(spacing: 6) {
                     StatusPill(text: status.0, tint: status.1)
                     ForEach(item.label.tags, id: \.self) { Tag($0, tint: $0 == "MTP" ? Brand.boost : nil) }
-                    if !item.isAutomatosX { Tag("Third-party") }
+                    if !item.isAutomatosX { Tag(LibraryScope.unofficialTag) }
                     if let certification = catalogEntry?.certification { Tag(certification.capitalized, tint: Brand.accent) }
                 }
             }
@@ -417,7 +435,7 @@ struct ModelsPage: View {
                 detail("Location", (item.path as NSString).abbreviatingWithTildeInPath)
             }
             Text(item.isAutomatosX ? "File completeness does not establish compatibility. AX Engine validates the model when you start it."
-                                   : LibraryScope.thirdPartyNote + " Its files are never deleted by AX Engine.")
+                                   : LibraryScope.unofficialNote)
                 .font(.system(size: 11)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
             Divider().overlay(Brand.hairlineColor)
             HStack(spacing: 4) {
@@ -487,11 +505,21 @@ struct ModelsPage: View {
 
     private var catalog: some View {
         let search = model.catalogSearch
-        let matches = models.catalog.filter { search.isEmpty || $0.alias.localizedCaseInsensitiveContains(search) || $0.repoId.localizedCaseInsensitiveContains(search) }
+        let matching = { (item: CatalogModel) in search.isEmpty || item.alias.localizedCaseInsensitiveContains(search) || item.repoId.localizedCaseInsensitiveContains(search) }
+        let matches = models.catalog.filter(matching)
+        let community = models.visibleCommunityCatalog.filter(matching)
         // Download size against unified memory: a size comparison, not a fit claim.
         let fits = matches.filter { ($0.approxSizeBytes ?? 0) <= memoryBytes }
         let larger = matches.filter { ($0.approxSizeBytes ?? 0) > memoryBytes }
-        return Card("Catalog", subtitle: "Public AutomatosX models. Pinned profiles come from your AX Engine runtime; an entry is not a hardware qualification.") {
+        return Card("Catalog", subtitle: "Public AutomatosX models, plus community models under All models. Profiles come from your AX Engine runtime; an entry is not a hardware qualification.") {
+            HStack(spacing: 10) {
+                AXSegmented(options: LibraryScope.allCases.map { ($0, $0.title) }, selection: $model.libraryScope, compact: true)
+                    .accessibilityLabel("Models shown")
+                Text(model.libraryScope == .automatosX ? "Officially supported AutomatosX packs."
+                     : "Also lists other publishers' models the runtime has a profile for, without official support.")
+                    .font(.system(size: 11.5)).foregroundStyle(Brand.text3).lineLimit(2)
+                Spacer(minLength: 0)
+            }
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("No Hugging Face account or token required", systemImage: "arrow.down.circle").font(.headline)
@@ -528,7 +556,7 @@ struct ModelsPage: View {
                     }
                 }
             }
-            if matches.isEmpty && !search.isEmpty && !models.refreshing {
+            if matches.isEmpty && community.isEmpty && !search.isEmpty && !models.refreshing {
                 Text("No catalog models match “\(search)”.").foregroundStyle(.secondary)
                 Button("Clear search") { model.catalogSearch = "" }
             }
@@ -547,6 +575,20 @@ struct ModelsPage: View {
                 } label: {
                     Text("Download size over this Mac's memory (\(larger.count))")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+                }
+            }
+            if model.libraryScope == .all && !models.refreshing && (models.communityCatalog.isEmpty ? !models.catalog.isEmpty : !community.isEmpty) {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Community models · not officially supported")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+                    Text(models.communityCatalog.isEmpty
+                         ? "This AX Engine runtime does not list community models. Update the runtime, then refresh."
+                         : "Published by others and not tested by AutomatosX. You are free to try them: downloads use the same anonymous, checksum-verified path, and the runtime checks compatibility at start and may refuse a model.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
+                    ForEach(community) { item in catalogCard(item) }
                 }
             }
         }
@@ -574,12 +616,20 @@ struct ModelsPage: View {
                         ModelAvatar(name: label.title)
                         ModelTitle(label: label, font: .system(size: 13.5, weight: .semibold)).help(item.repoId)
                     }
-                    Text(item.alias + " · " + item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(item.alias + " · " + item.repoId + (!item.isOfficial && item.revision == nil ? " · publisher's latest revision" : ""))
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack(spacing: 6) {
-                        if let size = item.approxSizeBytes { PillBadge(text: "about " + bytes(size), systemImage: "internaldrive") }
+                        if !item.isOfficial {
+                            PillBadge(text: LibraryScope.unofficialTag, systemImage: "person.2", tint: .orange).fixedSize()
+                                .help(LibraryScope.unofficialNote)
+                        }
+                        if let size = item.approxSizeBytes { PillBadge(text: "about " + bytes(size), systemImage: "internaldrive").fixedSize() }
                         if item.mtpIncluded == true { PillBadge(text: "MTP included", systemImage: "bolt") }
-                        if let certification = item.certification { PillBadge(text: certification.capitalized, systemImage: "checkmark.seal") }
-                        Text(item.revision.map { "Revision " + String($0.prefix(12)) } ?? "Unpinned runtime profile").font(.caption).foregroundStyle(.secondary)
+                        if item.isOfficial, let certification = item.certification { PillBadge(text: certification.capitalized, systemImage: "checkmark.seal") }
+                        // Community entries say "publisher's latest revision" on the line above; this row has no room.
+                        if item.isOfficial || item.revision != nil {
+                            Text(item.revision.map { "Revision " + String($0.prefix(12)) } ?? "Unpinned runtime profile").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Spacer()
@@ -607,7 +657,7 @@ struct ModelsPage: View {
                 } else {
                     Button("Download", systemImage: "arrow.down") { requestDownload(item) }
                         .buttonStyle(.ax(.primary)).disabled(blocked != nil)
-                        .help(blocked ?? "Download this public AutomatosX pack")
+                        .help(blocked ?? (item.isOfficial ? "Download this public AutomatosX pack" : "Download this community model. " + LibraryScope.unofficialNote))
                 }
             }
             if let shortfall, installed == nil, active == nil {

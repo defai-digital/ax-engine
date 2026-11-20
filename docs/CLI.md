@@ -124,7 +124,9 @@ have been removed, including the legacy Python download wizard. The old
 and exit; CLI commands remain supported.
 
 The native Rust `download` command uses anonymous HTTPS for public, unrestricted
-AutomatosX packs. No Python, Hugging Face account or token is required. It resolves
+repositories. AutomatosX packs are the officially supported set; any other
+public `owner/name` repository downloads through the same path without official
+support, and the runtime may still refuse the model when it starts. No Python, Hugging Face account or token is required. It resolves
 a revision to an immutable commit, verifies each file's SHA-256 (LFS) or Git blob
 SHA-1, resumes partial transfers, and validates the native manifest before
 replacing the destination. Invalid or interrupted replacements preserve the old
@@ -139,10 +141,12 @@ original `event`, `done`, `total` and `file` fields plus `phase` (`inventory`,
 only, `bytes_done` and `bytes_total` (null otherwise). Clients that predate
 these fields keep working; `done/total` remains the overall ratio. `download --list --json` advertises
 `download_backend: native-rust-public-v1`. The GUI requires this capability before
-enabling downloads. Older published runtimes and the Python SDK's separate
+enabling downloads. `targets` stays AutomatosX-only; `community_targets` (additive)
+lists other publishers' repositories the runtime has a serve profile for. Every
+entry carries `support`: `official` or `community`. Older published runtimes and the Python SDK's separate
 preparation tools may still need their documented Python dependencies.
 
-Download other publishers' models independently, then use a local directory:
+Models obtained another way are served from a local directory:
 
 ```text
 ax-engine serve /path/to/local/mlx-model --offline

@@ -23,8 +23,8 @@ final class ApplicationModel: ObservableObject {
     func openSettings() { settingsRequests += 1 }
     @Published var selectedPath = ""
     @Published var modelSearch = ""
-    @Published var catalogSearch = ""
-    @Published var modelsSection = "library"
+    @Published var catalogSearch = QALaunch.enabled ? UserDefaults.standard.string(forKey: "AXCatalogSearch") ?? "" : ""
+    @Published var modelsSection = QALaunch.enabled ? UserDefaults.standard.string(forKey: "AXModelsSection") ?? "library" : "library"
     @Published var searchFocusRequest = 0
     @Published var dashboardHistoryWindow: Double = ActivityHistoryRange.fiveMinutes.rawValue
     @Published var hostMonitoringEnabled = UserDefaults.standard.bool(forKey: "hostMonitoringEnabled") {

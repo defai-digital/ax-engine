@@ -39,6 +39,11 @@ impl ModelProfile {
     fn is_downloadable(self) -> bool {
         self.downloadable && self.repo_id.starts_with("AutomatosX/")
     }
+    /// A downloadable profile from another publisher: offered separately as
+    /// a community target, without official support.
+    fn is_community_download(self) -> bool {
+        self.downloadable && !self.repo_id.starts_with("AutomatosX/")
+    }
 }
 
 fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
@@ -3946,6 +3951,20 @@ fn download_progress_event(report: &ax_engine_download::Progress) -> Value {
     })
 }
 
+fn download_target(profile: ModelProfile) -> Value {
+    json!({
+        "alias": profile.label,
+        "approx_size_bytes": profile.approx_size_bytes,
+        "repo_id": profile.repo_id,
+        "revision": profile_revision(profile),
+        "certification": profile_certification(profile),
+        "preset": profile.preset,
+        "aliases": profile.aliases,
+        "mtp_included": profile.repo_id.to_ascii_lowercase().contains("-mtp"),
+        "support": if profile.is_downloadable() { "official" } else { "community" },
+    })
+}
+
 fn download_options_payload() -> Value {
     json!({
         "schema_version": "ax.download_options.v1",
@@ -3955,18 +3974,11 @@ fn download_options_payload() -> Value {
             "env": ["HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"],
             "dest_semantics": "--dest stages and validates the pinned model before atomically replacing the explicit directory",
         },
-        "targets": MODEL_PROFILES.iter().copied().filter(|profile| profile.is_downloadable()).map(|profile| {
-            json!({
-                "alias": profile.label,
-                "approx_size_bytes": profile.approx_size_bytes,
-                "repo_id": profile.repo_id,
-                "revision": profile_revision(profile),
-                "certification": profile_certification(profile),
-                "preset": profile.preset,
-                "aliases": profile.aliases,
-                "mtp_included": profile.repo_id.to_ascii_lowercase().contains("-mtp"),
-            })
-        }).collect::<Vec<_>>(),
+        "targets": MODEL_PROFILES.iter().copied().filter(|profile| profile.is_downloadable()).map(download_target).collect::<Vec<_>>(),
+        // Other publishers' repositories this runtime has a serve profile for.
+        // Downloadable through the same anonymous path, but not AutomatosX
+        // packs: no official support, pinned revision or certification.
+        "community_targets": MODEL_PROFILES.iter().copied().filter(|profile| profile.is_community_download()).map(download_target).collect::<Vec<_>>(),
         "examples": [
             "ax-engine download ax-qwen3.5-9b",
             "ax-engine download ax-qwen3.6-35b",
@@ -4578,6 +4590,21 @@ mod tests {
         assert_eq!(actual, expected);
         assert_eq!(targets.len(), EXPECTED_AUTOMATOSX_REPOS.len());
         assert!(targets.iter().all(|target| target["alias"] != "gemma4-12b"));
+        assert!(targets.iter().all(|target| target["support"] == "official"));
+        let community = payload["community_targets"].as_array().unwrap();
+        assert!(
+            community
+                .iter()
+                .any(|target| target["alias"] == "gemma4-12b")
+        );
+        assert!(community.iter().all(|target| {
+            target["support"] == "community"
+                && !target["repo_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("AutomatosX/")
+                && ax_engine_download::supported_repository(target["repo_id"].as_str().unwrap())
+        }));
         for (alias, revision) in [
             (
                 "ax-tiel-coder-35b",

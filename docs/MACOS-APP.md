@@ -182,13 +182,13 @@ Getting Started**.
    imported folders and other publishers' repositories in the Hugging Face
    cache. The choice is remembered and applies to every chooser (Home, the
    command palette, A/B compare and the sidebar). Rows from other publishers
-   carry a **Third-party** tag: the app can try to serve them, the runtime
-   checks compatibility at start and may refuse them, and the app never
-   deletes their files. Switching back to AutomatosX keeps the model being
+   carry an **Unofficial** tag (not officially supported): the app can try to
+   serve them, and the runtime checks compatibility at start and may refuse
+   them. The app removes only folders it downloaded itself and AutomatosX
+   repositories in the Hugging Face cache. Switching back to AutomatosX keeps the model being
    served listed; a hidden selection falls back to an AutomatosX model and
    pinned models return with the wider scope. The table footer says how many
-   models the narrow scope leaves out. The Catalog and downloads stay
-   AutomatosX-only in both scopes. Each row shows name and source, format, size and status:
+   models the narrow scope leaves out. The same control is on the Catalog. Each row shows name and source, format, size and status:
    **Ready**, **Incomplete** or **Not checked**, plus **Selected** and
    **Serving**), ready models first. Selecting a row opens an inspector with
    its tags, **Serve** and **Pin**, size on disk against unified memory (a
@@ -209,8 +209,15 @@ Getting Started**.
    the free space asks first: AX Engine checks the exact remaining size before
    downloading and stops without touching existing models when it does not
    fit, so **Download Anyway** is safe and a resumed download may need less.
-   Download third-party models independently; once they are on this Mac they
-   appear under **Your Models › All models**, or use CLI local model paths.
+   Under **All models** the Catalog adds **Community models · not officially
+   supported**: other publishers' public repositories that the runtime has a
+   serve profile for (`community_targets` in `download --list --json`). They
+   carry the **Unofficial** tag, the first such download asks once for
+   confirmation, and they use the same anonymous, checksum-verified download
+   path. AutomatosX has not tested them; the runtime may refuse one at start.
+   A runtime that predates `community_targets` lists none. Repositories the
+   runtime does not list are not offered in the GUI: download them with the
+   CLI, after which they appear under **Your Models › All models**.
    Arbitrary local folder imports and editable server paths are not GUI
    features. **Downloads** (the count of active ones is on the segment) shows
    each download's phase (checking files, downloading, verifying), bytes done

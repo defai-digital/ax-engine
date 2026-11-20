@@ -11,6 +11,7 @@ import AXEngineAppCore
 ///   -AXFinishThenStop YES         with -AXStartServer: once a request streams, choose
 ///                                 "Finish Reply, Then Stop" (the Stop dialog's button)
 ///   -AXSimulatePressure <Warning|Critical>  show a memory pressure event (needs live activity on)
+///   -AXModelsSection <library|catalog|transfers>  first Models segment; -AXCatalogSearch <text> prefills its search
 ///   -AXShowMenuPanel YES          also show the menu bar panel in a window for screenshots
 @MainActor
 enum QALaunch {

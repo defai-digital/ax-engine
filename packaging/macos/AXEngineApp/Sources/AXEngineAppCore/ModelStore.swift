@@ -11,6 +11,9 @@ public struct CatalogModel: Decodable, Identifiable, Sendable, Equatable {
     /// Runtime certification word such as "candidate"; nil when unrecorded.
     public var certification: String?
     public var id: String { alias + "|" + target }
+    /// An AutomatosX pack. Other catalog entries are community models the
+    /// runtime has a profile for, offered without official support.
+    public var isOfficial: Bool { repoId.hasPrefix("AutomatosX/") }
     public var target: String { repoId + (revision.map { "@" + $0 } ?? "") }
     public var folderName: String { repoId.replacingOccurrences(of: "/", with: "--") + (revision.map { "--" + $0 } ?? "") }
 }
@@ -20,7 +23,9 @@ public struct CatalogModel: Decodable, Identifiable, Sendable, Equatable {
 public enum LibraryScope: String, CaseIterable, Sendable {
     case automatosX, all
     public var title: String { self == .automatosX ? "AutomatosX" : "All models" }
-    public static let thirdPartyNote = "Not published by AutomatosX; compatibility is checked at start and starting may fail."
+    /// Tag for every model AutomatosX did not publish, in the library and the catalog.
+    public static let unofficialTag = "Unofficial"
+    public static let unofficialNote = "Not officially supported: AutomatosX has not tested this model. The runtime checks compatibility at start and may refuse it."
 
     /// Rows listed under this scope. `keeping` is a path that stays listed
     /// whatever the scope: the model the app is serving.
@@ -66,8 +71,9 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public var organization: String? {
         let url = URL(fileURLWithPath: path)
         if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
-            let parts = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
-                .replacingOccurrences(of: "models--", with: "").components(separatedBy: "--")
+            let repository = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            guard repository.hasPrefix("models--") else { return nil }
+            let parts = repository.dropFirst("models--".count).components(separatedBy: "--")
             return parts.count > 1 && !parts[0].isEmpty ? parts[0] : nil
         }
         guard managed, let range = url.lastPathComponent.range(of: "--"), range.lowerBound != url.lastPathComponent.startIndex else { return nil }
@@ -201,6 +207,11 @@ public struct DownloadProgress: Equatable, Sendable {
 @MainActor
 public final class ModelStore: ObservableObject {
     @Published public private(set) var catalog: [CatalogModel] = []
+    /// Other publishers' models the runtime lists, without official support.
+    /// Empty for runtimes that predate `community_targets`.
+    @Published public private(set) var communityCatalog: [CatalogModel] = []
+    /// Community entries offered under the current scope.
+    public var visibleCommunityCatalog: [CatalogModel] { scope == .all ? communityCatalog : [] }
     @Published public private(set) var supportsNativeDownloads = false
     /// Which discovered models are listed; the app persists the choice.
     @Published public var scope: LibraryScope = .automatosX
@@ -233,8 +244,12 @@ public final class ModelStore: ObservableObject {
     /// Why Download is unavailable for one catalog row, or nil when it can start.
     public func downloadBlockReason(for item: CatalogModel) -> String? {
         if let reason = downloadsBlockReason { return reason }
-        if !item.repoId.hasPrefix("AutomatosX/") { return "GUI downloads support public AutomatosX models only." }
+        if !downloadable(item) { return "This model is not in the runtime's catalog. Refresh the catalog, or download it with the AX Engine CLI." }
         return nil
+    }
+    /// AutomatosX packs, plus community models the runtime itself lists.
+    private func downloadable(_ item: CatalogModel) -> Bool {
+        item.isOfficial || communityCatalog.contains { $0.target == item.target }
     }
     public func clearFinishedDownloads(id: UUID? = nil) {
         downloads.removeAll { $0.isFinished && (id == nil || $0.id == id) }
@@ -244,7 +259,7 @@ public final class ModelStore: ObservableObject {
     /// so a retry can be queued from the same row.
     public func catalogEntry(forPartial partial: PartialDownload) -> CatalogModel? {
         let name = URL(fileURLWithPath: partial.path).lastPathComponent
-        return catalog.first { name == "." + $0.folderName + ".ax-download" }
+        return (catalog + communityCatalog).first { name == "." + $0.folderName + ".ax-download" }
     }
 
     @Published public private(set) var library: [LocalModel] = []
@@ -293,11 +308,15 @@ public final class ModelStore: ObservableObject {
             let result = try await catalogJob.run(executable: settings.runtime(),
                 arguments: ["download", "--list", "--json"], timeout: 30)
             guard result.status == 0, !result.truncated else { throw AppFailure.message("Cannot read runtime catalog: " + String(result.stderr.suffix(2048))) }
-            struct Catalog: Decodable { let schemaVersion: String; let downloadBackend: String?; let targets: [CatalogModel] }
+            struct Catalog: Decodable {
+                let schemaVersion: String; let downloadBackend: String?; let targets: [CatalogModel]
+                let communityTargets: [CatalogModel]?
+            }
             let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
             let value = try decoder.decode(Catalog.self, from: Data(result.stdout.utf8))
             guard value.schemaVersion == "ax.download_options.v1" else { throw AppFailure.message("Unsupported runtime catalog version.") }
-            catalog = value.targets.filter { $0.repoId.hasPrefix("AutomatosX/") }
+            catalog = value.targets.filter(\.isOfficial)
+            communityCatalog = (value.communityTargets ?? []).filter { !$0.isOfficial }
             supportsNativeDownloads = value.downloadBackend == "native-rust-public-v1"
         } catch { self.error = error.localizedDescription }
         refreshing = false
@@ -494,8 +513,11 @@ public final class ModelStore: ObservableObject {
     }
 
     public func removalTarget(for model: LocalModel, settings: AppSettings) -> ModelRemovalTarget? {
-        guard model.isAutomatosX else { return nil }
-        return ModelFiles.removalTarget(path: model.path, modelsRoot: settings.modelsDirectory, cacheRoot: hubCacheRoot)
+        let target = ModelFiles.removalTarget(path: model.path, modelsRoot: settings.modelsDirectory, cacheRoot: hubCacheRoot)
+        // Folders this app downloaded are removable whoever published them;
+        // in the shared Hugging Face cache only AutomatosX repositories are.
+        if case .cacheRepository = target, !model.isAutomatosX { return nil }
+        return target
     }
 
     /// Delete a downloaded model. The caller owns confirmation and the guard
@@ -551,8 +573,8 @@ public final class ModelStore: ObservableObject {
     public func enqueue(_ model: CatalogModel, settings: AppSettings) {
         guard !removing else { error = "Wait for model removal to finish."; return }
         guard !downloads.contains(where: { $0.model.target == model.target && ["Queued", "Downloading"].contains($0.state) }) else { return }
-        guard model.repoId.hasPrefix("AutomatosX/") else {
-            error = "GUI downloads support public AutomatosX models only. Download other models separately and use the AX Engine CLI."; return
+        guard downloadable(model) else {
+            error = "This model is not in the runtime's catalog. Download other models separately and use the AX Engine CLI."; return
         }
         guard supportsNativeDownloads else {
             error = "Update AX Engine to a runtime with native public-model downloads, then refresh the catalog."; return

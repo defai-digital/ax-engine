@@ -113,7 +113,7 @@ struct ModelPickerPopover: View {
             Button { choose(item.path) } label: {
                 HStack(spacing: 8) {
                     ModelTitle(label: item.label, font: .callout.weight(selected ? .semibold : .regular))
-                    if !item.isAutomatosX { Tag("Third-party").help(LibraryScope.thirdPartyNote) }
+                    if !item.isAutomatosX { Tag(LibraryScope.unofficialTag).help(LibraryScope.unofficialNote) }
                     if let size = item.sizeBytes {
                         Text(TransferFormat.bytes(size)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }

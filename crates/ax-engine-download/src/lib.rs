@@ -1,4 +1,5 @@
-//! Anonymous downloads of public AutomatosX model packs. No Python, login,
+//! Anonymous downloads of public model packs: AutomatosX packs, and other
+//! publishers' public repositories without official support. No Python, login,
 //! token discovery, custom Hub endpoint, or inference is involved here.
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -155,17 +156,26 @@ pub fn cache_root() -> PathBuf {
         })
 }
 
-/// Restrict product downloads to the publisher's namespace. Catalog admission
-/// and pinned product revisions remain the responsibility of the caller.
+/// A plain public Hub repository id (`owner/name`). AutomatosX packs are the
+/// officially supported set; other publishers' repositories pass the same
+/// anonymous, pinned and digest-checked path but are not qualified. Which
+/// repositories a product surface offers is the caller's decision.
 pub fn supported_repository(repository: &str) -> bool {
-    repository.strip_prefix("AutomatosX/").is_some_and(|name| {
-        !name.is_empty()
-            && name != "."
-            && name != ".."
-            && name
+    fn part(value: &str) -> bool {
+        !value.is_empty()
+            && value != "."
+            && value != ".."
+            && value
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-    })
+    }
+    repository
+        .split_once('/')
+        .is_some_and(|(owner, name)| part(owner) && part(name))
+}
+/// True for the publisher's own, officially supported namespace.
+pub fn official_repository(repository: &str) -> bool {
+    repository.starts_with("AutomatosX/") && supported_repository(repository)
 }
 fn hex(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())
@@ -408,7 +418,7 @@ impl Hub {
         let (owner, name) = options.repository.split_once('/').ok_or_else(|| {
             Failure::new(
                 "UNSUPPORTED_REPOSITORY",
-                "Choose an AX Engine public model.",
+                "Use a public Hugging Face repository id in the form owner/name.",
             )
         })?;
         let revision = options.revision.as_deref().unwrap_or("main");
@@ -437,7 +447,7 @@ impl Hub {
         {
             return Err(Failure::new(
                 "ACCESS_DENIED",
-                "AX Engine downloads only public, unrestricted AutomatosX models. Choose another public model.",
+                "AX Engine downloads only public, unrestricted models. Choose another public model.",
             ));
         }
         let commit = value["sha"]
@@ -517,7 +527,7 @@ fn http_failure(status: u16, code: Option<&str>) -> Failure {
         ),
         (401 | 403, _) => (
             "ACCESS_DENIED",
-            "This model is not publicly downloadable. AX Engine supports public, unrestricted AutomatosX models only.",
+            "This model is not publicly downloadable. AX Engine downloads public, unrestricted models only, without a token.",
         ),
         (404, _) => (
             "REPOSITORY_NOT_FOUND",
@@ -565,7 +575,7 @@ fn download_with(
     if !local && !supported_repository(&options.repository) {
         return Err(Failure::new(
             "UNSUPPORTED_REPOSITORY",
-            "Built-in downloads support public AutomatosX models only. Download other models yourself and use ax-engine serve with a local model path.",
+            "Use a public Hugging Face repository id in the form owner/name, or a local model directory.",
         ));
     }
     if let Some(revision) = &options.revision {

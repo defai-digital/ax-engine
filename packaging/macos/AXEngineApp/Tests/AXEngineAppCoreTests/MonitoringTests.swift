@@ -239,3 +239,43 @@ import Testing
     #expect(!store.canSelectInGUI(other) && store.hiddenCount == 1)
     await store.shutdown()
 }
+
+@Test @MainActor func communityCatalogDownloadsUnderTheWideScopeAndStaysRemovable() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let fixture = root.appendingPathComponent("runtime")
+    try FileManager.default.copyItem(at: #require(Bundle.module.url(forResource: "runtime", withExtension: "py", subdirectory: "Fixtures")), to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path)
+    var settings = AppSettings(); settings.executable = fixture.path
+    settings.modelsDirectory = root.appendingPathComponent("models").path
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"), scannerURL: testScannerURL(),
+                           scanEnvironment: ["HF_HUB_CACHE": root.appendingPathComponent("empty-cache").path])
+    await store.refresh(settings: settings)
+    // An entry mislabelled as community but published by AutomatosX is dropped.
+    #expect(store.catalog.map(\.repoId) == ["AutomatosX/Fixture"])
+    #expect(store.communityCatalog.map(\.repoId) == ["mlx-community/Fixture-4bit"])
+    let entry = try #require(store.communityCatalog.first)
+    #expect(!entry.isOfficial && store.visibleCommunityCatalog.isEmpty)
+    #expect(store.downloadBlockReason(for: entry) == nil)
+    // A repository the runtime does not list is still refused.
+    let unlisted = CatalogModel(alias: "Other", repoId: "community/Pack", revision: nil, mtpIncluded: false)
+    #expect(store.downloadBlockReason(for: unlisted) != nil)
+
+    store.scope = .all
+    #expect(store.visibleCommunityCatalog == [entry])
+    store.enqueue(entry, settings: settings)
+    #expect(store.activeDownload(for: entry) != nil)
+    while store.downloading { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(store.downloads.first?.state == "Ready")
+    let installed = try #require(store.installedModel(for: entry))
+    #expect(!installed.isAutomatosX && installed.organization == "mlx-community")
+    #expect(store.canSelectInGUI(installed.path))
+    // App-downloaded folders are removable whoever published them.
+    guard case .managedFolder = store.removalTarget(for: installed, settings: settings) else {
+        Issue.record("community download is not removable"); return
+    }
+    store.scope = .automatosX
+    #expect(!store.canSelectInGUI(installed.path) && store.installedModel(for: entry) == nil)
+    await store.shutdown()
+}
