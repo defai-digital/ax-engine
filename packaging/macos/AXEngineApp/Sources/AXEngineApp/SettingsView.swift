@@ -56,9 +56,6 @@ struct SettingsView: View {
                     }
                 }
             }
-            .tabViewStyle(.grouped)
-            .padding(.horizontal, 26).padding(.top, 16)
-            .frame(maxWidth: 860)
             .frame(maxWidth: .infinity, alignment: .leading)
             .onChange(of: model.settingsDraft) { _, _ in copiedDefaults = false }
             .onAppear { if model.settingsDraft.effectiveProfile == .custom { advancedGeneration = true } }

@@ -35,3 +35,16 @@ import Testing
     // One live update for "ready" plus the final one, not one per 100 ms poll.
     #expect(updates <= 3)
 }
+
+@Test func logLevelsColourErrorsBeforeWarnings() {
+    #expect(LogFilter.level("2026 ERROR request failed") == .error)
+    #expect(LogFilter.level("WARN client closed stream") == .warning)
+    #expect(LogFilter.level("INFO listening on 127.0.0.1") == .info)
+    #expect(LogFilter.level("warning: retry failed") == .error)
+}
+
+@Test func markdownBlocksSplitHeadingsFromProse() {
+    let blocks = MarkdownBlocks.split("# Title\nfirst line\nsecond\n\n## Part\n#hashtag stays text\n")
+    #expect(blocks == [.heading(1, "Title"), .text("first line\nsecond"), .heading(2, "Part"), .text("#hashtag stays text")])
+    #expect(MarkdownBlocks.split("") == [])
+}

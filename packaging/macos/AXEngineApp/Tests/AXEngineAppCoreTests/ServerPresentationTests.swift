@@ -36,13 +36,17 @@ import Testing
     for snippet in ClientSnippet.allCases {
         let open = snippet.text(apiURL: url, model: "qwen", requiresKey: false)
         let keyed = snippet.text(apiURL: url, model: "qwen", requiresKey: true)
-        #expect(open.contains(url) && keyed.contains(url))
+        let base = snippet == .claudeCode ? ClientSnippet.anthropicBase(url) : url
+        #expect(open.contains(base) && keyed.contains(base))
         #expect(!open.contains("AX_ENGINE_API_KEY"))
         #expect(keyed.contains("AX_ENGINE_API_KEY"))
         #expect(!keyed.contains("Bearer axe_"))
     }
     #expect(ClientSnippet.curl.text(apiURL: url, model: "", requiresKey: false).contains("\"model\": \"default\""))
     #expect(ClientSnippet.python.text(apiURL: url, model: "qwen", requiresKey: false).contains("model=\"qwen\""))
+    #expect(ClientSnippet.anthropicBase("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080")
+    #expect(ClientSnippet.claudeCode.text(apiURL: "http://127.0.0.1:8080/v1", model: "qwen", requiresKey: false)
+        .contains("ANTHROPIC_BASE_URL=http://127.0.0.1:8080\n"))
 }
 
 @Test func memoryReportOnlyUsesReportedValues() {

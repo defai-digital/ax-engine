@@ -68,7 +68,8 @@ Python and Pillow are build-time icon tools, not end-user download dependencies.
 
 **Layout.** The sidebar holds **Home** (Command-1), **Playground**
 (Command-2), **Models** (Command-3), **API & Logs** (Command-4) and **System**
-(Command-5), then **Pinned** models: starred models that serve in one click
+(Command-5), then **Pinned** models (or, before you pin one, your **Recent**
+ones): starred models that serve in one click
 (while a server runs, a pinned model is selected on Home, where Restart
 switches to it). The toolbar carries one **server capsule** on every page:
 state, model, endpoint, live token rate, a copy-URL button and the single
@@ -78,7 +79,8 @@ app did not start, and speculative-decoding readings; indigo is the accent
 for actions and selection. The toolbar also has a **Downloads** popover and
 the **command palette** (Command-K), which jumps to a page, serves a
 downloaded model or runs a server action through the same gates as the
-buttons. **Settings** is a standard window (Command-Comma).
+buttons. **Settings** is a standard window (Command-Comma). The sidebar header
+shows the app version, chip and unified memory of this Mac.
 
 **First run.** When a complete library scan finds no models, a short guide
 opens: what AX Engine does, a list of catalog models (download size within
@@ -87,38 +89,42 @@ claim), the download with live progress, and **Start Server**. Closing it
 keeps any download running. It is offered once; reopen it from **Help ›
 Getting Started**.
 
-1. **Start serving (Home):** the **Serve a model** card on Home (or the
-   toolbar capsule) is the quickest way to serve: pick a downloaded model and press
-   **Start Server** (or Shift-Command-R, or the menu-bar item). With nothing
-   downloaded yet, the card says so and offers **Download a Model**, which
-   opens the Catalog. The model picker is searchable and groups models under
+1. **Start serving (Home):** Home opens with one hero panel for the selected
+   model: its state, short title (for example **Tiel Coder 35B A3B**) with
+   quantization, MTP and size tags, the local endpoint with a copy button and
+   **Start Server** (or Shift-Command-R, the toolbar capsule or the menu-bar
+   item). **Choose Model** opens a searchable picker that groups models under
    **Favorites** (star a row to pin it), **Recent** (the last five models you
    started) and the rest; arrow keys and Return work from the search field,
-   and **Download more models** opens the Catalog. Model names are short
-   titles (for example **Tiel Coder 35B A3B**) with quantization and MTP as
-   tags; the full name and path are in the tooltip. With nothing chosen, the
+   and **Download more models** opens the Catalog. With nothing downloaded
+   yet, the panel offers **Download a Model**. With nothing chosen, the
    running model, then the most recently started one, a favorite or the first
-   download is preselected. Before anything is listening the card says **Not
-   listening**; while starting it shows the elapsed time and the runtime's
-   latest output line, and **Cancel Start** stops the launch. Once running it
-   offers **Restart Server**, **Stop Server** (Shift-Command-Period), **Copy
-   API URL**, **Copy API Key** when the server uses one, and **Open
-   Playground**. **Serving options** folds the serving mode and request cap
-   behind a one-line summary such as "Automatic mode · up to 4 requests · no
-   API key". By default the server needs no API key: it listens on 127.0.0.1
-   only, so local clients can call it directly. While something is serving,
-   Home leads with **Live speed**: tokens the runtime scheduled per second
-   (prompt and output together) between two-second polls of `/metrics`,
-   active and completed requests, interval MTP draft acceptance and the model
-   context, with a five-minute history. **Model memory** shows the MLX active,
-   cache, prefix-cache and peak bytes the runtime reports, and **Last
-   Playground reply** repeats the newest completed reply's native decode and
-   prefill rates. Missing counters show a dash; none of these is a benchmark.
-2. **API & Logs:** **Connect your apps** shows the endpoint with ready-to-paste
-   curl, Python (OpenAI SDK) and environment-variable setups; when a key is
-   required they reference `$AX_ENGINE_API_KEY` and never contain the key.
-   Below it are the same status, model picker and lifecycle buttons,
-   with the serving options and API key always visible. **Require an API key**
+   download is preselected. While starting it shows the elapsed time and the
+   runtime's latest output line, and **Cancel Start** stops the launch. Once
+   running it offers **Open Playground**, **Switch Model** and **Restart**.
+   By default the server needs no API key: it listens on 127.0.0.1 only, so
+   local clients can call it directly. The right side of the hero is **Token
+   speed · live**: tokens the runtime scheduled per second (prompt and output
+   together) between two-second polls of `/metrics`, with a five-minute
+   sparkline, the last Playground reply's first-text time and prefill rate,
+   interval MTP draft acceptance and requests in flight. Below it,
+   **Unified memory** splits the runtime's MLX active and cache bytes from
+   other apps (from the host monitor), **Throughput** charts scheduled tokens
+   per 10 seconds, **Requests** shows the runtime's HTTP counters (generating
+   now, completed, HTTP requests, 4xx/5xx errors) since the server started,
+   and **Connect an app** repeats the setups from API & Logs. The runtime does
+   not report per-request or per-client history, so Home shows none. Missing
+   counters show a dash; none of these is a benchmark.
+2. **API & Logs:** **Endpoint** lists the OpenAI base URL, the Anthropic base
+   URL and the served model ID, each with a copy button, followed by the API
+   key setting, **Serving profile**, **Parallel requests** and the port.
+   **Connect an app** has ready-to-paste setups for **Claude Code** (exports
+   `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and `ANTHROPIC_AUTH_TOKEN`, then
+   runs `claude`), **Python** (OpenAI SDK), **TypeScript**, **curl** and
+   **Env vars**; when a key is required they reference `$AX_ENGINE_API_KEY`
+   and never contain the key. **Logs** shows the runtime output with
+   errors and warnings coloured, **All** or **Problems**, a text filter,
+   **Follow** to stay at the newest line and **Copy**. **Require an API key**
    gives each later launch a fresh in-memory key, copied with **Copy API
    Key**; while a server is running the toggle shows **Restart required** and
    **Restart Now**. **Serving mode** (Automatic, Coding, Agentic, Chatbot)
@@ -148,10 +154,9 @@ Getting Started**.
    Stop gives the runtime eight seconds to drain before it is force-killed.
    When the runtime exits on its own, the error shows its last diagnostic line
    with **Start Again** and **Copy Diagnostics** (the bounded runtime output,
-   with the API key redacted), and **Runtime output** opens. Runtime output
-   can be filtered by text, narrowed to warnings and errors, and limited to
-   the last 100 or 500 lines; filters change the view only, and **Copy All**
-   copies the whole bounded output. Runtime metrics
+   with the API key redacted). Logs can be filtered by text, narrowed to
+   warnings and errors, and limited to the last 100 or 500 lines; filters
+   change the view only, and **Copy** copies the whole bounded output. Runtime metrics
    and history appear only while something is serving; Mac CPU, GPU and memory
    charts are on System. **Already running AX Engine on this Mac? Connect to
    it** (collapsed) attaches to a service on the configured port; a key you
@@ -165,16 +170,21 @@ Getting Started**.
    prevent other local apps from reading the clipboard. The key is never
    added to saved settings. A restarted app-owned server gets a new key, so
    copy it again after restarting.
-3. **Models:** three segments. **Your Models** lists app-managed and cached
-   AutomatosX models; each row says **Ready to serve**, **Weights incomplete
-   or metadata only** or **Not checked in this scan**, and marks the
-   **Selected** and **Serving** model. One snapshot per cached repository is
+3. **Models:** three segments. **Your Models** is a table of app-managed and
+   cached AutomatosX models (name and source, format, size and status:
+   **Ready**, **Incomplete** or **Not checked**, plus **Selected** and
+   **Serving**), ready models first. Selecting a row opens an inspector with
+   its tags, **Serve** and **Pin**, size on disk against unified memory (a
+   size comparison, not a fit claim), repository, revision, source, file
+   completeness and location, **Show in Finder**, **Copy Path** and
+   **Remove…** under the same gates as before. In narrow windows the Format
+   column is hidden, then the inspector moves below the table. One snapshot per cached repository is
    shown, preferring complete weights before the newest revision. **Serve**
    on a ready row starts the server on it when nothing is serving; while a
    server runs, **Select on Home** selects it there so Restart switches
    to it. The same action is on downloaded Catalog rows and finished
-   downloads. **Catalog** lists public AutomatosX packs (no Hugging Face
-   account or token) grouped into those that fit this Mac's unified memory and
+   downloads. **Catalog** shows public AutomatosX packs (no Hugging Face
+   account or token) as cards grouped into those that fit this Mac's unified memory and
    a collapsed group of larger ones; each row shows the runtime's approximate
    pack size, whether MTP artifacts are included and its certification word
    when recorded, plus the free space on the model volume. These are size
@@ -203,6 +213,8 @@ Getting Started**.
    **Discard**, which refuses while the runtime still holds the download lock.
    Your Models links to them.
 4. **Playground:** select a running model, send text, inspect reasoning when supplied,
+   set the generation profile, a **System prompt** and see the sampling and
+   maximum-token settings from chips under the composer,
    copy replies or code blocks, retry or stop (Command-Period). Return or
    Command-Return sends; Shift-Return enters a new line. You can type the next
    message while a reply streams. Without a server, Playground shows one state
@@ -218,6 +230,7 @@ Getting Started**.
    block new sends; **Reveal Saved Conversation** opens their location before
    an explicit **Clear** replaces them. These are storage/display limits, not
    a model token-context limit; the server still validates the model context.
+   Markdown headings render as headings and code blocks show their language.
    The **Telemetry** inspector (toolbar button or Option-Command-I) shows the
    live token rate, active requests and MTP draft acceptance; for the current
    or last reply the first-text time, elapsed time, native decode and prefill
@@ -229,9 +242,11 @@ Getting Started**.
    benchmark or a throughput certification.
 6. **Menu bar and Server menu:** the menu-bar item (on by default; Settings ›
    Runtime › Menu bar) shows the server state, with the live token rate next to its icon
-   while one is reported, and offers Start Server, Start
-   with… (any downloaded model), Restart, Stop, Copy API URL, Open Playground
-   and Open AX Engine. The **Server** menu has Start/Restart Server
+   while one is reported. Its panel shows the state and address, the model with
+   its tags and uptime, the live token rate with a sparkline and MTP draft
+   acceptance, Start, Stop or Restart, a **Switch model** list of up to five
+   downloaded models, Copy OpenAI base URL, Open Playground, Open AX Engine
+   and Quit. The **Server** menu has Start/Restart Server
    (Shift-Command-R), Stop Server (Shift-Command-Period), Copy API URL and
    Open Playground.
 
@@ -327,21 +342,24 @@ AX Engine provides inference; MTPLX inference code and model assets are not bund
 
 ## System and discovery
 
-System is the host overview, with charts for RAM usage, available disk space,
-CPU/GPU activity and your models on disk. Serving lives on Home and in the
+System is the host overview: Memory, GPU and CPU charts, a **Model storage**
+panel and a facts strip (chip, memory, macOS, AX Engine version, models ready
+to serve and memory pressure) with **Copy diagnostics**. Serving lives on Home and in the
 toolbar capsule; downloads stay in Models; authentication, attach and runtime
 metrics stay in API & Logs.
 
-The disk-space ring shows the volume containing the configured model download
-folder, not the size of model files. Used/reserved includes other files and APFS
-allocations. Imported models and caches may be on other volumes. A metadata helper
+Model storage shows the volume containing the configured model download
+folder: model bytes from the library index, other used space in gray and the
+free space, plus the Hugging Face cache's model bytes. Used space includes
+other files and APFS allocations. Imported models and caches may be on other volumes. A metadata helper
 reads capacity with a three-second deadline, once when System becomes active
 and every minute while it stays active. Missing volumes and broken links remain
 unavailable. No weights are read or directories sized for this chart. A local
 privacy manifest declares the disk-capacity API's display-only usage.
 
-The inventory chart separates models ready to serve (complete weight files), incomplete/metadata-only
-folders and folders not yet checked in the current scan. These are discovered
+The facts strip counts models ready to serve (complete weight files); its
+tooltip adds incomplete/metadata-only folders and folders not yet checked in
+the current scan. These are discovered
 folders, not a count of models verified to run. One cached snapshot per repository
 is included. Partial and ongoing scans are labeled. Refresh updates storage and
 inventory without starting a model or downloading anything.
@@ -359,14 +377,13 @@ inference performance. OS memory pressure remains unknown until a public system
 event arrives. Missing, stale and interrupted samples leave gaps instead of zeros.
 
 RAM shows estimated GB used with the percentage and total memory alongside it.
-Select **1 min, 5 min, 15 min, 30 min, 1 hour, or 4 hours** from the System
-range menu; changing the range does not change sampling or discard history.
+Select **5m, 1h or 4h** from the System range control; changing the range does not change sampling or discard history.
 History retains at most 6,000 samples within four hours. Each plot renders at
 most 600 original samples, preserving first/last and low/high values per time
 bucket and keeping gaps between disconnected segments. Hover inspection uses
 the original history. A newly opened app shows only the history collected so far. Each trend has a fixed 0–100% scale. Hover
 over a plot to inspect an actual sample and its timestamp; empty intervals stay
-unavailable. Source explanations are under **How these measurements work** on System. The
+unavailable. Source explanations are under **How these numbers are measured** on System. The
 native Swift Charts plot uses SwiftUI's Metal-backed offscreen composition, while
 labels and controls remain native. This is a rendering choice, not a measured
 performance claim. Chart appearance adapts to light/dark mode, increased contrast
@@ -388,11 +405,11 @@ checked. Partial scans retain results and offer Retry instead of claiming an
 empty library. A complete scan removes entries no longer found. Slow/unavailable
 network storage may require reconnecting the volume before retrying.
 
-Model rows show a compact name, source and download status, with full paths and
-revision details behind a disclosure. Complete files do not establish runtime
+Model rows show a compact name, source, format, size and status; full paths and
+revision details are in the inspector. Complete files do not establish runtime
 compatibility, and absence from the runtime catalog does not mean unsupported.
-Library filters distinguish all folders, catalog matches and other folders without
-claiming compatibility. Search offers a clear recovery action when nothing matches.
+The filter field matches folder and repository names without claiming
+compatibility. Search offers a clear recovery action when nothing matches.
 The app-owned running model is labeled explicitly. Catalog links an active
 download to Downloads.
 The app performs compatibility validation when the operator explicitly starts a

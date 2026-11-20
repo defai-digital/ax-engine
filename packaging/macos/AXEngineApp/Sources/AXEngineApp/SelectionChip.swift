@@ -10,16 +10,14 @@ struct SelectionChip: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                if selected { Image(systemName: "checkmark.circle.fill") }
-                Text(title)
-            }
-            .font(.callout.weight(selected ? .semibold : .regular))
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .foregroundStyle(selected ? Brand.accent : Color.primary)
-            .background(selected ? Brand.accent.opacity(0.14) : Color.secondary.opacity(0.08), in: Capsule())
-            .overlay(Capsule().strokeBorder(selected ? Brand.accent.opacity(0.5) : Color.clear))
-            .contentShape(Capsule())
+            Text(title)
+                .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+                .padding(.horizontal, 13).padding(.vertical, 5.5)
+                .foregroundStyle(selected ? Brand.text1 : Brand.text2)
+                .background(selected ? Brand.inset : Brand.control, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(selected ? Brand.accent.opacity(0.55) : .clear))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)

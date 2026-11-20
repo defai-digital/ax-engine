@@ -6,6 +6,16 @@ import Foundation
 public enum LogFilter {
     public static let problemMarkers = ["error", "warn", "panic", "fatal", "failed", "traceback", "exception"]
 
+    public enum Level: Sendable, Equatable { case error, warning, info }
+
+    /// Severity for colouring a line: errors and panics, then warnings.
+    public static func level(_ line: Substring) -> Level {
+        let lower = line.lowercased()
+        if ["error", "panic", "fatal", "failed", "traceback", "exception"].contains(where: { lower.contains($0) }) { return .error }
+        if lower.contains("warn") { return .warning }
+        return .info
+    }
+
     public static func isProblem(_ line: Substring) -> Bool {
         let lower = line.lowercased()
         return problemMarkers.contains { lower.contains($0) }

@@ -6,6 +6,16 @@ import AXEngineAppCore
 enum Page: String, CaseIterable, Identifiable {
     case home = "Home", chat = "Playground", models = "Models", api = "API & Logs", system = "System"
     var id: String { rawValue }
+    static var launchPage: Page? {
+        switch UserDefaults.standard.string(forKey: "AXOpenPage") {
+        case "home": .home
+        case "chat": .chat
+        case "models": .models
+        case "api": .api
+        case "system": .system
+        default: nil
+        }
+    }
     var icon: String {
         switch self {
         case .home: "house"
@@ -39,7 +49,7 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView {
             Sidebar(model: model, runtime: runtime, models: models)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 236, max: 290)
         } detail: {
             Group {
                 switch model.page ?? .home {
@@ -53,28 +63,40 @@ struct MainView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(Brand.canvas)
             .navigationTitle((model.page ?? .home).rawValue)
             .toolbar {
-                ToolbarItem(placement: .principal) {
+                ToolbarItem(placement: .primaryAction) {
                     ServerCapsule(model: model, runtime: runtime, models: models)
                 }
-                ToolbarItemGroup(placement: .primaryAction) {
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .primaryAction) {
+                    PaletteField { model.showsPalette = true }
+                }
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .primaryAction) {
                     DownloadsToolbarButton(model: model, models: models)
-                    Button { model.showsPalette = true } label: { Label("Command Palette", systemImage: "command") }
-                        .help("Command palette (⌘K)")
-                    if model.page == .chat {
-                        Button { model.showsTelemetry.toggle() } label: { Label("Telemetry", systemImage: "sidebar.trailing") }
-                            .help(model.showsTelemetry ? "Hide telemetry (⌥⌘I)" : "Show telemetry (⌥⌘I)")
+                }
+                .sharedBackgroundVisibility(.hidden)
+                if model.page == .chat {
+                    ToolbarItem(placement: .primaryAction) {
+                        ToolbarCircleButton(systemImage: "sidebar.trailing", active: model.showsTelemetry,
+                                            help: model.showsTelemetry ? "Hide telemetry (⌥⌘I)" : "Show telemetry (⌥⌘I)") {
+                            model.showsTelemetry.toggle()
+                        }
                     }
+                    .sharedBackgroundVisibility(.hidden)
                 }
             }
+            .toolbarBackground(Brand.canvas, for: .windowToolbar)
         }
         .task {
             if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) }
             model.offerOnboardingIfNeeded()
         }
-        .onChange(of: models.scanning) { _, scanning in if !scanning { model.offerOnboardingIfNeeded() } }
+        .onChange(of: models.scanning) { _, scanning in if !scanning { model.offerOnboardingIfNeeded(); model.preselectModel() } }
+        .onChange(of: model.servableModels.map(\.path)) { _, _ in model.preselectModel() }
+        .onAppear { model.preselectModel() }
         .onChange(of: model.settingsRequests) { _, _ in openSettings() }
         .sheet(isPresented: $model.showsOnboarding, onDismiss: { model.onboardingCompleted = true }) {
             OnboardingView(model: model, models: models, runtime: runtime) {
@@ -107,70 +129,126 @@ struct MainView: View {
     }
 }
 
-/// Edge-to-edge sidebar: pages with colored tiles, then pinned models that
-/// serve in one click, then a compact host line.
+/// Edge-to-edge sidebar from the boards: brand header, pages with colored
+/// tiles and their ⌘ shortcuts, pinned models that serve in one click, and
+/// Settings at the foot.
 private struct Sidebar: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var models: ModelStore
+    @Environment(\.openSettings) private var openSettings
 
     private var pinned: [LocalModel] {
         model.favoriteModels.compactMap { path in model.servableModels.first { $0.path == path } }
     }
+    /// Without favorites, the most recently served models stand in.
+    private var shortcuts: (title: String, items: [LocalModel]) {
+        if !pinned.isEmpty { return ("Pinned", pinned) }
+        let recent = model.recentModels.compactMap { path in model.servableModels.first { $0.path == path } }
+        return ("Recent", Array((recent.isEmpty ? model.servableModels : recent).prefix(4)))
+    }
 
     var body: some View {
-        List(selection: $model.page) {
-            Section {
-                ForEach(Array(Page.allCases.enumerated()), id: \.element) { index, page in
-                    HStack(spacing: 9) {
-                        Image(systemName: page.icon)
-                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
-                            .frame(width: 22, height: 22)
-                            .background(page.tileColor.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        Text(page.rawValue)
-                        Spacer()
-                        if page == .models, models.activeDownloadCount > 0 {
-                            Text("\(models.activeDownloadCount)").font(.caption2.monospacedDigit())
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(.quaternary, in: Capsule())
-                                .accessibilityLabel("\(models.activeDownloadCount) downloads")
-                        }
+        VStack(alignment: .leading, spacing: 0) {
+            header.padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 18)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(Page.allCases.enumerated()), id: \.element) { index, page in
+                        pageRow(page, shortcut: index + 1)
                     }
-                    .tag(page)
-                    .help("\(page.rawValue) (⌘\(index + 1))")
+                    let list = shortcuts
+                    SectionLabel(list.title).padding(.horizontal, 12).padding(.top, 18).padding(.bottom, 6)
+                    ForEach(list.items) { item in pinnedRow(item) }
+                    Button {
+                        model.modelSearch = ""; model.catalogSearch = ""
+                        model.modelsSection = model.servableModels.isEmpty ? "catalog" : "library"
+                        model.page = .models
+                    } label: {
+                        Text(model.servableModels.isEmpty ? "+ Download a model" : "+ Pin a model").font(.system(size: 12))
+                            .foregroundStyle(Brand.text3).padding(.leading, 30).padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(model.servableModels.isEmpty ? "Find a model in the Catalog" : "Star a model in the model picker or Models to pin it here")
                 }
+                .padding(.horizontal, 10)
             }
-            if !pinned.isEmpty {
-                Section("Pinned") {
-                    ForEach(pinned) { item in
-                        let serving = runtime.owned && runtime.selectedModel == item.path
-                        Button { model.serve(item.path) } label: {
-                            HStack(spacing: 8) {
-                                Circle().fill(serving ? Brand.serve : Color.secondary.opacity(0.35)).frame(width: 7, height: 7)
-                                Text(item.displayName).lineLimit(1).truncationMode(.middle)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(serving || model.attachedToService || model.connecting)
-                        .help(serving ? "Serving" : runtime.owned ? "Select \(item.displayName); Home offers the restart"
-                                                                  : "Serve \(item.displayName)")
-                    }
+            Spacer(minLength: 0)
+            Button { openSettings() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "gearshape").font(.system(size: 13))
+                    Text("Settings").font(.system(size: 13))
+                    Spacer()
+                    Text("⌘,").font(.system(size: 11)).foregroundStyle(Brand.text3)
                 }
+                .foregroundStyle(Brand.text2).padding(.horizontal, 12).padding(.vertical, 8).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).padding(.horizontal, 10).padding(.bottom, 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .background(Brand.sidebar)
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("AX").font(.system(size: 12, weight: .heavy)).foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(LinearGradient(colors: [Brand.accent, Brand.boost], startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("AX Engine").font(.system(size: 14, weight: .bold)).foregroundStyle(Brand.text1)
+                Text(HostInfo.summary).font(.system(size: 11)).foregroundStyle(Brand.text3).lineLimit(1).truncationMode(.tail)
             }
         }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 8) {
-                if let logo = Brand.logo { Image(nsImage: logo).resizable().frame(width: 20, height: 20) }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("AX Engine").font(.caption.weight(.semibold))
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
-                         + " unified memory").font(.caption2).foregroundStyle(.secondary)
-                }
+    }
+
+    private func pageRow(_ page: Page, shortcut: Int) -> some View {
+        let selected = (model.page ?? .home) == page
+        return Button { model.page = page } label: {
+            HStack(spacing: 10) {
+                Image(systemName: page.icon)
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(page.tileColor.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Text(page.rawValue).font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(Brand.text1)
                 Spacer()
+                if page == .models, models.activeDownloadCount > 0 {
+                    Text("\(models.activeDownloadCount)").font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.white).padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Brand.accent, in: Capsule())
+                        .accessibilityLabel("\(models.activeDownloadCount) downloads")
+                }
+                Text("⌘\(shortcut)").font(.system(size: 11)).foregroundStyle(Brand.text3)
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(selected ? Brand.control : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help("\(page.rawValue) (⌘\(shortcut))")
+    }
+
+    private func pinnedRow(_ item: LocalModel) -> some View {
+        let serving = runtime.owned && runtime.selectedModel == item.path
+        return Button { model.serve(item.path) } label: {
+            HStack(spacing: 10) {
+                Circle().strokeBorder(serving ? Brand.serve : Brand.text3, lineWidth: serving ? 0 : 1.2)
+                    .background(Circle().fill(serving ? Brand.serve : .clear))
+                    .frame(width: 7, height: 7).frame(width: 22)
+                Text(item.label.title).font(.system(size: 12.5, weight: serving ? .semibold : .regular))
+                    .foregroundStyle(Brand.text1).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(serving || model.attachedToService || model.connecting)
+        .help(serving ? "Serving" : runtime.owned ? "Select \(item.displayName); Home offers the restart"
+                                                  : "Serve \(item.displayName)")
     }
 }
 
@@ -195,25 +273,25 @@ struct ServerCapsule: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 9) {
             Circle().fill(Brand.tint(kind)).frame(width: 8, height: 8)
-                .overlay { if kind == .transition { ProgressView().controlSize(.mini).scaleEffect(0.6) } }
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                Text(subtitle).font(.caption2.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
-            }
-            .frame(minWidth: 140, maxWidth: 300, alignment: .leading)
+                .overlay { if kind == .transition { ProgressView().controlSize(.mini).scaleEffect(0.55) } }
+            Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.text1)
+                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 220, alignment: .leading)
+            Text(subtitle).font(.system(size: 12).monospacedDigit()).foregroundStyle(Brand.text2).lineLimit(1)
             if let url = runtime.connection?.apiURL.absoluteString {
                 Button {
                     copyText(url); copied = true
                     Task { try? await Task.sleep(for: .seconds(2)); copied = false }
-                } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
-                .buttonStyle(.borderless).help(copied ? "Copied" : "Copy API URL " + url)
+                } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10.5)) }
+                .buttonStyle(.plain).foregroundStyle(Brand.text3).help(copied ? "Copied" : "Copy API URL " + url)
                 .accessibilityLabel("Copy API URL")
             }
             action
         }
-        .padding(.leading, 12).padding(.trailing, 6).padding(.vertical, 3)
+        .padding(.leading, 13).padding(.trailing, 4).padding(.vertical, 4)
+        .background(Brand.panel, in: Capsule())
+        .overlay(Capsule().strokeBorder(Brand.hairlineColor))
         .help(runtime.error ?? ("Server: " + runtime.state))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Server, " + runtime.state + ", " + title)
@@ -224,10 +302,10 @@ struct ServerCapsule: View {
         case .serving, .external:
             let rate = runtime.history.latest(RuntimeController.tokenRateKey)
             let endpoint = runtime.connection.map { "127.0.0.1:" + String($0.baseURL.port ?? model.settings.port) } ?? ""
-            return [kind.label, endpoint, rate.map(TokenRateFormat.short) ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+            return [endpoint, rate.map(TokenRateFormat.short) ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
         case .transition: return runtime.state + "…"
         case .degraded, .failed: return runtime.state
-        case .stopped: return "Stopped · 127.0.0.1:" + String(model.settings.port)
+        case .stopped: return "Not serving"
         }
     }
 
@@ -237,18 +315,77 @@ struct ServerCapsule: View {
 
     @ViewBuilder private var actionButton: some View {
         if runtime.owned {
-            Button(runtime.state == "Starting" ? "Cancel" : "Stop", systemImage: "stop.fill") { model.requestStopServer() }
-                .controlSize(.small).disabled(runtime.state == "Stopping")
-                .help(runtime.state == "Starting" ? "Cancel the launch (⇧⌘.)" : "Stop Server (⇧⌘.)")
+            circle(systemImage: "stop.fill", tint: Brand.danger,
+                   help: runtime.state == "Starting" ? "Cancel the launch (⇧⌘.)" : "Stop Server (⇧⌘.)") { model.requestStopServer() }
+                .disabled(runtime.state == "Stopping")
+                .accessibilityLabel(runtime.state == "Starting" ? "Cancel start" : "Stop server")
         } else if runtime.connection != nil || model.connecting {
-            Button(model.connecting ? "Cancel" : "Disconnect") { model.requestStopServer() }
-                .controlSize(.small).help("Stop using the attached service. It keeps running.")
+            circle(systemImage: "xmark", tint: Brand.boost, help: "Stop using the attached service. It keeps running.") { model.requestStopServer() }
+                .accessibilityLabel(model.connecting ? "Cancel connecting" : "Disconnect")
         } else {
-            Button("Start", systemImage: "play.fill") { model.requestStartOrRestart() }
-                .controlSize(.small).buttonStyle(.borderedProminent)
+            circle(systemImage: "play.fill", tint: Brand.serve, help: model.startBlockReason ?? "Start Server (⇧⌘R)") { model.requestStartOrRestart() }
                 .disabled(!model.canStartServer)
-                .help(model.startBlockReason ?? "Start Server (⇧⌘R)")
+                .accessibilityLabel("Start server")
         }
+    }
+
+    private func circle(systemImage: String, tint: Color, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage).font(.system(size: 8.5, weight: .bold)).foregroundStyle(tint)
+                .frame(width: 22, height: 22).background(tint.opacity(0.18), in: Circle())
+        }
+        .buttonStyle(.plain).help(help)
+    }
+}
+
+/// The toolbar's "Search or run a command ⌘K" field; it opens the palette.
+private struct PaletteField: View {
+    let open: () -> Void
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12))
+                Text("Search or run a command").font(.system(size: 12.5))
+                Spacer(minLength: 12)
+                Text("⌘K").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Brand.text2)
+                    .padding(.horizontal, 5).padding(.vertical, 1.5)
+                    .background(Brand.control, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            }
+            .foregroundStyle(Brand.text3)
+            .padding(.leading, 10).padding(.trailing, 6).padding(.vertical, 5.5)
+            .frame(width: 228)
+            .background(Brand.panel, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Brand.hairlineColor))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Command palette (⌘K)")
+        .accessibilityLabel("Search or run a command")
+    }
+}
+
+/// Round toolbar button (downloads, inspector).
+struct ToolbarCircleButton: View {
+    let systemImage: String
+    var active = false
+    var badge: Double? = nil
+    let help: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle().strokeBorder(active ? Brand.accent : Brand.hairlineColor, lineWidth: 1)
+                    .background(Circle().fill(active ? Brand.accent.opacity(0.16) : Brand.panel))
+                if let badge {
+                    Circle().trim(from: 0, to: max(0.03, min(1, badge))).stroke(Brand.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).padding(1)
+                }
+                Image(systemName: systemImage).font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(active ? Brand.accent : Brand.text2)
+            }
+            .frame(width: 28, height: 28).contentShape(Circle())
+        }
+        .buttonStyle(.plain).help(help).accessibilityLabel(help)
     }
 }
 
@@ -259,38 +396,54 @@ private struct DownloadsToolbarButton: View {
     @State private var open = false
     var body: some View {
         let active = models.downloads.filter(\.isActive)
-        Button { open.toggle() } label: {
-            Label("Downloads", systemImage: active.isEmpty ? "arrow.down.circle" : "arrow.down.circle.fill")
-        }
-        .help(active.isEmpty ? "Downloads" : "\(active.count) downloading")
+        ToolbarCircleButton(systemImage: "arrow.down", active: !active.isEmpty,
+                            badge: active.first(where: { $0.state == "Downloading" })?.fraction,
+                            help: active.isEmpty ? "Downloads" : "\(active.count) downloading") { open.toggle() }
         .popover(isPresented: $open, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Downloads").font(.headline)
-                if models.downloads.isEmpty {
-                    Text("Nothing downloading. Find models in the Catalog.").font(.callout).foregroundStyle(.secondary)
-                } else {
-                    ForEach(models.downloads.prefix(6)) { item in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(item.model.repoId).font(.callout).lineLimit(1).truncationMode(.middle)
-                                Spacer()
-                                Text(item.state).font(.caption).foregroundStyle(.secondary)
-                            }
-                            if item.isActive {
-                                if let fraction = item.fraction { ProgressView(value: fraction) } else { ProgressView().progressViewStyle(.linear) }
-                            }
-                        }
-                    }
-                }
-                Divider()
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Button("Open Catalog") { open = false; model.catalogSearch = ""; model.modelsSection = "catalog"; model.page = .models }
+                    Text("Downloads").font(Brand.Font.cardTitle)
                     Spacer()
                     Button("Show All") { open = false; model.modelsSection = "transfers"; model.page = .models }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.axLink)
                 }
+                if models.downloads.isEmpty {
+                    Text("Nothing downloading. Find models in the Catalog.").font(Brand.Font.body).foregroundStyle(Brand.text2)
+                } else {
+                    ForEach(models.downloads.prefix(6)) { item in row(item) }
+                }
+                Divider()
+                Button("Open Catalog", systemImage: "books.vertical") {
+                    open = false; model.catalogSearch = ""; model.modelsSection = "catalog"; model.page = .models
+                }
+                .buttonStyle(.ax(.secondary))
             }
-            .padding(16).frame(width: 340)
+            .padding(18).frame(width: 360)
+        }
+    }
+
+    @ViewBuilder private func row(_ item: DownloadItem) -> some View {
+        let label = ModelLabel(repositoryName: item.model.repoId.components(separatedBy: "/").last ?? item.model.repoId)
+        let failed = item.state == "Failed"
+        if item.state == "Ready" {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.serve)
+                Text(label.text + " finished · verified").font(.system(size: 12)).foregroundStyle(Brand.text2).lineLimit(1)
+                Spacer()
+                Button("Serve") { open = false; model.serve(item.destination) }.buttonStyle(.axLink)
+                    .disabled(!models.canSelectInGUI(item.destination) || model.attachedToService || model.connecting)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(label.text).font(.system(size: 12.5, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                if item.isActive || failed {
+                    StackedBar(segments: [.init(id: "done", value: item.fraction ?? 0.02,
+                                                color: failed ? Brand.danger : Brand.accent)], total: 1, height: 5)
+                }
+                Text(failed ? item.detail : item.state == "Queued" ? "Queued · starts after the current download"
+                     : [item.phaseTitle, item.progressSummary].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 11)).foregroundStyle(failed ? Brand.danger : Brand.text3).lineLimit(1).truncationMode(.middle)
+            }
         }
     }
 }

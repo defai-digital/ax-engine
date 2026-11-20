@@ -25,7 +25,7 @@ struct Card<Content: View>: View {
     init(
         _ title: String? = nil,
         subtitle: String? = nil,
-        padding: CGFloat = 16,
+        padding: CGFloat = 20,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
@@ -38,7 +38,7 @@ struct Card<Content: View>: View {
     init<Trailing: View>(
         _ title: String,
         subtitle: String? = nil,
-        padding: CGFloat = 16,
+        padding: CGFloat = 20,
         @ViewBuilder trailing: () -> Trailing,
         @ViewBuilder content: () -> Content
     ) {
@@ -50,44 +50,41 @@ struct Card<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             if title != nil || subtitle != nil {
                 HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 3) {
                         if let title {
-                            Text(title)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
+                            Text(title).font(Brand.Font.cardTitle).foregroundStyle(Brand.text1)
                         }
                         if let subtitle {
-                            Text(subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(subtitle).font(Brand.Font.caption).foregroundStyle(Brand.text3)
                         }
                     }
                     Spacer(minLength: 8)
-                    if let trailing {
-                        trailing
-                    }
+                    if let trailing { trailing }
                 }
             }
             content
         }
         .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: Brand.Radii.l, style: .continuous)
-                .fill(Brand.cardSurface)
+        .panelSurface()
+    }
+}
+
+extension View {
+    /// The board's panel: panel fill, 1 pt hairline, 14 pt continuous corners.
+    func panelSurface(radius: CGFloat = Brand.Radii.l) -> some View {
+        background {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(Brand.panel)
                 .overlay {
-                    RoundedRectangle(cornerRadius: Brand.Radii.l, style: .continuous)
-                        .strokeBorder(Brand.separator, lineWidth: Brand.hairline)
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Brand.hairlineColor, lineWidth: Brand.hairline)
                 }
-                .shadow(
-                    color: Brand.Elevation.low.color,
-                    radius: Brand.Elevation.low.radius,
-                    x: Brand.Elevation.low.x,
-                    y: Brand.Elevation.low.y
-                )
+                .shadow(color: Brand.Elevation.low.color, radius: Brand.Elevation.low.radius,
+                        x: Brand.Elevation.low.x, y: Brand.Elevation.low.y)
         }
     }
 }

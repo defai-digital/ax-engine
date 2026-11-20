@@ -11,6 +11,8 @@ struct CommandPalette: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var highlighted: String?
+    /// Bumped by arrow keys only; hover must not scroll the row under the pointer.
+    @State private var keyboardMoves = 0
     @FocusState private var focused: Bool
 
     private var entries: [PaletteEntry] {
@@ -39,43 +41,93 @@ struct CommandPalette: View {
 
     var body: some View {
         let visible = PaletteEntry.filter(entries, query: query)
+        let current = highlighted ?? visible.first?.id
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").font(.system(size: 15)).foregroundStyle(Brand.text3)
                 TextField("Search pages, models and actions", text: $query)
-                    .textFieldStyle(.plain).font(.title3).focused($focused)
-                    .onSubmit { if let id = highlighted ?? visible.first?.id { run(id) } }
+                    .textFieldStyle(.plain).font(.system(size: 16, weight: .medium)).focused($focused)
+                    .onSubmit { if let id = current { run(id) } }
                     .onKeyPress(.downArrow) { move(1, in: visible); return .handled }
                     .onKeyPress(.upArrow) { move(-1, in: visible); return .handled }
-                Text("esc").font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text("esc").font(.system(size: 11)).foregroundStyle(Brand.text3)
             }
-            .padding(14)
-            Divider()
+            .padding(.horizontal, 18).padding(.vertical, 15)
+            Divider().overlay(Brand.hairlineColor)
             ScrollViewReader { proxy in
-                List {
-                    ForEach(sections(visible), id: \.self) { section in
-                        Section(section) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(sections(visible), id: \.self) { section in
+                            SectionLabel(section).padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
                             ForEach(visible.filter { $0.section == section }) { entry in
-                                Button { run(entry.id) } label: {
-                                    Text(entry.title).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.vertical, 3).padding(.horizontal, 6)
-                                .background((highlighted ?? visible.first?.id) == entry.id ? Brand.accent.opacity(0.16) : .clear,
-                                            in: RoundedRectangle(cornerRadius: 6))
-                                .id(entry.id)
+                                row(entry, highlighted: current == entry.id).id(entry.id)
                             }
                         }
+                        if visible.isEmpty {
+                            Text("No matches").foregroundStyle(Brand.text3).padding(20)
+                        }
                     }
-                    if visible.isEmpty { Text("No matches").foregroundStyle(.secondary) }
+                    .padding(10)
                 }
-                .listStyle(.plain)
-                .onChange(of: highlighted) { _, id in if let id { proxy.scrollTo(id) } }
+                .onChange(of: keyboardMoves) { _, _ in if let id = highlighted { proxy.scrollTo(id) } }
             }
+            Divider().overlay(Brand.hairlineColor)
+            Text("↑↓ to move · ↩ to run · ⌘K anywhere").font(.system(size: 11)).foregroundStyle(Brand.text3)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 9)
         }
-        .frame(width: 520, height: 400)
+        .frame(width: 600, height: 440)
+        .background(Brand.panel)
         .onAppear { focused = true }
         .onChange(of: query) { _, _ in highlighted = nil }
+    }
+
+    private func row(_ entry: PaletteEntry, highlighted: Bool) -> some View {
+        Button { run(entry.id) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon(entry.id)).font(.system(size: 12, weight: .medium)).frame(width: 18)
+                    .foregroundStyle(highlighted ? .white : Brand.text2)
+                Text(entry.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    .foregroundStyle(highlighted ? .white : Brand.text1)
+                Spacer()
+                if let hint = hint(entry.id) {
+                    Text(hint).font(.system(size: 11.5)).monospacedDigit().foregroundStyle(highlighted ? .white.opacity(0.85) : Brand.text3)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(highlighted ? Brand.accent : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { if $0 { self.highlighted = entry.id } }
+    }
+
+    private func icon(_ id: String) -> String {
+        if id.hasPrefix("page:"), let page = Page(rawValue: String(id.dropFirst(5))) { return page.icon }
+        if id.hasPrefix("serve:") { return "play.fill" }
+        switch id {
+        case "settings": return "gearshape"
+        case "restart": return "arrow.clockwise"
+        case "start": return "play.fill"
+        case "stop": return "stop.fill"
+        case "copy-url": return "doc.on.doc"
+        case "catalog": return "arrow.down.circle"
+        default: return "circle"
+        }
+    }
+
+    private func hint(_ id: String) -> String? {
+        if id.hasPrefix("page:"), let page = Page(rawValue: String(id.dropFirst(5))), let index = Page.allCases.firstIndex(of: page) {
+            return "⌘\(index + 1)"
+        }
+        if id.hasPrefix("serve:") {
+            return model.servableModels.first { "serve:" + $0.path == id }?.sizeBytes.map(TransferFormat.bytes)
+        }
+        switch id {
+        case "settings": return "⌘,"
+        case "restart", "start": return "⇧⌘R"
+        case "stop": return "⇧⌘."
+        default: return nil
+        }
     }
 
     private func sections(_ visible: [PaletteEntry]) -> [String] {
@@ -87,6 +139,7 @@ struct CommandPalette: View {
         guard !visible.isEmpty else { return }
         let current = visible.firstIndex { $0.id == (highlighted ?? visible.first?.id) } ?? 0
         highlighted = visible[max(0, min(visible.count - 1, current + step))].id
+        keyboardMoves += 1
     }
 
     private func run(_ id: String) {

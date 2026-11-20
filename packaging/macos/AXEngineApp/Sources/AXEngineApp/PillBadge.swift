@@ -19,24 +19,15 @@ struct PillBadge: View {
     var emphasized: Bool = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.caption2)
+                Image(systemName: systemImage).font(.system(size: 9, weight: .bold))
             }
-            Text(text)
-                .font(.caption.weight(.medium))
+            Text(text).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
         }
-        .foregroundStyle(emphasized ? tint : .primary)
-        .padding(.horizontal, 8)
+        .foregroundStyle(emphasized ? tint : Brand.text2)
+        .padding(.horizontal, 9)
         .padding(.vertical, 4)
-        .background {
-            Capsule(style: .continuous)
-                .fill(tint.opacity(emphasized ? 0.18 : 0.10))
-                .overlay {
-                    Capsule(style: .continuous)
-                        .strokeBorder(tint.opacity(0.25), lineWidth: Brand.hairline)
-                }
-        }
+        .background(Capsule(style: .continuous).fill(emphasized ? tint.opacity(0.15) : Brand.control))
     }
 }

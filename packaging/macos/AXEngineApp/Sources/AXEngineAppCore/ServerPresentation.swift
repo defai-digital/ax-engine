@@ -53,18 +53,40 @@ public struct CounterRate: Sendable {
 /// never contain a key: when one is required they reference an environment
 /// variable the user fills in.
 public enum ClientSnippet: String, CaseIterable, Identifiable, Sendable {
-    case curl, python, environment
+    case claudeCode, python, typescript, curl, environment
     public var id: String { rawValue }
     public var title: String {
         switch self {
+        case .claudeCode: "Claude Code"
+        case .python: "Python"
+        case .typescript: "TypeScript"
         case .curl: "curl"
-        case .python: "Python (OpenAI SDK)"
-        case .environment: "Environment variables"
+        case .environment: "Env vars"
         }
+    }
+    /// The Anthropic-compatible root: the OpenAI URL without its `/v1`.
+    public static func anthropicBase(_ apiURL: String) -> String {
+        apiURL.hasSuffix("/v1") ? String(apiURL.dropLast(3)) : apiURL
     }
     public func text(apiURL: String, model: String, requiresKey: Bool) -> String {
         let id = model.isEmpty ? "default" : model
         switch self {
+        case .claudeCode:
+            return "# Point Claude Code at the local AX Engine server\n"
+                + "export ANTHROPIC_BASE_URL=\(Self.anthropicBase(apiURL))\n"
+                + "export ANTHROPIC_MODEL=\(id)\n"
+                + (requiresKey ? "export ANTHROPIC_AUTH_TOKEN=$AX_ENGINE_API_KEY\n"
+                               : "export ANTHROPIC_AUTH_TOKEN=local   # any value while the key is off\n")
+                + "claude"
+        case .typescript:
+            return "import OpenAI from \"openai\";\n\n"
+                + "const client = new OpenAI({ baseURL: \"\(apiURL)\", apiKey: "
+                + (requiresKey ? "process.env.AX_ENGINE_API_KEY });\n" : "\"not-needed\" });\n")
+                + "const reply = await client.chat.completions.create({\n"
+                + "  model: \"\(id)\",\n"
+                + "  messages: [{ role: \"user\", content: \"Hello\" }],\n"
+                + "});\n"
+                + "console.log(reply.choices[0].message.content);"
         case .curl:
             return "curl \(apiURL)/chat/completions \\\n"
                 + "  -H 'Content-Type: application/json' \\\n"

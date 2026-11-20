@@ -16,6 +16,8 @@ struct ModelsPage: View {
     @State private var redownloadTarget: CatalogModel?
     @State private var cancelTarget: DownloadItem?
     @State private var largerExpanded = false
+    @State private var inspected: String?
+    @State private var libraryWidth: CGFloat = 1000
 
     private static let spaceMargin: Int64 = 64 * 1024 * 1024
 
@@ -29,21 +31,29 @@ struct ModelsPage: View {
                         Button("Dismiss") { models.dismissError() }
                     }
                 }
-                Picker("Models view", selection: $model.modelsSection) {
-                    Text("Your Models").tag("library")
-                    Text("Catalog").tag("catalog")
-                    Text(models.activeDownloadCount > 0 ? "Downloads (\(models.activeDownloadCount))" : "Downloads").tag("transfers")
-                }.pickerStyle(.segmented).frame(maxWidth: 460)
-                if model.modelsSection != "transfers" {
-                    HStack {
-                        TextField(model.modelsSection == "catalog" ? "Search catalog" : "Search your models",
-                                  text: model.modelsSection == "catalog" ? $model.catalogSearch : $model.modelSearch)
-                            .textFieldStyle(.roundedBorder).focused($searchFocused)
-                        Button("Refresh", systemImage: "arrow.clockwise") { Task { await models.refresh(settings: model.settings) } }
+                HStack(spacing: 12) {
+                    AXSegmented(options: [("library", "Your Models \(models.productLibrary.count)"),
+                                          ("catalog", models.catalog.isEmpty ? "Catalog" : "Catalog \(models.catalog.count)"),
+                                          ("transfers", models.activeDownloadCount > 0 ? "Downloads \(models.activeDownloadCount)" : "Downloads")],
+                                selection: $model.modelsSection)
+                    Spacer()
+                    if model.modelsSection != "transfers" {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Brand.text3)
+                            TextField(model.modelsSection == "catalog" ? "Search catalog" : "Filter your models",
+                                      text: model.modelsSection == "catalog" ? $model.catalogSearch : $model.modelSearch)
+                                .textFieldStyle(.plain).font(.system(size: 12.5)).focused($searchFocused)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 6).frame(maxWidth: 260)
+                        .background(Brand.panel, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Brand.hairlineColor))
+                        Button { Task { await models.refresh(settings: model.settings) } } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.ax(.secondary)).help("Refresh the library and catalog")
+                            .accessibilityLabel("Refresh")
                             .disabled(models.refreshing || models.scanning)
                     }
                 }
-            }.padding(26)
+            }.padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 14)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     switch model.modelsSection {
@@ -51,9 +61,10 @@ struct ModelsPage: View {
                     case "transfers": transfers
                     default: library(filter: model.modelSearch)
                     }
-                }.padding([.horizontal, .bottom], 26)
+                }.padding([.horizontal, .bottom], 24)
             }
         }
+        .background(Brand.canvas)
         .task { if !models.scanning && !models.discoveryAttempted { await models.scan(settings: model.settings) } }
         .task(id: model.modelsSection) {
             if model.modelsSection == "catalog" { await storage.refresh(path: model.settings.modelsDirectory) }
@@ -172,9 +183,9 @@ struct ModelsPage: View {
             : model.models.canSelectInGUI(path) ? nil : "The library scan has not checked this model yet."
         return Group {
             if prominent {
-                Button(busy ? "Select on Home" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.borderedProminent)
+                Button(busy ? "Select" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.ax(.serve))
             } else {
-                Button(busy ? "Select on Home" : "Serve", systemImage: "play.fill") { model.serve(path) }
+                Button(busy ? "Select on Home" : "Serve", systemImage: "play.fill") { model.serve(path) }.buttonStyle(.ax(.secondary))
             }
         }
         .disabled(reason != nil)
@@ -185,103 +196,150 @@ struct ModelsPage: View {
     // MARK: - Local Library
 
     private func library(filter: String) -> some View {
-        Card("Your models", subtitle: "\(models.productLibrary.count) on this Mac · \(model.servableModels.count) ready to serve") {
-            Text("Public AutomatosX models downloaded on this Mac. Other models can be used through the AX Engine CLI.")
-                .font(.caption).foregroundStyle(.secondary)
-            if models.scanning {
+        let matches = models.productLibrary.filter {
+            filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter)
+        }.sorted { left, right in
+            let l = left.ready && models.checkedPaths.contains(left.path)
+            let r = right.ready && models.checkedPaths.contains(right.path)
+            return l == r ? left.path < right.path : l && !r
+        }
+        let selected = matches.first { $0.path == inspected } ?? matches.first
+        // Width decides the layout: titles are long, so ideal-size fitting
+        // would always fall back to the stacked form.
+        return libraryLayout(matches: matches, selected: selected, filter: filter,
+                             side: libraryWidth >= 700, format: libraryWidth >= 960 || libraryWidth < 700)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { libraryWidth = $0 }
+    }
+
+    @ViewBuilder private func libraryLayout(matches: [LocalModel], selected: LocalModel?, filter: String, side: Bool, format: Bool) -> some View {
+        let layout = side ? AnyLayout(HStackLayout(alignment: .top, spacing: 16)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+        layout {
+            VStack(alignment: .leading, spacing: 0) {
+                if models.scanning {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Checking folders · \(models.checkedPaths.count) found").font(Brand.Font.caption).foregroundStyle(Brand.text2)
+                        Spacer()
+                        Button("Stop scan") { models.cancelScan() }.buttonStyle(.axLink)
+                    }.padding(.horizontal, 20).padding(.vertical, 10)
+                }
+                if let issue = models.libraryIssue {
+                    VStack(alignment: .leading) {
+                        ErrorBanner(text: issue)
+                        Button("Retry scan") { Task { await models.scan(settings: model.settings) } }.disabled(models.scanning)
+                    }.padding(16)
+                }
+                HStack(spacing: 0) {
+                    Text("Model").frame(maxWidth: .infinity, alignment: .leading)
+                    if format { Text("Format").frame(width: 120, alignment: .leading) }
+                    Text("Size").frame(width: 80, alignment: .leading)
+                    Text("Status").frame(width: 116, alignment: .leading)
+                }
+                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.text3)
+                .padding(.horizontal, 20).padding(.vertical, 12)
+                Divider().overlay(Brand.hairlineColor)
+                if models.productLibrary.isEmpty && !models.scanning && models.libraryIssue == nil {
+                    ContentUnavailableView {
+                        Label("No models yet", systemImage: "square.stack.3d.up")
+                    } description: {
+                        Text("Download a public AutomatosX model from the Catalog. No account or token needed.")
+                    } actions: {
+                        Button("Browse Catalog") { model.catalogSearch = ""; model.modelsSection = "catalog" }.buttonStyle(.axPrimary)
+                    }.padding(.vertical, 30)
+                }
+                if matches.isEmpty && !filter.isEmpty {
+                    HStack {
+                        Text("No folders match this filter.").foregroundStyle(Brand.text3)
+                        Button("Clear search") { model.modelSearch = "" }.buttonStyle(.axLink)
+                    }.padding(20)
+                }
+                ForEach(matches) { item in
+                    libraryRow(item, selected: item.path == selected?.path, format: format)
+                }
+                Spacer(minLength: 0)
                 HStack {
-                    ProgressView("Checking folders · \(models.checkedPaths.count) found")
+                    Text(libraryFooter).font(.system(size: 11.5)).foregroundStyle(Brand.text3)
                     Spacer()
-                    Button("Stop scan") { models.cancelScan() }
+                    if !models.partialDownloads.isEmpty {
+                        Button("\(models.partialDownloads.count) interrupted download\(models.partialDownloads.count == 1 ? "" : "s") on disk") {
+                            model.modelsSection = "transfers"
+                        }.buttonStyle(.axLink)
+                    }
                 }
+                .padding(.horizontal, 20).padding(.vertical, 14)
             }
-            if let issue = models.libraryIssue {
-                ErrorBanner(text: issue)
-                Button("Retry scan") { Task { await models.scan(settings: model.settings) } }.disabled(models.scanning)
-            }
-            if let date = models.lastScanAt {
-                Text("Last complete scan: " + date.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
-            }
-            if models.productLibrary.isEmpty && !models.scanning && models.libraryIssue == nil {
-                ContentUnavailableView {
-                    Label("No models yet", systemImage: "square.stack.3d.up")
-                } description: {
-                    Text("Download a public AutomatosX model from the Catalog. No account or token needed.")
-                } actions: {
-                    Button("Browse Catalog") { model.catalogSearch = ""; model.modelsSection = "catalog" }.buttonStyle(.borderedProminent)
-                }
-            }
-            let matches = models.productLibrary.filter {
-                filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter)
-            }.sorted { left, right in
-                let l = left.ready && models.checkedPaths.contains(left.path)
-                let r = right.ready && models.checkedPaths.contains(right.path)
-                return l == r ? left.path < right.path : l && !r
-            }
-            if matches.isEmpty && !filter.isEmpty {
-                Text("No folders match this filter.").foregroundStyle(.secondary)
-                Button("Clear search") { model.modelSearch = "" }
-            }
-            ForEach(matches) { item in
-                libraryRow(item)
-                Divider()
-            }
-            if !models.partialDownloads.isEmpty {
-                HStack {
-                    Label("\(models.partialDownloads.count) interrupted download\(models.partialDownloads.count == 1 ? "" : "s") on disk", systemImage: "arrow.down.circle.dotted")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("Review in Downloads") { model.modelsSection = "transfers" }.buttonStyle(.link)
-                }
+            .frame(maxWidth: .infinity, minHeight: 420, alignment: .top)
+            .panelSurface()
+            if let selected {
+                libraryInspector(selected).frame(width: side ? (format ? 300 : 270) : nil)
             }
         }
     }
 
-    private func libraryRow(_ item: LocalModel) -> some View {
+    private var libraryFooter: String {
+        let total = models.productLibrary.compactMap(\.sizeBytes).reduce(0, +)
+        return "\(models.productLibrary.count) model\(models.productLibrary.count == 1 ? "" : "s") · \(model.servableModels.count) ready to serve"
+            + (total > 0 ? " · " + bytes(total) : "")
+            + (models.lastScanAt.map { " · checked " + $0.formatted(date: .omitted, time: .shortened) } ?? "")
+    }
+
+    private func libraryStatus(_ item: LocalModel) -> (String, Color) {
         let running = runtime.ready && runtime.owned && runtime.selectedModel == item.path
         let checked = models.checkedPaths.contains(item.path)
+        if running { return ("Serving", Brand.serve) }
+        if runtime.owned && runtime.selectedModel == item.path { return (runtime.state, Brand.accent) }
+        if !checked { return ("Not checked", Brand.text3) }
+        return item.ready ? (model.selectedPath == item.path ? "Selected" : "Ready", Brand.text2) : ("Incomplete", Brand.warn)
+    }
+
+    private func libraryRow(_ item: LocalModel, selected: Bool, format: Bool) -> some View {
+        let checked = models.checkedPaths.contains(item.path)
+        let status = libraryStatus(item)
+        let running = status.0 == "Serving"
         let state = removalState(item)
         let reason = RemovalGate.reason(state)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        ModelTitle(label: item.label, font: .headline).help(item.name)
-                        if running { PillBadge(text: "Serving", systemImage: "circle.fill", tint: Brand.serve, emphasized: true) }
-                        else if model.selectedPath == item.path { PillBadge(text: "Selected", systemImage: "checkmark") }
+        return HStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ModelAvatar(name: item.label.title)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(item.label.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Brand.text1).lineLimit(1)
+                        if model.favoriteModels.contains(item.path) {
+                            Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Brand.accent)
+                        }
                     }
-                    Text(item.source + (item.sizeBytes.map { " · " + bytes($0) } ?? "")).font(.caption).foregroundStyle(.secondary)
-                    Label(checked ? (item.ready ? "Ready to serve" : "Weights incomplete or metadata only") : "Not checked in this scan",
-                          systemImage: checked ? (item.ready ? "checkmark.circle" : "exclamationmark.triangle") : "questionmark.circle")
-                        .font(.callout).foregroundStyle(checked && !item.ready ? .orange : .secondary)
-                }
-                Spacer()
-                if !running { serveButton(path: item.path, ready: item.ready && checked) }
-                if state.removable {
-                    Button("Remove", systemImage: "trash", role: .destructive) { removeTarget = item }
-                        .disabled(reason != nil)
-                        .help(reason ?? "Delete this downloaded model from disk")
-                        .accessibilityLabel("Remove " + item.displayName)
+                    Text(item.source).font(.system(size: 11.5)).foregroundStyle(Brand.text3).lineLimit(1)
                 }
             }
-            if let reason {
-                Label(reason, systemImage: state.removable ? "clock" : "lock")
-                    .font(.caption).foregroundStyle(.secondary)
+            .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+            if format {
+                Text(item.label.tags.isEmpty ? "—" : item.label.tags.joined(separator: " · "))
+                    .font(.system(size: 12.5)).foregroundStyle(Brand.text2).lineLimit(1).frame(width: 120, alignment: .leading)
             }
-            DisclosureGroup("Location and details") {
-                Text(item.name).font(.callout).textSelection(.enabled)
-                Text(item.path).font(.caption).textSelection(.enabled)
-                HStack {
-                    Button("Copy path", systemImage: "doc.on.doc") { copyText(item.path) }
-                    Button("Show in Finder", systemImage: "folder") { showInFinder(item.path) }
+            Text(item.sizeBytes.map(bytes) ?? "—").font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).frame(width: 80, alignment: .leading)
+            HStack {
+                if selected && !(runtime.owned && runtime.selectedModel == item.path) && item.ready && checked {
+                    serveButton(path: item.path, ready: true, prominent: true).controlSize(.small)
+                } else {
+                    StatusPill(text: status.0, tint: status.1,
+                               systemImage: status.0 == "Incomplete" ? "exclamationmark.triangle.fill" : nil)
                 }
-                Text("File completeness does not establish compatibility. AX Engine validates the model when you start it.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+            .frame(width: 116, alignment: .leading)
         }
-        .padding(.vertical, 8)
+        .padding(.horizontal, 20).padding(.vertical, 11)
+        .background(selected ? Brand.accent.opacity(0.10) : .clear)
         .contentShape(Rectangle())
+        .onTapGesture { inspected = item.path }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(item.label.title + ", " + status.0)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityAction(named: "Inspect") { inspected = item.path }
         .contextMenu {
             Button("Serve") { model.serve(item.path) }.disabled(!item.ready || !checked || running)
+            Button(model.favoriteModels.contains(item.path) ? "Unpin" : "Pin to Sidebar") { model.toggleFavoriteModel(item.path) }
             Button("Show in Finder") { showInFinder(item.path) }
             Button("Copy Path") { copyText(item.path) }
             if state.removable {
@@ -289,6 +347,80 @@ struct ModelsPage: View {
                 Button("Remove…", role: .destructive) { removeTarget = item }.disabled(reason != nil)
             }
         }
+    }
+
+    private func libraryInspector(_ item: LocalModel) -> some View {
+        let checked = models.checkedPaths.contains(item.path)
+        let status = libraryStatus(item)
+        let state = removalState(item)
+        let reason = RemovalGate.reason(state)
+        let catalogEntry = models.catalog.first { models.installedModel(for: $0)?.path == item.path }
+        return VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(item.label.title).font(.system(size: 17, weight: .bold)).textSelection(.enabled)
+                WrapLayout(spacing: 6) {
+                    StatusPill(text: status.0, tint: status.1)
+                    ForEach(item.label.tags, id: \.self) { Tag($0, tint: $0 == "MTP" ? Brand.boost : nil) }
+                    if let certification = catalogEntry?.certification { Tag(certification.capitalized, tint: Brand.accent) }
+                }
+            }
+            HStack(spacing: 8) {
+                if status.0 != "Serving" { serveButton(path: item.path, ready: item.ready && checked, prominent: true) }
+                Button(model.favoriteModels.contains(item.path) ? "Unpin" : "Pin", systemImage: model.favoriteModels.contains(item.path) ? "star.slash" : "star") {
+                    model.toggleFavoriteModel(item.path)
+                }.buttonStyle(.ax(.secondary))
+                .help("Pinned models appear in the sidebar and serve in one click")
+            }
+            SectionLabel("Size")
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.sizeBytes.map { bytes($0) + " on disk" } ?? "Size unknown").font(.system(size: 13, weight: .semibold))
+                if let size = item.sizeBytes {
+                    StackedBar(segments: [.init(id: "size", value: Double(size), color: Brand.accent)],
+                               total: Double(ProcessInfo.processInfo.physicalMemory), height: 6)
+                    Text("Against " + HostInfo.memory + " unified memory · size comparison only, not a fit guarantee")
+                        .font(.system(size: 11)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            SectionLabel("Details")
+            VStack(spacing: 9) {
+                detail("Repository", item.repositoryName)
+                if let revision = catalogEntry?.revision { detail("Revision", String(revision.prefix(8))) }
+                detail("Source", item.source)
+                detail("Files", checked ? (item.ready ? "Complete" : "Incomplete") : "Not checked")
+                detail("Location", (item.path as NSString).abbreviatingWithTildeInPath)
+            }
+            Text("File completeness does not establish compatibility. AX Engine validates the model when you start it.")
+                .font(.system(size: 11)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
+            Divider().overlay(Brand.hairlineColor)
+            HStack(spacing: 4) {
+                Button("Show in Finder", systemImage: "folder") { showInFinder(item.path) }.buttonStyle(.axLink)
+                Button("Copy Path", systemImage: "doc.on.doc") { copyText(item.path) }.buttonStyle(.axLink)
+            }
+            HStack {
+                Spacer()
+                if state.removable {
+                    Button("Remove…", systemImage: "trash") { removeTarget = item }
+                        .buttonStyle(.ax(.danger)).disabled(reason != nil)
+                        .help(reason ?? "Delete this downloaded model from disk")
+                        .accessibilityLabel("Remove " + item.displayName)
+                }
+            }
+            if let reason {
+                Label(reason, systemImage: state.removable ? "clock" : "lock").font(.system(size: 11)).foregroundStyle(Brand.text3)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panelSurface()
+    }
+
+    private func detail(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).foregroundStyle(Brand.text3)
+            Spacer(minLength: 10)
+            Text(value).fontWeight(.medium).lineLimit(1).truncationMode(.middle).textSelection(.enabled).help(value)
+        }
+        .font(.system(size: 12))
     }
 
     private var partialDownloads: some View {
@@ -376,22 +508,28 @@ struct ModelsPage: View {
                 Text("Download size under this Mac's \(ByteCountFormatter.string(fromByteCount: memoryBytes, countStyle: .memory)) memory")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
             }
-            ForEach(fits) { item in
-                catalogRow(item)
-                Divider()
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
+                ForEach(fits) { item in catalogCard(item) }
             }
             if !larger.isEmpty {
                 DisclosureGroup(isExpanded: $largerExpanded) {
-                    ForEach(larger) { item in
-                        catalogRow(item)
-                        Divider()
-                    }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
+                        ForEach(larger) { item in catalogCard(item) }
+                    }.padding(.top, 10)
                 } label: {
                     Text("Download size over this Mac's memory (\(larger.count))")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
                 }
             }
         }
+    }
+
+    private func catalogCard(_ item: CatalogModel) -> some View {
+        catalogRow(item)
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+            .background(Brand.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Brand.hairlineColor))
     }
 
     private func catalogRow(_ item: CatalogModel) -> some View {
@@ -404,7 +542,10 @@ struct ModelsPage: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    ModelTitle(label: label, font: .headline).help(item.repoId)
+                    HStack(spacing: 8) {
+                        ModelAvatar(name: label.title)
+                        ModelTitle(label: label, font: .system(size: 13.5, weight: .semibold)).help(item.repoId)
+                    }
                     Text(item.alias + " · " + item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack(spacing: 6) {
                         if let size = item.approxSizeBytes { PillBadge(text: "about " + bytes(size), systemImage: "internaldrive") }
@@ -437,7 +578,7 @@ struct ModelsPage: View {
                     }
                 } else {
                     Button("Download", systemImage: "arrow.down") { requestDownload(item) }
-                        .buttonStyle(.borderedProminent).disabled(blocked != nil)
+                        .buttonStyle(.ax(.primary)).disabled(blocked != nil)
                         .help(blocked ?? "Download this public AutomatosX pack")
                 }
             }

@@ -10,7 +10,8 @@ final class ApplicationModel: ObservableObject {
     }
     @Published var settingsSaved = false
     @Published var settingsError: String?
-    @Published var page: Page? = .home
+    /// `-AXOpenPage home|chat|models|api|system` opens a page at launch (QA screenshots).
+    @Published var page: Page? = Page.launchPage ?? .home
     /// Each increment asks the window to open the Settings window; the model
     /// cannot call `openSettings` itself.
     @Published var settingsRequests = 0
@@ -24,7 +25,7 @@ final class ApplicationModel: ObservableObject {
     @Published var catalogSearch = ""
     @Published var modelsSection = "library"
     @Published var searchFocusRequest = 0
-    @Published var dashboardHistoryWindow: Double = 60
+    @Published var dashboardHistoryWindow: Double = ActivityHistoryRange.fiveMinutes.rawValue
     @Published var hostMonitoringEnabled = UserDefaults.standard.bool(forKey: "hostMonitoringEnabled") {
         didSet { UserDefaults.standard.set(hostMonitoringEnabled, forKey: "hostMonitoringEnabled") }
     }
@@ -219,6 +220,18 @@ final class ApplicationModel: ObservableObject {
         if canStartServer { startServer() }
     }
 
+    /// Keep a startable model selected so Start works in one click: the
+    /// running model while the app owns a server, otherwise the most recently
+    /// served, a favorite, or the first downloaded model. An explicit valid
+    /// choice is never replaced.
+    func preselectModel() {
+        guard !models.scanning, selectedPath.isEmpty || !models.canSelectInGUI(selectedPath) else { return }
+        if runtime.owned, models.canSelectInGUI(runtime.selectedModel) { selectedPath = runtime.selectedModel }
+        else if let preferred = ModelPicker.preferred(models: servableModels, favorites: favoriteModels, recent: recentModels) {
+            selectedPath = preferred.path
+        }
+    }
+
     func revertSettings() {
         settingsDraft = settings; settingsError = nil
     }
@@ -283,6 +296,7 @@ struct AXEngineApplication: App {
         } label: {
             MenuBarLabel(runtime: model.runtime)
         }
+        .menuBarExtraStyle(.window)
         Settings {
             SettingsView(model: model)
                 .tint(Brand.accent)
@@ -371,43 +385,119 @@ struct MenuBarLabel: View {
     }
 }
 
-/// Menu-bar menu: state, the model it serves, and one-click lifecycle.
+/// Menu-bar panel (`10-menubar-and-command-palette.svg`): state, the model
+/// it serves, live speed, one-click lifecycle and model switching.
 struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var model: ApplicationModel
     @ObservedObject var runtime: RuntimeController
     private var selected: LocalModel? { model.models.productLibrary.first { $0.path == model.selectedPath } }
     private var running: LocalModel? { model.models.productLibrary.first { $0.path == runtime.selectedModel } }
+    private var kind: ServerStatusKind { .from(state: runtime.state, owned: runtime.owned, ready: runtime.ready) }
 
     var body: some View {
-        Text("Server: " + runtime.state + (runtime.connection.map { " · " + $0.apiURL.absoluteString } ?? ""))
-        if runtime.owned, let running { Text("Serving " + running.displayName) }
-        else if !runtime.owned, runtime.connection == nil { Text(selected.map { "Model: " + $0.displayName } ?? "No model selected") }
-        Divider()
-        if runtime.owned {
-            Button("Restart Server") { model.requestStartOrRestart() }.disabled(!model.canRestartServer)
-            Button(runtime.state == "Starting" ? "Cancel Start" : "Stop Server") { model.requestStopServer() }
-                .disabled(runtime.state == "Stopping")
-        } else if runtime.connection != nil || model.connecting {
-            Button(model.connecting ? "Cancel Connecting" : "Disconnect") { model.requestStopServer() }
-        } else {
-            Button("Start Server") { model.startServer() }.disabled(!model.canStartServer)
-            if !model.servableModels.isEmpty {
-                Menu("Start with…") {
-                    ForEach(model.servableModels) { item in
-                        Button(item.displayName) { model.serve(item.path); openWindow(id: "main") }
-                            .disabled(!model.models.canSelectInGUI(item.path))
+        let now = Date()
+        let rate = runtime.history.latest(RuntimeController.tokenRateKey, now: now)
+        let acceptance = runtime.history.latest("mtpAcceptedPercent", now: now)
+        let shown = runtime.owned ? running : runtime.connection == nil ? selected : nil
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                StatusPill(text: kind == .serving ? "Serving" : kind == .external ? "Attached" : runtime.state, tint: Brand.tint(kind))
+                Spacer()
+                if let url = runtime.connection?.baseURL { Text(url.host.map { host in url.port.map { "\(host):\($0)" } ?? host } ?? "")
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.text3) }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(shown?.label.title ?? runtime.models.first?.id ?? "No model selected").font(.system(size: 16, weight: .bold)).lineLimit(1)
+                Text(([shown?.label.tags.joined(separator: " · ")].compactMap { $0 } + [Format.uptime(since: runtime.connection == nil ? nil : runtime.startedAt).map { "up " + $0 }].compactMap { $0 })
+                        .filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.system(size: 11.5)).foregroundStyle(Brand.text3)
+            }
+            if runtime.connection != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(Format.rate(rate) ?? "–").font(.system(size: 24, weight: .bold)).monospacedDigit()
+                        Text("tok/s").font(.system(size: 16, weight: .medium)).foregroundStyle(Brand.text2)
+                        Spacer()
+                        if let acceptance { Text(String(format: "Draft %.0f%%", acceptance)).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.boost) }
                     }
-                }.disabled(runtime.busy || model.models.scanning || model.models.removing)
+                    Sparkline(points: runtime.history.plotPoints(RuntimeController.tokenRateKey, window: 300, now: now),
+                              start: now.addingTimeInterval(-300), end: now).frame(height: 32)
+                }
+                .padding(12)
+                .background(Brand.inset, in: RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous))
+            }
+            HStack(spacing: 8) {
+                if runtime.owned {
+                    Button(runtime.state == "Starting" ? "Cancel Start" : "Stop Server", systemImage: "stop.fill") { model.requestStopServer() }
+                        .buttonStyle(.ax(.danger)).disabled(runtime.state == "Stopping").frame(maxWidth: .infinity)
+                    Button("Restart", systemImage: "arrow.clockwise") { model.requestStartOrRestart() }
+                        .buttonStyle(.ax(.secondary)).disabled(!model.canRestartServer).frame(maxWidth: .infinity)
+                } else if runtime.connection != nil || model.connecting {
+                    Button(model.connecting ? "Cancel Connecting" : "Disconnect") { model.requestStopServer() }.buttonStyle(.ax(.secondary))
+                } else {
+                    Button("Start Server", systemImage: "play.fill") { model.startServer() }
+                        .buttonStyle(.ax(.serve)).disabled(!model.canStartServer)
+                }
+            }
+            let candidates = model.servableModels.filter { $0.path != runtime.selectedModel }
+            let others = candidates.prefix(6)
+            if !others.isEmpty && !model.attachedToService {
+                SectionLabel(runtime.owned ? "Switch model" : "Serve a model")
+                    .help(runtime.owned ? "Selects the model and restarts the server on it." : "Starts the server on the model.")
+                VStack(spacing: 1) {
+                    ForEach(Array(others)) { item in
+                        Button {
+                            model.serve(item.path)
+                            // serve() never replaces a running server; here the row says Switch.
+                            if runtime.owned { model.requestStartOrRestart() }
+                            openMain()
+                        } label: {
+                            HStack {
+                                Circle().strokeBorder(Brand.text3, lineWidth: 1.2).frame(width: 7, height: 7)
+                                Text(item.label.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                                Spacer()
+                                Text(item.sizeBytes.map(TransferFormat.bytes) ?? "").font(.system(size: 11)).foregroundStyle(Brand.text3)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 6).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(runtime.busy || model.models.scanning || model.models.removing || !model.models.canSelectInGUI(item.path))
+                    }
+                    if candidates.count > others.count {
+                        Button("All \(candidates.count) models…") { model.modelsSection = "library"; model.page = .models; openMain() }
+                            .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Brand.accent)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                    }
+                }
+            }
+            Divider().overlay(Brand.hairlineColor)
+            VStack(spacing: 1) {
+                action("Copy OpenAI base URL", "doc.on.doc", hint: nil) {
+                    if let url = runtime.connection?.apiURL.absoluteString { copyText(url) }
+                }.disabled(runtime.connection == nil)
+                action("Open Playground", "bubble.left.and.bubble.right", hint: "⌘2") { model.page = .chat; openMain() }
+                    .disabled(!runtime.ready)
+                action("Open AX Engine", "house", hint: nil) { openMain() }
+                action("Quit AX Engine", "power", hint: "⌘Q") { NSApp.terminate(nil) }.keyboardShortcut("q")
             }
         }
-        Divider()
-        Button("Copy API URL") { if let url = runtime.connection?.apiURL.absoluteString { copyText(url) } }
-            .disabled(runtime.connection == nil)
-        Button("Open Playground") { model.page = .chat; openWindow(id: "main"); NSApp.activate() }
-            .disabled(!runtime.ready)
-        Button("Open AX Engine") { openWindow(id: "main"); NSApp.activate() }
-        Divider()
-        Button("Quit AX Engine") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        .padding(16)
+        .frame(width: 320)
+    }
+
+    private func openMain() { openWindow(id: "main"); NSApp.activate() }
+
+    private func action(_ title: String, _ icon: String, hint: String?, perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 12)).frame(width: 16).foregroundStyle(Brand.text2)
+                Text(title).font(.system(size: 12.5, weight: .medium))
+                Spacer()
+                if let hint { Text(hint).font(.system(size: 11)).foregroundStyle(Brand.text3) }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 5).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

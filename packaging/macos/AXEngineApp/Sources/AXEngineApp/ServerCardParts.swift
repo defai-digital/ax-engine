@@ -1,45 +1,6 @@
 import SwiftUI
 import AXEngineAppCore
 
-/// Server state, elapsed time and the listening address. Before anything is
-/// listening it says so instead of showing an address clients cannot reach.
-struct ServerStatusRow: View {
-    @ObservedObject var model: ApplicationModel
-    @ObservedObject var runtime: RuntimeController
-    private var transitioning: Bool { ["Starting", "Stopping", "Connecting"].contains(runtime.state) }
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : transitioning ? "clock" : "circle",
-                          tint: Brand.tint(.from(state: runtime.state, owned: runtime.owned, ready: runtime.ready)),
-                          emphasized: runtime.ready || transitioning)
-                if transitioning { ProgressView().controlSize(.small) }
-                if let detail = ServerGate.stateDetail(state: runtime.state, startedAt: runtime.startedAt, now: context.date) {
-                    Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if let connection = runtime.connection {
-                    Text(connection.apiURL.absoluteString).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                } else {
-                    Text(transitioning ? "Not listening yet" : "Not listening").font(.callout).foregroundStyle(.secondary)
-                        .help("Clients connect to http://127.0.0.1:\(String(model.settings.port))/v1 once the server is running.")
-                }
-            }
-            .accessibilityElement(children: .combine)
-        }
-        if runtime.state == "Starting" {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Large models can take a few minutes from a cold start. Cancel Start stops the launch.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let line = RuntimeController.lastDiagnostic(runtime.logs) {
-                    Text(line).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
-                }
-            }
-        }
-    }
-}
-
 /// Copy API URL and, when the server uses one, Copy API key. The same
 /// buttons and wording on every page that shows a connection.
 struct ClientCopyButtons: View {
@@ -80,31 +41,5 @@ struct ClientCopyButtons: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-    }
-}
-
-/// Serving mode and request cap behind a one-line summary. They save at once
-/// and apply at the next start or restart.
-struct ServingOptionsDisclosure: View {
-    @ObservedObject var model: ApplicationModel
-    @ObservedObject var runtime: RuntimeController
-    @State private var expanded = false
-
-    private var summary: String {
-        let settings = model.settings
-        return settings.servingMode.badge + " · up to \(settings.concurrentRequests) requests · "
-            + (settings.requireAPIKey ? "API key required" : "no API key")
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            ServingOptions(model: model, runtime: runtime).padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                Text("Serving options").font(.callout)
-                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-        .accessibilityLabel("Serving options, " + summary)
     }
 }

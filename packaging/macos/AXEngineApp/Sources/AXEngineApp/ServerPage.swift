@@ -14,7 +14,7 @@ struct ServerPage: View {
     let clientClipboard: SensitiveClipboard
     @State private var apiKey = ""
     @State private var connectExpanded = false
-    @State private var outputExpanded = false
+    @State private var followLogs = true
     @State private var diagnosticsNotice = ""
     @State private var logQuery = ""
     @State private var problemsOnly = false
@@ -23,28 +23,156 @@ struct ServerPage: View {
     private var attached: Bool { runtime.connection != nil && !runtime.owned }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 18) {
+        GeometryReader { geometry in
+            PageScroll {
                 if let error = runtime.error { errorCard(error) }
-                if let connection = runtime.connection { ConnectAppsCard(connection: connection, runtime: runtime) }
-                serverCard
+                if geometry.size.width >= 900 {
+                    HStack(alignment: .top, spacing: 16) {
+                        endpointPanel.frame(maxWidth: .infinity)
+                        ConnectAppPanel(runtime: runtime, port: model.settings.port, keyWhenStopped: model.settings.requireAPIKey).frame(maxWidth: .infinity)
+                    }
+                } else {
+                    endpointPanel
+                    ConnectAppPanel(runtime: runtime, port: model.settings.port, keyWhenStopped: model.settings.requireAPIKey)
+                }
+                logsPanel
                 if runtime.connection == nil && !runtime.owned { connectCard }
                 if runtime.connection != nil {
                     metricsCard
                     RuntimeHistoryView(runtime: runtime)
-                } else {
-                    Card {
-                        Label("Runtime metrics and history appear here while a server is running. Mac CPU, GPU and memory charts are on System.",
-                              systemImage: "chart.xyaxis.line")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Button("Open System") { model.page = .system }.buttonStyle(.link)
+                }
+            }
+        }
+        .onChange(of: runtime.error) { _, _ in diagnosticsNotice = "" }
+    }
+
+    /// Endpoint panel from `08-api-and-logs.svg`: URLs, key, serving profile.
+    private var endpointPanel: some View {
+        let url = runtime.connection?.apiURL.absoluteString ?? "http://127.0.0.1:\(model.settings.port)/v1"
+        return Card("Endpoint", trailing: {
+            StatusPill(text: "Local only", tint: Brand.serve, systemImage: "lock.fill")
+        }) {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                GridRow {
+                    fieldLabel("OpenAI"); CodeField(text: url)
+                }
+                GridRow {
+                    fieldLabel("Anthropic"); CodeField(text: ClientSnippet.anthropicBase(url))
+                }
+                GridRow {
+                    fieldLabel("Model ID"); CodeField(text: runtime.models.first?.id ?? "", placeholder: "Appears when a model is serving")
+                }
+            }
+            .opacity(runtime.connection == nil ? 0.6 : 1)
+            if runtime.connection?.hasAPIKey == true {
+                ClientCopyButtons(runtime: runtime, clipboard: clientClipboard, notice: $clientCopyNotice)
+            }
+            Divider().overlay(Brand.hairlineColor)
+            apiKeySetting
+            Divider().overlay(Brand.hairlineColor)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Serving profile").font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    if runtime.owned && model.settings.servingMode != runtime.servingMode {
+                        Text("Applies on restart").font(Brand.Font.caption).foregroundStyle(Brand.warn)
                     }
                 }
-                if !runtime.logs.isEmpty { outputCard }
-            }.padding(26)
+                AXSegmented(options: ServingMode.allCases.map { ($0, $0.title) },
+                            selection: Binding(get: { model.settings.servingMode }, set: { model.selectServingMode($0) }))
+                    .disabled(attached)
+                Text(attached ? "An attached service keeps the serving mode it was started with."
+                              : model.settings.servingMode.summary)
+                    .font(Brand.Font.caption).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 14) {
+                    Text("Parallel requests").font(.system(size: 13))
+                    Stepper(value: Binding(get: { model.settings.concurrentRequests }, set: { model.selectConcurrentRequests($0) }),
+                            in: AppSettings.concurrentRequestRange) {
+                        Text("\(model.settings.concurrentRequests)").font(.system(size: 13, weight: .semibold).monospacedDigit())
+                            .frame(minWidth: 18)
+                    }
+                    .disabled(attached).accessibilityLabel("Parallel requests")
+                    Spacer()
+                    Text("Port").font(.system(size: 13))
+                    Button(String(model.settings.port)) { model.openSettings() }
+                        .buttonStyle(.ax(.secondary)).monospacedDigit().help("Change the port in Settings")
+                }
+                if runtime.owned && model.settings.concurrentRequests != runtime.concurrentRequests {
+                    Label("Applies on restart. The running server still accepts \(runtime.concurrentRequests) at once.", systemImage: "arrow.clockwise")
+                        .font(Brand.Font.caption).foregroundStyle(Brand.warn)
+                }
+                Text("Startup is offline. Extra requests beyond the limit receive 429 until a slot frees.")
+                    .font(Brand.Font.caption).foregroundStyle(Brand.text3)
+            }
         }
-        .onAppear { if runtime.error != nil { outputExpanded = true } }
-        .onChange(of: runtime.error) { _, error in if error != nil { outputExpanded = true }; diagnosticsNotice = "" }
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text).font(.system(size: 12.5)).foregroundStyle(Brand.text2).frame(width: 72, alignment: .leading)
+    }
+
+    /// Logs panel: level tabs, filter, follow, colourized lines.
+    private var logsPanel: some View {
+        let filtered = LogFilter.apply(runtime.logs, query: logQuery, problemsOnly: problemsOnly, lastLines: logLines == 0 ? nil : logLines)
+        let problems = LogFilter.apply(runtime.logs, problemsOnly: true).matched
+        return Card {
+            HStack(spacing: 12) {
+                Text("Logs").font(Brand.Font.cardTitle)
+                AXSegmented(options: [(false, "All"), (true, problems > 0 ? "Problems \(problems)" : "Problems")],
+                            selection: $problemsOnly, compact: true)
+                Spacer()
+                Button("Copy", systemImage: "doc.on.doc") { copyText(runtime.logs) }.buttonStyle(.axLink)
+                    .disabled(runtime.logs.isEmpty)
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Brand.text3)
+                    TextField("Filter logs", text: $logQuery).textFieldStyle(.plain).font(.system(size: 12.5))
+                }
+                .padding(.horizontal, 9).padding(.vertical, 5).frame(maxWidth: 220)
+                .background(Brand.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Brand.hairlineColor))
+                Toggle("Follow", isOn: $followLogs).toggleStyle(.switch).controlSize(.mini).font(.system(size: 12.5))
+            }
+            ScrollViewReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(filtered.text.isEmpty ? AttributedString(runtime.logs.isEmpty ? "Runtime output appears here while the app-owned server runs." : "No lines match.")
+                                                   : colourized(filtered.text))
+                            .font(.system(size: 11.5, design: .monospaced)).lineSpacing(4).textSelection(.enabled)
+                            .foregroundStyle(filtered.text.isEmpty ? Brand.text3 : Brand.text1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("logEnd")
+                    }
+                    .padding(14)
+                }
+                .frame(height: 300)
+                .background(Brand.inset, in: RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous))
+                .onChange(of: runtime.logs) { _, _ in if followLogs && logQuery.isEmpty && !problemsOnly { proxy.scrollTo("logEnd", anchor: .bottom) } }
+                .onAppear { proxy.scrollTo("logEnd", anchor: .bottom) }
+            }
+            HStack {
+                Text("\(min(filtered.matched, logLines == 0 ? filtered.matched : logLines)) of \(filtered.total) lines · local diagnostic output; filters change this view only")
+                Spacer()
+                Picker("Show", selection: $logLines) {
+                    Text("Last 100").tag(100); Text("Last 500").tag(500); Text("All").tag(0)
+                }.pickerStyle(.menu).labelsHidden().fixedSize()
+            }
+            .font(Brand.Font.caption).foregroundStyle(Brand.text3)
+        }
+    }
+
+    private func colourized(_ text: String) -> AttributedString {
+        var result = AttributedString()
+        for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            if index > 0 { result += AttributedString("\n") }
+            var piece = AttributedString(String(line))
+            switch LogFilter.level(line) {
+            case .error: piece.foregroundColor = Brand.danger
+            case .warning: piece.foregroundColor = Brand.warn
+            case .info: piece.foregroundColor = Brand.text1
+            }
+            result += piece
+        }
+        return result
     }
 
     private func errorCard(_ error: String) -> some View {
@@ -66,24 +194,6 @@ struct ServerPage: View {
                 Button("Review Settings") { model.openSettings() }
             }
             if !diagnosticsNotice.isEmpty { Text(diagnosticsNotice).font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-
-    private var serverCard: some View {
-        Card("Local server", subtitle: "Listens on this Mac only (127.0.0.1). Services started elsewhere are never stopped by this app.") {
-            ServerStatusRow(model: model, runtime: runtime)
-            if let checked = runtime.lastSuccessfulCheck {
-                Text("Last successful check: " + checked.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
-            }
-            ClientCopyButtons(runtime: runtime, clipboard: clientClipboard, notice: $clientCopyNotice)
-            Divider()
-            ServerControls(model: model, runtime: runtime, models: models, chat: chat)
-            Divider()
-            ServingOptions(model: model, runtime: runtime)
-            Divider()
-            apiKeySetting
-            Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults; the serving mode only tunes speculative drafting.")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -120,58 +230,25 @@ struct ServerPage: View {
         }
     }
 
-    private var outputCard: some View {
-        let filtered = LogFilter.apply(runtime.logs, query: logQuery, problemsOnly: problemsOnly, lastLines: logLines == 0 ? nil : logLines)
-        return Card("Runtime output", subtitle: "Bounded local diagnostic output; filters change this view only", trailing: {
-            Button("Copy All", systemImage: "doc.on.doc") { copyText(runtime.logs) }.controlSize(.small)
-        }) {
-            DisclosureGroup(outputExpanded ? "Hide output" : "Show output", isExpanded: $outputExpanded) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        TextField("Filter lines", text: $logQuery).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
-                        Toggle("Warnings and errors", isOn: $problemsOnly).toggleStyle(.checkbox)
-                        Picker("Show", selection: $logLines) {
-                            Text("Last 100").tag(100); Text("Last 500").tag(500); Text("All").tag(0)
-                        }.pickerStyle(.menu).fixedSize()
-                        Spacer()
-                        Text("\(min(filtered.matched, logLines == 0 ? filtered.matched : logLines)) of \(filtered.total) lines")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    ScrollViewReader { proxy in
-                        ScrollView([.horizontal, .vertical]) {
-                            Text(filtered.text.isEmpty ? "No lines match." : filtered.text)
-                                .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                .foregroundStyle(filtered.text.isEmpty ? .secondary : .primary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Color.clear.frame(height: 1).id("logEnd")
-                        }
-                        .frame(height: 220)
-                        // Follow new output only in the unfiltered view, so reading matches is not interrupted.
-                        .onChange(of: runtime.logs) { _, _ in if logQuery.isEmpty && !problemsOnly { proxy.scrollTo("logEnd", anchor: .bottom) } }
-                        .onAppear { proxy.scrollTo("logEnd", anchor: .bottom) }
-                    }
-                }.padding(.top, 6)
-            }
-        }
-    }
-
     private var keyAwaitsRestart: Bool { runtime.owned && runtime.requiresAPIKey != model.settings.requireAPIKey }
 
     private var apiKeySetting: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Toggle("Require an API key", isOn: Binding(get: { model.settings.requireAPIKey },
-                                                             set: { model.selectRequireAPIKey($0) }))
-                    .toggleStyle(.switch).controlSize(.small)
-                    .disabled(attached)
+                Text("Require API key").font(.system(size: 13, weight: .semibold))
+                Spacer()
                 if keyAwaitsRestart {
                     PillBadge(text: "Restart required", systemImage: "arrow.clockwise", tint: .orange)
                     Button("Restart Now") { model.requestStartOrRestart() }
                     .controlSize(.small).disabled(!model.canRestartServer)
                     .help("Restart the server so the API key setting applies. Asks first if a reply is being generated.")
                 }
+                Toggle("Require API key", isOn: Binding(get: { model.settings.requireAPIKey },
+                                                         set: { model.selectRequireAPIKey($0) }))
+                    .toggleStyle(.switch).controlSize(.small).labelsHidden()
+                    .disabled(attached)
             }
-            Text(apiKeyGuidance).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(apiKeyGuidance).font(Brand.Font.caption).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -192,42 +269,4 @@ struct ServerPage: View {
         return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
     }
     private func metric(_ key: String) -> String { runtime.metrics[key].map { String(format: "%.0f", $0) } ?? "—" }
-}
-
-/// Ready-to-paste setups for OpenAI-compatible clients. Snippets reference
-/// $AX_ENGINE_API_KEY instead of embedding a key.
-private struct ConnectAppsCard: View {
-    let connection: EngineConnection
-    @ObservedObject var runtime: RuntimeController
-    @State private var snippet: ClientSnippet = .curl
-    var body: some View {
-        let url = connection.apiURL.absoluteString
-        let text = snippet.text(apiURL: url, model: runtime.models.first?.id ?? "", requiresKey: connection.hasAPIKey)
-        Card("Connect your apps", subtitle: "OpenAI-compatible endpoint on this Mac only", trailing: {
-            Button("Copy URL", systemImage: "doc.on.doc") { copyText(url) }.controlSize(.small)
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: "lock.fill").foregroundStyle(.secondary).font(.caption)
-                Text(url).font(.system(.title3, design: .monospaced).weight(.medium)).textSelection(.enabled)
-                Spacer()
-                PillBadge(text: connection.hasAPIKey ? "API key required" : "No API key", systemImage: "key",
-                          tint: connection.hasAPIKey ? Brand.warn : .secondary)
-            }
-            Picker("Client", selection: $snippet) {
-                ForEach(ClientSnippet.allCases) { Text($0.title).tag($0) }
-            }.pickerStyle(.segmented).labelsHidden()
-            ZStack(alignment: .topTrailing) {
-                ScrollView(.horizontal) {
-                    Text(text).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                CopyButton(text: text, label: "Copy snippet").padding(8)
-            }
-            Text(connection.hasAPIKey
-                 ? "Set AX_ENGINE_API_KEY from Copy API Key below. Snippets never contain the key."
-                 : "Any OpenAI-compatible client works: point its base URL here. Other devices cannot connect.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
 }

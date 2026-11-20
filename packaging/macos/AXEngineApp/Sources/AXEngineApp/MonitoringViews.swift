@@ -17,6 +17,7 @@ struct MetricHistoryChart: View {
     var window: TimeInterval = 300
     var readoutMultiplier: Double = 1
     var readoutUnit: String? = nil
+    var chartHeight: CGFloat = 140
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var selectedDate: Date?
@@ -29,26 +30,19 @@ struct MetricHistoryChart: View {
         let latest = selectedDate == nil ? history.latest(key, now: now) : selected?.values[key]
         let segmentCounts = Dictionary(grouping: points, by: \.segment).mapValues(\.count)
         let ceiling = percent ? 100 : max(1, (points.map { $0.value / divisor }.max() ?? 1) * 1.1)
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
-                Text(title).font(.system(size: 13, weight: .semibold))
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(latest.map { String(format: "%.1f", $0 / divisor * readoutMultiplier) } ?? "—")
-                    .font(.system(size: 32, weight: .semibold, design: .rounded))
-                    .monospacedDigit().contentTransition(reduceMotion ? .identity : .numericText())
-                if latest != nil {
-                    Text((readoutUnit ?? unit).trimmingCharacters(in: .whitespaces))
-                        .font(.system(size: 16, weight: .medium)).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
+                Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(Brand.text2).accessibilityHidden(true)
+                Text(title).font(Brand.Font.cardTitle).foregroundStyle(Brand.text1)
+                Spacer(minLength: 8)
+                Text(selectedDate != nil
+                     ? selected.map { $0.time.formatted(date: .omitted, time: .standard) + " · " + readout(latest) } ?? "No sample here"
+                     : latest == nil ? (points.isEmpty ? emptyDetail : "No current sample") : readout(latest) + (detail.isEmpty ? "" : " " + detail))
+                    .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(latest == nil ? Brand.text3 : Brand.text1)
+                    .contentTransition(reduceMotion ? .identity : .numericText())
             }
             .accessibilityElement(children: .combine)
-            Text(selectedDate != nil
-                 ? selected.map { $0.time.formatted(date: .omitted, time: .standard) } ?? "No sample at this time"
-                 : latest == nil ? (points.isEmpty ? emptyDetail : "No current sample") : detail)
-                .font(.caption).foregroundStyle(.secondary)
             Chart {
                 ForEach(points) { point in
                     AreaMark(x: .value("Time", point.time), y: .value(title, point.value / divisor),
@@ -92,8 +86,8 @@ struct MetricHistoryChart: View {
             .chartXAxis(.hidden)
             .chartYAxis {
                 AxisMarks(position: .leading, values: [0, ceiling / 2, ceiling]) { value in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 4]))
-                        .foregroundStyle(.secondary.opacity(0.2))
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 1, dash: [2, 4]))
+                        .foregroundStyle(Brand.hairlineColor)
                     AxisValueLabel {
                         if let number = value.as(Double.self) {
                             Text(number.formatted(.number.precision(.fractionLength(0...1))) + (percent ? "%" : ""))
@@ -109,22 +103,27 @@ struct MetricHistoryChart: View {
                 plot.padding(.vertical, 4).padding(.horizontal, 4)
                     .drawingGroup(opaque: false, colorMode: .linear)
             }
-            .frame(height: 108)
+            .frame(height: chartHeight)
             .accessibilityLabel(title + ". Last \(range.spokenLabel). Missing samples are gaps.")
             .accessibilityValue(percent ? "Vertical scale: zero to one hundred percent." : "Values in " + (unit.isEmpty ? "count" : unit))
             HStack {
                 Text("\(range.label) ago")
                 Spacer()
-                Text("Now")
-            }.font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("now")
+            }.font(.system(size: 10.5)).foregroundStyle(Brand.text3)
         }
-        .padding(18)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Brand.separator.opacity(0.6), lineWidth: 0.5))
+        .panelSurface()
         .accessibilityElement(children: .contain)
         .onDisappear { selectedDate = nil }
         .onChange(of: window) { _, _ in selectedDate = nil }
+    }
+    private func readout(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        let number = String(format: "%.1f", value / divisor * readoutMultiplier)
+        let suffix = (readoutUnit ?? unit).trimmingCharacters(in: .whitespaces)
+        return suffix == "%" ? number + "%" : number + (suffix.isEmpty ? "" : " " + suffix)
     }
     private func inspect(_ location: CGPoint, chart: ChartProxy, geometry: GeometryProxy) {
         guard let anchor = chart.plotFrame else { selectedDate = nil; return }

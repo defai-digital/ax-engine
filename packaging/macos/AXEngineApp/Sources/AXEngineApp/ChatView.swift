@@ -9,31 +9,20 @@ struct ChatView: View {
     @ObservedObject var model: ApplicationModel
     private var settings: AppSettings { model.settings }
     @State private var clearConfirmation = false
+    @State private var systemPromptOpen = false
     private var modelID: String { runtime.models.contains(where: { $0.id == chat.selectedModel }) ? chat.selectedModel : runtime.models.first?.id ?? "" }
     private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
     private var canSend: Bool { !chat.generating && !chat.recoveryRequired && runtime.ready && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
-            ModelProfileHeader(model: model, runtime: runtime, chat: chat)
-                .padding(.horizontal, 26).padding(.top, 16)
-            HStack {
-                Spacer()
-                Toggle("Follow output", isOn: $chat.followOutput).toggleStyle(.checkbox)
-                if chat.recoveryRequired {
-                    Button("Reveal Saved Conversation", systemImage: "folder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([chat.storage])
-                    }
-                }
-                Button("Export", systemImage: "square.and.arrow.up") { exportConversation() }
-                    .disabled(chat.generating || chat.messages.isEmpty || chat.recoveryRequired)
-                Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || (chat.messages.isEmpty && !chat.recoveryRequired))
-            }.padding(.horizontal, 26).padding(.vertical, 14)
-            if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 26) }
-            if !runtime.ready && !chat.messages.isEmpty { notServingBanner.padding(.horizontal, 26) }
+            topBar.padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 10)
+            if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 24).padding(.bottom, 8) }
+            if let error = model.settingsError { ErrorBanner(text: error).padding(.horizontal, 24).padding(.bottom, 8) }
+            if !runtime.ready && !chat.messages.isEmpty { notServingBanner.padding(.horizontal, 24).padding(.bottom, 8) }
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    LazyVStack(alignment: .leading, spacing: 22) {
                         if !runtime.ready && chat.messages.isEmpty {
                             notServing.frame(maxWidth: .infinity).padding(.vertical, 30)
                         } else if chat.messages.isEmpty {
@@ -45,15 +34,86 @@ struct ChatView: View {
                         // only the row that changed, so settled replies are not
                         // re-parsed as Markdown 20 times a second.
                         ForEach(chat.messages) { message in
-                            MessageRow(message: message).equatable()
+                            MessageRow(message: message, retry: message.id == lastAssistantID && !chat.generating ? retryAction : nil)
+                                .equatable()
                         }
                         Color.clear.frame(height: 1).id("bottom")
-                    }.padding(26)
+                    }
+                    .padding(.horizontal, 40).padding(.vertical, 18)
+                    .frame(maxWidth: 900).frame(maxWidth: .infinity)
                 }
                 .onChange(of: chat.messages.last?.content) { _, _ in if chat.followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
+            composer.padding(.horizontal, 24).padding(.bottom, 20).padding(.top, 6)
+                .frame(maxWidth: 900).frame(maxWidth: .infinity)
+        }
+        .background(Brand.canvas)
+        .inspector(isPresented: $model.showsTelemetry) {
+            TelemetryInspector(runtime: runtime, chat: chat)
+                .inspectorColumnWidth(min: 300, ideal: 330, max: 400)
+        }
+        .onChange(of: runtime.models.map(\.id)) { _, ids in
+            if !ids.contains(chat.selectedModel) { chat.selectedModel = "" }
+        }
+        .alert("Clear this conversation?", isPresented: $clearConfirmation) {
+            Button("Clear", role: .destructive) { chat.clear() }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("This removes the saved local conversation.") }
+    }
+
+    private var lastAssistantID: UUID? { chat.messages.last { $0.role == "assistant" }?.id }
+    private var retryAction: (() -> Void)? {
+        guard runtime.ready, runtime.connection != nil else { return nil }
+        // Rows are Equatable and keep this closure across re-renders, so it
+        // reads the connection (per-launch key), model and settings on click.
+        return {
+            guard runtime.ready, let connection = runtime.connection else { return }
+            chat.retry(model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
+        }
+    }
+
+    /// Model chip, then conversation actions, as on the board.
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Circle().fill(Brand.tint(.from(state: runtime.state, owned: runtime.owned, ready: runtime.ready))).frame(width: 7, height: 7)
+                if runtime.ready && runtime.models.count > 1 {
+                    Picker("Running model", selection: $chat.selectedModel) {
+                        Text("Default model").tag("")
+                        ForEach(runtime.models) { Text($0.id).tag($0.id) }
+                    }.labelsHidden().pickerStyle(.menu).fixedSize().disabled(chat.generating)
+                } else {
+                    Text(runtime.ready ? modelID : runtime.state == "Starting" ? "Loading…" : "No model running")
+                        .font(.system(size: 12.5, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                }
+            }
+            .padding(.horizontal, 11).padding(.vertical, 6)
+            .background(Brand.panel, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Brand.hairlineColor))
+            if runtime.owned { Tag(runtime.servingMode.badge, tint: Brand.boost) }
+            Spacer()
+            Toggle("Follow", isOn: $chat.followOutput).toggleStyle(.checkbox).font(.system(size: 12)).foregroundStyle(Brand.text2)
+            if chat.recoveryRequired {
+                Button("Reveal Saved", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([chat.storage]) }
+                    .buttonStyle(.ax(.secondary))
+            }
+            Button { clearConfirmation = true } label: {
+                HStack(spacing: 6) { Text("New Chat"); Text("⌘N").font(.system(size: 10.5)).foregroundStyle(Brand.text3) }
+            }
+            .buttonStyle(.ax(.secondary))
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(chat.generating || (chat.messages.isEmpty && !chat.recoveryRequired))
+            .help("Clear this conversation and start a new one")
+            Button("Export") { exportConversation() }.buttonStyle(.ax(.plain))
+                .foregroundStyle(Brand.text2)
+                .disabled(chat.generating || chat.messages.isEmpty || chat.recoveryRequired)
+        }
+    }
+
+    /// Composer card: prompt, request chips, Send or Stop.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
                 TextField(placeholder, text: $chat.draft, axis: .vertical)
                     .onSubmit { send() }
                     .onKeyPress(.return, phases: .down) { key in
@@ -65,45 +125,63 @@ struct ChatView: View {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
                     }
-                    .lineLimit(2...7).textFieldStyle(.plain).padding(12)
-                    .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
+                    .lineLimit(2...8).textFieldStyle(.plain).font(.system(size: 13.5))
                     .disabled(chat.recoveryRequired)
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Enter to send · Shift+Enter for a new line")
-                    Spacer(minLength: 12)
-                    Label("No analytics or telemetry uploads", systemImage: "lock.shield")
-                        .help("Playground sends requests to the AX Engine service on this Mac. Conversations are saved locally. Model downloads use the network.")
-                }
-                .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    if let seconds = chat.firstTokenSeconds { Text(String(format: "First text %.2fs", seconds)).font(.caption).foregroundStyle(.secondary) }
-                    if let seconds = chat.elapsedSeconds { Text(String(format: "Elapsed %.1fs", seconds)).font(.caption).foregroundStyle(.secondary) }
-                    Spacer()
-                    Button("Retry", systemImage: "arrow.clockwise") {
-                        if let connection = runtime.connection { chat.retry(model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature) }
-                    }.disabled(chat.generating || chat.messages.isEmpty || !runtime.ready)
-                    if chat.generating {
-                        Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } }
-                            .keyboardShortcut(".", modifiers: .command).help("Stop this reply (⌘.)")
+                Text("↩ send · ⇧↩ line").font(.system(size: 10.5)).foregroundStyle(Brand.text3).padding(.top, 2)
+            }
+            HStack(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                Menu {
+                    ForEach(GenerationProfile.allCases, id: \.self) { profile in
+                        Button(profile.title + (model.settings.effectiveProfile == profile ? " ✓" : "")) { model.selectPlaygroundProfile(profile) }
                     }
-                    else { Button("Send", systemImage: "arrow.up") { send() }.buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(!canSend) }
+                } label: { chip("Profile " + model.settings.effectiveProfile.title) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .disabled(chat.generating)
+                .help(model.settings.effectiveProfile.summary + " Applies to new Playground requests only.")
+                .accessibilityLabel("Playground request profile")
+                Button { systemPromptOpen.toggle() } label: { chip(chat.systemPrompt.isEmpty ? "System prompt" : "System prompt ✓") }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $systemPromptOpen, arrowEdge: .top) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("System prompt").font(Brand.Font.cardTitle)
+                            TextEditor(text: $chat.systemPrompt).font(.system(size: 12.5)).frame(width: 360, height: 140)
+                                .scrollContentBackground(.hidden).padding(6)
+                                .background(Brand.inset, in: RoundedRectangle(cornerRadius: 8))
+                            Text("Sent before every Playground message. Other clients set their own.").font(Brand.Font.caption).foregroundStyle(Brand.text3)
+                        }.padding(16).disabled(chat.generating)
+                    }
+                Button { model.openSettings() } label: {
+                    chip(settings.useRuntimeSampling ? "Runtime sampling" : String(format: "Temp %.1f", settings.temperature))
+                }.buttonStyle(.plain).help("Sampling for Playground requests. Opens Settings.")
+                Button { model.openSettings() } label: { chip("Max " + settings.maxTokens.formatted()) }
+                    .buttonStyle(.plain).help("Maximum output tokens for Playground requests. Opens Settings.")
                 }
-            }.padding(20)
+                }
+                Spacer(minLength: 6)
+                if chat.generating {
+                    Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } }
+                        .buttonStyle(.ax(.danger, compact: false))
+                        .keyboardShortcut(".", modifiers: .command).help("Stop this reply (⌘.)")
+                } else {
+                    Button("Send", systemImage: "arrow.up") { send() }
+                        .buttonStyle(.ax(.primary, compact: false))
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!canSend)
+                }
+            }
         }
-        .inspector(isPresented: $model.showsTelemetry) {
-            TelemetryInspector(runtime: runtime, chat: chat)
-                .inspectorColumnWidth(min: 240, ideal: 270, max: 340)
-        }
-        .onChange(of: runtime.models.map(\.id)) { _, ids in
-            if !ids.contains(chat.selectedModel) { chat.selectedModel = "" }
-        }
-        .alert("Clear this conversation?", isPresented: $clearConfirmation) {
-            Button("Clear", role: .destructive) { chat.clear() }
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("This removes the saved local conversation.") }
+        .padding(16)
+        .panelSurface(radius: 14)
     }
+
+    private func chip(_ text: String) -> some View {
+        Text(text).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Brand.text2).lineLimit(1).fixedSize()
+            .padding(.horizontal, 9).padding(.vertical, 4.5)
+            .background(Brand.control, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
     private var placeholder: String {
         if chat.generating { return "Write your next message; Send is available when this reply finishes…" }
         if runtime.state == "Starting" { return "Loading the model…" }
@@ -198,60 +276,79 @@ struct ChatView: View {
 
 private struct MessageRow: View, Equatable {
     let message: ChatMessage
+    var retry: (() -> Void)? = nil
+    private var canRetry: Bool { retry != nil }
+    nonisolated static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
+        MainActor.assumeIsolated { lhs.message == rhs.message && lhs.canRetry == rhs.canRetry }
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        if message.role == "user" {
             HStack {
-                Label(message.role == "user" ? "You" : "AX Engine", systemImage: message.role == "user" ? "person.crop.circle" : "sparkle")
-                    .font(.headline)
-                Spacer()
-                if message.state != "Complete" { Text(message.state).font(.caption).foregroundStyle(.secondary) }
-                CopyButton(text: message.content, label: "Copy message")
+                Spacer(minLength: 80)
+                Text(message.content).font(.system(size: 13.5, weight: .medium)).textSelection(.enabled)
+                    .foregroundStyle(Brand.text1)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(Brand.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .contextMenu { Button("Copy") { copyText(message.content) } }
             }
-            if !message.reasoning.isEmpty {
-                DisclosureGroup("Reasoning") { Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                if !message.reasoning.isEmpty {
+                    DisclosureGroup("Reasoning") {
+                        Text(message.reasoning).font(.system(size: 12.5)).foregroundStyle(Brand.text2).textSelection(.enabled)
+                    }.font(.system(size: 12)).foregroundStyle(Brand.text3)
+                }
+                if message.content.isEmpty && message.state == "Streaming" {
+                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Waiting for the model…").foregroundStyle(Brand.text3) }
+                } else if message.state == "Streaming" {
+                    Text(message.content).font(.system(size: 13.5)).textSelection(.enabled)
+                } else {
+                    MarkdownMessage(text: message.content)
+                }
+                HStack(spacing: 14) {
+                    if message.state == "Streaming" {
+                        StatusPill(text: "Generating", tint: Brand.serve)
+                        Text("⌘. cancels").font(.system(size: 11.5)).foregroundStyle(Brand.text3)
+                    } else if message.state != "Complete" {
+                        StatusPill(text: message.state, tint: message.state == "Failed" ? Brand.danger : Brand.text3)
+                    }
+                    ChatSpeedSummary(message: message)
+                    Spacer()
+                    CopyButton(text: message.content, label: "Copy reply")
+                    if let retry {
+                        Button(action: retry) { Image(systemName: "arrow.clockwise") }
+                            .accessibilityLabel("Retry this reply")
+                            .buttonStyle(.plain).foregroundStyle(Brand.text3).help("Retry this reply")
+                    }
+                }
             }
-            if message.content.isEmpty && message.state == "Streaming" { ProgressView("Waiting for the model…") }
-            else if message.state == "Streaming" { Text(message.content).textSelection(.enabled) }
-            else { MarkdownMessage(text: message.content) }
-            if message.role == "assistant" {
-                ChatSpeedSummary(message: message)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(message.role == "user" ? Brand.accent.opacity(0.06) : Brand.cardSurface,
-                    in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
+/// Per-turn speed line under a reply, e.g. "71.2 tok/s decode · 412 tokens".
 private struct ChatSpeedSummary: View {
     let message: ChatMessage
-    private var performance: ChatPerformance? {
-        message.state == "Complete" ? message.performance : nil
-    }
-    private func rate(_ value: Double?) -> String {
-        value.map { String(format: "%.1f tok/s", $0) } ?? "—"
-    }
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) { readings }
-            VStack(alignment: .leading, spacing: 6) { readings }
+        let performance = message.state == "Complete" ? message.performance : nil
+        HStack(spacing: 14) {
+            if let performance {
+                reading(performance.decodeTokensPerSecond.map { String(format: "%.1f tok/s", $0) }, "decode")
+                reading(performance.promptFullyCached ? "Cached" : performance.prefillTokensPerSecond.map { String(format: "%.0f tok/s", $0) }, "prefill")
+                reading(performance.decodeTokens.map { "\($0)" }, "tokens")
+            } else if message.state == "Complete" {
+                Text("Timing unavailable").foregroundStyle(Brand.text3)
+            }
         }
-        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        .font(.system(size: 11.5)).monospacedDigit()
         .accessibilityElement(children: .combine)
-        .help("Native evaluation averages for this reply. Prefill counts uncached prompt tokens. Decode excludes the first output batch. These exclude network/display time; first-text latency and elapsed time are shown separately. A dash means no measurement was reported, not zero speed.")
+        .help("Native evaluation averages for this reply. Prefill counts uncached prompt tokens. Decode excludes the first output batch. A dash means no measurement was reported, not zero speed.")
     }
-    @ViewBuilder private var readings: some View {
-        Text("Prefill \(performance?.promptFullyCached == true ? "Cached" : rate(performance?.prefillTokensPerSecond))")
-        Text("Decode \(rate(performance?.decodeTokensPerSecond))")
-        if message.state == "Streaming" {
-            Text("Measuring · rates shown when complete")
-        } else if performance?.prefillTokensPerSecond != nil
-                    || performance?.decodeTokensPerSecond != nil
-                    || performance?.promptFullyCached == true {
-            Text("Model average")
-        } else {
-            Text("Timing unavailable")
+    @ViewBuilder private func reading(_ value: String?, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(value ?? "—").fontWeight(.semibold).foregroundStyle(Brand.text1)
+            Text(label).foregroundStyle(Brand.text3)
         }
     }
 }
@@ -260,18 +357,40 @@ private struct ChatSpeedSummary: View {
 // This follows MTPLX's streaming-cost boundary without executing generated HTML.
 private struct MarkdownMessage: View {
     let text: String
+    private func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    }
     var body: some View {
         let parts = text.components(separatedBy: "```")
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                 if index % 2 == 1 {
                     let code = CodeFence.body(part)
-                    ScrollView(.horizontal) { Text(code).font(.system(.callout, design: .monospaced)).textSelection(.enabled).padding(12) }
-                        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(alignment: .topTrailing) { CopyButton(text: code, label: "Copy code").padding(8) }
+                    let language = CodeFence.language(part)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(language ?? "code").font(.system(size: 11)).foregroundStyle(Brand.text3)
+                            Spacer()
+                            CopyButton(text: code, label: "Copy code")
+                        }
+                        ScrollView(.horizontal) {
+                            Text(code).font(.system(size: 12.5, design: .monospaced)).lineSpacing(4).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(14)
+                    .background(Brand.inset, in: RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous).strokeBorder(Brand.hairlineColor))
                 } else {
-                    Text((try? AttributedString(markdown: part, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(part))
-                        .textSelection(.enabled)
+                    ForEach(Array(MarkdownBlocks.split(part).enumerated()), id: \.offset) { _, block in
+                        switch block {
+                        case .heading(let level, let text):
+                            Text(inline(text)).font(.system(size: level == 1 ? 18 : level == 2 ? 15.5 : 14, weight: .bold))
+                                .padding(.top, 4).textSelection(.enabled)
+                        case .text(let text):
+                            Text(inline(text)).font(.system(size: 13.5)).lineSpacing(3).textSelection(.enabled)
+                        }
+                    }
                 }
             }
         }
@@ -291,13 +410,19 @@ struct CopyButton: View {
         Button {
             copyText(text); copied = true
             Task { try? await Task.sleep(for: .seconds(2)); copied = false }
-        } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
-        .buttonStyle(.plain).help(copied ? "Copied" : label)
+        } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 11.5)) }
+        .buttonStyle(.plain).foregroundStyle(Brand.text3).help(copied ? "Copied" : label)
         .accessibilityLabel(copied ? "Copied" : label)
     }
 }
 
 enum CodeFence {
+    /// The fence's language tag ("rust"), when it has one.
+    static func language(_ fenced: String) -> String? {
+        guard let newline = fenced.firstIndex(of: "\n") else { return nil }
+        let info = String(fenced[..<newline]).trimmingCharacters(in: .whitespaces)
+        return body(fenced) != fenced && !info.isEmpty ? info : nil
+    }
     /// The code inside a fence, without a language tag on its first line.
     static func body(_ fenced: String) -> String {
         guard let newline = fenced.firstIndex(of: "\n") else { return fenced }
@@ -307,53 +432,121 @@ enum CodeFence {
     }
 }
 
-/// Playground's right inspector: live runtime speed, the last reply's
-/// native timings and prefix-cache reuse. A dash means "not reported".
+/// Playground's right inspector (`06-playground.svg`): live runtime speed,
+/// the last reply's native timings, draft acceptance, prefix-cache reuse and
+/// per-turn speeds. A dash means "not reported".
 private struct TelemetryInspector: View {
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var chat: ChatStore
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { context in
+            let now = context.date
             let last = chat.messages.last { $0.role == "assistant" }
             let performance = last?.state == "Complete" ? last?.performance : nil
-            Form {
-                Section("Live") {
-                    row("Speed", TokenRateFormat.short(runtime.history.latest(RuntimeController.tokenRateKey, now: context.date)),
-                        help: "Tokens the runtime scheduled per second, prompt and output together.")
-                    row("Active requests", runtime.metrics["ax_engine_generation_active_streams"].map { String(format: "%.0f", $0) })
-                    row("MTP drafts accepted", runtime.history.latest("mtpAcceptedPercent", now: context.date).map { String(format: "%.0f%%", $0) },
-                        tint: Brand.boost, help: "Accepted share of speculative draft tokens in the last poll interval. Not a speedup measurement.")
+            let rate = runtime.history.latest(RuntimeController.tokenRateKey, now: now)
+            let acceptance = runtime.history.latest("mtpAcceptedPercent", now: now)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    SectionLabel(chat.generating ? "This reply · live" : "Live")
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(Format.rate(rate).map { $0 + " tok/s" } ?? "— tok/s").font(.system(size: 15, weight: .bold)).monospacedDigit()
+                                .foregroundStyle(rate == nil ? Brand.text3 : Brand.text1)
+                            Spacer()
+                            Text("active \(Format.count(runtime.metrics["ax_engine_generation_active_streams"]) ?? "—")")
+                                .font(.system(size: 11)).foregroundStyle(Brand.text3)
+                        }
+                        Sparkline(points: runtime.history.plotPoints(RuntimeController.tokenRateKey, window: 120, now: now),
+                                  start: now.addingTimeInterval(-120), end: now, tint: Brand.serve)
+                            .frame(height: 64)
+                        HStack { Text("2 min ago"); Spacer(); Text("now") }.font(.system(size: 10)).foregroundStyle(Brand.text3)
+                    }
+                    .padding(12)
+                    .background(Brand.inset, in: RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous))
+                    .help("Tokens the runtime scheduled per second, prompt and output together.")
+                    SectionLabel(chat.generating ? "This reply" : "Last reply")
+                    Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                        GridRow {
+                            StatTile(title: "First text", value: chat.firstTokenSeconds.map { String(format: "%.0f", $0 * 1000) }, unit: "ms",
+                                     help: "Time from Send to the first visible text, including network and display.")
+                            StatTile(title: "Prefill", value: performance.flatMap { $0.promptFullyCached ? "Cached" : Format.rate($0.prefillTokensPerSecond) },
+                                     unit: performance?.promptFullyCached == true ? nil : "tok/s")
+                            StatTile(title: "Decode", value: performance.flatMap { Format.rate($0.decodeTokensPerSecond) }, unit: "tok/s",
+                                     help: "Native decode average; excludes the first output batch.")
+                        }
+                        GridRow {
+                            StatTile(title: "Output", value: performance?.decodeTokens.map { "\($0)" }, unit: "tok")
+                            StatTile(title: "Prompt", value: performance?.prefillTokens.map { "\($0)" }, unit: "tok",
+                                     help: "Uncached prompt tokens the model processed.")
+                            StatTile(title: "Elapsed", value: chat.elapsedSeconds.map { String(format: "%.1f", $0) }, unit: "s")
+                        }
+                    }
+                    if acceptance != nil { mtpCallout(acceptance) }
+                    SectionLabel("Prefix cache")
+                    VStack(spacing: 8) {
+                        let hits = runtime.metrics["ax_engine_mlx_prefix_cache_hits_total"]
+                        let misses = runtime.metrics["ax_engine_mlx_prefix_cache_misses_total"]
+                        let rateText = hits.flatMap { h in misses.flatMap { m in h + m > 0 ? String(format: "%.0f%%", 100 * h / (h + m)) : nil } }
+                        row("Hit rate", rateText, tint: Brand.serve, help: "Since the server started. Reused prompt prefixes skip prefill.")
+                        row("Reused tokens", Format.count(runtime.metrics["ax_engine_mlx_prefix_cache_reused_tokens_total"]))
+                    }
+                    SectionLabel("Model")
+                    VStack(spacing: 8) {
+                        row("Context", runtime.models.first?.contextLength.map { $0.formatted() + " tokens" })
+                    }
+                    let completed = chat.messages.filter { $0.role == "assistant" && $0.state == "Complete" && $0.performance != nil }
+                    let turns = completed.suffix(8)
+                    let firstTurn = completed.count - turns.count + 1
+                    if !turns.isEmpty {
+                        SectionLabel("Turns")
+                        VStack(spacing: 7) {
+                            ForEach(Array(turns.enumerated()), id: \.element.id) { index, turn in
+                                HStack {
+                                    Text("Turn \(firstTurn + index)").foregroundStyle(Brand.text2)
+                                    Spacer()
+                                    Text(turn.performance?.decodeTokens.map { "\($0) tok" } ?? "—").foregroundStyle(Brand.text3)
+                                        .frame(width: 70, alignment: .trailing)
+                                    Text(Format.rate(turn.performance?.decodeTokensPerSecond).map { $0 + " tok/s" } ?? "—")
+                                        .fontWeight(.semibold).frame(width: 84, alignment: .trailing)
+                                }
+                                .font(.system(size: 12)).monospacedDigit()
+                            }
+                        }
+                    }
                 }
-                Section(chat.generating ? "This reply" : "Last reply") {
-                    row("First text", chat.firstTokenSeconds.map { String(format: "%.2f s", $0) },
-                        help: "Time from Send to the first visible text, including network and display.")
-                    row("Elapsed", chat.elapsedSeconds.map { String(format: "%.1f s", $0) })
-                    row("Decode", performance.flatMap(\.decodeTokensPerSecond).map(TokenRateFormat.short),
-                        help: "Native decode average; excludes the first output batch.")
-                    row("Prefill", performance.map { $0.promptFullyCached ? "Cached" : TokenRateFormat.short($0.prefillTokensPerSecond) })
-                    row("Prompt tokens", performance?.prefillTokens.map { "\($0) uncached" })
-                    row("Output tokens", performance?.decodeTokens.map(String.init))
-                    if chat.generating { Text("Rates appear when the reply completes.").font(.caption).foregroundStyle(.secondary) }
-                }
-                Section("Prefix cache") {
-                    let hits = runtime.metrics["ax_engine_mlx_prefix_cache_hits_total"]
-                    let misses = runtime.metrics["ax_engine_mlx_prefix_cache_misses_total"]
-                    row("Hit rate", hits.flatMap { h in misses.flatMap { m in h + m > 0 ? String(format: "%.0f%%", 100 * h / (h + m)) : nil } },
-                        help: "Since the server started. Reused prompt prefixes skip prefill.")
-                    row("Reused tokens", runtime.metrics["ax_engine_mlx_prefix_cache_reused_tokens_total"].map { $0.formatted(.number.precision(.fractionLength(0))) })
-                }
-                Section("Model") {
-                    row("Context", runtime.models.first?.contextLength.map { $0.formatted() + " tokens" })
-                    if runtime.owned { row("Serving mode", runtime.servingMode.badge, tint: Brand.boost) }
-                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .formStyle(.grouped)
+            .background(Brand.panel)
         }
     }
-    private func row(_ title: String, _ value: String?, tint: Color = .primary, help: String? = nil) -> some View {
-        LabeledContent(title) {
-            Text(value ?? "—").monospacedDigit().foregroundStyle(value == nil ? .secondary : tint)
+
+    private func mtpCallout(_ acceptance: Double?) -> some View {
+        let acceptance = acceptance ?? 0
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "sparkle").font(.system(size: 11, weight: .bold))
+                Text(String(format: "Draft accepted %.0f%%", acceptance)).font(.system(size: 12.5, weight: .semibold))
+                Spacer()
+                Text("MTP").font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(Brand.boost)
+            StackedBar(segments: [.init(id: "accepted", value: acceptance, color: Brand.boost)], total: 100, height: 5)
+            Text("MTP predicts tokens ahead and checks them in one pass. Accepted drafts save decode steps; this is not a speedup measurement.")
+                .font(.system(size: 11.5)).foregroundStyle(Brand.text2).fixedSize(horizontal: false, vertical: true)
         }
+        .padding(12)
+        .background(Brand.boost.opacity(0.10), in: RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous).strokeBorder(Brand.boost.opacity(0.25)))
+    }
+
+    private func row(_ title: String, _ value: String?, tint: Color = Brand.text1, help: String? = nil) -> some View {
+        HStack {
+            Text(title).foregroundStyle(Brand.text2)
+            Spacer()
+            Text(value ?? "—").fontWeight(.semibold).monospacedDigit().foregroundStyle(value == nil ? Brand.text3 : tint)
+        }
+        .font(.system(size: 12.5))
         .help(help ?? title)
     }
 }
