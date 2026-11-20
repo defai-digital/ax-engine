@@ -61,20 +61,15 @@ class VersionSyncTests(unittest.TestCase):
             "sdk/swift/Sources/AxEngine/AxEngineClient.swift",
             f'public static let version = "{version}"\n',
         )
-        for path in (
-            "README.md",
-            "docs/GETTING-STARTED.md",
-            "crates/ax-engine-py/README.md",
-            "docs/sdk/python.md",
-        ):
-            self._write(
-                path,
-                f'python3 -m pip install "ax-engine[download]>={version},<2"\n',
-            )
+        self._write_install_versions(version)
         self._write(
             "docs/sdk/swift.md",
             f'The current version is `{version}`.\n',
         )
+
+    def _write_install_versions(self, version: str) -> None:
+        for path in check_version_sync.INSTALL_GUIDES:
+            self._write(path, f'python3 -m pip install "ax-engine[download]>={version},<2"\n')
 
     def test_accepts_aligned_package_and_install_versions(self):
         self.assertEqual(check_version_sync.verify_versions(self.root), "1.2.3")
@@ -83,6 +78,20 @@ class VersionSyncTests(unittest.TestCase):
             "1.2.3",
         )
         self.assertEqual(check_version_sync.verify_python_policy(self.root), "3.12")
+
+    def test_accepts_published_install_floor_behind_package_version(self):
+        self._write_install_versions("1.2.2")
+        self.assertEqual(check_version_sync.verify_versions(self.root, "v1.2.3"), "1.2.3")
+
+    def test_rejects_install_floor_ahead_of_package_version(self):
+        self._write_install_versions("1.2.4")
+        with self.assertRaisesRegex(check_version_sync.VersionSyncError, "no newer than 1.2.3"):
+            check_version_sync.verify_versions(self.root)
+
+    def test_rejects_install_floor_from_another_major(self):
+        self._write_install_versions("0.9.9")
+        with self.assertRaisesRegex(check_version_sync.VersionSyncError, "same major release"):
+            check_version_sync.verify_versions(self.root)
 
     def test_rejects_misaligned_python_abi_floor(self):
         self._write(
