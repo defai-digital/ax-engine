@@ -68,7 +68,10 @@ struct RuntimeIssuePanel: View {
                 Text(hint).font(.system(size: 11.5)).foregroundStyle(Brand.text3)
             }
             if models.library.contains(where: { $0.path == runtime.selectedModel && !$0.isAutomatosX }) {
-                Text("This model was not published by AutomatosX. The runtime checks compatibility at start, so complete files can still be refused; the files stay on disk.")
+                Text("This model was not published by AutomatosX. The runtime checks compatibility at start, so complete files can still be refused; the files stay on disk."
+                     + (error.contains("could not infer --model-id")
+                        ? " Here the runtime could not tell which model family the folder holds: serve it from the CLI with ax-engine serve <folder> -- --model-id <id>."
+                        : ""))
                     .font(.system(size: 11.5)).foregroundStyle(Brand.text3).fixedSize(horizontal: false, vertical: true)
             }
         }
