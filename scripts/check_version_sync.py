@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that published package and installation-guide versions are aligned."""
+"""Validate package versions and Python installation requirements."""
 
 from __future__ import annotations
 
@@ -18,6 +18,12 @@ class VersionSyncError(ValueError):
 
 INSTALL_REQUIREMENT_PATTERN = re.compile(
     r"ax-engine(?:\[[^\]]+\])?>=(\d+\.\d+\.\d+),<\d+"
+)
+INSTALL_GUIDES = (
+    "README.md",
+    "docs/GETTING-STARTED.md",
+    "crates/ax-engine-py/README.md",
+    "docs/sdk/python.md",
 )
 PYTHON_MIN_VERSION = "3.12"
 PYTHON_REQUIRES = f">={PYTHON_MIN_VERSION}"
@@ -71,14 +77,6 @@ def load_versions(root: pathlib.Path) -> dict[str, str]:
             "sdk/swift/Sources/AxEngine/AxEngineClient.swift",
             r'\bstatic\s+let\s+version\s*=\s*"([^"]+)"',
         ),
-        "README.md": _required_install_version(root, "README.md"),
-        "docs/GETTING-STARTED.md": _required_install_version(
-            root, "docs/GETTING-STARTED.md"
-        ),
-        "crates/ax-engine-py/README.md": _required_install_version(
-            root, "crates/ax-engine-py/README.md"
-        ),
-        "docs/sdk/python.md": _required_install_version(root, "docs/sdk/python.md"),
         "docs/sdk/swift.md": _required_match(
             root,
             "docs/sdk/swift.md",
@@ -101,6 +99,20 @@ def verify_versions(root: pathlib.Path, expected: str | None = None) -> str:
         )
         raise VersionSyncError(
             f"version mismatch: expected={expected_version}, {details}"
+        )
+
+    install_versions = {path: _required_install_version(root, path) for path in INSTALL_GUIDES}
+    if len(set(install_versions.values())) != 1:
+        details = ", ".join(f"{path}={version}" for path, version in install_versions.items())
+        raise VersionSyncError(f"inconsistent install versions across guides: {details}")
+
+    install_version = install_versions["README.md"]
+    install_parts = tuple(map(int, install_version.split(".")))
+    expected_parts = tuple(map(int, expected_version.split(".")))
+    if install_parts[0] != expected_parts[0] or install_parts > expected_parts:
+        raise VersionSyncError(
+            f"install version {install_version} must be in the same major release "
+            f"and no newer than {expected_version}"
         )
     return expected_version
 

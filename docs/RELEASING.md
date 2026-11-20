@@ -15,7 +15,9 @@ the qualification dry-run without mounting the 27B snapshot.
 ## Publish a release
 
 Commit and push the synchronized version change, then wait for the exact commit
-to pass the `CI` workflow. Run the canonical publisher from a clean checkout:
+to pass the `CI` workflow. Keep the public pip and uv examples on a published
+minimum version for the documented features so the commands resolve while the
+new release is being prepared. Run the canonical publisher from a clean checkout:
 
 ```bash
 # Draft notes first (required for real publishes — not empty gh --generate-notes)
