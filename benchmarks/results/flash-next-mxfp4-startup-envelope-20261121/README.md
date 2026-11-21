@@ -36,6 +36,17 @@ Its native manifest was produced by the successful loader.
   projected estimate, rejects the replacement with HTTP 422, and continues
   serving the existing 27B session at 16,384 tokens.
 
+## Lifecycle replay on the replacement build
+
+The [same-build lifecycle receipt](lifecycle-current-binary.json) records
+all 21 actions on the M5 across disabled, default and required MTP.
+Every action drained all five counters and each process shut down
+cleanly. The two direct arms finished with zero verifier steps, and
+the required arm recorded 112. This replay used the frozen 4,096-block
+lifecycle setup. The ordinary 32K admission and disconnect controls
+above use the product envelope. CPU idle was 94.77% at start and 84.90%
+at finish. The published timing gate requires 90% at both ends.
+
 The boundary probe sends pre-tokenized synthetic input with a one-token output
 budget. Readiness and request timings are diagnostic observations. The
 [signed v7.9.0 direct-default record](../qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)
