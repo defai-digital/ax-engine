@@ -1,0 +1,15 @@
+{
+  "injector": "Truncate the second fixture after descriptor load and first shard evaluation.",
+  "execution": "Rust C binding from the same release build and pinned MLX library",
+  "stdout": [
+    "first shard evaluated",
+    "read error propagated through mlx_sys::try_eval: mlx_eval failed: [read] Unable to read from file.",
+    "first shard evaluated",
+    "both shards evaluated",
+    "intact retry evaluated after failure in the same process"
+  ],
+  "stderr": [
+    "mlx error: [read] Unable to read from file."
+  ],
+  "probe_binary_sha256": "52dd6792cb45d0c994186a993284abb982d1f6702066720ad6316afb38e794e3"
+}
