@@ -34,6 +34,7 @@ class QaCohortTests(unittest.TestCase):
         self.assertEqual(mod.budget_for(items[0]), 256)
         self.assertEqual(mod.budget_for(items[-1]), 64)
         body = mod.request_body(items[0])
+        self.assertEqual(body["model"], "qwen3.8-flash-next:mxfp4")
         self.assertEqual(body["temperature"], 0)
         self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(body["messages"][-1]["content"], items[0]["user"])
@@ -100,6 +101,41 @@ class QaCohortTests(unittest.TestCase):
                               capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(done.stdout)["modes"], ["disabled", "default"])
 
+    def test_ordinary_launch_resolves_the_model_without_envelope_flags(self):
+        server, root = Path("/server"), Path("/model")
+        ordinary = mod.server_command(server, root, "default", 18888, True)
+        self.assertEqual(ordinary, ["/server", "--mlx", "--mlx-model-artifacts-dir", "/model",
+                                    "--host", "127.0.0.1", "--port", "18888"])
+        control = mod.server_command(server, root, "disabled", 18888, True)
+        self.assertEqual(control[-2:], ["--total-blocks", "2048"])
+        self.assertEqual(control[control.index("--max-concurrent-requests") + 1], "1")
+        self.assertEqual(control[control.index("--mlx-mtp-policy") + 1], "disabled")
+        self.assertIn("--disable-ngram-acceleration", control)
+        self.assertEqual(mod.request_body({"id": "test", "user": "test"}, mod.ORDINARY_MODEL_ID)["model"],
+                         "qwen3.8-flash-next")
+
+    def test_ordinary_launch_verifies_the_advertised_model_and_context(self):
+        model = {"id": mod.ORDINARY_MODEL_ID, "context_length": 32768}
+        self.assertEqual(mod.check_standard_model({"data": [model]}, mod.ORDINARY_MODEL_ID), model)
+        for entries in ([], [model, model], [{**model, "context_length": 16384}],
+                        [{**model, "id": "qwen3.8-27b"}]):
+            with self.assertRaisesRegex(ValueError, "32,768-token budget"):
+                mod.check_standard_model({"data": entries}, mod.ORDINARY_MODEL_ID)
+
+    def test_ordinary_launch_dry_run_records_a_distinct_32k_contract(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--ordinary-launch"],
+                             capture_output=True, text=True, check=True)
+        contract = json.loads(out.stdout)
+        self.assertTrue(contract["ordinary_launch"])
+        self.assertEqual(contract["modes"], ["disabled", "default"])
+        self.assertEqual(contract["total_blocks"] * contract["block_size_tokens"], 32768)
+        self.assertFalse(contract["qualification"])
+        extra = subprocess.run(
+            [sys.executable, str(SCRIPT), "--dry-run", "--ordinary-launch", "--modes",
+             "disabled", "default", "required"], capture_output=True, text=True,
+        )
+        self.assertNotEqual(extra.returncode, 0)
+
     def test_rss_sampler_reports_a_positive_peak_for_a_live_process(self):
         sampler = mod.RssPeak(os.getpid(), interval=0.05)
         sampler.start()
@@ -113,6 +149,8 @@ class QaCohortTests(unittest.TestCase):
         self.assertFalse(contract["qualification"])
         self.assertFalse(contract["release_ready"])
         self.assertEqual(contract["items"], 105)
+        self.assertNotIn("ordinary_launch", contract)
+        self.assertEqual(contract["total_blocks"], 4096)
         # The pool must hold the 29,774-token lookup plus its output budget.
         self.assertGreater(contract["total_blocks"] * contract["block_size_tokens"],
                            29774 + contract["long_budget"])

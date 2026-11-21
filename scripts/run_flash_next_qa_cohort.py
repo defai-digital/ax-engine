@@ -38,10 +38,12 @@ LONG_BUDGET = 64
 LONG_ID = "long_context_record_mass"
 REQUEST_TIMEOUT = 1800
 READY_TIMEOUT = 900
-# The default KV pool (16 tokens x 1024 blocks) caps context at 16,384 tokens,
-# below the 29,774-token lookup; the original cohort ran with 4,096 blocks.
+# Preserve the original cohort's replay pool. The ordinary launch uses the
+# 32,768-token Flash Next profile, with the same pool on its direct control.
 TOTAL_BLOCKS = 4096
+STANDARD_CONTEXT_TOKENS = 32768
 MODEL_ID = "qwen3.8-flash-next:mxfp4"
+ORDINARY_MODEL_ID = "qwen3.8-flash-next"
 
 # Runs in the frozen directory so the original checkers grade the answers.
 GRADER = """
@@ -73,12 +75,12 @@ def budget_for(item: dict[str, Any]) -> int:
     return LONG_BUDGET if item["id"] == LONG_ID else SHORT_BUDGET
 
 
-def request_body(item: dict[str, Any]) -> dict[str, Any]:
+def request_body(item: dict[str, Any], model_id: str = MODEL_ID) -> dict[str, Any]:
     messages = []
     if item.get("system"):
         messages.append({"role": "system", "content": item["system"]})
     messages.append({"role": "user", "content": item["user"]})
-    return {"model": MODEL_ID, "messages": messages, "temperature": 0,
+    return {"model": model_id, "messages": messages, "temperature": 0,
             "max_tokens": budget_for(item), "chat_template_kwargs": {"enable_thinking": False}}
 
 
@@ -121,8 +123,25 @@ def post_chat(base: str, body: dict[str, Any]) -> dict[str, Any]:
         return json.loads(response.read())
 
 
+def server_command(server: Path, root: Path, mode: str, port: int,
+                   ordinary_launch: bool) -> list[str]:
+    if ordinary_launch and mode == "default":
+        return [str(server), "--mlx", "--mlx-model-artifacts-dir", str(root),
+                "--host", "127.0.0.1", "--port", str(port)]
+    blocks = STANDARD_CONTEXT_TOKENS // 16 if ordinary_launch else TOTAL_BLOCKS
+    return [*native.server_command(server, root, mode, port), "--total-blocks", str(blocks)]
+
+
+def check_standard_model(models: dict[str, Any], model_id: str) -> dict[str, Any]:
+    entries = models["data"]
+    if len(entries) != 1 or entries[0].get("id") != model_id \
+            or entries[0].get("context_length") != STANDARD_CONTEXT_TOKENS:
+        raise ValueError(f"expected {model_id} with a 32,768-token budget")
+    return {"id": entries[0]["id"], "context_length": entries[0]["context_length"]}
+
+
 def run_mode(server: Path, root: Path, output: Path, mode: str, items: list[dict[str, Any]],
-             resume: bool) -> dict[str, Any]:
+             resume: bool, ordinary_launch: bool = False) -> dict[str, Any]:
     mode_dir = output / mode
     mode_dir.mkdir(parents=True, exist_ok=resume)
     with socket.socket() as listener:
@@ -132,9 +151,11 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, items: list[dict
     log_path = mode_dir / "server.log"
     started = time.monotonic()
     rows: list[dict[str, Any]] = []
+    ordinary_arm = ordinary_launch and mode == "default"
+    model_id = ORDINARY_MODEL_ID if ordinary_arm else MODEL_ID
+    advertised_model = None
     with log_path.open("ab") as log:
-        command = [*native.server_command(server, root, mode, port),
-                   "--total-blocks", str(TOTAL_BLOCKS)]
+        command = server_command(server, root, mode, port, ordinary_launch)
         process = subprocess.Popen(command, stdout=log, stderr=log, env=native.server_env(),
                                    start_new_session=True)
         rss = RssPeak(process.pid)
@@ -143,13 +164,15 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, items: list[dict
                 if process.poll() is not None:
                     raise RuntimeError(f"owned {mode} server exited with {process.returncode}")
                 try:
-                    native.request(base, "/v1/models")
+                    models_raw = native.request(base, "/v1/models")
                     break
                 except (OSError, ValueError):
                     if time.monotonic() - started >= READY_TIMEOUT:
                         raise TimeoutError("native server readiness timeout") from None
                     time.sleep(1)
             ready_seconds = time.monotonic() - started
+            if ordinary_launch:
+                advertised_model = check_standard_model(json.loads(models_raw), model_id)
             rss.start()
             for index, item in enumerate(items):
                 row_path = mode_dir / f"{index:03d}-{item['id']}.json"
@@ -158,7 +181,7 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, items: list[dict
                     continue
                 before = native.metrics(native.request(base, "/metrics").decode())
                 t0 = time.monotonic()
-                response = post_chat(base, request_body(item))
+                response = post_chat(base, request_body(item, model_id))
                 elapsed = time.monotonic() - t0
                 after = native.metrics(native.request(base, "/metrics").decode())
                 choice = response["choices"][0]
@@ -177,8 +200,11 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, items: list[dict
             peak = rss.finish() if rss.is_alive() else rss.peak_kib
             native.stop_owned(process)
     native.scrub_log(log_path)
-    return {"mode": mode, "ready_seconds": round(ready_seconds, 3), "peak_rss_kib": peak,
-            "rows": rows}
+    result = {"mode": mode, "ready_seconds": round(ready_seconds, 3), "peak_rss_kib": peak,
+              "rows": rows}
+    if advertised_model is not None:
+        result["advertised_model"] = advertised_model
+    return result
 
 
 def summarize(items: list[dict[str, Any]], runs: dict[str, dict[str, Any]],
@@ -204,6 +230,8 @@ def summarize(items: list[dict[str, Any]], runs: dict[str, dict[str, Any]],
             "long_context_elapsed_seconds": next(
                 (r["elapsed_seconds"] for r in rows if r["id"] == LONG_ID), None),
         }
+        if "advertised_model" in run:
+            summary["modes"][mode]["advertised_model"] = run["advertised_model"]
     if "disabled" in runs and len(runs) > 1:
         direct = {r["id"]: r["text"] for r in runs["disabled"]["rows"]}
         identity = {}
@@ -232,11 +260,17 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="run only the first N items (smoke runs)")
     parser.add_argument("--resume", action="store_true",
                         help="continue an interrupted run with an unchanged contract")
-    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
+    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES,
                         help="control modes; `default` runs the server with no policy flags")
+    parser.add_argument("--ordinary-launch", action="store_true",
+                        help="replay the default arm with the normal 32k Flash Next launch")
     args = parser.parse_args()
+    if args.modes is None:
+        args.modes = ["disabled", "default"] if args.ordinary_launch else list(MODES)
     if "disabled" not in args.modes or len(set(args.modes)) != len(args.modes):
         parser.error("--modes must list each mode once and include the disabled baseline")
+    if args.ordinary_launch and set(args.modes) != {"disabled", "default"}:
+        parser.error("--ordinary-launch compares only the disabled and default arms")
     items = load_items(args.items)
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
                 "items": len(items), "items_sha256": sha256_bytes(args.items.read_bytes()),
@@ -246,6 +280,8 @@ def main() -> int:
                 "request_timeout_seconds": REQUEST_TIMEOUT, "grader": "frozen closed_checks",
                 "qualification": False, "release_ready": False,
                 "scope": "functional and closed-answer QA; MTP-S/P/D and performance not assessed"}
+    if args.ordinary_launch:
+        contract.update(ordinary_launch=True, total_blocks=STANDARD_CONTEXT_TOKENS // 16)
     if args.dry_run:
         print(json.dumps(contract, indent=2))
         return 0
@@ -275,7 +311,7 @@ def main() -> int:
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
     host_quiet = native.wait_for_quiet()
     runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
-                           items, args.resume) for mode in args.modes}
+                           items, args.resume, args.ordinary_launch) for mode in args.modes}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:
         raise ValueError("native manifest changed during the run")
