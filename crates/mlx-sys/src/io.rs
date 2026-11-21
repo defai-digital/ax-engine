@@ -94,8 +94,8 @@ pub fn load_safetensors(
     }
 }
 
-/// Load all tensors from a safetensors file using a memory-mapped region
-/// (zero-copy on the file → array path). Returns `name → MlxArray`.
+/// Load all tensors from a memory-mapped safetensors file into MLX arrays.
+/// Returns `name → MlxArray`.
 ///
 /// Unlike `load_safetensors`, no bytes are copied into a CPU buffer up
 /// front. Each tensor is created from a slice of the `Mmap`; MLX copies
@@ -300,15 +300,36 @@ fn load_safetensors_mmap_filtered(
     Ok(result)
 }
 
-/// Fail closed when `path` no longer matches the metadata taken before it
-/// was mapped (size or mtime drift, or the path vanished).
+/// Compare file metadata used to detect drift during a load.
+/// Unix file identity detects replacement, and change time detects rewrites
+/// that preserve modification time.
+pub fn file_metadata_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    let modified = before.modified().ok();
+    if before.len() != after.len() || modified.is_none() || modified != after.modified().ok() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Fail closed when `path` no longer matches the file opened before mapping.
 fn ensure_unchanged_since(path: &Path, before: &std::fs::Metadata) -> Result<(), String> {
     let after = std::fs::metadata(path)
         .map_err(|e| format!("stat after load {}: {}", path.display(), e))?;
-    if after.len() != before.len() || after.modified().ok() != before.modified().ok() {
+    if !file_metadata_unchanged(before, &after) {
         return Err(format!(
             "safetensors file {} changed while mapped (size {} -> {}, mtime {:?} -> {:?}); \
-             refusing to load possibly-torn tensors",
+             size, timestamps, or file identity differ; refusing to load possibly-torn tensors",
             path.display(),
             before.len(),
             after.len(),
@@ -410,6 +431,32 @@ mod tests {
         let err = ensure_unchanged_since(&path, &before).unwrap_err();
         assert!(err.contains("stat after load"), "{err}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drift_check_rejects_file_replacement_with_same_size_and_mtime() {
+        let dir = std::env::temp_dir().join(format!("ax-drift-replacement-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shard.bin");
+        std::fs::write(&path, [0u8; 16]).unwrap();
+        let original = std::fs::File::open(&path).unwrap();
+        let before = original.metadata().unwrap();
+        let replacement = dir.join("replacement.bin");
+        std::fs::write(&replacement, [1u8; 16]).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(before.modified().unwrap())
+            .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        let result = ensure_unchanged_since(&path, &before);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.is_err());
     }
 
     /// Build a minimal safetensors file in a temp dir, load it back, and

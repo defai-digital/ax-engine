@@ -4268,27 +4268,9 @@ fn mtp_sidecar_file_unchanged(
     before: Option<&std::fs::Metadata>,
     after: Option<&std::fs::Metadata>,
 ) -> bool {
-    let (Some(before), Some(after)) = (before, after) else {
-        return false;
-    };
-    if before.len() != after.len()
-        || before.modified().ok().is_none()
-        || before.modified().ok() != after.modified().ok()
-    {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if before.dev() != after.dev()
-            || before.ino() != after.ino()
-            || before.ctime() != after.ctime()
-            || before.ctime_nsec() != after.ctime_nsec()
-        {
-            return false;
-        }
-    }
-    true
+    before
+        .zip(after)
+        .is_some_and(|(before, after)| mlx_sys::io::file_metadata_unchanged(before, after))
 }
 
 /// Repair the two byte-identical-to-audited Tiel exports whose AXQuant runtime
