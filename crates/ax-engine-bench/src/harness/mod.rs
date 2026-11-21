@@ -4,10 +4,9 @@
 //! observation utilities used by the workload fixtures under
 //! `crates/ax-engine-bench/src/workloads/`. See
 //! `.internal/prd/engine-serving-invariants.md` (Phase 1 for metrics,
-//! Phase 4 for `pressure_observer`, Phase 6 for `ngram_claim_gate`).
+//! Phase 4 for `pressure_observer`).
 
 pub(crate) mod metrics;
-pub(crate) mod ngram_claim_gate;
 pub(crate) mod pressure_observer;
 
 // `WorkloadReport` is consumed by workload fixtures; the remaining metrics

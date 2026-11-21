@@ -110,10 +110,12 @@ artifacts and release claims must distinguish:
 
 The bench script `scripts/bench_mlx_inference_stack.py` emits two separate
 fields per row: `ax_decode_claim_status` (fallback / promotion state) and
-`ax_decode_claim_mode` (correctness mode). The same-policy greedy gate in
-`crates/ax-engine-bench/src/harness/ngram_claim_gate.rs` decides whether
-two paired rows can be promoted as a single greedy-exact claim — see
-[NGRAM-ACCELERATION.md](NGRAM-ACCELERATION.md) for the full taxonomy.
+`ax_decode_claim_mode` (correctness mode). The bench script also records a
+same-policy row identity (`ax_decode_row_identity` plus
+`ax_decode_same_policy_baseline_identity`)
+so two paired rows can be compared for promotion to a single greedy-exact
+claim — see [NGRAM-ACCELERATION.md](NGRAM-ACCELERATION.md) for the full
+taxonomy.
 
 Sampling-mode rows may report throughput and acceptance telemetry, but
 **must not be labeled distribution-exact**. The promotion gate in

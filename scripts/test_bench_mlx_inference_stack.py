@@ -3172,7 +3172,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("temperature=0.7", sig)
         self.assertIn("top_p=0.95", sig)
 
-    def test_build_row_identity_matches_rust_gate_schema(self) -> None:
+    def test_build_row_identity_has_stable_schema(self) -> None:
         ident = bench.build_row_identity(
             model_id="qwen3",
             tokens=[1, 2, 3, 4],
@@ -3180,9 +3180,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             max_output_tokens=64,
             sampler=None,
         )
-        # Schema name and field set must match the Rust harness
-        # RowIdentity struct ordering so a Python aggregator can hand a
-        # JSON-deserialized row to the gate without renaming fields.
+        # Schema name and field set are the Python-side promotion contract
+        # so aggregators can compare two rows without renaming fields.
         self.assertEqual(ident["schema"], "ax.row_identity.v1")
         for key in (
             "model_id",
@@ -3196,6 +3195,55 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(ident["seed"], 0)
         self.assertEqual(ident["max_output_tokens"], 64)
         self.assertEqual(ident["sampler_signature"], "greedy")
+
+    def test_bench_axengine_row_identity_prefers_explicit_model_id(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "client_wall_total_ms": 420.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+        }
+        metadata = {"model_family": "qwen3_5", "model_type": "qwen3_5"}
+        with patch.object(bench, "axengine_one_run", side_effect=[dict(run), dict(run)]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                1,
+                0.0,
+                model_metadata=dict(metadata),
+                model_id="qwen3.8-27b:axq",
+                direct_mode=True,
+            )
+
+        identity = row["ax_decode_row_identity"]
+        self.assertEqual(identity["model_id"], "qwen3.8-27b:axq")
+        self.assertEqual(identity, row["ax_decode_same_policy_baseline_identity"])
+
+        # Omitting model_id keeps the metadata fallback for direct callers
+        # that invoke bench_axengine outside the CLI main().
+        with patch.object(bench, "axengine_one_run", side_effect=[dict(run), dict(run)]):
+            fallback_row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                1,
+                0.0,
+                model_metadata=dict(metadata),
+                direct_mode=True,
+            )
+
+        fallback_identity = fallback_row["ax_decode_row_identity"]
+        self.assertEqual(fallback_identity["model_id"], "qwen3_5")
+        self.assertEqual(
+            fallback_identity,
+            fallback_row["ax_decode_same_policy_baseline_identity"],
+        )
 
     def test_absent_ax_mlx_telemetry_stays_silent(self) -> None:
         self.assertEqual(

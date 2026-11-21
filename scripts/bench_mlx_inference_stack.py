@@ -1614,8 +1614,8 @@ def ax_decode_effective_route(
 def canonical_prompt_hash(tokens: list[int]) -> str:
     """Stable SHA256-hex(prefix) hash of a token sequence.
 
-    Used by the same-policy promotion gate (Rust harness +
-    ``ax_decode_same_policy_baseline_identity``) so a direct-vs-n-gram
+    Used by the Python same-policy promotion checks and
+    ``ax_decode_same_policy_baseline_identity`` so a direct-vs-n-gram
     pairing can verify both rows ran on the exact same prompt without
     embedding the full token vector in every artifact.
 
@@ -1665,9 +1665,9 @@ def build_row_identity(
 ) -> dict[str, Any]:
     """Construct the identity block embedded in every emitted bench row.
 
-    Mirrors the Rust ``crates/ax-engine-bench/src/harness/ngram_claim_gate.rs::RowIdentity``
-    so a Python aggregator and the Rust promotion gate can decide on the
-    same five fields.
+    The five fields are the Python-side same-policy promotion contract: a
+    direct-vs-n-gram pairing is only comparable when both rows agree on all
+    of them.
     """
     return {
         "schema": "ax.row_identity.v1",
@@ -4557,6 +4557,7 @@ def bench_axengine(
     prompt_source: str = "random",
     load_gate: Callable[[str], dict[str, Any]] | None = None,
     gpu_wake: bool = True,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     if cooldown is None:
         cooldown = float(warmup_repetitions)
@@ -4684,6 +4685,21 @@ def bench_axengine(
         if mtp_disable_ngram_stacking and not direct_mode
         else None
     )
+    # Prefer the configured --model identifier: model_family/model_type alone
+    # can conflate distinct artifacts served under the same family.
+    row_model_id = (
+        model_id
+        or model_metadata.get("model_family")
+        or model_metadata.get("model_type")
+        or "unknown"
+    )
+    row_identity = build_row_identity(
+        model_id=row_model_id,
+        tokens=tokens,
+        seed=seed,
+        max_output_tokens=generation_tokens,
+        sampler=sampler,
+    )
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
@@ -4760,28 +4776,9 @@ def bench_axengine(
         if sampler
         else "greedy",
         # Row identity block + same-policy baseline pointer (PRD §8 Phase 6).
-        "ax_decode_row_identity": build_row_identity(
-            model_id=(
-                model_metadata.get("model_family")
-                or model_metadata.get("model_type")
-                or "unknown"
-            ),
-            tokens=tokens,
-            seed=seed,
-            max_output_tokens=generation_tokens,
-            sampler=sampler,
-        ),
-        "ax_decode_same_policy_baseline_identity": build_row_identity(
-            model_id=(
-                model_metadata.get("model_family")
-                or model_metadata.get("model_type")
-                or "unknown"
-            ),
-            tokens=tokens,
-            seed=seed,
-            max_output_tokens=generation_tokens,
-            sampler=sampler,
-        ),
+        # Built once per row so the two fields cannot drift.
+        "ax_decode_row_identity": dict(row_identity),
+        "ax_decode_same_policy_baseline_identity": dict(row_identity),
         "ax_mlx_telemetry": ax_mlx_telemetry,
         "ax_mlx_decode_route": summarize_ax_mlx_decode_route(ax_mlx_telemetry),
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
@@ -6565,6 +6562,7 @@ def main() -> None:
                             args.warmup_repetitions,
                             args.cooldown,
                             model_metadata=model_metadata,
+                            model_id=args.model,
                             direct_mode=direct_mode,
                             engine_key_override=engine_key,
                             capture_output_token_ids=args.capture_output_token_ids,

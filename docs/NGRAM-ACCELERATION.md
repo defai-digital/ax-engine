@@ -234,27 +234,26 @@ but the default throughput artifact stays size-conscious and claim-scoped.
   JSON/tool payloads) prefer non-random prompts. Random-token throughput is
   useful for engine comparison, not for user-workload generalization.
 
-## Same-policy greedy promotion gate
+## Same-policy greedy promotion contract
 
-The Rust gate at `crates/ax-engine-bench/src/harness/ngram_claim_gate.rs`
-decides whether a baseline-candidate pair can be promoted to a single
-greedy-exact accelerated claim. Inputs:
+Every bench row carries an `ax.row_identity.v1` block in
+`ax_decode_row_identity` plus the same-policy baseline pointer
+`ax_decode_same_policy_baseline_identity`. Both are built once per row from
+the same inputs, so a direct-vs-n-gram pairing can be compared without the
+two sides drifting. The identity fields are:
 
-- `RowIdentity` for both rows: `model_id`, `prompt_hash`, `seed`,
-  `max_output_tokens`, `sampler_signature`.
-- The full generated token sequences from each row.
-- An `is_sampling_mode` flag.
+- `model_id`: the configured `--model` identifier (not the model family),
+  falling back to the model metadata only for direct callers that omit it.
+- `prompt_hash`
+- `seed`
+- `max_output_tokens`
+- `sampler_signature`
 
-Outcomes:
-
-| Outcome | Meaning |
-|---|---|
-| `Promoted` | All identity fields equal; generated token IDs match byte-for-byte; greedy mode. |
-| `IdentityMismatch` | One or more identity fields differ. The artifact records which field. |
-| `TokensDiverged` | Identity matched but token streams differ. The artifact records `first_mismatch_index`, `baseline_len`, `candidate_len`. |
-| `SamplingModeRefused` | `is_sampling_mode == true`. Promotion refused unconditionally. |
-
-The gate is **fail-closed**: any input ambiguity defaults to non-promotion.
+A baseline-candidate pair may be promoted to a single greedy-exact
+accelerated claim only when every identity field matches, both rows are in
+greedy mode, and the generated token sequences match byte-for-byte.
+Sampling-mode rows (`*_sampling_not_distribution_exact`) are never
+promotable. Short of a verified pairing, the row is not a promotion claim.
 
 ## Sampling-mode promotion is forbidden
 
@@ -283,18 +282,14 @@ Every n-gram row used for release claims must include:
   coherent generated content rather than throughput alone
 
 The bench script enforces presence of `ax_decode_claim_status` and
-`ax_decode_claim_mode` on every emitted row; the same-policy gate
-enforces presence of the rest at promotion time.
+`ax_decode_claim_mode` on every emitted row. The same-policy identity block
+records the pairing fields; telemetry and token-output validation artifacts
+remain separate evidence requirements.
 
-## Reproducing the gate locally
+## Reproducing the promotion checks locally
 
 ```bash
-# Run the Python claim-taxonomy tests.
+# Claim taxonomy and same-policy row identity tests.
 python -m unittest scripts.test_bench_mlx_inference_stack -v -k claim
-
-# Run the Rust same-policy gate tests.
-cargo test -p ax-engine-bench --quiet ngram_claim_gate
+python -m unittest scripts.test_bench_mlx_inference_stack -v -k identity
 ```
-
-Both surfaces stay in different runtimes by design — neither side can
-silently relax the other's checks.
