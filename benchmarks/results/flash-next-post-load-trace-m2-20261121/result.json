@@ -1,0 +1,143 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "source_startup": {
+    "status": "complete",
+    "hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+    "server_sha256": "8d83c0199ad59afe2725741c901b70ff84b55666868900f52ef433250fd5f52d",
+    "paired_receipt_sha256": "dbfa5493530693bd904969ca7425d68e5eedfe349b01496b11da2c37062b05a2",
+    "traces": [
+      {
+        "scheduled_offset_seconds": 0,
+        "observed_offset_seconds": 0.0,
+        "exit_code": 0
+      },
+      {
+        "scheduled_offset_seconds": 9,
+        "observed_offset_seconds": 9.120765333995223,
+        "exit_code": 0
+      },
+      {
+        "scheduled_offset_seconds": 24,
+        "observed_offset_seconds": 24.052363249938935,
+        "exit_code": 0
+      },
+      {
+        "scheduled_offset_seconds": 44,
+        "observed_offset_seconds": 44.11610079195816,
+        "exit_code": 0
+      },
+      {
+        "scheduled_offset_seconds": 64,
+        "observed_offset_seconds": 64.17951104196254,
+        "exit_code": 0
+      },
+      {
+        "scheduled_offset_seconds": 84,
+        "observed_offset_seconds": 84.03165595897008,
+        "exit_code": 0
+      },
+      {
+        "scheduled_offset_seconds": 104,
+        "observed_offset_seconds": 104.09445574996062,
+        "exit_code": 0
+      }
+    ],
+    "markers": [
+      "2026-11-21T16:00:03.469831Z",
+      "2026-11-21T16:01:45.869692Z",
+      "2026-11-21T16:02:04.593191Z"
+    ],
+    "matched_output_ids": 96,
+    "load_trace_armed_seconds": 82.63526012504008,
+    "ready_observed_seconds": 203.73823762498796
+  },
+  "generation_thread_traces": [
+    {
+      "trace_sha256": "9f8fd2c046a915388df159669041d02d9766cbe733df9dad470983a3e0eb68f7",
+      "offset_seconds": 0,
+      "native_generation_samples": 85,
+      "frames": {
+        "mmap_filter": 85,
+        "array_init_bf16": 85,
+        "memory_copy": 84,
+        "flash_next_forward": 0
+      }
+    },
+    {
+      "trace_sha256": "7eb5f06e0c70dcc99e9a8325f3d0f008863c12bd2d584c3d59c3aaf41b84d52d",
+      "offset_seconds": 9,
+      "native_generation_samples": 89,
+      "frames": {
+        "mmap_filter": 89,
+        "array_init_bf16": 89,
+        "memory_copy": 89,
+        "flash_next_forward": 0
+      }
+    },
+    {
+      "trace_sha256": "111a4f076e5e44878153afe009a8aa9507eddbd0ec83be6bf1ad4788c4aa41fe",
+      "offset_seconds": 24,
+      "native_generation_samples": 89,
+      "frames": {
+        "mmap_filter": 89,
+        "array_init_bf16": 89,
+        "memory_copy": 89,
+        "flash_next_forward": 0
+      }
+    },
+    {
+      "trace_sha256": "ed97f554086ad370d3b6dd620468fcf2897e71adb49c1abb4789446d45379940",
+      "offset_seconds": 44,
+      "native_generation_samples": 89,
+      "frames": {
+        "mmap_filter": 89,
+        "array_init_bf16": 89,
+        "memory_copy": 89,
+        "flash_next_forward": 0
+      }
+    },
+    {
+      "trace_sha256": "5ab0c5a88bce071accadb4f2f0327d74f924179b15f8c9f29aba2d6c0ce5b1fd",
+      "offset_seconds": 64,
+      "native_generation_samples": 88,
+      "frames": {
+        "mmap_filter": 88,
+        "array_init_bf16": 88,
+        "memory_copy": 88,
+        "flash_next_forward": 0
+      }
+    },
+    {
+      "trace_sha256": "29eb998dbb09d7e872bdc83f88a5b7f63e220017178ccbae2172cde5389a79d7",
+      "offset_seconds": 84,
+      "native_generation_samples": 89,
+      "frames": {
+        "mmap_filter": 89,
+        "array_init_bf16": 89,
+        "memory_copy": 89,
+        "flash_next_forward": 0
+      }
+    },
+    {
+      "trace_sha256": "7ae6ebcb7c04b5bc267c61b24a172728e91f01f19625ce79adbaec3f8e698baa",
+      "offset_seconds": 104,
+      "native_generation_samples": 85,
+      "frames": {
+        "mmap_filter": 0,
+        "array_init_bf16": 0,
+        "memory_copy": 1,
+        "flash_next_forward": 78
+      }
+    }
+  ],
+  "resident_load_to_first_kernel_warm_log_seconds": 102.399861,
+  "resident_load_to_http_listener_seconds": 121.12336,
+  "observed_system_pressure_levels": [
+    1
+  ],
+  "related_open_member": {
+    "name": "mtp.safetensors",
+    "observed_utc": "2026-11-21T16:01:08Z",
+    "published_size_bytes": 5214305544
+  }
+}
