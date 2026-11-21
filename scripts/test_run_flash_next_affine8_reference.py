@@ -63,6 +63,27 @@ class Affine8TableTests(unittest.TestCase):
         self.assertEqual(table.bytes_read, 4 * 180)
         self.assertEqual(table(mx.zeros((2, 0), dtype=mx.int32)).shape, (2, 0, 160))
         self.assertEqual(table.row_reads, 4)
+        self.assertIsNone(table.row_io)
+
+    def test_profiles_host_lookup_deltas_per_generation(self):
+        table = Affine8Table(self.root, profile_row_io=True)
+
+        def generate(*_args, **_kwargs):
+            table(mx.array([1, 7, 1]))
+            table(mx.zeros((0,), dtype=mx.int32))
+            return {"generated_ids": [7]}
+
+        with patch.object(diagnostic.reference, "generate", generate):
+            for _ in range(2):
+                result = diagnostic.generate_case(None, [1], 1, table=table)
+                self.assertEqual(result["generated_ids"], [7])
+                timing = result["ple_row_io"]
+                self.assertEqual(timing["lookups"], 1)
+                for phase in ("index_host", "plan", "select_and_read", "graph_build"):
+                    elapsed = timing[f"{phase}_seconds"]
+                    self.assertTrue(np.isfinite(elapsed))
+                    self.assertGreaterEqual(elapsed, 0.0)
+            self.assertNotIn("ple_row_io", diagnostic.generate_case(None, [1], 1))
 
     def test_rejects_out_of_range_or_noninteger_ids(self):
         table = Affine8Table(self.root)
