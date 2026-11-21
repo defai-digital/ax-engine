@@ -27,6 +27,11 @@ TRAJECTORY_HASHES = {f"traj-{index:02d}": f"{index:064x}" for index in range(16)
 COMMON = {"server_sha256": "a" * 64, "inventory_sha256": "b" * 64, "hardware": HARDWARE,
           "qualification": False, "release_ready": False,
           "host_quiet": {"cpu_idle_percent": 95.0}, "host_idle_after": 93.0}
+COHORT_PATH = mod.qa_cohort.FROZEN / "full-qa-items.json"
+COHORT_IDS = [item["id"] for item in mod.qa_cohort.load_items(COHORT_PATH)]
+SIGNED_REFERENCE = (SCRIPT.parent.parent / "benchmarks/results/qualification"
+                    / "2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/reference/result.json")
+REFERENCE_QA = json.loads(SIGNED_REFERENCE.read_text())["qa"]
 
 
 def ax_cells(decode_seconds=7.0, ttft=(4.0, 16.0, 70.0), tokens=128):
@@ -53,7 +58,10 @@ def good():
     arm = {"completed": 105, "passed": 101, "quality_failures": list(FAILURES), "normal_stops": True,
            "verified_steps": 0.0, "route_errors": 0.0, "ready_seconds": 33.0,
            "peak_rss_kib": 80 * GIB_KIB, "long_context_elapsed_seconds": 270.0}
-    qa = {**COMMON, "summary": {"modes": {"disabled": dict(arm), "default": dict(arm)},
+    qa = {**COMMON, "items": len(COHORT_IDS), "items_sha256": mod.sha256_file(COHORT_PATH),
+          "grades": {mode: {item_id: {"passed": item_id not in FAILURES} for item_id in COHORT_IDS}
+                     for mode in mod.AX_ARMS},
+          "summary": {"modes": {"disabled": copy.deepcopy(arm), "default": copy.deepcopy(arm)},
                                 "text_identity_vs_disabled": {"default": {
                                     "matching_text_pairs": 105, "differing_text_ids": []}}}}
     lifecycle = {**COMMON, "lifecycle_passed": True, "runs": [
@@ -76,7 +84,7 @@ def good():
                  "completed": True, "phase": "complete", "runtime_files_bound": 1750,
                  "versions": dict(mod.REFERENCE_VERSIONS), "language_sha256": mod.REFERENCE_LANGUAGE_SHA256,
                  **mod.REFERENCE_EXECUTION_SETTINGS,
-                 "qa": {"rows": [0] * 105, "failures": list(FAILURES)},
+                 "qa": copy.deepcopy(REFERENCE_QA),
                  "matrix": {"cells": ref_cells(), "prompt_id_hashes": dict(CELL_HASHES)}}
     delivery = {**COMMON, "completed": True, "fresh_cache": True, "revision": TH["target"]["pack_revision"],
                 "download": {"exit_code": 0, "elapsed_seconds": 900.0}, "previous_attempts": [],
@@ -106,8 +114,14 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_a_failure_the_reference_passes_fails_quality(self):
         r = good()
-        r["qa"]["summary"]["modes"]["default"]["quality_failures"].append("math_gcd_18_24")
-        self.assertEqual(failed(r), {"quality"})
+        item_id = "math_gcd_18_24"
+        r["qa"]["grades"]["default"][item_id]["passed"] = False
+        default = r["qa"]["summary"]["modes"]["default"]
+        default["quality_failures"].append(item_id)
+        default["passed"] -= 1
+        result = next(g for g in verdict(r)["gates"] if g["gate"] == "quality")
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["ax_only_failures"], {"disabled": [], "default": [item_id]})
 
     def test_default_text_that_differs_from_direct_fails_quality(self):
         r = good()
@@ -151,8 +165,34 @@ class ReleaseGateTests(unittest.TestCase):
             with self.subTest(failure_list=missing):
                 r = good()
                 r["reference"]["qa"]["failures"] = missing
-                for mode in ("disabled", "default"):
-                    r["qa"]["summary"]["modes"][mode]["quality_failures"] = []
+                self.assertEqual(failed(r), {"quality"})
+
+    def test_reference_rows_and_grades_must_match_the_frozen_replay(self):
+        for label, mutate in (
+            ("duplicate case", lambda qa: qa["rows"].__setitem__(1, qa["rows"][0])),
+            ("wrong prompt length", lambda qa: qa["rows"][0].update(prompt_tokens=1)),
+            ("changed answer", lambda qa: qa["rows"][0].update(text="")),
+            ("stale grade", lambda qa: qa["grades"][COHORT_IDS[0]].update(passed=False)),
+            ("numeric grade", lambda qa: qa["grades"][COHORT_IDS[0]].update(passed=1)),
+            ("missing grades", lambda qa: qa.pop("grades")),
+        ):
+            with self.subTest(case=label):
+                r = good()
+                mutate(r["reference"]["qa"])
+                self.assertEqual(failed(r), {"quality"})
+
+    def test_native_summary_requires_frozen_per_item_evidence(self):
+        for label, mutate in (
+            ("different cohort", lambda qa: qa.update(items_sha256="0" * 64)),
+            ("malformed grades", lambda qa: qa.update(grades=[True])),
+            ("missing case", lambda qa: qa["grades"]["disabled"].pop(COHORT_IDS[0])),
+            ("unreported failure", lambda qa: qa["grades"]["default"][COHORT_IDS[0]].update(passed=False)),
+            ("missing text pair", lambda qa: qa["summary"]["text_identity_vs_disabled"]["default"]
+             .update(matching_text_pairs=104)),
+        ):
+            with self.subTest(case=label):
+                r = good()
+                mutate(r["qa"])
                 self.assertEqual(failed(r), {"quality"})
 
     def test_default_mode_activating_the_drafter_fails_the_policy_gate(self):

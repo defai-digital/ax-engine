@@ -20,6 +20,11 @@ import subprocess
 import sys
 from typing import Any
 
+try:
+    import run_flash_next_qa_cohort as qa_cohort
+except ImportError:
+    from scripts import run_flash_next_qa_cohort as qa_cohort
+
 SCRIPTS = Path(__file__).resolve().parent
 THRESHOLDS = SCRIPTS / "flash_next_release_thresholds.json"
 GIB = 1024**3
@@ -175,34 +180,78 @@ def gate_long_lookup(qa: dict[str, Any], th: dict[str, Any]) -> list[dict[str, A
                  seconds=seconds)]
 
 
+def cohort_failures(grades: Any, expected_ids: set[str], reported: Any) -> set[str] | None:
+    if (not isinstance(grades, dict) or grades.keys() != expected_ids
+            or any(not isinstance(grade, dict) or type(grade.get("passed")) is not bool
+                   for grade in grades.values())):
+        return None
+    failures = {item_id for item_id, grade in grades.items() if not grade["passed"]}
+    if (not isinstance(reported, list) or len(reported) != len(failures)
+            or not all(isinstance(item_id, str) for item_id in reported)
+            or set(reported) != failures):
+        return None
+    return failures
+
+
 def gate_quality(qa: dict[str, Any], reference: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
+    cohort_path = qa_cohort.FROZEN / "full-qa-items.json"
+    items = qa_cohort.load_items(cohort_path)
+    expected_ids = {item["id"] for item in items}
     modes = qa["summary"]["modes"]
-    ref_qa = reference.get("qa") or {}
+    ref_qa = reference.get("qa")
+    if not isinstance(ref_qa, dict):
+        ref_qa = {}
     problems = []
     rows = ref_qa.get("rows")
-    reference_complete = reference.get("completed") is True and isinstance(rows, list) and len(rows) == 105
-    recorded_failures = ref_qa.get("failures")
-    if not reference_complete:
+    ref_failures = None
+    if reference.get("completed") is not True or not isinstance(rows, list) or len(rows) != len(items):
         problems.append("reference QA is incomplete")
-    elif not isinstance(recorded_failures, list) or not all(isinstance(item, str) for item in recorded_failures):
-        problems.append("reference QA has no valid failure list")
-    ref_failures = set(recorded_failures) if not problems else None
+    else:
+        inputs = json.loads((qa_cohort.FROZEN / "full-qa-inputs.json").read_text())["prepared"]
+        if (len(inputs) != len(items)
+                or any(not isinstance(row, dict) or row.get("id") != item["id"]
+                       or prompt["id"] != item["id"]
+                       or type(row.get("prompt_tokens")) is not int
+                       or row["prompt_tokens"] != len(prompt["input_ids"])
+                       or not isinstance(row.get("text"), str)
+                       for row, item, prompt in zip(rows, items, inputs))):
+            problems.append("reference QA rows do not match the frozen prompts in order")
+        else:
+            grades = qa_cohort.grade(items, {row["id"]: row["text"] for row in rows})
+            recorded_grades = ref_qa.get("grades")
+            ref_failures = cohort_failures(recorded_grades, expected_ids, ref_qa.get("failures"))
+            if grades != recorded_grades or ref_failures is None:
+                problems.append("reference QA grades or failures disagree with the frozen checker replay")
+                ref_failures = None
+    if qa.get("items") != len(items) or qa.get("items_sha256") != sha256_file(cohort_path):
+        problems.append("AX QA does not bind the frozen cohort")
+    ax_grades = qa.get("grades")
+    if not isinstance(ax_grades, dict):
+        ax_grades = {}
+    ax_failures: dict[str, list[str]] = {}
     ax_only: dict[str, list[str] | None] = {}
     for mode in AX_ARMS:
         summary = modes.get(mode, {})
-        if summary.get("completed") != 105 or not summary.get("normal_stops") or summary.get("route_errors"):
+        if summary.get("completed") != len(items) or not summary.get("normal_stops") or summary.get("route_errors"):
             problems.append(f"{mode}: incomplete cohort, abnormal stop or route error")
-        extra = sorted(set(summary.get("quality_failures", [])) - ref_failures) if ref_failures is not None else None
+        reported = summary.get("quality_failures")
+        failures = cohort_failures(ax_grades.get(mode), expected_ids, reported)
+        ax_failures[mode] = reported if isinstance(reported, list) and all(
+            isinstance(item_id, str) for item_id in reported
+        ) else []
+        if failures is None or summary.get("passed") != len(items) - len(failures):
+            problems.append(f"{mode}: missing or inconsistent per-item QA grades")
+        extra = sorted(failures - ref_failures) if failures is not None and ref_failures is not None else None
         ax_only[mode] = extra
         if extra is not None and len(extra) > th["quality"]["ax_only_failures_max"]:
             problems.append(f"{mode}: failures the reference passes: {extra}")
-    differing = qa["summary"]["text_identity_vs_disabled"]["default"]["differing_text_ids"]
-    if differing:
-        problems.append(f"default text differs from direct on {differing}")
+    identity = (qa["summary"].get("text_identity_vs_disabled") or {}).get("default") or {}
+    if identity.get("matching_text_pairs") != len(items) or identity.get("differing_text_ids") != []:
+        problems.append("default and direct do not match on all frozen QA responses")
     return [gate("quality", not problems, "; ".join(problems) or
-                 "105/105 complete in both arms, default text equals direct text, every AX failure "
-                 f"also fails on the reference ({sorted(ref_failures or [])})",
-                 ax_failures={m: modes[m]["quality_failures"] for m in AX_ARMS},
+                 f"{len(items)}/{len(items)} complete in both arms, default text equals direct text, "
+                 f"every AX failure also fails on the reference ({sorted(ref_failures or [])})",
+                 ax_failures=ax_failures,
                  reference_failures=sorted(ref_failures) if ref_failures is not None else None,
                  ax_only_failures=ax_only)]
 
