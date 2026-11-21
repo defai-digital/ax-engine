@@ -1,0 +1,73 @@
+{
+  "diagnostic_only": true,
+  "full": {
+    "memory_samples_sha256": "65b3f060990525e5e97a4818c80ea4d85d29ba96f768e0c565e3a99a4cad2884",
+    "result_sha256": "ca9f595e0b24e61be9b7d7174ad6af60f1f4c43091f18af7b1eeb403ea57b5ed",
+    "runner_sha256": "7088c8a24d7733d6a321b55a29d882df5d92ed65662843a1279c27d52f28d7ee",
+    "samplings_at_normal_pressure": 25
+  },
+  "matched_fixed_matrix_cells": 15,
+  "matched_qa_rows_and_grades": 105,
+  "matched_smoke_output_ids": 96,
+  "prior_native_comparison_cells": {
+    "2048/default": {
+      "ax_decode_tok_s": 46.435,
+      "ax_ttft_s": 1.626,
+      "decode_ratio": 1.2504,
+      "reference_decode_tok_s": 37.137,
+      "reference_ttft_s": 5.646,
+      "ttft_ratio": 0.2881
+    },
+    "2048/disabled": {
+      "ax_decode_tok_s": 46.276,
+      "ax_ttft_s": 1.64,
+      "decode_ratio": 1.2461,
+      "reference_decode_tok_s": 37.137,
+      "reference_ttft_s": 5.646,
+      "ttft_ratio": 0.2905
+    },
+    "512/default": {
+      "ax_decode_tok_s": 49.538,
+      "ax_ttft_s": 0.55,
+      "decode_ratio": 1.2932,
+      "reference_decode_tok_s": 38.307,
+      "reference_ttft_s": 2.197,
+      "ttft_ratio": 0.2504
+    },
+    "512/disabled": {
+      "ax_decode_tok_s": 49.724,
+      "ax_ttft_s": 0.546,
+      "decode_ratio": 1.298,
+      "reference_decode_tok_s": 38.307,
+      "reference_ttft_s": 2.197,
+      "ttft_ratio": 0.2483
+    },
+    "8192/default": {
+      "ax_decode_tok_s": 45.068,
+      "ax_ttft_s": 9.533,
+      "decode_ratio": 1.2133,
+      "reference_decode_tok_s": 37.146,
+      "reference_ttft_s": 15.149,
+      "ttft_ratio": 0.6293
+    },
+    "8192/disabled": {
+      "ax_decode_tok_s": 44.387,
+      "ax_ttft_s": 9.41,
+      "decode_ratio": 1.1949,
+      "reference_decode_tok_s": 37.146,
+      "reference_ttft_s": 15.149,
+      "ttft_ratio": 0.6212
+    }
+  },
+  "prior_native_matrix_sha256": "92cc96e5f0d6577c011c8ebac26a3eb93166c43a5558827842a1e3bef18567bb",
+  "prior_native_server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+  "qa_passing": 100,
+  "signed_reference_sha256": "2eeeb8ab3b5f329726550b675ec61d57edeab6558a582582d75287983d4a19b7",
+  "smoke": {
+    "memory_samples_sha256": "0d2e5ece5177847a64a4cc02b5b7cf3a70aa2a2c28708feb4a212361d5ac9259",
+    "result_sha256": "10175c31bf91d1784b2d3f63d2be0a180390981395b886fe24b1344c3c3678f9",
+    "runner_sha256": "2a94805078547888b26b16f243e04af770a4491586a128fc699dd218079d4dd4",
+    "samplings_at_normal_pressure": 10
+  },
+  "threshold_profile_sha256": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b"
+}
