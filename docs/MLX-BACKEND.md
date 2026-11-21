@@ -423,6 +423,12 @@ matches keys written before the tier existed. A snapshot written with `fast`
 prefix cache and the disk prefix cache when restored by a process running the
 default. The disk key domain stays `ax.mlx.disk_prefix_key.v4`.
 
+On M5 Max 128 GB with the pinned Flash Next MXFP4 pack, indexed prefill
+reduced median TTFT from 9.476 s to 8.924 s at 8,192 input tokens and from
+21.071 s to 19.009 s at 16,384. The greedy token sequences differed in all
+four measured long-prompt pairs. The gathered path remains the exact preset
+default. [M5 measurements](../benchmarks/results/flash-next-mxfp4-qsa-prefill-m5-20261121/README.md).
+
 Memory rule: the usable ceiling is `RAM - max(8 GiB, 10% RAM)`, so a 128 GiB
 host reserves 12.8 GiB and admits about 115.2 GiB. The Metal
 `recommendedMaxWorkingSetSize` is reported but never bounds the ceiling: a
