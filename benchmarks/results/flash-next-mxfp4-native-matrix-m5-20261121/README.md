@@ -41,6 +41,31 @@ timing samples, and prompt hashes. The
 [retry raw runs](retry-raw-runs.json.gz) preserve both per-mode repeats
 for independent comparison.
 
+## Quiet-host repeat
+
+The third run completed on the same current binary, pack and matrix.
+CPU idle was 98.98% before and 97.56% afterward. The two repeats in
+each mode matched all 31 output arrays, and all 124 arrays across the
+four measured processes match the signed v7.9.0 matrix. The comparison
+checked all input hashes, complete output IDs, zero route errors and
+zero MTP verifier steps.
+
+| Input tokens | Explicit direct TTFT | Default TTFT | Explicit direct decode | Default decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 0.546 s | 0.550 s | 49.72 tok/s | 49.54 tok/s |
+| 2,048 | 1.640 s | 1.626 s | 46.28 tok/s | 46.44 tok/s |
+| 8,192 | 9.410 s | 9.533 s | 44.39 tok/s | 45.07 tok/s |
+
+The signed native default-arm medians were 0.487, 1.572 and 12.012 s
+TTFT, with decode at 50.72, 47.10 and 45.78 tok/s. The current native
+observations show lower 8K TTFT, higher short-prompt TTFT and lower
+decode rates across the measured lengths. The executable and macOS
+version differ between those campaigns. The current independent
+MLX-VLM comparison remains open.
+
+The [quiet result](quiet-result.json.gz) and
+[raw repeats](quiet-raw-runs.json.gz) retain the timing and token evidence.
+
 ## Independent reference stop
 
 The pinned MLX-VLM process used the same verified inventory on the
