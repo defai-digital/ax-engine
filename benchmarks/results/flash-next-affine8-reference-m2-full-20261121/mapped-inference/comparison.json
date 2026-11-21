@@ -1,0 +1,178 @@
+{
+  "arms": {
+    "a1": {
+      "cases": [
+        {
+          "prompt_tokens": 512,
+          "select_and_read_seconds": 3.65221362572629,
+          "total_seconds": 5.989625,
+          "ttft_seconds": 4.567461
+        },
+        {
+          "prompt_tokens": 2048,
+          "select_and_read_seconds": 14.970569921075366,
+          "total_seconds": 20.753208,
+          "ttft_seconds": 18.587532
+        },
+        {
+          "prompt_tokens": 8192,
+          "select_and_read_seconds": 104.29911737935618,
+          "total_seconds": 122.466791,
+          "ttft_seconds": 121.014382
+        }
+      ],
+      "matched_ids": 96,
+      "peak_mlx_memory_bytes": 71261645978,
+      "peak_process_rss_bytes": 68719542272,
+      "receipt_sha256": "71d58b4f07fa971aead689e464941b62d38288da5b7898cc02b4bf6c32eb1793",
+      "sampled_pressure": [
+        1
+      ],
+      "samples_sha256": "0c708bfd02828c2309e4eea2e2949bb40f39d534d97ace3fe809c2fb63c944c3"
+    },
+    "a2": {
+      "cases": [
+        {
+          "prompt_tokens": 512,
+          "select_and_read_seconds": 0.044327790034003556,
+          "total_seconds": 2.346367,
+          "ttft_seconds": 1.196422
+        },
+        {
+          "prompt_tokens": 2048,
+          "select_and_read_seconds": 0.11210891709197313,
+          "total_seconds": 5.840696,
+          "ttft_seconds": 4.587366
+        },
+        {
+          "prompt_tokens": 8192,
+          "select_and_read_seconds": 0.4226557483198121,
+          "total_seconds": 18.812297,
+          "ttft_seconds": 17.53241
+        }
+      ],
+      "matched_ids": 96,
+      "peak_mlx_memory_bytes": 71261629597,
+      "peak_process_rss_bytes": 68713234432,
+      "receipt_sha256": "6ae2329ab0abfb23e6972d684224732e5e7db7357dbb5f579950d51f06c80e5d",
+      "sampled_pressure": [
+        1
+      ],
+      "samples_sha256": "05cd451e2070935cebdc29bb828300eba9d9343fbf49abb0609fb8869c3f877c"
+    },
+    "b1": {
+      "cases": [
+        {
+          "prompt_tokens": 512,
+          "select_and_read_seconds": 6.008360999636352,
+          "total_seconds": 8.335845,
+          "ttft_seconds": 6.854517
+        },
+        {
+          "prompt_tokens": 2048,
+          "select_and_read_seconds": 14.972982496139593,
+          "total_seconds": 20.848942,
+          "ttft_seconds": 19.316002
+        },
+        {
+          "prompt_tokens": 8192,
+          "select_and_read_seconds": 91.60316354210954,
+          "total_seconds": 109.70754,
+          "ttft_seconds": 108.239706
+        }
+      ],
+      "matched_ids": 96,
+      "peak_mlx_memory_bytes": 71261645981,
+      "peak_process_rss_bytes": 75282939904,
+      "receipt_sha256": "ed9fa39ae9cfc3d2df186d2967ad256239870c105ca6e806b5ab80122df64a24",
+      "sampled_pressure": [
+        1
+      ],
+      "samples_sha256": "29291514bf90d00277cdb0d34e50abba55bebc5c748dcfea6bb09779e6a80e0c"
+    },
+    "b2": {
+      "cases": [
+        {
+          "prompt_tokens": 512,
+          "select_and_read_seconds": 0.08207345788832754,
+          "total_seconds": 2.413322,
+          "ttft_seconds": 1.250412
+        },
+        {
+          "prompt_tokens": 2048,
+          "select_and_read_seconds": 0.125893872580491,
+          "total_seconds": 5.669317,
+          "ttft_seconds": 4.403027
+        },
+        {
+          "prompt_tokens": 8192,
+          "select_and_read_seconds": 0.38004804379306734,
+          "total_seconds": 18.728976,
+          "ttft_seconds": 17.444811
+        }
+      ],
+      "matched_ids": 96,
+      "peak_mlx_memory_bytes": 71261596834,
+      "peak_process_rss_bytes": 75277172736,
+      "receipt_sha256": "3d1d763d8b780fbe201084bffbf2d0a0cb0dc02c648fcdae3740e8d431740bc2",
+      "sampled_pressure": [
+        1
+      ],
+      "samples_sha256": "e8ee44017ee8d784af2049bed757c352de108130a802d8b19944aa19f0eb2030"
+    }
+  },
+  "descriptive_medians": [
+    {
+      "prompt_tokens": 512,
+      "select_and_read_seconds": {
+        "mapped": 3.04521722876234,
+        "positional": 1.8482707078801468
+      },
+      "total_seconds": {
+        "mapped": 5.3745835,
+        "positional": 4.1679960000000005
+      },
+      "ttft_seconds": {
+        "mapped": 4.0524645,
+        "positional": 2.8819415
+      }
+    },
+    {
+      "prompt_tokens": 2048,
+      "select_and_read_seconds": {
+        "mapped": 7.549438184360042,
+        "positional": 7.54133941908367
+      },
+      "total_seconds": {
+        "mapped": 13.2591295,
+        "positional": 13.296952000000001
+      },
+      "ttft_seconds": {
+        "mapped": 11.8595145,
+        "positional": 11.587449
+      }
+    },
+    {
+      "prompt_tokens": 8192,
+      "select_and_read_seconds": {
+        "mapped": 45.991605792951304,
+        "positional": 52.360886563837994
+      },
+      "total_seconds": {
+        "mapped": 64.21825799999999,
+        "positional": 70.639544
+      },
+      "ttft_seconds": {
+        "mapped": 62.8422585,
+        "positional": 69.27339599999999
+      }
+    }
+  ],
+  "order": [
+    "positional",
+    "mapped",
+    "mapped",
+    "positional"
+  ],
+  "scope": "supplemental bounded diagnostic on M2, OS cache shared without eviction"
+}

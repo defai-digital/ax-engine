@@ -69,3 +69,30 @@ own parallel positional reads and bounded read-ahead.
 
 The [raw smoke receipt](profiled-smoke.json), [memory samples](profiled-smoke-samples.jsonl.gz)
 and [source binding](profiled-smoke-source.json) preserve the measurement.
+
+## Positional reads and shared mappings during inference
+
+Four fresh profiled processes ran in positional, mapped, mapped,
+positional order. Each matched all 96 archived output IDs and completed
+the pack and runtime rehashes. The mapped reader used one read-only
+mapping per physical file, 12 in each execution. All pressure samples
+were normal. The system page cache was shared across the sequence and
+the pack was rehashed before and after each process.
+
+| Process order and reader | 512-token TTFT | 2,048-token TTFT | 8,192-token TTFT | 8,192-token row stage | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A1 positional | 4.567 s | 18.588 s | 121.014 s | 104.299 s | 64.000 GiB |
+| B1 mapped | 6.855 s | 19.316 s | 108.240 s | 91.603 s | 70.113 GiB |
+| B2 mapped | 1.250 s | 4.403 s | 17.445 s | 0.380 s | 70.107 GiB |
+| A2 positional | 1.196 s | 4.587 s | 17.532 s | 0.423 s | 63.994 GiB |
+
+Both readers were much faster in the later processes. The last two
+8,192-token TTFT values were within 0.088 seconds. Peak MLX allocation
+was about 66.37 GiB in all four processes. Both mapped processes had
+about 6 GiB higher RSS, which can include file-backed pages. The earlier
+microbenchmark's repeated-read improvement did not establish a stable
+end-to-end advantage. Keep positional reads for the bounded diagnostic.
+
+The [comparison](mapped-inference/comparison.json) binds the exact
+receipts and memory samples. The trial wrapper and the three added
+raw receipts are in [mapped-inference](mapped-inference/).
