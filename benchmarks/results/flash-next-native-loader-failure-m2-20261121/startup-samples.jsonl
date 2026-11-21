@@ -1,0 +1,3 @@
+{"utc": "2026-11-21T15:42:49+00:00", "pressure": 1, "swap": "total = 1024.00M  used = 1.19M  free = 1022.81M  (encrypted)", "compressor_bytes": 1561968640, "reference_rss_bytes": 6422528, "reference_cpu_percent": 0.0, "elapsed_seconds": 0.003067959100008011}
+{"utc": "2026-11-21T15:42:49+00:00", "pressure": 1, "swap": "total = 1024.00M  used = 1.19M  free = 1022.81M  (encrypted)", "compressor_bytes": 1561968640, "reference_rss_bytes": 247087104, "reference_cpu_percent": 28.4, "elapsed_seconds": 0.26837937510572374}
+{"utc": "2026-11-21T15:42:49+00:00", "pressure": 1, "swap": "total = 1024.00M  used = 1.19M  free = 1022.81M  (encrypted)", "compressor_bytes": 1561968640, "reference_rss_bytes": 337199104, "reference_cpu_percent": 74.0, "elapsed_seconds": 0.5344712090445682}

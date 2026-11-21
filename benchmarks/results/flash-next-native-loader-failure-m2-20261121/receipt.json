@@ -1,0 +1,29 @@
+{
+  "status": "pass",
+  "hardware": "Mac Studio M2 Ultra 192 GiB",
+  "macos_version": "27.2.1",
+  "storage": "external APFS SSD",
+  "mlx_version": "0.32.4",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "server_sha256": "8d83c0199ad59afe2725741c901b70ff84b55666868900f52ef433250fd5f52d",
+  "interposer_sha256": "3806a98db68120ef56bceabf5e9609b0c8ca6537e30d11765d59c95bf83988dc",
+  "harness_sha256": "4e1d3f851f48078be95de99dea69fec9b3b9d825c77d16b56e05e61b59e63e24",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "started": "2026-11-21T15:42:26+00:00",
+  "earlier_shard": "model-00001-of-00025.safetensors",
+  "failed_shard": "model-00012-of-00025.safetensors",
+  "elapsed_seconds": 0.8000708339968696,
+  "exit_code": 1,
+  "earlier_shard_read_before_fault": true,
+  "injected_fault_observed": true,
+  "typed_read_failure": true,
+  "listener_observed": false,
+  "loader_completed": false,
+  "port_reclaimed": true,
+  "pressure_levels": [
+    1
+  ],
+  "peak_sampled_rss_bytes": 337199104,
+  "finished": "2026-11-21T15:42:50+00:00"
+}

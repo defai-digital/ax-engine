@@ -1,0 +1,10 @@
+{
+  "file_sha256": {
+    "receipt.json": "bbf43368b6d6352e533099bda574b5e2878c4f8274dc798526521d5622665dff",
+    "startup-samples.jsonl": "990f8bc500f499ba7dd74cdde7549127214cfd27f1cc70551630f4eaa392af47",
+    "error-events.txt": "2cc3012e3a8095857f424dcd0da7a115305e04e0c432be89432196a74f6aaf77",
+    "shard_read_fault.c": "26500a5ceec54aa3228d8863bcc93b16a662ad8500a099a7ec10c5da89c0ce5a",
+    "isolated-loader-control.json": "ba2bd8900c84b8bb84025f560a327cf692cdf0e1849e00d5d900b728e544d722",
+    "harness-decision-control.json": "9e070d558e839726e4508e22403c281bbc8650e1bb9ddc5b0dc4b80209f7479a"
+  }
+}

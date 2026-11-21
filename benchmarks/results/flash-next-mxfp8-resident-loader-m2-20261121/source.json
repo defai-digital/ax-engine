@@ -1,0 +1,89 @@
+{
+  "server_build": {
+    "source_base_commit": "d492d191a285ecbfe8995e87b7f6b0d189b44369",
+    "server_sha256": "8d83c0199ad59afe2725741c901b70ff84b55666868900f52ef433250fd5f52d",
+    "mlx_version": "0.32.4",
+    "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo_profile": "release-server",
+    "selected_source_sha256": {
+      "crates/mlx-sys/src/io.rs": "c433a11ac00a44371a9072e726435edab0649e679265cfb2d47608d41264cad3",
+      "crates/ax-engine-mlx/src/weights/qwen4_exp.rs": "15d05752001fa799631aa795cafd30bdf4b88db519deffb53bc5ede4308fe47d"
+    }
+  },
+  "pack_inventory_sha256": "7e2c19296d630d4e4495d022d080e761bd592a7265065fbc7ac369f9d2afb26d",
+  "verified_pack_members": 61,
+  "verified_pack_bytes": 189240515155,
+  "matched_greedy_output_tokens": 64,
+  "matched_historical_prefix_tokens": 12,
+  "summary": {
+    "disabled": {
+      "spawn_to_ready_seconds": 254.58713550004177,
+      "resident_load_seconds": 125.126252,
+      "resident_shards": 27.0,
+      "resident_tensors": 1842.0,
+      "startup_samples": 16,
+      "peak_sampled_startup_rss_bytes": 139723014144,
+      "verified_steps": [
+        0.0,
+        0.0
+      ],
+      "mtp": [
+        {
+          "available": true,
+          "requested": false,
+          "active": false,
+          "direct_fallback_steps": 0,
+          "draft_tokens": 0,
+          "accepted_tokens": 0,
+          "decode_steps": 0
+        },
+        {
+          "available": true,
+          "requested": false,
+          "active": false,
+          "direct_fallback_steps": 0,
+          "draft_tokens": 0,
+          "accepted_tokens": 0,
+          "decode_steps": 0
+        }
+      ]
+    },
+    "required": {
+      "spawn_to_ready_seconds": 187.95636958407704,
+      "resident_load_seconds": 121.043510792,
+      "resident_shards": 27.0,
+      "resident_tensors": 1842.0,
+      "startup_samples": 12,
+      "peak_sampled_startup_rss_bytes": 139597529088,
+      "verified_steps": [
+        17.0,
+        17.0
+      ],
+      "mtp": [
+        {
+          "available": true,
+          "requested": true,
+          "active": true,
+          "direct_fallback_steps": 0,
+          "draft_tokens": 16,
+          "accepted_tokens": 14,
+          "decode_steps": 16
+        },
+        {
+          "available": true,
+          "requested": true,
+          "active": true,
+          "direct_fallback_steps": 0,
+          "draft_tokens": 16,
+          "accepted_tokens": 14,
+          "decode_steps": 16
+        }
+      ]
+    }
+  },
+  "file_sha256": {
+    "result.json": "84f2b0d7df140f8ba2e9b26be2b323d30aafe734990c53d9c66b2a9baa17839e",
+    "disabled-startup.jsonl": "857d35c5795260093b81fced11ea19b3fc77ed85b62e49c8d7ac784c50078e51",
+    "required-startup.jsonl": "8c174020025f985527e2e2c9be8b58dfabe696c1b9633fd8ee30b4649de85f78"
+  }
+}

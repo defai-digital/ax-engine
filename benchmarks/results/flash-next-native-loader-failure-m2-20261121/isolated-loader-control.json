@@ -1,0 +1,12 @@
+{
+  "name-order": {
+    "returncode": 0,
+    "fault_observed": false,
+    "mlx_read_error": false
+  },
+  "lazy-cpu": {
+    "returncode": 1,
+    "fault_observed": true,
+    "mlx_read_error": true
+  }
+}

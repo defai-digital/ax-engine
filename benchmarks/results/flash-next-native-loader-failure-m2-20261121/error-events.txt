@@ -1,0 +1,4 @@
+ax_fixture earlier shard payload read
+ax_fixture selected shard pread returned EIO
+mlx error: [read] Unable to read from file.
+Error: Engine(MetalRuntime(Generic("weight loading failed: invalid layer tensor layout: qwen4_exp weight evaluation: mlx_eval failed: [read] Unable to read from file.")))
