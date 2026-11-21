@@ -1,0 +1,8 @@
+{
+  "completed": false,
+  "exit_code": -15,
+  "stop_reason": "reference stopped writing progress",
+  "phase": "qa",
+  "qa_rows": 3,
+  "matrix_rows": 0
+}
