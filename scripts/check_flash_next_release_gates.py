@@ -419,6 +419,12 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
             problems.append(f"{name}: not the {TARGET_DESCRIPTION} standard host")
         if result.get("qualification") or result.get("release_ready"):
             problems.append(f"{name}: a harness result claims qualification")
+    comparison_os = [(results[name].get("hardware") or {}).get("os")
+                     for name in ("qa", "matrix", "reference")]
+    if not all(isinstance(version, str) and version.strip() for version in comparison_os):
+        problems.append("QA, native matrix and reference must record a macOS version")
+    elif len(set(comparison_os)) != 1:
+        problems.append("QA, native matrix and reference must use the same macOS version")
     floor = th["timing_host"]["min_cpu_idle_percent"]
     for name in ("qa", "lifecycle", "matrix", "reference"):
         quiet = results[name].get("host_quiet")

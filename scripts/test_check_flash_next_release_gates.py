@@ -20,7 +20,8 @@ import qualify_qwen38_flash_next as qualify  # noqa: E402
 TH = json.loads(mod.THRESHOLDS.read_text())
 GIB_KIB = 1024 * 1024
 FAILURES = ["format_csv_pair", "format_status_colon", "instruction_alphabet_first", "knowledge_water_formula"]
-HARDWARE = {"form_factor": "MacBook Pro", "soc": "Apple M5 Max", "memory_bytes": 128 * 1024**3}
+HARDWARE = {"form_factor": "MacBook Pro", "soc": "Apple M5 Max", "memory_bytes": 128 * 1024**3,
+            "os": "27.2.1"}
 CELL_HASHES = {f"cell-{length}-{run}": f"{length * 10 + run:064x}" for length in (512, 2048, 8192)
                for run in range(5)}
 TRAJECTORY_HASHES = {f"traj-{index:02d}": f"{index:064x}" for index in range(16)}
@@ -160,6 +161,14 @@ class ReleaseGateTests(unittest.TestCase):
                 r = good()
                 mutate(r["reference"])
                 self.assertEqual(failed(r), {"integrity"})
+
+    def test_comparison_requires_matching_macos_versions(self):
+        for name in ("qa", "matrix", "reference"):
+            for version in (None, " ", 27, "27.0.1"):
+                with self.subTest(receipt=name, version=version):
+                    r = good()
+                    r[name]["hardware"] = {**HARDWARE, "os": version}
+                    self.assertEqual(failed(r), {"integrity"})
 
     def test_a_complete_reference_without_grades_cannot_pass_quality(self):
         for missing in (None, "", {"case": False}, [12]):
