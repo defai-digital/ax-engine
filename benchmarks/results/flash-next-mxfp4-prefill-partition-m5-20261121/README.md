@@ -1,0 +1,56 @@
+# Flash Next prefill partition replay on M5 Max
+
+MacBook Pro with M5 Max, 128 GB unified memory, internal SSD, macOS 27.2.1,
+MLX 0.32.4, and Rust 1.99.1. The resident MXFP4 pack was
+`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP` at
+`ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`.
+The `b36b7b287` release-server binary has SHA-256
+`0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5`.
+The pack inventory was verified before and after the replay.
+
+| Request slots | Batch tokens | Arrivals tested | Changed outputs | Peak sampled footprint |
+| ---: | ---: | --- | ---: | ---: |
+| 1 | 2,048 | Serial baseline | 0/4 | 72.10 GiB |
+| 1 | 2,047 | Serial, forced split | 2/4 | 73.09 GiB |
+| 2 | 2,048 | Serial, simultaneous, during decode | 2/12 | 73.91 GiB |
+| 2 | 4,096 | Serial, simultaneous, during decode | 0/12 | 72.21 GiB |
+
+The 2,047-budget solo arm split each prompt at cursor 2,047 before
+finishing at 2,048. The second prompt's first token changed from 760 to
+27775 on both repeats. All 96 output IDs matched its two changed
+concurrent outputs under the 2,048 budget, with the same prefill cursors.
+In the other two overlapping trials at that budget, the first prompt was
+split and retained its solo output. The reported inner chunk switched
+from 512 to 1,024 when the scheduler split a prompt.
+
+The 4,096 budget preserved the full 2,048-token scheduled prefill and all
+output IDs for both prompts, including every request in the four
+overlapping trials. Both requests recorded engine steps that scheduled
+two requests in each of those trials. All memory samples reported normal
+system pressure. This is a two-prompt replay with MTP and coalescing off.
+Longer concurrent inputs, different prompts, and sustained traffic
+remain unqualified. The supported profile remains one active request.
+
+## Reproduction
+
+Start a fresh server per table row with the pinned pack and set
+`--max-concurrent-requests` and `--max-batch-tokens` to the row values.
+Use `--mlx --model-id qwen3.8-flash-next:axq` and
+`--prefill-chunk 1024 --total-blocks 2048 --stream-experts auto
+--mlx-mtp-policy disabled --disable-ngram-acceleration` and disable
+native prefix reuse, the disk prefix cache, and direct coalescing with
+`AX_ENGINE_PREFIX_REUSE_DISABLED=1`,
+`AX_MLX_PREFIX_CACHE_DISK_DISABLED=1`,
+`AX_MLX_PREFIX_CACHE_MAX_BYTES=0`,
+`AX_MLX_PREFIX_CACHE_MAX_ENTRIES=0`, and
+`AX_MLX_FLASH_NEXT_DIRECT_COALESCING=0` with `AX_MLX_NATIVE_CONFIRM=1`.
+
+Send the [two token arrays](prompts.jsonl.gz) to
+`/v1/generate/stream` with 96 output tokens, temperature zero, and
+`sampling.ignore_eos` enabled. The decode-arrival control starts the second
+client when the first receives a token and swaps the leading prompt on the
+second repeat. Compare the terminal output IDs against the serial baseline
+and use each request's recorded prefill cursors and scheduler step counts
+to identify actual partitioning and overlap. The [raw observation](observation.json.gz)
+retains all 32 requests, their forwarded scheduler events, and one-second
+memory samples.
