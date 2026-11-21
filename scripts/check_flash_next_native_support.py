@@ -90,6 +90,18 @@ def validate_inventory(root: Path, inventory: dict[str, Any],
         raise ValueError("inventory omits indexed model shards")
     actual = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
     allowed_local = {"model-manifest.json", "ax-engine-pack-inventory.json", ".ax-engine-download.json"}
+    # The native downloader renames its staging directory into the final snapshot.
+    # Its transaction marker stays beside the published files.
+    state = root / ".ax-native-state.json"
+    if state.is_symlink() or state.exists():
+        if state.is_symlink() or not state.is_file():
+            raise ValueError("native download state must be a regular local file")
+        expected = {"repository": PRIMARY_REPO, "revision": PACK_REVISION, "commit": PACK_REVISION}
+        fields = json.loads(state.read_text(encoding="utf-8"), object_pairs_hook=list)
+        if (not isinstance(fields, list) or len(fields) != len(expected)
+                or any(field not in fields for field in expected.items())):
+            raise ValueError("native download state does not bind the pinned pack")
+        allowed_local.add(state.name)
     if actual - names - allowed_local:
         raise ValueError(f"unbound model-directory files: {sorted(actual - names - allowed_local)}")
     _mtp_metadata(root)

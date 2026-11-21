@@ -117,6 +117,28 @@ class NativeSupportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "escapes the model directory"):
                     mod.validate_inventory(root, inventory, stray)
                 self.assertEqual(mod.validate_inventory(root, inventory, base), {})
+                state = root / ".ax-native-state.json"
+                bound_state = {"repository": mod.PRIMARY_REPO, "revision": mod.PACK_REVISION,
+                               "commit": mod.PACK_REVISION}
+                state.write_text(json.dumps(bound_state))
+                self.assertEqual(mod.validate_inventory(root, inventory, base), {})
+                for field in bound_state:
+                    with self.subTest(field=field):
+                        state.write_text(json.dumps({**bound_state, field: "unbound"}))
+                        with self.assertRaisesRegex(ValueError, "does not bind the pinned pack"):
+                            mod.validate_inventory(root, inventory, base)
+                state.write_text('{"commit":"unbound",' + json.dumps(bound_state)[1:])
+                with self.assertRaisesRegex(ValueError, "does not bind the pinned pack"):
+                    mod.validate_inventory(root, inventory, base)
+                state.write_text("{")
+                with self.assertRaises(json.JSONDecodeError):
+                    mod.validate_inventory(root, inventory, base)
+                state.unlink()
+                outside = stray / state.name
+                outside.write_text(json.dumps(bound_state))
+                state.symlink_to(outside)
+                with self.assertRaisesRegex(ValueError, "regular local file"):
+                    mod.validate_inventory(root, inventory, base)
 
     def test_wait_for_quiet_returns_when_idle_and_times_out_when_busy(self):
         ticks = iter([0.0, 5.0, 10.0, 15.0, 20.0])
