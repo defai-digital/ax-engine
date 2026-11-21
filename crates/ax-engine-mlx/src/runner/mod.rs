@@ -5056,6 +5056,10 @@ impl ExecutionRunner for MlxRunner {
         true
     }
 
+    fn discard_prepared_prefix_reuse(&self, request_id: RequestId) {
+        self.prepared_prefixes.lock().remove(&request_id);
+    }
+
     fn checkpoint_request(
         &self,
         request_id: ax_engine_core::RequestId,
@@ -6124,7 +6128,7 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn release_request_state(&self, request_id: RequestId) {
-        self.prepared_prefixes.lock().remove(&request_id);
+        self.discard_prepared_prefix_reuse(request_id);
         // Terminal cleanup for requests that never reach a runner-observed stop
         // (cancelled while waiting/blocked, or cancelled by the engine after a
         // step reinserted state). Without this the per-request KV cache, MTP,
@@ -10083,7 +10087,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
     ) -> Result<MlxPrefixCacheTelemetry, String> {
         if item.reused_prefix_token_slice.is_empty() {
-            self.prepared_prefixes.lock().remove(&item.request_id);
+            self.discard_prepared_prefix_reuse(item.request_id);
             return Ok(MlxPrefixCacheTelemetry::default());
         }
         if state.cache.seq_len() != 0 {

@@ -357,7 +357,8 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
 
     /// Admit a logical prefix before the scheduler skips its tokens. Runners
     /// with partition-sensitive state may reject it or retain the physical
-    /// snapshot until `run`. Reservations must be released with request state.
+    /// snapshot until `run`. Reservations must be released when the plan
+    /// rolls back the reuse or the request state is released.
     fn prepare_prefix_reuse(
         &self,
         _request: &crate::request::RequestRecord,
@@ -367,6 +368,9 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     ) -> bool {
         true
     }
+
+    /// Release a prepared prefix reservation when the plan defers its request.
+    fn discard_prepared_prefix_reuse(&self, _request_id: RequestId) {}
 
     /// Compute a dense embedding for `token_ids` and return it as a `Vec<f32>`.
     ///

@@ -1085,10 +1085,7 @@ impl EngineCore {
                 }
                 AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred => {
                     if let Some(lookup) = prefix_reuse.get(&rid) {
-                        self.kv_manager.rollback_prefix_share(rid, lookup)?;
-                        self.request_manager
-                            .rollback_prefix_reuse(rid, lookup.matched_token_count)?;
-                        self.sync_request_block_table(rid)?;
+                        self.rollback_prepared_prefix_reuse(rid, lookup)?;
                     }
                     memory_blocked_requests.push(rid);
                 }
@@ -1378,10 +1375,7 @@ impl EngineCore {
             .map(|(request_id, lookup)| (*request_id, lookup))
             .collect::<Vec<_>>();
         for (request_id, lookup) in &rolled_back_prefixes {
-            self.kv_manager.rollback_prefix_share(*request_id, lookup)?;
-            self.request_manager
-                .rollback_prefix_reuse(*request_id, lookup.matched_token_count)?;
-            self.sync_request_block_table(*request_id)?;
+            self.rollback_prepared_prefix_reuse(*request_id, lookup)?;
             debug!(
                 request_id = request_id.0,
                 matched_tokens = lookup.matched_token_count,
@@ -1393,6 +1387,19 @@ impl EngineCore {
         }
 
         Ok((prefix_reuse, schedule_plan))
+    }
+
+    fn rollback_prepared_prefix_reuse(
+        &mut self,
+        request_id: RequestId,
+        lookup: &PrefixLookupResult,
+    ) -> Result<(), EngineCoreError> {
+        self.runner.discard_prepared_prefix_reuse(request_id);
+        self.kv_manager.rollback_prefix_share(request_id, lookup)?;
+        self.request_manager
+            .rollback_prefix_reuse(request_id, lookup.matched_token_count)?;
+        self.sync_request_block_table(request_id)?;
+        Ok(())
     }
 
     fn scheduler_input(
@@ -3022,6 +3029,41 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(request_id);
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct PrefixPinTrackingRunner {
+        pinned: Arc<Mutex<BTreeSet<RequestId>>>,
+    }
+
+    impl ExecutionRunner for PrefixPinTrackingRunner {
+        fn prepare_prefix_reuse(
+            &self,
+            request: &RequestRecord,
+            matched_tokens: u32,
+            _block_size_tokens: u32,
+            _deterministic_output: bool,
+        ) -> bool {
+            if matched_tokens as usize != request.prompt_tokens.len() {
+                return false;
+            }
+            self.pinned.lock().unwrap().insert(request.request_id);
+            true
+        }
+
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let mut pinned = self.pinned.lock().unwrap();
+            for item in &input.execution_batch.items {
+                if item.prefix_tokens_reused > 0 {
+                    assert!(pinned.remove(&item.request_id));
+                }
+            }
+            DeterministicRunner.run(input)
+        }
+
+        fn discard_prepared_prefix_reuse(&self, request_id: RequestId) {
+            assert!(self.pinned.lock().unwrap().remove(&request_id));
         }
     }
 
@@ -5313,8 +5355,12 @@ mod tests {
 
     #[test]
     fn blocked_full_prefix_reuse_remains_visible_in_route_metadata() {
-        let mut engine =
-            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 3));
+        let runner = PrefixPinTrackingRunner::default();
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 3),
+            runner.clone(),
+            DeterministicSampler,
+        );
         let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
 
         engine
@@ -5399,6 +5445,15 @@ mod tests {
                 .processed_prompt_tokens,
             0
         );
+        assert!(runner.pinned.lock().unwrap().is_empty());
+
+        let recovered = engine.step(4, true).unwrap();
+        assert_eq!(
+            recovered.schedule_plan.selected_requests,
+            vec![RequestId(2)]
+        );
+        assert_eq!(recovered.metrics.prefix_hits, 1);
+        assert!(runner.pinned.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -5738,10 +5793,11 @@ mod tests {
 
     #[test]
     fn prefix_reuse_rolls_back_when_replanning_defers_the_request() {
+        let runner = PrefixPinTrackingRunner::default();
         let mut engine = EngineCore::with_runtime_components_and_planner(
             KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             PrefixReuseRouteSplitResolver,
-            DeterministicRunner,
+            runner.clone(),
             DeterministicSampler,
         );
         let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
@@ -5785,6 +5841,7 @@ mod tests {
             .expect("repeated request block table");
         assert!(block_table.block_ids.is_empty());
         assert_eq!(block_table.logical_token_count, 0);
+        assert!(runner.pinned.lock().unwrap().is_empty());
     }
 
     #[test]
