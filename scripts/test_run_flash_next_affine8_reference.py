@@ -6,7 +6,9 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 HAS_MLX = importlib.util.find_spec("mlx") is not None
@@ -14,6 +16,7 @@ if HAS_MLX:
     import mlx.core as mx
     import numpy as np
 
+    from scripts import run_flash_next_affine8_reference as diagnostic
     from scripts.run_flash_next_affine8_reference import Affine8Table
 
 
@@ -80,6 +83,62 @@ class Affine8TableTests(unittest.TestCase):
             handle.truncate(path.stat().st_size - 1)
         with self.assertRaisesRegex(ValueError, "invalid affine8 row layout"):
             Affine8Table(self.root)
+
+
+@unittest.skipUnless(HAS_MLX, "requires MLX")
+class FullWorkloadTests(unittest.TestCase):
+    SIGNED = (Path(__file__).resolve().parents[1] / "benchmarks/results/qualification"
+              / "2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0")
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        original = json.loads((self.SIGNED / "reference/result.json").read_text())
+        vocab = original["matrix"]["vocab_size"]
+        (self.root / "config.json").write_text(json.dumps({"vocab_size": vocab}))
+        self.matrix = self.SIGNED / "generate-matrix/result.json"
+
+    def test_preflight_binds_both_native_prompt_cohorts(self):
+        workload = diagnostic.prepare_full_workload(self.root, self.matrix)
+        self.assertEqual(len(workload.items), 105)
+        self.assertEqual(len(workload.prompt_hashes), 15)
+        altered = json.loads(self.matrix.read_text())
+        altered["runs"]["default"]["prompt_id_hashes"]["cell-512-0"] = "0" * 64
+        bad = self.root / "bad-matrix.json"
+        bad.write_text(json.dumps(altered))
+        with self.assertRaisesRegex(ValueError, "reference prompt window differs"):
+            diagnostic.prepare_full_workload(self.root, bad)
+
+    def test_full_workload_uses_frozen_budgets_and_all_repeats(self):
+        workload = diagnostic.prepare_full_workload(self.root, self.matrix)
+        tokens_by_prompt = {row["rendered"]: row["input_ids"] for row in workload.prompts}
+        tokenizer = SimpleNamespace(
+            encode=lambda text, **_: tokens_by_prompt[text],
+            decode=lambda ids, **_: str(ids[0]),
+        )
+        generation_calls = []
+
+        def generate(model, mx, ids, budget, stop_on_eos=True):
+            generation_calls.append((len(ids), budget, stop_on_eos))
+            count = 1 if stop_on_eos else budget
+            return {"generated_ids": [1] * count, "generated_tokens": count, "normal_stop": stop_on_eos,
+                    "ttft_seconds": 1.0, "decode_tok_s": 1.0}
+
+        record = {}
+        saves = []
+        with patch.object(diagnostic.reference, "generate", generate):
+            diagnostic.run_full_workload(None, tokenizer, workload, record, saves.append)
+        self.assertEqual(len(record["qa"]["rows"]), 105)
+        self.assertEqual(len(record["qa"]["grades"]), 105)
+        self.assertTrue(record["qa"]["normal_stops"])
+        self.assertEqual(generation_calls[104], (29774, 64, True))
+        self.assertTrue(all(budget == 256 and stop for _, budget, stop in generation_calls[:104]))
+        self.assertEqual(generation_calls[105:], [(length, 128, False)
+                                                  for length in (512, 2048, 8192) for _ in range(5)])
+        self.assertEqual(len(record["matrix"]["cells"]), 15)
+        self.assertTrue(all(summary["full_length_runs"] == 3 for summary in record["matrix"]["summary"].values()))
+        self.assertEqual(saves.count("matrix"), 15)
 
 
 if __name__ == "__main__":

@@ -141,7 +141,81 @@ def load_language_model(root: Path, table: Affine8Table | None):
         return utils.load_model(root, lazy=True, strict=True).language_model
 
 
-def run(root: Path, mode: str, output: Path) -> None:
+@dataclass(frozen=True)
+class FullWorkload:
+    items: list[dict]
+    prompts: list[dict]
+    vocab_size: int
+    prompt_hashes: dict[str, str]
+    evidence_hashes: dict[str, str]
+
+
+def prepare_full_workload(root: Path, ax_matrix: Path) -> FullWorkload:
+    qa = reference.qa
+    items_path = qa.FROZEN / "full-qa-items.json"
+    prompts_path = qa.FROZEN / "full-qa-inputs.json"
+    items = qa.load_items(items_path)
+    frozen = json.loads(prompts_path.read_text())
+    evidence = {"items_sha256": reference.digest(items_path),
+                "inputs_sha256": reference.digest(prompts_path),
+                "ax_matrix_sha256": reference.digest(ax_matrix)}
+    for name in ("closed_checks", "qa_checks", "checkers", "prompt_def"):
+        evidence[f"{name}_sha256"] = reference.digest(qa.FROZEN / f"{name}.py")
+    if (evidence["items_sha256"] != frozen["items_sha256"]
+            or evidence["checkers_sha256"] != frozen["checker_sha256"]
+            or evidence["prompt_def_sha256"] != frozen["prompt_definition_sha256"]):
+        raise ValueError("QA definitions differ from the frozen inputs")
+    prompts = frozen["prepared"]
+    if [item["id"] for item in items] != [prompt["id"] for prompt in prompts]:
+        raise ValueError("frozen QA prompts do not follow the item order")
+
+    expected = {"revision": reference.native.PACK_REVISION,
+                "inventory_sha256": reference.digest(ple.INVENTORY),
+                "lengths": list(reference.LENGTHS), "output_tokens": reference.OUTPUT_TOKENS,
+                "warmups": reference.WARMUPS, "measured": reference.MEASURED,
+                "workload_seed": reference.matrix.WORKLOAD_SEED, "temperature": 0}
+    recorded = json.loads(ax_matrix.read_text())
+    if any(recorded.get(key) != value for key, value in expected.items()):
+        raise ValueError("AX matrix uses a different pack or workload")
+    vocab = reference.matrix.pack_vocab_size(root)
+    hashes = reference.window_hashes(vocab, reference.LENGTHS)
+    for mode in ("disabled", "default"):
+        reference.verify_prompt_hashes(recorded["runs"][mode]["prompt_id_hashes"], hashes)
+    return FullWorkload(items, prompts, vocab, hashes, evidence)
+
+
+def run_full_workload(model, tokenizer, workload: FullWorkload, record: dict, save) -> None:
+    qa_rows: list[dict] = []
+    record["qa"] = {"rows": qa_rows}
+    for item, prompt in zip(workload.items, workload.prompts, strict=True):
+        ids = prompt["input_ids"]
+        if tokenizer.encode(prompt["rendered"], add_special_tokens=False) != ids:
+            raise ValueError(f"tokenizer disagrees with the frozen input IDs: {item['id']}")
+        result = reference.generate(model, mx, ids, reference.qa.budget_for(item))
+        text = tokenizer.decode(result["generated_ids"], skip_special_tokens=True)
+        qa_rows.append({"id": item["id"], "prompt_tokens": len(ids), "text": text, **result})
+        save("qa")
+    grades = reference.qa.grade(workload.items, {row["id"]: row["text"] for row in qa_rows})
+    record["qa"].update(grades=grades,
+                        failures=sorted(item for item, grade in grades.items() if not grade["passed"]),
+                        normal_stops=all(row["normal_stop"] for row in qa_rows))
+    save("qa")
+
+    cells: list[dict] = []
+    record["matrix"] = {"vocab_size": workload.vocab_size, "prompt_id_hashes": workload.prompt_hashes,
+                        "cells": cells}
+    for length in reference.LENGTHS:
+        for repeat in range(reference.WARMUPS + reference.MEASURED):
+            ids = reference.matrix.workload_ids(workload.vocab_size, length, repeat)
+            result = reference.generate(model, mx, ids, reference.OUTPUT_TOKENS, stop_on_eos=False)
+            if len(result["generated_ids"]) != reference.OUTPUT_TOKENS:
+                raise ValueError(f"short reference output for {length} tokens")
+            cells.append({"length": length, "run": repeat, "warmup": repeat < reference.WARMUPS, **result})
+            save("matrix")
+    record["matrix"]["summary"] = reference.summarize_matrix(cells, reference.LENGTHS)
+
+
+def run(root: Path, mode: str, output: Path, ax_matrix: Path | None = None) -> None:
     from mlx_vlm.models.qwen4_exp import language
 
     versions = {name: importlib.metadata.version(name) for name in reference.PINNED}
@@ -152,6 +226,7 @@ def run(root: Path, mode: str, output: Path) -> None:
         raise ValueError("diagnostic requires Metal dequantization")
     root = root.resolve()
     inventory = json.loads(ple.INVENTORY.read_bytes())
+    workload = prepare_full_workload(root, ax_matrix) if ax_matrix is not None else None
     output.mkdir(parents=True, exist_ok=False)
     record = {
         "schema": "ax-engine.flash-next.affine8-ple-diagnostic.v1",
@@ -164,8 +239,14 @@ def run(root: Path, mode: str, output: Path) -> None:
             "memory_bytes": int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)),
             "os": platform.mac_ver()[0],
         },
-        "prefill_chunk": reference.PREFILL_CHUNK, "output_tokens": TOKEN_BUDGET, "cases": [],
+        "prefill_chunk": reference.PREFILL_CHUNK,
+        "output_tokens": reference.OUTPUT_TOKENS if workload is not None else TOKEN_BUDGET,
+        "workload": "frozen-qa-and-matrix" if workload is not None else "smoke",
     }
+    if workload is not None:
+        record["workload_hashes"] = workload.evidence_hashes
+    else:
+        record["cases"] = []
 
     def save(phase):
         record["phase"] = phase
@@ -177,6 +258,8 @@ def run(root: Path, mode: str, output: Path) -> None:
     save("prehash")
     pack_before = reference.native.validate_inventory(root, inventory)
     runtime_before = reference.runtime_hashes()
+    if workload is not None:
+        record["host_quiet"] = reference.native.wait_for_quiet()
     mx.set_memory_limit(reference.MEMORY_LIMIT)
     mx.set_cache_limit(reference.CACHE_LIMIT)
     table = Affine8Table(root) if mode == "bounded" else None
@@ -187,14 +270,20 @@ def run(root: Path, mode: str, output: Path) -> None:
     record["active_after_load_bytes"] = mx.get_active_memory()
     record["load_seconds"] = time.monotonic() - started
     save("loaded")
-    vocab = reference.matrix.pack_vocab_size(root)
-    for length in reference.LENGTHS:
-        ids = reference.matrix.workload_ids(vocab, length, 0)
-        result = reference.generate(model, mx, ids, TOKEN_BUDGET, stop_on_eos=False)
-        if len(result["generated_ids"]) != TOKEN_BUDGET:
-            raise ValueError(f"short reference output for {length} tokens")
-        record["cases"].append({"prompt_tokens": length, "prompt_ids_sha256": reference.matrix.ids_sha(ids), **result})
-        save("case")
+    if workload is not None:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True, trust_remote_code=False)
+        run_full_workload(model, tokenizer, workload, record, save)
+    else:
+        vocab = reference.matrix.pack_vocab_size(root)
+        for length in reference.LENGTHS:
+            ids = reference.matrix.workload_ids(vocab, length, 0)
+            result = reference.generate(model, mx, ids, TOKEN_BUDGET, stop_on_eos=False)
+            if len(result["generated_ids"]) != TOKEN_BUDGET:
+                raise ValueError(f"short reference output for {length} tokens")
+            record["cases"].append({"prompt_tokens": length, "prompt_ids_sha256": reference.matrix.ids_sha(ids), **result})
+            save("case")
     if table is not None:
         if not table.row_reads:
             raise ValueError("external PLE was never used")
@@ -209,6 +298,10 @@ def run(root: Path, mode: str, output: Path) -> None:
         raise ValueError("pack changed during the diagnostic")
     if reference.runtime_hashes() != runtime_before:
         raise ValueError("reference runtime changed during the diagnostic")
+    if workload is not None:
+        if prepare_full_workload(root, ax_matrix).evidence_hashes != workload.evidence_hashes:
+            raise ValueError("frozen workload evidence changed during the diagnostic")
+        record["host_idle_after"] = reference.native.cpu_idle_percent()
     record["runtime_files_bound"] = len(runtime_before)
     record["completed"] = True
     save("complete")
@@ -219,8 +312,10 @@ def main() -> None:
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--mode", choices=("bounded", "resident"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--ax-matrix", type=Path,
+                        help="run all frozen QA and matrix cases, checking prompt hashes against this native result")
     args = parser.parse_args()
-    run(args.model_dir, args.mode, args.output)
+    run(args.model_dir, args.mode, args.output, args.ax_matrix)
 
 
 if __name__ == "__main__":
