@@ -109,8 +109,9 @@ def streams(artifact, traces, prompts, lanes, split, budget, name):
                 and all(1 <= event["scheduled"] <= lanes for event in trace["prefill"]),
                 f"{label}: prefill step ordering")
         shared_candidates = audit_prefill(trace, row["input_tokens"], split, f"{label}: prefill cuts")
-        for step in prefill_ids:
-            prefill_owners[step].add(request)
+        for event in trace["prefill"]:
+            route = "split" if event["split_end"] is not None else "whole"
+            prefill_owners[event["step_id"]].add((request, row["input_tokens"], route))
         for step in steps[1:]:
             decoder_owners[step].add(request)
         records[prompt_id] = (row, steps, shared_candidates)
@@ -122,17 +123,28 @@ def streams(artifact, traces, prompts, lanes, split, budget, name):
         ident = row["request_id"]
         shared_splits += any(decoder_owners[step] - {ident} for step in candidates)
         gaps = row["stream_step_interval_ms"]
-        peer_gaps = []
+        peer_prefill = False
+        long_gap_peers = Counter()
         for a, b, gap in zip(steps, steps[1:], gaps):
             # Work at the previous output step has already reached this stream.
             lo, hi = bisect_right(prefill_ids, a), bisect_right(prefill_ids, b)
-            if any(prefill_owners[step] - {ident} for step in prefill_ids[lo:hi]):
-                peer_gaps.append(gap)
+            peers = {
+                (length, route)
+                for step in prefill_ids[lo:hi]
+                for owner, length, route in prefill_owners[step]
+                if owner != ident
+            }
+            if peers:
+                peer_prefill = True
+                if gap >= 100:
+                    label = "+".join(f"{length}/{route}" for length, route in sorted(peers))
+                    long_gap_peers[label] += 1
         results[prompt_id] = {
             "prompt_tokens": row["input_tokens"],
-            "peer_prefill": bool(peer_gaps),
+            "peer_prefill": peer_prefill,
             "gaps_at_least_100ms": sum(gap >= 100 for gap in gaps),
-            "peer_prefill_gaps_at_least_100ms": sum(gap >= 100 for gap in peer_gaps),
+            "peer_prefill_gaps_at_least_100ms": long_gap_peers.total(),
+            "long_gap_peer_profiles": dict(sorted(long_gap_peers.items())),
             "client_lane_wait_ms": row["queue_delay_ms"],
             "client_ttft_ms": row["ttft_ms"],
             "arrival_to_first_token_ms": row["queue_delay_ms"] + row["ttft_ms"],
@@ -148,10 +160,14 @@ def percentiles(values):
 
 
 def summarize(rows):
+    peer_profiles = Counter()
+    for row in rows:
+        peer_profiles.update(row["long_gap_peer_profiles"])
     return {
         "requests": len(rows),
         "gaps_at_least_100ms": sum(row["gaps_at_least_100ms"] for row in rows),
         "peer_prefill_gaps_at_least_100ms": sum(row["peer_prefill_gaps_at_least_100ms"] for row in rows),
+        "long_gap_peer_profiles": dict(sorted(peer_profiles.items())),
         **{name: percentiles([row[name] for row in rows]) for name in METRICS},
     }
 

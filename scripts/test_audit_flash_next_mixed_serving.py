@@ -44,6 +44,7 @@ class MixedServingAuditTests(unittest.TestCase):
         data, _, shared = audit.streams(*mixed_streams(), 2, True, 3, "pair")
         self.assertEqual(shared, 1)
         self.assertEqual(data["p1"]["peer_prefill_gaps_at_least_100ms"], 2)
+        self.assertEqual(data["p1"]["long_gap_peer_profiles"], {"2048/split": 2})
         self.assertEqual(data["p1"]["arrival_to_first_token_ms"], 120)
         self.assertEqual(data["p1"]["client_ttft_ms"], 20)
         self.assertFalse(data["p2"]["peer_prefill"])
