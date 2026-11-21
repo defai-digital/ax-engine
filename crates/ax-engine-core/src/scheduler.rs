@@ -77,8 +77,8 @@ impl SchedulerInput {
     }
 }
 
-/// Forward sizes for a runner that can materialize each cache-only chunk
-/// independently. The logical item's last token keeps a singleton forward.
+/// Scheduler turn sizes for a runner with fixed cache-only forwards.
+/// The logical item's last token keeps a singleton forward.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrefillSplitGeometry {
     pub logical_tokens: u32,

@@ -4879,9 +4879,32 @@ impl MlxRunner {
     }
 }
 
+const FLASH_NEXT_SPLIT_FORWARD_TOKENS: usize = 512;
+
 enum PrefillSchedule {
     Adaptive(usize),
     Split(u32),
+}
+
+fn flash_next_cache_only_prefill_turn(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    tokens: &[u32],
+    cache: &mut MlxKVCache,
+    forward_tokens: usize,
+) {
+    // Each forward keeps its original evaluation and cache-clear boundary.
+    for forward in tokens.chunks(forward_tokens) {
+        chunked_prefill_cache_only(
+            cfg,
+            weights,
+            forward,
+            cache,
+            forward.len(),
+            CacheOnlyPrefillLayout::Batched,
+            crate::generate::CacheOnlyBarrier::Blocking,
+        );
+    }
 }
 
 /// One request's padded-batched-prefill result, staged by
@@ -5210,7 +5233,7 @@ impl ExecutionRunner for MlxRunner {
             return None;
         }
         let logical = 2048;
-        let physical = 512;
+        let forward = FLASH_NEXT_SPLIT_FORWARD_TOKENS;
         if crate::fastpath::skip_cache_only_split_for_family(&self.cfg.model_family, logical)
             || [self.cold_prefill_chunk, self.prefill_chunk]
                 .into_iter()
@@ -5219,14 +5242,19 @@ impl ExecutionRunner for MlxRunner {
                         base,
                         logical,
                         &self.cfg.model_family,
-                    ) != physical
+                    ) != forward
                 })
         {
             return None;
         }
+        let forwards_per_turn = if crate::fastpath::flash_next_prefill_split_pair_enabled() {
+            2
+        } else {
+            1
+        };
         Some(PrefillSplitGeometry {
             logical_tokens: logical as u32,
-            physical_tokens: physical as u32,
+            physical_tokens: (forward * forwards_per_turn) as u32,
         })
     }
 
@@ -8426,14 +8454,12 @@ impl MlxRunner {
                             }
                             Some(token)
                         } else {
-                            chunked_prefill_cache_only(
+                            flash_next_cache_only_prefill_turn(
                                 &self.cfg,
                                 &self.weights,
                                 prefill_tokens,
                                 &mut state.cache,
-                                prefill_tokens.len(),
-                                CacheOnlyPrefillLayout::Batched,
-                                crate::generate::CacheOnlyBarrier::Blocking,
+                                FLASH_NEXT_SPLIT_FORWARD_TOKENS,
                             );
                             state
                                 .decode_telemetry

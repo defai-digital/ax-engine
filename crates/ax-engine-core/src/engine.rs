@@ -4048,7 +4048,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct PhysicalPrefillRunner;
+    struct PhysicalPrefillRunner(u32);
 
     impl ExecutionRunner for PhysicalPrefillRunner {
         fn run(&self, input: RunnerInput) -> RunnerOutput {
@@ -4058,16 +4058,21 @@ mod tests {
         fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
             Some(PrefillSplitGeometry {
                 logical_tokens: 2048,
-                physical_tokens: 512,
+                physical_tokens: self.0,
             })
         }
     }
 
     #[test]
     fn physical_prefill_split_commits_the_same_cuts_after_the_decoder_cancels() {
+        assert_split_turns_after_cancel(512, &[512, 512, 511, 1]);
+        assert_split_turns_after_cancel(1024, &[1023, 1]);
+    }
+
+    fn assert_split_turns_after_cancel(turn_tokens: u32, split_remainder: &[u32]) {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 512),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner(turn_tokens),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
@@ -4091,20 +4096,19 @@ mod tests {
                 .iter()
                 .map(|item| item.scheduled_token_count)
                 .collect::<Vec<_>>(),
-            [1, 512]
+            [1, turn_tokens]
         );
         assert_eq!(first.sampled_tokens.len(), 1);
         assert_eq!(first.sampled_tokens[0].request_id, RequestId(1));
         assert_eq!(engine.prefill_splits[&RequestId(2)].end, Some(2048));
         engine.cancel(RequestId(1)).unwrap();
 
-        for (count, route_end) in [
-            (512, Some(2048)),
-            (512, Some(2048)),
-            (511, Some(2048)),
-            (1, Some(2048)),
-            (1, None),
-        ] {
+        for (count, route_end) in split_remainder
+            .iter()
+            .copied()
+            .map(|count| (count, Some(2048)))
+            .chain([(1, None)])
+        {
             let result = engine.step(2049, true).unwrap();
             let batch = result.schedule_plan.execution_batch.unwrap();
             assert_eq!(batch.items.len(), 1);
@@ -4132,7 +4136,7 @@ mod tests {
     fn preempting_and_cancelling_a_physical_prefill_split_releases_its_progress() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 512),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner(512),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);

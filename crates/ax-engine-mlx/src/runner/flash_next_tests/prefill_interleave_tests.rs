@@ -3,7 +3,7 @@
 use super::{
     ExecutionMode, MlxKVCache, MlxRunner, MlxSamplingParams, MlxSamplingRequest,
     NativeModelArtifacts, PathBuf, RequestId, Xorshift64, context, execute_with_route_decisions,
-    flash_runner_state_bytes, snapshot_trunk,
+    flash_next_cache_only_prefill_turn, flash_runner_state_bytes, snapshot_trunk,
 };
 use crate::generate::{
     CacheOnlyBarrier, CacheOnlyPrefillLayout, chunked_prefill, chunked_prefill_cache_only,
@@ -161,7 +161,9 @@ fn assert_prefill_interleave(
     drop(baseline);
 
     let mut arm_results = Vec::new();
-    for with_sibling in [false, true] {
+    for (forwards_per_turn, with_sibling) in [(1, false), (1, true), (2, false), (2, true)] {
+        let turn_tokens = chunk_size * forwards_per_turn;
+        let turns = prefix.chunks(turn_tokens).len() + usize::from(!tail.is_empty());
         let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
         let mut rng = Xorshift64::new(42);
         let mut sibling = MlxKVCache::new_contiguous(cfg.layer_count);
@@ -171,19 +173,11 @@ fn assert_prefill_interleave(
         let mut sibling_matched = sibling_token.is_none_or(|token| token == expected_sibling[0]);
         let cache_only_singleton = (!tail.is_empty()).then(|| std::slice::from_ref(&last));
         for (index, chunk) in prefix
-            .chunks(chunk_size)
+            .chunks(turn_tokens)
             .chain(cache_only_singleton)
             .enumerate()
         {
-            chunked_prefill_cache_only(
-                cfg,
-                weights,
-                chunk,
-                &mut cache,
-                chunk_size,
-                CacheOnlyPrefillLayout::Batched,
-                CacheOnlyBarrier::Blocking,
-            );
+            flash_next_cache_only_prefill_turn(cfg, weights, chunk, &mut cache, chunk_size);
             if let Some(token) = sibling_token {
                 let next = decode(&mut sibling, &mut sibling_rng, token);
                 sibling_matched &= next == expected_sibling[index + 1];
@@ -205,16 +199,23 @@ fn assert_prefill_interleave(
             output_matched &= token == next;
         }
         let decode_state_matched = cache.serialize_to_bytes() == expected_decode_state;
-        sibling_matched &= !with_sibling || sibling.serialize_to_bytes() == expected_sibling_state;
+        // Complete the same number of sibling forwards to compare its final cache.
+        if let Some(mut token) = sibling_token {
+            for &expected_token in &expected_sibling[turns + 1..] {
+                token = decode(&mut sibling, &mut sibling_rng, token);
+                sibling_matched &= token == expected_token;
+            }
+            sibling_matched &= sibling.serialize_to_bytes() == expected_sibling_state;
+        }
         eprintln!(
-            "Flash Next fixed chunks {sibling_steps} tail={} with_sibling={with_sibling}: output={output_matched} prefill_state={prefill_state_matched} decode_state={decode_state_matched} sibling={sibling_matched}",
+            "Flash Next fixed chunks {sibling_steps} forwards_per_turn={forwards_per_turn} tail={} with_sibling={with_sibling}: output={output_matched} prefill_state={prefill_state_matched} decode_state={decode_state_matched} sibling={sibling_matched}",
             tail.len(),
         );
         arm_results.push(
             output_matched && prefill_state_matched && decode_state_matched && sibling_matched,
         );
     }
-    assert_eq!(arm_results, [true, true]);
+    assert_eq!(arm_results, [true; 4]);
 }
 
 #[test]
