@@ -47,6 +47,17 @@ lifecycle setup. The ordinary 32K admission and disconnect controls
 above use the product envelope. CPU idle was 94.77% at start and 84.90%
 at finish. The published timing gate requires 90% at both ends.
 
+The [quiet-host repeat](lifecycle-quiet-retry.json) completed all 21
+actions on the same build, pack and pool. CPU idle was 93.64% at
+start and 93.73% at finish. All five gauges drained after each
+action, and all three server processes exited cleanly. Response
+texts, finish reasons and token counts match the earlier replay.
+Readiness took 67.710, 57.576 and 57.580 seconds for disabled, default
+and required. The two direct arms had no verifier steps and required
+recorded 112. This passes the frozen lifecycle and CPU-idle checks
+for this receipt. The current reference-relative timing matrix remains
+a separate release gate.
+
 The boundary probe sends pre-tokenized synthetic input with a one-token output
 budget. Readiness and request timings are diagnostic observations. The
 [signed v7.9.0 direct-default record](../qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)

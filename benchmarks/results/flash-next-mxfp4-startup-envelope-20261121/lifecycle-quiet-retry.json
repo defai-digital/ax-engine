@@ -1,0 +1,578 @@
+{
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "modes": [
+    "disabled",
+    "default",
+    "required"
+  ],
+  "actions": [
+    "baseline",
+    "sse",
+    "budget_1",
+    "budget_2",
+    "stop",
+    "disconnect",
+    "recovery"
+  ],
+  "counters": [
+    "ax_engine_jobs_in_flight",
+    "ax_engine_generation_jobs_pending",
+    "ax_engine_generation_commands_queued",
+    "ax_engine_generation_active_streams",
+    "ax_engine_generation_buffered_stream_events"
+  ],
+  "total_blocks": 4096,
+  "expert_stream": "auto",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "API lifecycle; MTP-S/P/D, quality and performance not assessed",
+  "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "soc": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.2.1"
+  },
+  "host_quiet": {
+    "cpu_idle_percent": 93.64,
+    "min_idle_percent": 90.0,
+    "waited_seconds": 29.8
+  },
+  "host_idle_after": 93.73,
+  "lifecycle_passed": true,
+  "runs": [
+    {
+      "mode": "disabled",
+      "ready_seconds": 67.71,
+      "actions": [
+        {
+          "mode": "disabled",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 298491,
+              "decode_tokens": 36,
+              "decode_time_us": 736246
+            }
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 258545,
+              "decode_tokens": 36,
+              "decode_time_us": 721795
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 237415
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 262391,
+              "decode_tokens": 1,
+              "decode_time_us": 1517
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 260742,
+              "decode_tokens": 36,
+              "decode_time_us": 724323
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 282493,
+              "decode_tokens": 36,
+              "decode_time_us": 723551
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "final_verified_steps": 0.0,
+      "exit_code_after_stop": 0
+    },
+    {
+      "mode": "default",
+      "ready_seconds": 57.576,
+      "actions": [
+        {
+          "mode": "default",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 307996,
+              "decode_tokens": 36,
+              "decode_time_us": 736626
+            }
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 260246,
+              "decode_tokens": 36,
+              "decode_time_us": 724388
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 239105
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 259024,
+              "decode_tokens": 1,
+              "decode_time_us": 1618
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 259978,
+              "decode_tokens": 36,
+              "decode_time_us": 722713
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 285809,
+              "decode_tokens": 36,
+              "decode_time_us": 724967
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "final_verified_steps": 0.0,
+      "exit_code_after_stop": 0
+    },
+    {
+      "mode": "required",
+      "ready_seconds": 57.58,
+      "actions": [
+        {
+          "mode": "required",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 299055,
+              "decode_tokens": 36,
+              "decode_time_us": 798453
+            }
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 19.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 257429,
+              "decode_tokens": 36,
+              "decode_time_us": 783246
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 251223
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 250960,
+              "decode_tokens": 1,
+              "decode_time_us": 22105
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 251917,
+              "decode_tokens": 36,
+              "decode_time_us": 785953
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 281394,
+              "decode_tokens": 36,
+              "decode_time_us": 784050
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "final_verified_steps": 112.0,
+      "exit_code_after_stop": 0
+    }
+  ]
+}
