@@ -1,0 +1,44 @@
+{
+  "status": "complete",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "server_sha256": "2a82ca49731fb19a0871f62d2bb50eee98e0c0f8702188b747beec7f8a7e4bd3",
+  "fault_runner_sha256": "076c6dce16c6bb413faf68b8a33fd38d23f8f3fe4d1f3b5a81b173105a6e8c54",
+  "arms": {
+    "artifact-integrity": {
+      "required": {
+        "listener_opened": false,
+        "returncode": 1,
+        "direct_tokens_match": null,
+        "attachment_failures_logged": 0,
+        "failure_boundary": "manifest",
+        "rebound_port": true
+      },
+      "disabled": {
+        "listener_opened": false,
+        "returncode": 1,
+        "direct_tokens_match": null,
+        "attachment_failures_logged": 0,
+        "failure_boundary": "manifest",
+        "rebound_port": true
+      }
+    },
+    "head-attachment": {
+      "required": {
+        "listener_opened": false,
+        "returncode": 1,
+        "direct_tokens_match": null,
+        "attachment_failures_logged": 1,
+        "failure_boundary": "head attachment",
+        "rebound_port": true
+      },
+      "disabled": {
+        "listener_opened": true,
+        "returncode": 0,
+        "direct_tokens_match": true,
+        "attachment_failures_logged": 1,
+        "failure_boundary": "head attachment",
+        "rebound_port": true
+      }
+    }
+  }
+}

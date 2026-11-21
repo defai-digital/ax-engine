@@ -1,0 +1,44 @@
+{
+  "files": [
+    {
+      "path": "mtp.safetensors",
+      "names": [
+        "mtp.fc_embedding.weight",
+        "mtp.fc_hidden.weight",
+        "mtp.hyper_connection_mixer.hc_norm.weight",
+        "mtp.hyper_connection_mixer.input_mix_weight_down.weight",
+        "mtp.hyper_connection_mixer.input_mix_weight_up.weight",
+        "mtp.layers.0.attn_hyper_connection.block_inject_weight.weight",
+        "mtp.layers.0.attn_hyper_connection.hc_norm.weight",
+        "mtp.layers.0.attn_hyper_connection.input_mix_weight_down.weight",
+        "mtp.layers.0.attn_hyper_connection.input_mix_weight_up.weight",
+        "mtp.layers.0.mlp.experts.down_proj",
+        "mtp.layers.0.mlp.experts.gate_up_proj",
+        "mtp.layers.0.mlp.gate.weight",
+        "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+        "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+        "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+        "mtp.layers.0.mlp.shared_expert_gate.weight",
+        "mtp.layers.0.mlp_hyper_connection.block_inject_weight.weight",
+        "mtp.layers.0.mlp_hyper_connection.hc_norm.weight",
+        "mtp.layers.0.mlp_hyper_connection.input_mix_weight_down.weight",
+        "mtp.layers.0.mlp_hyper_connection.input_mix_weight_up.weight",
+        "mtp.layers.0.self_attn.indexer.index_qk_proj.weight",
+        "mtp.layers.0.self_attn.indexer.k_layernorm.weight",
+        "mtp.layers.0.self_attn.indexer.q_layernorm.weight",
+        "mtp.layers.0.self_attn.k_norm.weight",
+        "mtp.layers.0.self_attn.k_proj.weight",
+        "mtp.layers.0.self_attn.o_proj.weight",
+        "mtp.layers.0.self_attn.q_norm.weight",
+        "mtp.layers.0.self_attn.q_proj.weight",
+        "mtp.layers.0.self_attn.v_proj.weight",
+        "mtp.pre_fc_norm_embedding.weight",
+        "mtp.pre_fc_norm_hidden.weight"
+      ],
+      "selected_bytes": 5214301696,
+      "backward_jumps": 0
+    }
+  ],
+  "expected_sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
+}

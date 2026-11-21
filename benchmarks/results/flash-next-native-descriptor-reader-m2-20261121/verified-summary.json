@@ -1,0 +1,106 @@
+{
+  "positive": [
+    {
+      "policy": "disabled",
+      "reader": "name-order",
+      "ready_seconds": 151.41042529197875,
+      "resident_seconds": 80.208455583,
+      "sidecar_seconds": 45.190051792,
+      "peak_sampled_startup_rss_gib": 70.93510437011719,
+      "sidecar_initial_page_state": {
+        "selected_pages": 318256,
+        "resident_pages": 1
+      },
+      "startup_samples": 10,
+      "greedy_output_tokens": 96,
+      "verified_steps": 0,
+      "accepted_drafts": 0
+    },
+    {
+      "policy": "disabled",
+      "reader": "descriptor-lazy",
+      "ready_seconds": 46.538862625020556,
+      "resident_seconds": 28.496198584,
+      "sidecar_seconds": 2.172053333,
+      "peak_sampled_startup_rss_gib": 68.98056030273438,
+      "sidecar_initial_page_state": {
+        "selected_pages": 318256,
+        "resident_pages": 1
+      },
+      "startup_samples": 3,
+      "greedy_output_tokens": 96,
+      "verified_steps": 0,
+      "accepted_drafts": 0
+    },
+    {
+      "policy": "required",
+      "reader": "descriptor-lazy",
+      "ready_seconds": 101.2199023750145,
+      "resident_seconds": 81.616765791,
+      "sidecar_seconds": 2.170488125,
+      "peak_sampled_startup_rss_gib": 65.90678405761719,
+      "sidecar_initial_page_state": {
+        "selected_pages": 318256,
+        "resident_pages": 1
+      },
+      "startup_samples": 7,
+      "greedy_output_tokens": 96,
+      "verified_steps": 56,
+      "accepted_drafts": 37
+    },
+    {
+      "policy": "required",
+      "reader": "name-order",
+      "ready_seconds": 131.5348977500107,
+      "resident_seconds": 87.615604417,
+      "sidecar_seconds": 26.439028458,
+      "peak_sampled_startup_rss_gib": 73.05325317382812,
+      "sidecar_initial_page_state": {
+        "selected_pages": 318256,
+        "resident_pages": 1
+      },
+      "startup_samples": 9,
+      "greedy_output_tokens": 96,
+      "verified_steps": 56,
+      "accepted_drafts": 37
+    }
+  ],
+  "fault": {
+    "artifact-integrity": {
+      "required": {
+        "listener_opened": false,
+        "returncode": 1,
+        "direct_tokens_match": null,
+        "attachment_failures_logged": 0,
+        "failure_boundary": "manifest",
+        "rebound_port": true
+      },
+      "disabled": {
+        "listener_opened": false,
+        "returncode": 1,
+        "direct_tokens_match": null,
+        "attachment_failures_logged": 0,
+        "failure_boundary": "manifest",
+        "rebound_port": true
+      }
+    },
+    "head-attachment": {
+      "required": {
+        "listener_opened": false,
+        "returncode": 1,
+        "direct_tokens_match": null,
+        "attachment_failures_logged": 1,
+        "failure_boundary": "head attachment",
+        "rebound_port": true
+      },
+      "disabled": {
+        "listener_opened": true,
+        "returncode": 0,
+        "direct_tokens_match": true,
+        "attachment_failures_logged": 1,
+        "failure_boundary": "head attachment",
+        "rebound_port": true
+      }
+    }
+  }
+}
