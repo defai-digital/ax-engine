@@ -55,3 +55,17 @@ prefill and continuation states in all four trials. Sibling tokens and
 state matched the separate sequential control. The
 [tail receipt](tail-result.json) binds the test executable, pinned
 inventory, source prompts and all four debug logs.
+
+## First split-serving activation attempt
+
+The `91ca25c7f` release-server ran with an explicit two-request limit
+and the split experiment enabled. The resident memory plan priced both
+slots and reported `live-sequence-cap=uncapped`. The experiment had
+treated that optional memory throttle as the configured request limit,
+so all six candidate observations kept a single 2,048-token scheduler
+turn. All six output arrays matched their solo controls. The prefill
+disconnect probe reached stream completion without receiving an
+intermediate prefill event. The [partial receipt](split-activation-attempt.json)
+retains the inputs, outputs and startup decision for that failed
+activation attempt. Latency and cancellation still require a run that
+activates the split path.
