@@ -3,13 +3,14 @@
 //! The audited legacy exporter stores raw norm deltas with MLX conv1d axes.
 //! Its identity tuple selects `HfNormOnly`; unknown exports remain blocked.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crate::model::{
     NativeModelManifest, NativeTensorDataType, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
-use super::ConvertError;
+use super::{ConvertError, SafetensorEntry};
 
 const AXQUANT_MANIFEST_FILE: &str = "axquant_manifest.json";
 
@@ -38,6 +39,64 @@ const DECLARED_CONV1D_AXES_MLX: &str = "mlx";
 /// interpreted from `axquant_manifest.json` (missing file or unrecognized
 /// exporter tuple).
 pub(crate) const QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER: &str = "qwen4_exp_weight_layout_unknown";
+
+pub(super) fn read_source_weight_map(model_dir: &Path) -> Option<BTreeMap<String, PathBuf>> {
+    #[derive(serde::Deserialize)]
+    struct Index {
+        weight_map: BTreeMap<String, PathBuf>,
+    }
+    let data = std::fs::read(model_dir.join("model.safetensors.index.json")).ok()?;
+    serde_json::from_slice::<Index>(&data)
+        .ok()
+        .map(|index| index.weight_map)
+}
+
+/// The Flash Next loader resolves these sidecars by name from the source files.
+/// They stay out of the role manifest. Unknown entries still count as dropped.
+pub(super) fn is_implicit_quantization_sidecar(
+    entry: &SafetensorEntry,
+    weights: &BTreeMap<&str, &NativeTensorSpec>,
+    index: Option<&BTreeMap<String, PathBuf>>,
+) -> bool {
+    let Some((base, field @ ("scales" | "biases"))) = entry.name.rsplit_once('.') else {
+        return false;
+    };
+    let Some(weight) = weights
+        .get(base)
+        .filter(|weight| weight.source_quantized && weight.dtype == NativeTensorDataType::U32)
+    else {
+        return false;
+    };
+    let Some(quant) = &weight.quantization else {
+        return false;
+    };
+    let indexed_file = |name: &str| index.and_then(|map| map.get(name)).unwrap_or(&weight.file);
+    if indexed_file(&weight.name) != &weight.file || indexed_file(&entry.name) != &entry.file {
+        return false;
+    }
+    let valid_layout = match (quant.mode.as_str(), quant.bits, quant.group_size) {
+        ("mxfp4", 4, 32) | ("mxfp8", 8, 32) => field == "scales" && entry.dtype == "U8",
+        ("affine", 2 | 4 | 6 | 8, 32 | 64) => {
+            matches!(entry.dtype.as_str(), "F16" | "BF16" | "F32")
+        }
+        _ => false,
+    };
+    let (Some((&packed_columns, weight_rows)), Some((&groups, sidecar_rows))) =
+        (weight.shape.split_last(), entry.shape.split_last())
+    else {
+        return false;
+    };
+    let Some(packed_bits) = packed_columns.checked_mul(32) else {
+        return false;
+    };
+    let bits_per_group = u64::from(quant.bits) * u64::from(quant.group_size);
+    valid_layout
+        && packed_bits > 0
+        && !weight_rows.is_empty()
+        && !weight_rows.contains(&0)
+        && weight_rows == sidecar_rows
+        && groups.checked_mul(bits_per_group) == Some(packed_bits)
+}
 
 fn is_expert_role(role: NativeTensorRole) -> bool {
     matches!(

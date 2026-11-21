@@ -208,11 +208,15 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     } else {
         None
     };
+    let flash_next_weight_index = (family.family_name == "qwen4_exp")
+        .then(|| qwen4_exp_layout::read_source_weight_map(model_dir))
+        .flatten();
     let (mut mapped_tensors, dropped_ledger) = map_tensors(
         &config,
         &all_tensors,
         &family,
         converted_v4.as_ref().map(|converted| &converted.consumed),
+        flash_next_weight_index.as_ref(),
     )?;
     if is_deepseek_v4(&model_type) {
         // Name match treats `switch_mlp.gate_proj` as fused. When the same
@@ -1705,9 +1709,10 @@ fn map_tensors(
     all_tensors: &[SafetensorEntry],
     family: &ModelFamily,
     consumed_source_names: Option<&BTreeSet<String>>,
+    flash_next_weight_index: Option<&BTreeMap<String, PathBuf>>,
 ) -> Result<(Vec<NativeTensorSpec>, DroppedTensorLedger), ConvertError> {
     let mut mapped = Vec::new();
-    let mut dropped = DroppedTensorLedger::default();
+    let mut unmapped = Vec::new();
 
     for entry in all_tensors {
         // Quantized sources consumed by a family data pass (DeepSeek V4 FP8
@@ -1724,8 +1729,7 @@ fn map_tensors(
             continue;
         }
         let Some((role, layer_index)) = match_tensor(&entry.name, family) else {
-            // Fail-loud: count every unrecognised tensor (WS-C1).
-            dropped.record(&entry.name, entry.length_bytes);
+            unmapped.push(entry);
             continue;
         };
 
@@ -1752,6 +1756,25 @@ fn map_tensors(
             offset_bytes: entry.offset_bytes,
             length_bytes: entry.length_bytes,
         });
+    }
+
+    let flash_next_weights = if family.family_name == "qwen4_exp" {
+        mapped
+            .iter()
+            .filter_map(|spec| Some((spec.name.strip_suffix(".weight")?, spec)))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    let mut dropped = DroppedTensorLedger::default();
+    for entry in unmapped {
+        if !qwen4_exp_layout::is_implicit_quantization_sidecar(
+            entry,
+            &flash_next_weights,
+            flash_next_weight_index,
+        ) {
+            dropped.record(&entry.name, entry.length_bytes);
+        }
     }
 
     // Sort by (layer_index, role ordinal) for deterministic output.

@@ -5472,6 +5472,97 @@ fn qwen4_exp_rejects_malformed_contract_fields_without_dropping_entries() {
 
 #[test]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+fn qwen4_exp_accounts_for_only_valid_implicit_quantization_sidecars() {
+    use super::{SafetensorEntry, map_tensors};
+
+    let embedding = "language_model.model.embed_tokens";
+    let experts = "language_model.model.layers.0.mlp.switch_mlp.down_proj";
+    let query = "language_model.model.layers.0.self_attn.q_proj";
+    let key = "language_model.model.layers.0.self_attn.k_proj";
+    let value = "language_model.model.layers.0.self_attn.v_proj";
+    let head = "language_model.lm_head";
+    let config = serde_json::json!({"quantization": {
+        "mode": "mxfp8", "bits": 8, "group_size": 32,
+        (embedding): {"mode": "affine", "bits": 8, "group_size": 64},
+        (experts): {"mode": "mxfp4", "bits": 4, "group_size": 32},
+        (head): {"mode": "affine", "bits": 6, "group_size": 64},
+    }});
+    let family = model_family_for_type("qwen4_exp", &config).unwrap();
+    let entry = |base: &str, field: &str, dtype: &str, shape: &[u64]| SafetensorEntry {
+        name: format!("{base}.{field}"),
+        dtype: dtype.into(),
+        shape: shape.into(),
+        file: format!("{field}.safetensors").into(),
+        offset_bytes: 0,
+        length_bytes: 16,
+    };
+    let valid = [
+        entry(embedding, "scales", "BF16", &[16, 2]),
+        entry(embedding, "biases", "BF16", &[16, 2]),
+        entry(embedding, "weight", "U32", &[16, 32]),
+        entry(experts, "weight", "U32", &[8, 16, 16]),
+        entry(experts, "scales", "U8", &[8, 16, 4]),
+        entry(query, "weight", "U32", &[16, 32]),
+        entry(query, "scales", "U8", &[16, 4]),
+        entry(head, "weight", "U32", &[16, 12]),
+        entry(head, "scales", "F16", &[16, 1]),
+        entry(head, "biases", "F16", &[16, 1]),
+    ];
+    let mut index: BTreeMap<_, _> = valid
+        .iter()
+        .map(|entry| (entry.name.clone(), entry.file.clone()))
+        .collect();
+    let (mapped, dropped) = map_tensors(&config, &valid, &family, None, Some(&index)).unwrap();
+    assert_eq!(mapped.len(), 4);
+    assert!(dropped.is_empty());
+
+    let cross_shard = format!("{query}.scales");
+    let shard = index.remove(&cross_shard).unwrap();
+    let (_, dropped) = map_tensors(&config, &valid, &family, None, Some(&index)).unwrap();
+    assert_eq!(dropped.names_sample, vec![cross_shard.clone()]);
+    index.insert(cross_shard, shard);
+
+    let invalid = [
+        entry(experts, "biases", "U8", &[8, 16, 4]),
+        entry(key, "scales", "U8", &[16, 5]),
+        entry(value, "scales", "BF16", &[16, 4]),
+        entry(
+            "language_model.model.layers.0.self_attn.o_proj",
+            "scales",
+            "U8",
+            &[16, 4],
+        ),
+        entry("unmapped", "scales", "U8", &[16, 4]),
+    ];
+    let names: Vec<_> = invalid.iter().map(|entry| entry.name.clone()).collect();
+    index.extend(
+        invalid
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.file.clone())),
+    );
+    let combined: Vec<_> = valid
+        .into_iter()
+        .chain([
+            entry(key, "weight", "U32", &[16, 32]),
+            entry(value, "weight", "U32", &[16, 32]),
+            entry(
+                "language_model.model.layers.0.self_attn.o_proj",
+                "weight",
+                "BF16",
+                &[16, 32],
+            ),
+            entry("unmapped", "weight", "U32", &[16, 32]),
+        ])
+        .chain(invalid)
+        .collect();
+    let (_, dropped) = map_tensors(&config, &combined, &family, None, Some(&index)).unwrap();
+    assert_eq!(dropped.count, 6);
+    assert_eq!(dropped.names_sample[0], "unmapped.weight");
+    assert_eq!(dropped.names_sample[1..], names);
+}
+
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn qwen4_exp_preserves_ngram_layer_ownership_and_hash_buffers() {
     let family = model_family_for_type("qwen4_exp", &serde_json::json!({})).unwrap();
     for prefix in [

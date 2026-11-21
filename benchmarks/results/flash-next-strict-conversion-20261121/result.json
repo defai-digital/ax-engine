@@ -1,0 +1,32 @@
+{
+  "build_profile": "debug",
+  "converter_sha256": "8cb2b51d29ce155c4d67292ac5039afcfa11391d2c2281e89065a68b8ced8c3c",
+  "results": {
+    "mxfp4": {
+      "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+      "old_unrecognised_sidecars": 972,
+      "strict_conversion_and_validation_exit_code": 0,
+      "primary_specs": 1718,
+      "manifest_equal_except_ledger": true
+    },
+    "mxfp8": {
+      "pack_revision": "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b",
+      "old_unrecognised_sidecars": 744,
+      "strict_conversion_and_validation_exit_code": 0,
+      "primary_specs": 1718,
+      "manifest_equal_except_ledger": true,
+      "without_preview_opt_in_exit_code": 1
+    }
+  },
+  "cross_shard_negative": {
+    "removed_index_entry": "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.13.scales",
+    "exit_code": 1,
+    "unrecognised_sidecars": 1
+  },
+  "source_base_commit": "9ad3c521cf36f8e34acfb29f28c1987035faf846",
+  "updated_source_sha256": {
+    "crates/ax-engine-core/src/convert/mod.rs": "65c647a1d04419b3f28cd7226d159994e630d0d2f78522162d84be3299b88431",
+    "crates/ax-engine-core/src/convert/qwen4_exp_layout.rs": "aee49ee229f758ffcc6f0f46d575f6085dd76027043d55de2c237707bb3a3e68",
+    "crates/ax-engine-core/src/convert/tests.rs": "dfe0618a22892b5fd85c6cfc7aee9fa92c0e710befdf0a27ca800d636c59954b"
+  }
+}
