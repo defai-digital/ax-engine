@@ -13,6 +13,7 @@
 //! owned here, and nothing attaches this graph to a runner automatically.
 
 use std::collections::{HashMap, HashSet};
+use std::fs::Metadata;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -501,7 +502,7 @@ pub(crate) fn load(
         .filter(|spec| spec.name.starts_with("mtp."))
         .cloned()
         .collect();
-    let declared = read_sidecar_header_specs(&sidecar)?;
+    let (declared, header_source) = read_sidecar_header_specs(&sidecar)?;
     let index = read_weight_index(root, &canonical_root)?;
     if !manifest_specs.is_empty() {
         let bound_manifest = bind_declared_specs(
@@ -546,10 +547,7 @@ pub(crate) fn load(
 
     // Payload IO starts only after the full metadata contract is admitted.
     let names: HashSet<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-    let mut name_map = load_safetensors_filtered(&sidecar, SafetensorsNameFilter::Keep(&names))
-        .map_err(WeightLoadError::FileMissing)?;
-    mlx_sys::try_eval(&name_map.values().collect::<Vec<_>>())
-        .map_err(|e| WeightLoadError::InvalidLayer(format!("Flash Next MTP evaluation: {e}")))?;
+    let mut name_map = load_sidecar_payload(&sidecar, &header_source, &names)?;
     validate_loaded(&specs, &name_map)?;
     apply_norm_layout(norm_layout, &expected, &mut name_map)?;
 
@@ -759,12 +757,40 @@ fn read_norm_layout(
     parse_norm_layout(&value)
 }
 
-/// Read only the safetensors JSON header (names, dtypes, shapes, offsets).
-fn read_sidecar_header_specs(path: &Path) -> Result<Vec<NativeTensorSpec>, WeightLoadError> {
+fn ensure_sidecar_unchanged(path: &Path, header_source: &Metadata) -> Result<(), WeightLoadError> {
+    let current = std::fs::metadata(path).map_err(|error| {
+        WeightLoadError::FileMissing(format!("stat {}: {error}", path.display()))
+    })?;
+    if !mlx_sys::io::file_metadata_unchanged(header_source, &current) {
+        return Err(invalid(
+            "sidecar file changed after its header was read".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn load_sidecar_payload(
+    path: &Path,
+    header_source: &Metadata,
+    names: &HashSet<String>,
+) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
+    ensure_sidecar_unchanged(path, header_source)?;
+    let tensors = load_safetensors_filtered(path, SafetensorsNameFilter::Keep(names))
+        .map_err(WeightLoadError::FileMissing)?;
+    mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>())
+        .map_err(|e| WeightLoadError::InvalidLayer(format!("Flash Next MTP evaluation: {e}")))?;
+    ensure_sidecar_unchanged(path, header_source)?;
+    Ok(tensors)
+}
+
+/// Read the safetensors header and retain the identity of the opened file.
+fn read_sidecar_header_specs(
+    path: &Path,
+) -> Result<(Vec<NativeTensorSpec>, Metadata), WeightLoadError> {
     let io_error =
         |e: std::io::Error| WeightLoadError::FileMissing(format!("{}: {e}", path.display()));
     let mut file = std::fs::File::open(path).map_err(io_error)?;
-    let file_bytes = file.metadata().map_err(io_error)?.len();
+    let header_source = file.metadata().map_err(io_error)?;
     let mut len = [0_u8; 8];
     file.read_exact(&mut len).map_err(io_error)?;
     let header_len = u64::from_le_bytes(len);
@@ -821,7 +847,7 @@ fn read_sidecar_header_specs(path: &Path) -> Result<Vec<NativeTensorSpec>, Weigh
         let offset_bytes = (8 + header_len).checked_add(start).ok_or_else(malformed)?;
         if offset_bytes
             .checked_add(end - start)
-            .is_none_or(|end| end > file_bytes)
+            .is_none_or(|end| end > header_source.len())
         {
             return Err(invalid(format!(
                 "sidecar tensor {name} extends past its file"
@@ -842,7 +868,7 @@ fn read_sidecar_header_specs(path: &Path) -> Result<Vec<NativeTensorSpec>, Weigh
             length_bytes: end - start,
         });
     }
-    Ok(specs)
+    Ok((specs, header_source))
 }
 
 /// Admit the exact MTP tensor set and rebind each declared spec to its graph
@@ -1276,7 +1302,7 @@ mod tests {
         let path = root.0.join(MTP_SIDECAR_FILE);
         std::fs::write(&path, &bytes).unwrap();
 
-        let declared = read_sidecar_header_specs(&path).unwrap();
+        let (declared, _) = read_sidecar_header_specs(&path).unwrap();
         assert_eq!(declared.len(), 32);
         assert!(rejection(bind(&root, &declared, None)).contains("mtp.fc_hidden.scales"));
         let admitted: Vec<_> = declared
@@ -1287,6 +1313,54 @@ mod tests {
 
         std::fs::write(&path, (MTP_HEADER_MAX_BYTES + 1).to_le_bytes()).unwrap();
         assert!(rejection(read_sidecar_header_specs(&path)).contains("header length"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn payload_is_bound_to_the_file_used_for_header_validation() {
+        let root = temp_root("header-source");
+        let path = root.0.join(MTP_SIDECAR_FILE);
+        let name = "mtp.fc_hidden.weight";
+        let header = serde_json::to_vec(&serde_json::json!({
+            (name): {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]}
+        }))
+        .unwrap();
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&0x3f80_u16.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+
+        let (specs, header_source) = read_sidecar_header_specs(&path).unwrap();
+        let names = HashSet::from([name.to_string()]);
+        assert_eq!(specs[0].name, name);
+        assert_eq!(
+            load_sidecar_payload(&path, &header_source, &names)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let replacement = root.0.join("other.safetensors");
+        let payload_offset = 8 + header.len();
+        bytes[payload_offset..].copy_from_slice(&0x4000_u16.to_le_bytes());
+        std::fs::write(&replacement, &bytes).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(header_source.modified().unwrap()))
+            .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        let current = std::fs::metadata(&path).unwrap();
+        assert_eq!(current.len(), header_source.len());
+        assert_eq!(
+            current.modified().unwrap(),
+            header_source.modified().unwrap()
+        );
+        assert!(
+            rejection(load_sidecar_payload(&path, &header_source, &names))
+                .contains("sidecar file changed")
+        );
     }
 
     #[test]
