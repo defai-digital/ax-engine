@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
+import re
 import statistics
 import subprocess
 from typing import Any
@@ -28,7 +30,13 @@ TARGET_SOC = "Apple M5 Max"
 TARGET_MEMORY_GIB = 128
 TARGET_DESCRIPTION = "MacBook Pro, Apple M5 Max, 128 GB"
 AX_ARMS = ("disabled", "default")
+# The release gate checks the frozen workload independently of the runners.
 OUTPUT_TOKENS = 128
+LENGTHS = (512, 2048, 8192)
+WARMUPS = 2
+MEASURED = 3
+TRAJECTORIES = 16
+AX_REPEATS = 2
 LONG_ID = "long_context_record_mass"
 RESULT_FILES = {"delivery": "delivery/result.json", "qa": "qa/result.json",
                 "lifecycle": "lifecycle/result.json", "matrix": "generate-matrix/result.json",
@@ -42,6 +50,10 @@ def gate(name: str, passed: bool, detail: str, **data: Any) -> dict[str, Any]:
 def sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
@@ -164,39 +176,56 @@ def gate_lifecycle(lifecycle: dict[str, Any], th: dict[str, Any]) -> list[dict[s
 
 def cell_stats(rows: list[dict[str, Any]], tokens: Any) -> dict[str, Any]:
     """Medians over measured runs of one cell; every measured run must be full length."""
-    measured = [r for r in rows if not r["warmup"]]
+    measured = [r for r in rows if r.get("warmup") is False]
     full = [r for r in measured if tokens(r) == OUTPUT_TOKENS]
     rates, ttfts = [], []
-    for row in measured:
-        timing = row["timing"] if "timing" in row else row
-        if timing.get("decode_seconds") and timing.get("decode_tokens"):
-            rates.append(timing["decode_tokens"] / timing["decode_seconds"])
-        ttfts.append(timing["ttft_seconds"])
+    for row in full:
+        timing = row.get("timing", row)
+        seconds = timing.get("decode_seconds")
+        count = timing.get("decode_tokens")
+        first = timing.get("ttft_seconds")
+        if all(type(value) in (int, float) and math.isfinite(value) and value > 0
+               for value in (seconds, count, first)):
+            rates.append(count / seconds)
+            ttfts.append(first)
+    complete_timing = bool(measured) and len(rates) == len(measured)
     return {"measured": len(measured), "full_length": len(full),
-            "decode_tok_s": statistics.median(rates) if rates else None,
-            "ttft_s": statistics.median(ttfts) if ttfts else None}
+            "decode_tok_s": statistics.median(rates) if complete_timing else None,
+            "ttft_s": statistics.median(ttfts) if complete_timing else None}
 
 
 def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
                             th: dict[str, Any]) -> list[dict[str, Any]]:
     spec = th["reference_relative"]
-    ref_cells = (reference.get("matrix") or {}).get("cells") or []
-    lengths = sorted({c["length"] for c in ref_cells})
+    ref_matrix = reference.get("matrix") or {}
+    ref_cells = ref_matrix.get("cells") or []
+    ax_cells = {arm: matrix["runs"][arm]["cells"] for arm in AX_ARMS}
+    expected_runs = {(length, run, run < WARMUPS) for length in LENGTHS
+                     for run in range(WARMUPS + MEASURED)}
+    expected_hash_keys = {f"cell-{length}-{run}" for length, run, _ in expected_runs}
     problems, table = [], {}
     if not reference.get("completed") or not ref_cells:
         problems.append("reference matrix is incomplete")
-    ref_hashes = (reference.get("matrix") or {}).get("prompt_id_hashes") or {}
+    for label, rows in {"reference": ref_cells, **ax_cells}.items():
+        valid = [(row.get("length"), row.get("run"), row.get("warmup")) for row in rows
+                 if type(row.get("length")) is int and type(row.get("run")) is int
+                 and isinstance(row.get("warmup"), bool)]
+        if len(rows) != len(expected_runs) or set(valid) != expected_runs:
+            problems.append(f"{label}: expected two warmups and three measurements at each of {LENGTHS}")
+    ref_hashes = ref_matrix.get("prompt_id_hashes") or {}
+    if ref_hashes.keys() != expected_hash_keys or not all(map(is_sha256, ref_hashes.values())):
+        problems.append("reference: expected a SHA-256 for every fixed-workload prompt")
     for arm in AX_ARMS:
         ax_hashes = {key: value for key, value in matrix["runs"][arm]["prompt_id_hashes"].items()
                      if key.startswith("cell-")}
         if not ax_hashes or ax_hashes != ref_hashes:
             problems.append(f"{arm}: prompt token IDs differ from the reference's")
-    for length in lengths:
-        ref = cell_stats([c for c in ref_cells if c["length"] == length], lambda r: r["generated_tokens"])
+    for length in LENGTHS:
+        ref = cell_stats([c for c in ref_cells if c.get("length") == length], lambda r: r["generated_tokens"])
         if ref["full_length"] != ref["measured"]:
             problems.append(f"{length}: reference has short measured outputs")
         for arm in AX_ARMS:
-            rows = [c for c in matrix["runs"][arm]["cells"] if c["length"] == length]
+            rows = [c for c in ax_cells[arm] if c.get("length") == length]
             ax = cell_stats(rows, lambda r: len(r["output_tokens"]))
             if ax["full_length"] != ax["measured"]:
                 problems.append(f"{length}/{arm}: AX has short measured outputs")
@@ -244,12 +273,14 @@ def gate_mtp_policy(delivery: dict[str, Any], qa: dict[str, Any], lifecycle: dic
 
 def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> list[dict[str, Any]]:
     problems = []
-    servers = {name: r.get("server_sha256") for name, r in results.items() if "server_sha256" in r}
-    if len(set(servers.values())) != 1:
-        problems.append(f"server binaries differ across results: {servers}")
-    inventories = {name: r.get("inventory_sha256") for name, r in results.items() if "inventory_sha256" in r}
-    if len(set(inventories.values())) != 1:
-        problems.append(f"inventories differ across results: {inventories}")
+    for digest_key, names in (("server_sha256", ("delivery", "qa", "lifecycle", "matrix")),
+                              ("inventory_sha256", RESULT_FILES)):
+        digests = {name: results[name].get(digest_key) for name in names}
+        missing = [name for name, digest in digests.items() if not is_sha256(digest)]
+        if missing:
+            problems.append(f"{digest_key} missing or invalid in {missing}")
+        elif len(set(digests.values())) != 1:
+            problems.append(f"{digest_key} differs across results: {digests}")
     for name, result in results.items():
         hardware = result.get("hardware") or {}
         if hardware.get("form_factor") != TARGET_FORM_FACTOR or hardware.get("soc", "").strip() != TARGET_SOC \
@@ -262,8 +293,24 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
         quiet = results[name].get("host_quiet") or {}
         if quiet.get("cpu_idle_percent", -1) < floor or results[name].get("host_idle_after", -1) < floor:
             problems.append(f"{name}: host was not recorded idle (CPU idle >= {floor}%)")
-    for mode, identity in (results["matrix"].get("repeat_token_identity") or {}).items():
-        if identity["identical"] != identity["compared"]:
+    matrix = results["matrix"]
+    repeats = matrix.get("repeat_token_identity") or {}
+    if matrix.get("repeats_per_arm") != AX_REPEATS or repeats.keys() != set(AX_ARMS):
+        problems.append(f"matrix: expected {AX_REPEATS} independent processes for each direct arm")
+    expected_pairs = len(LENGTHS) * (WARMUPS + MEASURED) + TRAJECTORIES
+    trajectory_hashes = {f"traj-{index:02d}" for index in range(TRAJECTORIES)}
+    for mode in AX_ARMS:
+        identity = repeats.get(mode) or {}
+        run = matrix["runs"][mode]
+        indices = [row.get("index") for row in run["trajectories"]]
+        hashes = {key: value for key, value in run["prompt_id_hashes"].items() if key.startswith("traj-")}
+        if (indices != list(range(TRAJECTORIES)) or any(type(index) is not int for index in indices)
+                or hashes.keys() != trajectory_hashes or not all(map(is_sha256, hashes.values()))
+                or len(set(hashes.values())) != TRAJECTORIES):
+            problems.append(f"matrix/{mode}: expected the {TRAJECTORIES} distinct trajectory prompts")
+        if identity.get("compared") != expected_pairs:
+            problems.append(f"matrix/{mode}: expected {expected_pairs} repeat token comparisons")
+        elif identity.get("identical") != expected_pairs:
             problems.append(f"matrix/{mode}: repeats of the same arm emitted different tokens")
     if results["reference"].get("versions", {}).get("mlx-vlm") != "0.7.0rc0":
         problems.append("reference runtime is not the pinned MLX-VLM")

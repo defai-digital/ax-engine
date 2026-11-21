@@ -21,9 +21,10 @@ TH = json.loads(mod.THRESHOLDS.read_text())
 GIB_KIB = 1024 * 1024
 FAILURES = ["format_csv_pair", "format_status_colon", "instruction_alphabet_first", "knowledge_water_formula"]
 HARDWARE = {"form_factor": "MacBook Pro", "soc": "Apple M5 Max", "memory_bytes": 128 * 1024**3}
-CELL_HASHES = {f"cell-{length}-{run}": f"h{length}{run}" for length in (512, 2048, 8192)
+CELL_HASHES = {f"cell-{length}-{run}": f"{length * 10 + run:064x}" for length in (512, 2048, 8192)
                for run in range(5)}
-COMMON = {"server_sha256": "s", "inventory_sha256": "i", "hardware": HARDWARE,
+TRAJECTORY_HASHES = {f"traj-{index:02d}": f"{index:064x}" for index in range(16)}
+COMMON = {"server_sha256": "a" * 64, "inventory_sha256": "b" * 64, "hardware": HARDWARE,
           "qualification": False, "release_ready": False,
           "host_quiet": {"cpu_idle_percent": 95.0}, "host_idle_after": 93.0}
 
@@ -59,10 +60,15 @@ def good():
     lifecycle = {**COMMON, "lifecycle_passed": True, "runs": [
         {"mode": mode, "ready_seconds": 33.0, "actions": [action] * 7, "final_verified_steps": 0.0,
          "exit_code_after_stop": 0} for mode in ("disabled", "default")]}
-    matrix = {**COMMON, "runs": {m: {"ready_seconds": 33.0, "trajectories": [{"verified_steps": 0.0}],
-                                     "prompt_id_hashes": {"traj-00": "t", **CELL_HASHES},
-                                     "cells": ax_cells()} for m in ("disabled", "default")}}
-    reference = {**COMMON, "completed": True, "versions": {"mlx-vlm": "0.7.0rc0"},
+    matrix = {**COMMON, "repeats_per_arm": 2,
+              "repeat_token_identity": {mode: {"compared": 31, "identical": 31}
+                                        for mode in ("disabled", "default")},
+              "runs": {mode: {"ready_seconds": 33.0,
+                              "trajectories": [{"index": index, "verified_steps": 0.0} for index in range(16)],
+                              "prompt_id_hashes": {**TRAJECTORY_HASHES, **CELL_HASHES},
+                              "cells": ax_cells()} for mode in ("disabled", "default")}}
+    reference = {**{key: value for key, value in COMMON.items() if key != "server_sha256"},
+                 "completed": True, "versions": {"mlx-vlm": "0.7.0rc0"},
                  "qa": {"rows": [0] * 105, "failures": list(FAILURES)},
                  "matrix": {"cells": ref_cells(), "prompt_id_hashes": dict(CELL_HASHES)}}
     delivery = {**COMMON, "completed": True, "fresh_cache": True, "revision": TH["target"]["pack_revision"],
@@ -159,7 +165,45 @@ class ReleaseGateTests(unittest.TestCase):
         r["matrix"]["runs"]["default"]["prompt_id_hashes"]["cell-512-0"] = "other"
         self.assertEqual(failed(r), {"reference_relative"})
         r = good()
-        r["matrix"]["runs"]["disabled"]["prompt_id_hashes"] = {"traj-00": "t"}
+        r["matrix"]["runs"]["disabled"]["prompt_id_hashes"] = dict(TRAJECTORY_HASHES)
+        self.assertEqual(failed(r), {"reference_relative"})
+
+    def test_fixed_matrix_rejects_missing_cells_repeated_runs_and_wrong_warmup_labels(self):
+        r = good()
+        for arm in (*r["matrix"]["runs"].values(), r["reference"]["matrix"]):
+            arm["cells"] = [row for row in arm["cells"] if row["length"] != 8192]
+            arm["prompt_id_hashes"] = {key: digest for key, digest in arm["prompt_id_hashes"].items()
+                                       if not key.startswith("cell-8192-")}
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        cells = r["matrix"]["runs"]["default"]["cells"]
+        cells[3] = copy.deepcopy(cells[2])
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["reference"]["matrix"]["cells"][0]["warmup"] = False
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        for arm in (*r["matrix"]["runs"].values(), r["reference"]["matrix"]):
+            arm["prompt_id_hashes"].pop("cell-512-0")
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        for arm in (*r["matrix"]["runs"].values(), r["reference"]["matrix"]):
+            arm["prompt_id_hashes"]["cell-512-0"] = None
+        self.assertEqual(failed(r), {"reference_relative"})
+        for invalid_run in (False, [], {}):
+            r = good()
+            r["reference"]["matrix"]["cells"][0]["run"] = invalid_run
+            self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["reference"]["matrix"]["cells"][0]["warmup"] = 1
+        self.assertEqual(failed(r), {"reference_relative"})
+
+    def test_every_measured_row_needs_valid_timing(self):
+        r = good()
+        r["matrix"]["runs"]["default"]["cells"][2]["timing"].pop("decode_seconds")
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["reference"]["matrix"]["cells"][2]["ttft_seconds"] = float("nan")
         self.assertEqual(failed(r), {"reference_relative"})
 
     def test_a_short_measured_output_is_reported_not_averaged_away(self):
@@ -199,10 +243,10 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_integrity_requires_one_binary_one_inventory_and_the_target_sku(self):
         r = good()
-        r["qa"]["server_sha256"] = "other"
+        r["qa"]["server_sha256"] = "c" * 64
         self.assertEqual(failed(r), {"integrity"})
         r = good()
-        r["matrix"]["inventory_sha256"] = "other"
+        r["matrix"]["inventory_sha256"] = "c" * 64
         self.assertEqual(failed(r), {"integrity"})
         r = good()
         r["lifecycle"]["hardware"] = {**HARDWARE, "form_factor": "unrecognized (x)"}
@@ -213,6 +257,19 @@ class ReleaseGateTests(unittest.TestCase):
         r = good()
         r["reference"]["versions"] = {"mlx-vlm": "0.8"}
         self.assertEqual(failed(r), {"integrity"})
+
+    def test_every_required_receipt_must_have_its_digests(self):
+        for name in mod.RESULT_FILES:
+            keys = ("inventory_sha256",) if name == "reference" else ("inventory_sha256", "server_sha256")
+            for key in keys:
+                for value in (None, "", "a" * 63, "g" * 64, ["a" * 64]):
+                    with self.subTest(name=name, key=key, value=value):
+                        r = good()
+                        if value is None:
+                            r[name].pop(key)
+                        else:
+                            r[name][key] = value
+                        self.assertEqual(failed(r), {"integrity"})
 
     def test_timing_results_must_record_an_idle_host_before_and_after(self):
         for name in ("qa", "lifecycle", "matrix", "reference"):
@@ -228,11 +285,18 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_repeats_of_one_arm_must_be_token_identical(self):
         r = good()
-        r["matrix"]["repeat_token_identity"] = {"disabled": {"compared": 25, "identical": 25},
-                                                "default": {"compared": 25, "identical": 25}}
-        self.assertEqual(failed(r), set())
-        r["matrix"]["repeat_token_identity"]["default"]["identical"] = 24
+        r["matrix"]["repeat_token_identity"]["default"]["identical"] = 30
         self.assertEqual(failed(r), {"integrity"})
+        for mutate in (lambda m: m.pop("repeat_token_identity"),
+                       lambda m: m["repeat_token_identity"].pop("default"),
+                       lambda m: m["repeat_token_identity"]["default"].update(compared=0, identical=0),
+                       lambda m: m.update(repeats_per_arm=1),
+                       lambda m: m["runs"]["default"]["trajectories"].pop(),
+                       lambda m: m["runs"]["default"]["trajectories"][1].update(index=0),
+                       lambda m: m["runs"]["default"]["prompt_id_hashes"].pop("traj-01")):
+            r = good()
+            mutate(r["matrix"])
+            self.assertEqual(failed(r), {"integrity"})
 
     def test_lifecycle_needs_seven_drained_actions_in_each_required_mode(self):
         r = good()
