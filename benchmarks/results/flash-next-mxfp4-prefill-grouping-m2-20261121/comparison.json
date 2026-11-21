@@ -1,0 +1,35 @@
+{
+  "arms": {
+    "off": {
+      "leader_max_gap_seconds": 4.9962912909686565,
+      "leader_median_p95_gap_seconds": 0.07336901836679317,
+      "leader_stalls_at_or_over_100ms": [
+        4,
+        4
+      ],
+      "normal_pressure_samples": 165
+    },
+    "one": {
+      "leader_max_gap_seconds": 1.3821732089854777,
+      "leader_median_p95_gap_seconds": 1.3311982477607671,
+      "leader_stalls_at_or_over_100ms": [
+        17,
+        17
+      ],
+      "normal_pressure_samples": 288
+    },
+    "two": {
+      "leader_max_gap_seconds": 2.685874665970914,
+      "leader_median_p95_gap_seconds": 2.616557225352153,
+      "leader_stalls_at_or_over_100ms": [
+        9,
+        9
+      ],
+      "normal_pressure_samples": 368
+    }
+  },
+  "binary_sha256": "5ce4cc4766d3dc69005b56caa83509d7883710e7fb57ed0c01b74361a3da8d9d",
+  "cancellation_survivor_and_replacement_matching_serial": 2,
+  "paired_requests_matching_serial": 12,
+  "result_sha256": "641a0e913587a859503bf4827599ef20839ab6bf47aa2dfcbb34a6bcadd6d728"
+}
