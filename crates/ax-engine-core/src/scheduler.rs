@@ -2281,6 +2281,73 @@ mod tests {
     }
 
     #[test]
+    fn fair_prefill_reserves_one_decode_token_and_preserves_2048_token_quanta() {
+        let scheduler = Scheduler::new();
+        let model = "qwen3.8-flash-next:axq";
+        let prompt = [9; 2050];
+        let arriving = make_snapshot(2, 2, model, &prompt, 0, &[], 96);
+        let mut input = SchedulerInput::new(
+            StepId(50),
+            vec![make_snapshot(1, 1, model, &[7; 2050], 0, &[], 96), arriving],
+            None,
+            2049,
+        );
+        input.multi_prefill_fair = true;
+        input.max_prefill_tokens_per_request_per_step = 2048;
+        input.max_inflight_prefill_requests = 1;
+        input.block_size_tokens = 16;
+        input.available_kv_blocks = 2048;
+        input.total_kv_blocks = 2048;
+
+        // The one-prefill admission cap leaves the extra token unused when
+        // both prompts arrive together.
+        let plan = scheduler.plan(&input);
+        assert_eq!(plan.selected_requests, vec![RequestId(1)]);
+        assert_eq!(plan.deferred_requests, vec![RequestId(2)]);
+        let batch = plan.execution_batch.unwrap();
+        assert_eq!(batch.total_scheduled_tokens, 2048);
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].position_range.start, 0);
+        assert_eq!(batch.items[0].position_range.end_exclusive, 2048);
+
+        let decoder = make_snapshot(1, 1, model, &[7; 2050], 2050, &[42], 96);
+        let decoder_blocks = (decoder.processed_prompt_tokens + decoder.generated_len)
+            .div_ceil(input.block_size_tokens);
+        input.request_snapshots[0] = decoder;
+        for (budget, prompt_len, start, end) in [
+            (2049, 2048, 0u32, 2048),
+            (2048, 2048, 0, 2047),
+            (2048, 2048, 2047, 2048),
+            (2049, 2050, 0, 2048),
+            (2049, 2050, 2048, 2050),
+        ] {
+            input.step_id = StepId(input.step_id.0 + 1);
+            input.global_token_budget = budget;
+            input.available_kv_blocks =
+                input.total_kv_blocks - decoder_blocks - start.div_ceil(input.block_size_tokens);
+            input.request_snapshots[1] =
+                make_snapshot(2, 2, model, &prompt[..prompt_len], start, &[], 96);
+            let batch = scheduler.plan(&input).execution_batch.unwrap();
+            assert_eq!(batch.items.len(), 2);
+            let decode = &batch.items[0];
+            let prefill = &batch.items[1];
+            assert_eq!(
+                (decode.request_id, decode.mode),
+                (RequestId(1), ExecutionMode::Decode)
+            );
+            assert_eq!(decode.scheduled_token_count, 1);
+            assert_eq!(
+                (prefill.request_id, prefill.mode),
+                (RequestId(2), ExecutionMode::Prefill)
+            );
+            assert_eq!(prefill.position_range.start, start);
+            assert_eq!(prefill.position_range.end_exclusive, end);
+            assert_eq!(prefill.scheduled_token_count, end - start);
+            assert_eq!(batch.total_scheduled_tokens, 1 + end - start);
+        }
+    }
+
+    #[test]
     fn fair_prefill_interleave_bounds_a_lone_prefill_sharing_the_decode_cohort_step() {
         // The "fair chunked-prefill interleave" property (Phase 3): when a single
         // new prefill shares a step with an active decode cohort, the per-request
