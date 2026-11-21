@@ -12,6 +12,7 @@ use ax_engine_core::{
 use std::path::PathBuf;
 
 mod aligned_state_tests;
+mod prefill_interleave_tests;
 
 fn artifacts() -> NativeModelArtifacts {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
