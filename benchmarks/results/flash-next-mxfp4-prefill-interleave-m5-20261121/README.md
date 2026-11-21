@@ -24,4 +24,17 @@ record the physical widths in the deferred and materialized arms.
 The [receipt](result.json) binds the test executable, inventory, model
 manifest and prompt bytes. The [first order](prompt-0.log.gz) and
 [reversed order](prompt-1.log.gz) retain the complete diagnostic traces.
-The served-path trace and client latency comparison remain separate.
+
+## Served-path geometry
+
+The `b36b7b287` release-server binary repeated the same two 2,048-token
+prompts. It served four requests with one slot and twelve with two
+slots on the 2,049-token reservation schedule. Every request reproduced
+all 96 solo output IDs. The trace recorded physical prefix widths
+512, 512, 512 and 511 and a final singleton for all 16 requests.
+
+The [forward trace](serving-prefill-forwards.json) contains the physical
+forwards after readiness and the hashes of the source logs. The
+[serving result](serving-result.json.gz) retains the client output and
+scheduler events. Measuring the latency of split scheduler turns
+requires a separate run.
