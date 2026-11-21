@@ -41,6 +41,7 @@ COUNTERS = ("ax_engine_jobs_in_flight", "ax_engine_generation_jobs_pending",
 BASELINE_PROMPT = "Count from 1 to 12, separated by commas. Output only the numbers."
 LONG_PROMPT = "Write the integers from 1 to 400 separated by commas. Output only the numbers."
 ACTIONS = ("baseline", "sse", "budget_1", "budget_2", "stop", "disconnect", "recovery")
+TOKEN_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
 
 
 def chat_body(prompt: str, max_tokens: int, **extra: Any) -> dict[str, Any]:
@@ -104,6 +105,16 @@ def complete(base: str, body: dict[str, Any]) -> dict[str, Any]:
     choice = response["choices"][0]
     return {"text": choice["message"].get("content") or "", "finish_reason": choice["finish_reason"],
             "usage": response["usage"]}
+
+
+def check_recovery(baseline: dict[str, Any], recovery: dict[str, Any]) -> None:
+    for field in ("text", "finish_reason"):
+        if recovery[field] != baseline[field]:
+            raise ValueError(f"recovery {field} differs from the baseline")
+    # Timing and cache reuse may vary between identical completions.
+    for field in TOKEN_USAGE_FIELDS:
+        if recovery["usage"][field] != baseline["usage"][field]:
+            raise ValueError(f"recovery usage.{field} differs from the baseline")
 
 
 def disconnect_midstream(base: str) -> dict[str, Any]:
@@ -171,8 +182,7 @@ def run_actions(base: str, mode: str) -> list[dict[str, Any]]:
     record("disconnect", disconnect_midstream(base))
 
     again = complete(base, chat_body(BASELINE_PROMPT, 48))
-    if again["text"] != baseline["text"] or again["usage"] != baseline["usage"]:
-        raise ValueError("recovery request differs from the baseline")
+    check_recovery(baseline, again)
     record("recovery", again)
     return results
 
