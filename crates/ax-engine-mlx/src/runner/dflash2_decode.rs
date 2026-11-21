@@ -27,6 +27,7 @@ use mlx_sys::{MlxArray, MlxDtype, argmax, astype, concatenate, contiguous, resha
 
 use super::*;
 use crate::dflash2::{Dflash2Drafter, Dflash2Weights, HandoffCosts};
+use crate::fastpath::dflash2_logit_probe;
 use crate::model::layer_capture;
 
 /// RAM-only BF16 prompt tail: an evaluated, contiguous array (no pending
@@ -757,6 +758,7 @@ pub(super) struct Dflash2RoundPlan {
     pub(super) window: usize,
     /// Output tokens the request may still emit when the round starts.
     pub(super) remaining: usize,
+    ignore_eos: bool,
 }
 
 /// A round drafted ahead of its plan (`AX_MLX_DFLASH2_PREDRAFT`): the whole
@@ -775,6 +777,27 @@ pub(super) struct Dflash2PreDraft {
 /// host-side split of the round, for the host-overlap work.
 fn round_trace_enabled() -> bool {
     crate::fastpath::dflash2_round_trace_enabled()
+}
+
+fn verifier_logit_pair(logits: &MlxArray, row: usize, ids: [u32; 2]) -> Option<[f32; 2]> {
+    let shape = logits.shape();
+    if shape.len() != 2 || row >= shape[0] as usize || ids.iter().any(|&id| id >= shape[1] as u32) {
+        return None;
+    }
+    let row = row as i32;
+    let logits = slice(logits, &[row, 0], &[row + 1, shape[1]], &[1, 1], None);
+    let ids = MlxArray::from_raw_data(ids.as_ptr().cast(), 8, &[2], MlxDtype::Uint32);
+    let pair = astype(
+        &mlx_sys::take(&logits, &ids, 1, None),
+        MlxDtype::Float32,
+        None,
+    );
+    mlx_sys::try_eval(&[&pair]).ok()?;
+    let scores = <[f32; 2]>::try_from(pair.data_f32()).ok()?;
+    scores
+        .iter()
+        .all(|score| score.is_finite())
+        .then_some(scores)
 }
 
 /// Cuts a drafted block to the round's verify window (lazy slice).
@@ -800,6 +823,8 @@ pub(super) struct Dflash2StagedVerify {
     verify_build_us: u32,
     eval_wall_us: u32,
     predrafted: bool,
+    cohort_lanes: usize,
+    probe_logits: Option<MlxArray>,
     verify_cache: MlxKVCache,
     predicted: Vec<u32>,
     drafts: Vec<u32>,
@@ -882,6 +907,22 @@ fn cut_at_think_entry(tokens: &mut Vec<u32>, accepted: usize, think_start: Optio
 /// past the cut. The emitted count is one higher (the target's bonus token).
 fn committed_draft_count(pre_cut_accepted: usize, keep: usize) -> usize {
     keep.saturating_sub(1).min(pre_cut_accepted)
+}
+
+fn cohort_predraft_anchor(
+    drafts: &[u32],
+    predicted: &[u32],
+    remaining: usize,
+    terminal_ids: &[u32],
+) -> Option<(u32, usize)> {
+    let (accepted, new_tokens) = greedy_walk(drafts, predicted)?;
+    let (emitted, keep) = linear_window_commit(&new_tokens, accepted, remaining, terminal_ids);
+    if remaining.saturating_sub(emitted.len()) < 2
+        || emitted.iter().any(|token| terminal_ids.contains(token))
+    {
+        return None;
+    }
+    Some((*emitted.last()?, keep))
 }
 
 /// How the draft ids are read before verify.
@@ -1512,6 +1553,8 @@ impl MlxRunner {
             verify_build_us,
             eval_wall_us,
             predrafted: was_predrafted,
+            cohort_lanes: 1,
+            probe_logits: dflash2_logit_probe().map(|_| logits_all),
             verify_cache,
             predicted,
             drafts: drafts_owned,
@@ -1601,6 +1644,7 @@ impl MlxRunner {
             token_offset,
             window,
             remaining,
+            ignore_eos: ctx.ignore_eos,
         })
     }
 
@@ -1707,6 +1751,8 @@ impl MlxRunner {
             verify_build_us,
             eval_wall_us,
             predrafted,
+            cohort_lanes,
+            probe_logits,
             mut verify_cache,
             predicted,
             drafts: drafts_owned,
@@ -1749,6 +1795,14 @@ impl MlxRunner {
         // caller never emits. `keep == verify_len` is the only full adopt.
         let (emitted, keep) =
             linear_window_commit(&new_tokens, accepted, remaining, options.terminal_token_ids);
+        let trace_enabled = round_trace_enabled();
+        let tape_layers = if trace_enabled {
+            (0..self.weights.layers.len())
+                .filter(|&layer| verify_cache.linear_mtp_tape_stash(layer).is_some())
+                .count()
+        } else {
+            0
+        };
         let rollback_started = Instant::now();
         let mut cache_eval_failed = false;
         let adopted = if keep == verify_len {
@@ -1866,6 +1920,24 @@ impl MlxRunner {
         // The budget and terminal cuts already happened. This latches the
         // last emitted token for the next step.
         let tokens = apply_decode_result(state, &emitted, options.terminal_token_ids);
+        if let (Some((position, ids)), Some(logits), Some(ctx)) = (
+            dflash2_logit_probe(),
+            probe_logits.as_ref(),
+            options.request_context,
+        ) && let Some(row) = position.checked_sub(ctx.generated_len as usize)
+            && let Some(token) = tokens.get(row).filter(|token| ids.contains(token))
+            && let Some([left, right]) = verifier_logit_pair(logits, row, ids)
+        {
+            eprintln!(
+                "dflash2_margin request_id={} position={position} token={token} \
+                 left_id={} right_id={} left_bits={} right_bits={}",
+                ctx.request_id.0,
+                ids[0],
+                ids[1],
+                left.to_bits(),
+                right.to_bits(),
+            );
+        }
         self.finish_dflash2_round(state, window);
         // Draft the next round now, while the GPU is idle and before this
         // step's bookkeeping. The anchor is the last token emitted; the
@@ -1885,8 +1957,8 @@ impl MlxRunner {
                 remaining.saturating_sub(emitted.len()),
             );
         }
-        if round_trace_enabled()
-            && let Some(dflash) = state.dflash2.as_mut()
+        if trace_enabled
+            && let (Some(dflash), Some(ctx)) = (state.dflash2.as_mut(), options.request_context)
         {
             let now = Instant::now();
             let gap_us = match (dflash.trace_last_end, dflash.trace_entry) {
@@ -1903,9 +1975,17 @@ impl MlxRunner {
                 "dflash2_round gap_us={gap_us} draft_us={draft_wall_us} clone_us={clone_wall_us} \
                  vbuild_us={verify_build_us} eval_us={eval_wall_us} commit_us={commit_us} \
                  rollback_us={rollback_wall_us} keep={keep} window={window} predrafted={} \
-                 predraft_next={}",
+                 predraft_next={} request_id={} generated={} cohort_lanes={cohort_lanes} \
+                 proposed={} accepted={committed_drafts} emitted={} recomputed={} \
+                 tape_layers={tape_layers} mlx_peak_bytes={}",
                 predrafted as u8,
-                dflash.predraft.is_some() as u8
+                dflash.predraft.is_some() as u8,
+                ctx.request_id.0,
+                ctx.generated_len,
+                drafts.len(),
+                tokens.len(),
+                u8::from(!adopted),
+                mlx_sys::get_peak_memory(),
             );
             dflash.trace_last_end = Some(now);
         }
@@ -2129,14 +2209,21 @@ impl MlxRunner {
         let eval_wall_us = elapsed_us(eval_started);
         let verify_wall_us = elapsed_us(verify_started);
         if round_trace_enabled() {
+            let contexts: Vec<_> = drafted
+                .iter()
+                .map(|(idx, _, _)| lanes[*idx].1.token_offset)
+                .collect();
             eprintln!(
-                "dflash2_cohort lanes={} rows={} predrafted={} draft_us={} vbuild_us={} eval_us={}",
+                "dflash2_cohort lanes={} rows={} predrafted={} draft_us={} vbuild_us={} eval_us={} context_min={} context_max={} context_total={}",
                 drafted.len(),
                 lanes.iter().map(|(_, plan)| plan.window).sum::<usize>(),
                 used_predraft as u8,
                 draft_wall_us,
                 verify_build_us,
-                eval_wall_us
+                eval_wall_us,
+                contexts.iter().min().copied().unwrap_or(0),
+                contexts.iter().max().copied().unwrap_or(0),
+                contexts.iter().sum::<usize>(),
             );
         }
         let predicted_all: Vec<u32> = predicted_arr.data_u32().to_vec();
@@ -2163,21 +2250,16 @@ impl MlxRunner {
             // drafted now (the commit itself runs in the lane's own step).
             // A malformed window skips the pre-draft; the lane's own commit
             // step rejects the same shape and leaves DFlash2.
-            let predraft = greedy_walk(&drafts, &predicted_all[start..end]).and_then(
-                |(accepted, new_tokens)| {
-                    let (emitted, keep) = linear_window_commit(
-                        &new_tokens,
-                        accepted,
-                        plan.remaining,
-                        &self.terminal_token_ids,
-                    );
-                    let ended = emitted
-                        .iter()
-                        .any(|token| self.terminal_token_ids.contains(token));
-                    let next_primary = emitted.last().copied()?;
-                    (!ended && plan.remaining.saturating_sub(emitted.len()) >= 2)
-                        .then_some((next_primary, keep))
-                },
+            let terminal_ids = if plan.ignore_eos {
+                &[][..]
+            } else {
+                self.terminal_token_ids.as_slice()
+            };
+            let predraft = cohort_predraft_anchor(
+                &drafts,
+                &predicted_all[start..end],
+                plan.remaining,
+                terminal_ids,
             );
             if let Some((next_primary, keep)) = predraft {
                 next_rounds.push((
@@ -2202,6 +2284,16 @@ impl MlxRunner {
                 verify_build_us,
                 eval_wall_us,
                 predrafted: used_predraft,
+                cohort_lanes: lanes_staged,
+                probe_logits: dflash2_logit_probe().map(|_| {
+                    slice(
+                        &logits_all,
+                        &[start as i32, 0],
+                        &[end as i32, self.cfg.vocab_size as i32],
+                        &[1, 1],
+                        None,
+                    )
+                }),
                 verify_cache,
                 predicted: predicted_all[start..end].to_vec(),
                 drafts,
@@ -2976,6 +3068,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verifier_logit_pair_uses_the_requested_row_and_rivals() {
+        let values = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let logits =
+            MlxArray::from_raw_data(values.as_ptr().cast(), 24, &[2, 3], MlxDtype::Float32);
+        assert_eq!(verifier_logit_pair(&logits, 1, [2, 0]), Some([6.0, 4.0]));
+        assert_eq!(verifier_logit_pair(&logits, 0, [3, 0]), None);
+    }
+
+    #[test]
+    fn cohort_predraft_uses_the_requests_terminal_policy() {
+        let drafts = [10, 11];
+        let predicted = [10, 11, 12];
+        assert_eq!(cohort_predraft_anchor(&drafts, &predicted, 10, &[11]), None);
+        assert_eq!(
+            cohort_predraft_anchor(&drafts, &predicted, 10, &[]),
+            Some((12, 3))
+        );
+        assert_eq!(cohort_predraft_anchor(&drafts, &predicted, 4, &[]), None);
+    }
+
+    #[test]
     fn dflash2_replay_reuses_the_abandoned_verifier_page() {
         use crate::kv_block_pool::FaBlockPoolConfig;
         use crate::model::forward_all_positions_with_post_norm;
@@ -3061,6 +3174,7 @@ mod tests {
                         token_offset: 4,
                         window: 2,
                         remaining: 16,
+                        ignore_eos: ctx.ignore_eos,
                     },
                     cursor,
                     draft_wall_us: 0,
@@ -3069,6 +3183,8 @@ mod tests {
                     verify_build_us: 0,
                     eval_wall_us: 0,
                     predrafted: false,
+                    cohort_lanes: 1,
+                    probe_logits: None,
                     verify_cache: trial,
                     predicted: vec![expected; 2],
                     drafts: vec![bad_draft],

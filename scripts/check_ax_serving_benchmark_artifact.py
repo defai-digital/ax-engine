@@ -184,18 +184,11 @@ def validate_goodput(summary: dict[str, Any], *, require_slo: bool, min_goodput_
     ratio = require_number(goodput.get("ratio"), "summary.goodput.ratio")
     if ratio > 1.0:
         raise ArtifactCheckError("summary.goodput.ratio must be <= 1")
-    slo_values = [
-        goodput.get("ttft_slo_ms"),
-        goodput.get("client_tpot_slo_ms"),
-        goodput.get("e2e_slo_ms"),
-    ]
+    slo_names = ("ttft_slo_ms", "client_tpot_slo_ms", "e2e_slo_ms", "stream_gap_slo_ms")
+    slo_values = [goodput.get(name) for name in slo_names]
     if require_slo and not any(value is not None for value in slo_values):
         raise ArtifactCheckError("--require-slo needs at least one configured goodput SLO")
-    for name, value in zip(
-        ["ttft_slo_ms", "client_tpot_slo_ms", "e2e_slo_ms"],
-        slo_values,
-        strict=True,
-    ):
+    for name, value in zip(slo_names, slo_values, strict=True):
         if value is not None:
             require_number(value, f"summary.goodput.{name}", positive=True)
     if min_goodput_ratio is not None and ratio < min_goodput_ratio:

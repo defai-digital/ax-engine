@@ -292,6 +292,111 @@ fn mxfp4_verifier_key_and_index_histories_match_singletons_across_block_boundary
 }
 
 #[test]
+fn mxfp4_sparse_verification_and_prefix_replay_cover_every_qsa_group_offset() {
+    let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    let mode = Some(MlxQuantizationMode::Mxfp4);
+    let module = module_with_modes(mode, mode, mode, mode, mode);
+    let first_sparse_group = 12;
+    let width = 4;
+    let rows = first_sparse_group + 3 + width + 1;
+    let input = astype(
+        &reshape(&wave(rows, HIDDEN, 19), &[1, rows, HIDDEN], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let initial = Qwen4ExpAttentionCache::empty();
+    assert!(first_sparse_group as usize > module.indexer.config().dense_context_limit());
+
+    crate::qwen4_exp_qsa::with_pooled_cache(true, || {
+        for prefix in first_sparse_group..first_sparse_group + 4 {
+            let base = module
+                .forward(&span(&input, 0, prefix), &initial, 0, ROW_EXACT)
+                .unwrap();
+            evaluate(&base);
+            let base = base.next_state();
+            let snapshot = cache_arrays(base).map(|array| values(&array));
+            let pool_snapshot = values(base.index().pooled_blocks().unwrap());
+            let window = span(&input, prefix, prefix + width);
+            let trial = module
+                .forward_with_verifier_policy(&window, base, prefix as usize, ROW_EXACT, ROW_EXACT)
+                .unwrap();
+            let selected = module
+                .indexer
+                .select_with_projection(&window, base.index(), prefix as usize, |rows, weight| {
+                    qw_with_policy(rows, weight, ROW_EXACT)
+                })
+                .unwrap();
+            let mut committed = base.clone();
+            let keep = 2;
+            for row in 0..width {
+                let position = prefix + row;
+                let token = span(&input, position, position + 1);
+                let direct_selection = module
+                    .indexer
+                    .select_with_projection(
+                        &token,
+                        committed.index(),
+                        position as usize,
+                        |rows, weight| qw_with_policy(rows, weight, ROW_EXACT),
+                    )
+                    .unwrap();
+                let indices = direct_selection.tokens_for_query(0, 0);
+                assert!(indices.len() < (position + 1) as usize);
+                assert_eq!(
+                    selected.tokens_for_query(0, row as usize),
+                    indices,
+                    "prefix {prefix}, row {row}"
+                );
+                let step = module
+                    .forward(&token, &committed, position as usize, ROW_EXACT)
+                    .unwrap();
+                evaluate(&step);
+                committed = step.into_next_state();
+
+                if row + 1 == keep {
+                    // Recover only the accepted rows from the original cache.
+                    let retained = module
+                        .forward_with_verifier_policy(
+                            &span(&input, prefix, prefix + keep),
+                            base,
+                            prefix as usize,
+                            ROW_EXACT,
+                            ROW_EXACT,
+                        )
+                        .unwrap();
+                    exact_cache(retained.next_state(), &committed);
+                    exact(
+                        retained.next_state().index().pooled_blocks().unwrap(),
+                        committed.index().pooled_blocks().unwrap(),
+                    );
+                    let correction = span(&input, prefix + width, prefix + width + 1);
+                    let advance = |cache| {
+                        module
+                            .forward(&correction, cache, (prefix + keep) as usize, ROW_EXACT)
+                            .unwrap()
+                    };
+                    let replayed = advance(retained.next_state());
+                    let expected = advance(&committed);
+                    exact(replayed.delta(), expected.delta());
+                    exact_cache(replayed.next_state(), expected.next_state());
+                    exact(
+                        replayed.next_state().index().pooled_blocks().unwrap(),
+                        expected.next_state().index().pooled_blocks().unwrap(),
+                    );
+                }
+            }
+            exact_cache(trial.next_state(), &committed);
+            exact(
+                selected.next_cache().pooled_blocks().unwrap(),
+                committed.index().pooled_blocks().unwrap(),
+            );
+            assert_eq!(cache_arrays(base).map(|array| values(&array)), snapshot);
+            assert_eq!(values(base.index().pooled_blocks().unwrap()), pool_snapshot);
+        }
+    });
+}
+
+#[test]
 fn verifier_policy_preserves_ordinary_dense_and_affine_qsa_paths() {
     let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
     for mode in [

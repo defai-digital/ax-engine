@@ -1917,6 +1917,19 @@ env_flag_default_on!(
     "AX_MLX_DFLASH2_COHORT_WINDOW"
 );
 
+env_flag!(
+    /// Project packed DFlash2 hidden states with the standalone LM-head
+    /// shape for each lane to isolate row-dependent verifier arithmetic.
+    dflash2_cohort_lane_head_enabled,
+    "AX_MLX_DFLASH2_COHORT_LANE_HEAD"
+);
+
+env_flag!(
+    /// Coalesce two resident Flash Next greedy text pipelines for measurement.
+    flash_next_direct_coalescing_enabled,
+    "AX_MLX_FLASH_NEXT_DIRECT_COALESCING"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
     /// requests of one engine step take a DFlash2 round, verify them in one
@@ -1963,6 +1976,20 @@ env_flag!(
     dflash2_round_trace_enabled,
     "AX_MLX_DFLASH2_ROUND_TRACE"
 );
+
+/// `AX_MLX_DFLASH2_LOGIT_PROBE=position,left_id,right_id` captures two
+/// verifier scores at one zero-based output position in an untimed rerun.
+pub(crate) fn dflash2_logit_probe() -> Option<(usize, [u32; 2])> {
+    static CACHED: OnceLock<Option<(usize, [u32; 2])>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let value = std::env::var("AX_MLX_DFLASH2_LOGIT_PROBE").ok()?;
+        let mut fields = value.split(',');
+        let position = fields.next()?.parse().ok()?;
+        let left = fields.next()?.parse().ok()?;
+        let right = fields.next()?.parse().ok()?;
+        (left != right && fields.next().is_none()).then_some((position, [left, right]))
+    })
+}
 
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_TOPK_KERNEL` — the DFlash2 candidate selector finds each
@@ -7650,6 +7677,8 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// expert is reused at least four times. A 64-token prefill meets that.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NumericsTierSwitches {
+    pub(crate) dflash2_cohort_lane_head: bool,
+    pub(crate) flash_next_direct_coalescing: bool,
     pub(crate) indexed_prefill: bool,
     pub(crate) tiled_prefill_chunk: Option<usize>,
     pub(crate) decode_block_key: bool,
@@ -7800,6 +7829,8 @@ pub(crate) struct NumericsTierSwitches {
 impl Default for NumericsTierSwitches {
     fn default() -> Self {
         Self {
+            dflash2_cohort_lane_head: false,
+            flash_next_direct_coalescing: false,
             indexed_prefill: false,
             tiled_prefill_chunk: None,
             decode_block_key: false,
@@ -7956,6 +7987,10 @@ impl NumericsTierSwitches {
     /// dtype policy keep bf16 regardless of `AX_MLX_ACTIVATION_DTYPE`.
     pub(crate) fn resolved(model_family: &str) -> Self {
         Self {
+            dflash2_cohort_lane_head: model_family == "qwen3_5"
+                && dflash2_cohort_lane_head_enabled(),
+            flash_next_direct_coalescing: model_family == "qwen4_exp"
+                && flash_next_direct_coalescing_enabled(),
             indexed_prefill: flash_next_qsa_indexed_prefill_enabled(),
             tiled_prefill_chunk: flash_next_qsa_tiled_outer_prefill_chunk(),
             decode_block_key: flash_next_qsa_decode_block_key_enabled(),
@@ -8212,6 +8247,12 @@ pub(crate) fn nax_attention_killed_for_tier(allowed: bool, accelerator_active: b
 pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     acknowledge_bit_exact_switches(switches);
     let mut tokens = Vec::new();
+    if switches.dflash2_cohort_lane_head {
+        tokens.push("packed_verify_lm_head".to_string());
+    }
+    if switches.flash_next_direct_coalescing {
+        tokens.push("two_resident_direct_rows".to_string());
+    }
     if switches.indexed_prefill {
         tokens.push("indexed".to_string());
     }

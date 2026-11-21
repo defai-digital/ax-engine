@@ -45,6 +45,9 @@ def fake_stream(url: str, payload: dict[str, object], timeout: float, started: f
     yield "step", {"delta_tokens": [12]}, 0.21
     yield "response", {
         "response": {
+            "request_id": 1,
+            "prompt_tokens": [1, 2, 3],
+            "output_tokens": [10, 11, 12],
             "output_token_count": 3,
             "route": {
                 "crossover_decisions": {
@@ -59,6 +62,15 @@ def fake_stream(url: str, payload: dict[str, object], timeout: float, started: f
 
 
 class AxServingBenchTests(unittest.TestCase):
+    def test_native_token_capture_is_opt_in(self) -> None:
+        events = list(fake_stream("", {"input_tokens": [1, 2, 3]}, 0, 0))
+        options = {"prompt": prompt(), "started_at_s": 0, "scheduled_at_s": 0, "completed_at_s": 1}
+        self.assertNotIn("output_token_ids", bench.observe_stream(events, **options))
+        result = bench.observe_stream(events, record_token_ids=True, **options)
+        self.assertEqual(result["request_id"], 1)
+        self.assertEqual(result["prompt_token_ids"], [1, 2, 3])
+        self.assertEqual(result["output_token_ids"], [10, 11, 12])
+
     def test_build_payload_can_force_fixed_length_generation(self) -> None:
         payload = bench.build_payload(
             prompt(),
@@ -261,6 +273,39 @@ class AxServingBenchTests(unittest.TestCase):
         self.assertEqual(summary["ttft_ms"]["p50"], 200.0)
         self.assertEqual(summary["route_decisions"]["ax_mlx_prefix_cache_disk_hits"], 5)
         self.assertEqual(summary["route_decisions"]["ax_mlx_prefix_cache_disk_enabled"], 2)
+
+    def test_corpus_arrivals_and_gap_slo_reach_the_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = Path(tmp) / "arrivals.jsonl"
+            rows = [
+                {
+                    "id": prompt_id,
+                    "category": prompt_id,
+                    "input_tokens": [1, 2, 3],
+                    "max_output_tokens": 3,
+                    "arrival_s": offset,
+                }
+                for prompt_id, offset in [("decoder", 0), ("cold-prefill", 0.01)]
+            ]
+            corpus.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            args = bench.build_parser().parse_args([
+                "--model-id", "qwen3", "--corpus", str(corpus), "--corpus-arrivals",
+                "--warmup-requests", "0", "--concurrency", "2", "--stream-gap-slo-ms", "55",
+            ])
+            artifact = bench.run_benchmark(args, stream_func=fake_stream)
+            self.assertEqual(artifact["load"]["measured_requests"], 2)
+            self.assertEqual(
+                [row["scheduled_at_s"] for row in artifact["observations"]], [0, 0.01]
+            )
+            self.assertEqual(artifact["summary"]["goodput"]["requests"], 0)
+            self.assertEqual(
+                artifact["by_category"]["cold-prefill"]["goodput"]["stream_gap_slo_ms"], 55
+            )
+
+            rows[0]["arrival_s"] = 1
+            corpus.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            with self.assertRaisesRegex(SystemExit, "arrival_s must be ordered"):
+                bench.run_benchmark(args, stream_func=fake_stream)
 
     def test_main_writes_serving_artifact_from_fake_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

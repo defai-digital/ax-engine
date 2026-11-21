@@ -74,6 +74,8 @@ bash scripts/check-qa.sh
   scripts/test_probe_agent_turn_reuse.py \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
+  scripts/compare_ax_serving_runs.py \
+  scripts/test_compare_ax_serving_runs.py \
   scripts/bench_single_client_mlx_serving.py \
   scripts/test_bench_single_client_mlx_serving.py \
   scripts/bench_ax_multimodel_serving.py \
@@ -323,6 +325,7 @@ bash scripts/check-qa.sh
   scripts/test_probe_hybrid_prefix_reuse.py \
   scripts/test_probe_agent_turn_reuse.py \
   scripts/test_bench_ax_serving.py \
+  scripts/test_compare_ax_serving_runs.py \
   scripts/test_bench_single_client_mlx_serving.py \
   scripts/test_bench_ax_multimodel_serving.py \
   scripts/test_bench_qwen_gemma_flip_target.py \
