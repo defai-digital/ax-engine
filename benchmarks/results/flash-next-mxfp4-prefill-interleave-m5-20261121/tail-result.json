@@ -1,0 +1,53 @@
+{
+  "status": "passed",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "manifest_sha256": {
+    "model-manifest.json": "06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76"
+  },
+  "physical_chunk": 512,
+  "logical_item": 2048,
+  "prompts_sha256": {
+    "2049": "f7ae4c54aaf42c022f3d30bd1c7f8d31867030016f0846b17d45b977e68d5fca",
+    "2050": "99dbc25a0300b9869f7ef3b265707cd27d2b5b0b49a465c0e39cceda0499ee84"
+  },
+  "source": {
+    "commit": "a6fc6eee8659ce42c57de8e95aa482a3b2bb63fb",
+    "test_source_sha256": "d40a21d97e10e7eea1bca31b4b9f5b3f11b73fa572281e34a7b71d5f66e35352",
+    "test_sha256": "179b15909a4eebf2c6e1387be90a70e37b2fe7e7c938562c50ecded04d3f6309",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4"
+  },
+  "runs": [
+    {
+      "length": 2049,
+      "order": 0,
+      "returncode": 0,
+      "log": "2049-order-0.log",
+      "log_sha256": "28ea08b4edd6055b747e4f2ac56cf7d344185c758ce098d287da28468273409a"
+    },
+    {
+      "length": 2049,
+      "order": 1,
+      "returncode": 0,
+      "log": "2049-order-1.log",
+      "log_sha256": "7fc9e7340e982808a6471c68063e84258076f8c0414abacf38b5d5e1b414ee04"
+    },
+    {
+      "length": 2050,
+      "order": 0,
+      "returncode": 0,
+      "log": "2050-order-0.log",
+      "log_sha256": "88821e97f2e099ed6671b51dea24ef8075838ddb534158fbdceb08d34328171f"
+    },
+    {
+      "length": 2050,
+      "order": 1,
+      "returncode": 0,
+      "log": "2050-order-1.log",
+      "log_sha256": "db766c23879a8fdce088eeebb043c5c66d744c87db7a3e0128f7374c815279a6"
+    }
+  ],
+  "qualification": false
+}

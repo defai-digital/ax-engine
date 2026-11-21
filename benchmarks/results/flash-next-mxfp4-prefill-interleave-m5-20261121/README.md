@@ -38,3 +38,20 @@ forwards after readiness and the hashes of the source logs. The
 [serving result](serving-result.json.gz) retains the client output and
 scheduler events. Measuring the latency of split scheduler turns
 requires a separate run.
+
+## One- and two-token tails
+
+The `a6fc6eee8` Rust 1.99.1 diagnostic repeated the state comparison
+with the archived 2,049- and 2,050-token prompt pairs in both orders.
+For each input, the baseline used a legacy asynchronous 2,048-token
+cache-only item and then the ordinary prompt-completing tail. The
+treatment materialized the same four prefix forwards and the
+cache-only singleton, with a sibling decode between turns in the
+interleaved arm. The remaining one or two prompt tokens kept the
+legacy tail route.
+
+Both treatments matched all eight primary output IDs and serialized
+prefill and continuation states in all four trials. Sibling tokens and
+state matched the separate sequential control. The
+[tail receipt](tail-result.json) binds the test executable, pinned
+inventory, source prompts and all four debug logs.
