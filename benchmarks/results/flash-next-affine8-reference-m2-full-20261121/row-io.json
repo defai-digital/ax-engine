@@ -1,0 +1,496 @@
+{
+  "scope": "CPU packed-row reads, no MLX forward or qualification",
+  "hardware": "Apple M2 Ultra 192 GB, external SSD",
+  "os": "27.2.1",
+  "source_commit": "88cd09972",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "cache_scope": "paired first and repeated windows without cache eviction",
+  "observations": [
+    {
+      "tokens": 1,
+      "rotation": 0,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "28baf7bc863c4d6c67fcdfceaefcbe040c4e7fb164440ab2baee65aebe617b7c",
+      "seconds": 0.00039712502621114254
+    },
+    {
+      "tokens": 1,
+      "rotation": 0,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "28baf7bc863c4d6c67fcdfceaefcbe040c4e7fb164440ab2baee65aebe617b7c",
+      "seconds": 0.0008832089370116591
+    },
+    {
+      "tokens": 1,
+      "rotation": 0,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "28baf7bc863c4d6c67fcdfceaefcbe040c4e7fb164440ab2baee65aebe617b7c",
+      "seconds": 0.0066868329886347055
+    },
+    {
+      "tokens": 1,
+      "rotation": 0,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "28baf7bc863c4d6c67fcdfceaefcbe040c4e7fb164440ab2baee65aebe617b7c",
+      "seconds": 0.0003154170699417591
+    },
+    {
+      "tokens": 1,
+      "rotation": 0,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "28baf7bc863c4d6c67fcdfceaefcbe040c4e7fb164440ab2baee65aebe617b7c",
+      "seconds": 0.0005600419826805592
+    },
+    {
+      "tokens": 1,
+      "rotation": 0,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "28baf7bc863c4d6c67fcdfceaefcbe040c4e7fb164440ab2baee65aebe617b7c",
+      "seconds": 6.712507456541061e-05
+    },
+    {
+      "tokens": 1,
+      "rotation": 1,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "a90aa981c2ef0683a4aee442633b75f9a41b7a90f89783724d9368601896c201",
+      "seconds": 0.0005860000383108854
+    },
+    {
+      "tokens": 1,
+      "rotation": 1,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "a90aa981c2ef0683a4aee442633b75f9a41b7a90f89783724d9368601896c201",
+      "seconds": 0.00021287507843226194
+    },
+    {
+      "tokens": 1,
+      "rotation": 1,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "a90aa981c2ef0683a4aee442633b75f9a41b7a90f89783724d9368601896c201",
+      "seconds": 0.00030137505382299423
+    },
+    {
+      "tokens": 1,
+      "rotation": 1,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "a90aa981c2ef0683a4aee442633b75f9a41b7a90f89783724d9368601896c201",
+      "seconds": 0.0005509579787030816
+    },
+    {
+      "tokens": 1,
+      "rotation": 1,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "a90aa981c2ef0683a4aee442633b75f9a41b7a90f89783724d9368601896c201",
+      "seconds": 5.974993109703064e-05
+    },
+    {
+      "tokens": 1,
+      "rotation": 1,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "a90aa981c2ef0683a4aee442633b75f9a41b7a90f89783724d9368601896c201",
+      "seconds": 0.0003108750097453594
+    },
+    {
+      "tokens": 1,
+      "rotation": 2,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "3799701a3eee94a60534c280fc6be0e3a2680102e057cfc55398a7641b95b2d6",
+      "seconds": 0.00018854206427931786
+    },
+    {
+      "tokens": 1,
+      "rotation": 2,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "3799701a3eee94a60534c280fc6be0e3a2680102e057cfc55398a7641b95b2d6",
+      "seconds": 0.00030933297239243984
+    },
+    {
+      "tokens": 1,
+      "rotation": 2,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "3799701a3eee94a60534c280fc6be0e3a2680102e057cfc55398a7641b95b2d6",
+      "seconds": 0.0006098749581724405
+    },
+    {
+      "tokens": 1,
+      "rotation": 2,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "3799701a3eee94a60534c280fc6be0e3a2680102e057cfc55398a7641b95b2d6",
+      "seconds": 6.725010462105274e-05
+    },
+    {
+      "tokens": 1,
+      "rotation": 2,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "3799701a3eee94a60534c280fc6be0e3a2680102e057cfc55398a7641b95b2d6",
+      "seconds": 0.00035737501457333565
+    },
+    {
+      "tokens": 1,
+      "rotation": 2,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "3799701a3eee94a60534c280fc6be0e3a2680102e057cfc55398a7641b95b2d6",
+      "seconds": 0.0006159169133752584
+    },
+    {
+      "tokens": 1,
+      "rotation": 3,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "48b7a3c5cdb7ea2f0fc74d53a7e885180c162c50edf24566a452f1890ecec9c0",
+      "seconds": 0.0003304999554529786
+    },
+    {
+      "tokens": 1,
+      "rotation": 3,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "48b7a3c5cdb7ea2f0fc74d53a7e885180c162c50edf24566a452f1890ecec9c0",
+      "seconds": 0.0005418750224635005
+    },
+    {
+      "tokens": 1,
+      "rotation": 3,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "48b7a3c5cdb7ea2f0fc74d53a7e885180c162c50edf24566a452f1890ecec9c0",
+      "seconds": 0.0001639589900150895
+    },
+    {
+      "tokens": 1,
+      "rotation": 3,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "48b7a3c5cdb7ea2f0fc74d53a7e885180c162c50edf24566a452f1890ecec9c0",
+      "seconds": 0.00030166597571223974
+    },
+    {
+      "tokens": 1,
+      "rotation": 3,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "48b7a3c5cdb7ea2f0fc74d53a7e885180c162c50edf24566a452f1890ecec9c0",
+      "seconds": 0.0005490420153364539
+    },
+    {
+      "tokens": 1,
+      "rotation": 3,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "48b7a3c5cdb7ea2f0fc74d53a7e885180c162c50edf24566a452f1890ecec9c0",
+      "seconds": 5.8999983593821526e-05
+    },
+    {
+      "tokens": 1,
+      "rotation": 4,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "562bd459aa833b123da4334bc19bb00ab5b5f529e233222614ed7aaf328ffc4b",
+      "seconds": 0.0005793749587610364
+    },
+    {
+      "tokens": 1,
+      "rotation": 4,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "562bd459aa833b123da4334bc19bb00ab5b5f529e233222614ed7aaf328ffc4b",
+      "seconds": 0.0001443750225007534
+    },
+    {
+      "tokens": 1,
+      "rotation": 4,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "562bd459aa833b123da4334bc19bb00ab5b5f529e233222614ed7aaf328ffc4b",
+      "seconds": 0.0003004590980708599
+    },
+    {
+      "tokens": 1,
+      "rotation": 4,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "562bd459aa833b123da4334bc19bb00ab5b5f529e233222614ed7aaf328ffc4b",
+      "seconds": 0.0005848340224474669
+    },
+    {
+      "tokens": 1,
+      "rotation": 4,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "562bd459aa833b123da4334bc19bb00ab5b5f529e233222614ed7aaf328ffc4b",
+      "seconds": 7.629196625202894e-05
+    },
+    {
+      "tokens": 1,
+      "rotation": 4,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "562bd459aa833b123da4334bc19bb00ab5b5f529e233222614ed7aaf328ffc4b",
+      "seconds": 0.0003073749830946326
+    },
+    {
+      "tokens": 1,
+      "rotation": 5,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "4569532559603edcf4cf3228171a19528864158fbdebacd880955492a1fbe1dd",
+      "seconds": 0.0001644589938223362
+    },
+    {
+      "tokens": 1,
+      "rotation": 5,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "4569532559603edcf4cf3228171a19528864158fbdebacd880955492a1fbe1dd",
+      "seconds": 0.0003155419835820794
+    },
+    {
+      "tokens": 1,
+      "rotation": 5,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "4569532559603edcf4cf3228171a19528864158fbdebacd880955492a1fbe1dd",
+      "seconds": 0.0005394170293584466
+    },
+    {
+      "tokens": 1,
+      "rotation": 5,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16,
+      "digest": "4569532559603edcf4cf3228171a19528864158fbdebacd880955492a1fbe1dd",
+      "seconds": 6.179208867251873e-05
+    },
+    {
+      "tokens": 1,
+      "rotation": 5,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16,
+      "digest": "4569532559603edcf4cf3228171a19528864158fbdebacd880955492a1fbe1dd",
+      "seconds": 0.00030387507285922766
+    },
+    {
+      "tokens": 1,
+      "rotation": 5,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16,
+      "digest": "4569532559603edcf4cf3228171a19528864158fbdebacd880955492a1fbe1dd",
+      "seconds": 0.0005519590340554714
+    },
+    {
+      "tokens": 1024,
+      "rotation": 0,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16384,
+      "digest": "ba61005cff7b1289156b0c29f1253bae4fd28614d39116ab7194f1881dbf0b71",
+      "seconds": 0.040224374970421195
+    },
+    {
+      "tokens": 1024,
+      "rotation": 0,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16384,
+      "digest": "ba61005cff7b1289156b0c29f1253bae4fd28614d39116ab7194f1881dbf0b71",
+      "seconds": 0.13797949999570847
+    },
+    {
+      "tokens": 1024,
+      "rotation": 0,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16384,
+      "digest": "ba61005cff7b1289156b0c29f1253bae4fd28614d39116ab7194f1881dbf0b71",
+      "seconds": 0.0387045000679791
+    },
+    {
+      "tokens": 1024,
+      "rotation": 0,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16384,
+      "digest": "ba61005cff7b1289156b0c29f1253bae4fd28614d39116ab7194f1881dbf0b71",
+      "seconds": 0.036447249935008585
+    },
+    {
+      "tokens": 1024,
+      "rotation": 0,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16384,
+      "digest": "ba61005cff7b1289156b0c29f1253bae4fd28614d39116ab7194f1881dbf0b71",
+      "seconds": 0.14033383398782462
+    },
+    {
+      "tokens": 1024,
+      "rotation": 0,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16384,
+      "digest": "ba61005cff7b1289156b0c29f1253bae4fd28614d39116ab7194f1881dbf0b71",
+      "seconds": 0.003472000011242926
+    },
+    {
+      "tokens": 1024,
+      "rotation": 1,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16384,
+      "digest": "f59a0bc99920685185965b69af9b2f3cf7104bc212745110e16548e74386a99d",
+      "seconds": 0.13859891600441188
+    },
+    {
+      "tokens": 1024,
+      "rotation": 1,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16384,
+      "digest": "f59a0bc99920685185965b69af9b2f3cf7104bc212745110e16548e74386a99d",
+      "seconds": 0.03178525005932897
+    },
+    {
+      "tokens": 1024,
+      "rotation": 1,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16384,
+      "digest": "f59a0bc99920685185965b69af9b2f3cf7104bc212745110e16548e74386a99d",
+      "seconds": 0.034365750034339726
+    },
+    {
+      "tokens": 1024,
+      "rotation": 1,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16384,
+      "digest": "f59a0bc99920685185965b69af9b2f3cf7104bc212745110e16548e74386a99d",
+      "seconds": 0.13169099995866418
+    },
+    {
+      "tokens": 1024,
+      "rotation": 1,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16384,
+      "digest": "f59a0bc99920685185965b69af9b2f3cf7104bc212745110e16548e74386a99d",
+      "seconds": 0.0032305410131812096
+    },
+    {
+      "tokens": 1024,
+      "rotation": 1,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16384,
+      "digest": "f59a0bc99920685185965b69af9b2f3cf7104bc212745110e16548e74386a99d",
+      "seconds": 0.03426358301658183
+    },
+    {
+      "tokens": 1024,
+      "rotation": 2,
+      "pass": "first-window",
+      "profile": "mapped",
+      "rows": 16384,
+      "digest": "98bd52b41a27c93aa5d410906138c7eb804fdba38f340c9448bb9e7e1a67707b",
+      "seconds": 0.037167917005717754
+    },
+    {
+      "tokens": 1024,
+      "rotation": 2,
+      "pass": "first-window",
+      "profile": "serial-pread",
+      "rows": 16384,
+      "digest": "98bd52b41a27c93aa5d410906138c7eb804fdba38f340c9448bb9e7e1a67707b",
+      "seconds": 0.03625095798633993
+    },
+    {
+      "tokens": 1024,
+      "rotation": 2,
+      "pass": "first-window",
+      "profile": "parallel-pread-4",
+      "rows": 16384,
+      "digest": "98bd52b41a27c93aa5d410906138c7eb804fdba38f340c9448bb9e7e1a67707b",
+      "seconds": 0.1403059170115739
+    },
+    {
+      "tokens": 1024,
+      "rotation": 2,
+      "pass": "repeated-window",
+      "profile": "mapped",
+      "rows": 16384,
+      "digest": "98bd52b41a27c93aa5d410906138c7eb804fdba38f340c9448bb9e7e1a67707b",
+      "seconds": 0.003469875082373619
+    },
+    {
+      "tokens": 1024,
+      "rotation": 2,
+      "pass": "repeated-window",
+      "profile": "serial-pread",
+      "rows": 16384,
+      "digest": "98bd52b41a27c93aa5d410906138c7eb804fdba38f340c9448bb9e7e1a67707b",
+      "seconds": 0.0350245829904452
+    },
+    {
+      "tokens": 1024,
+      "rotation": 2,
+      "pass": "repeated-window",
+      "profile": "parallel-pread-4",
+      "rows": 16384,
+      "digest": "98bd52b41a27c93aa5d410906138c7eb804fdba38f340c9448bb9e7e1a67707b",
+      "seconds": 0.13107749994378537
+    }
+  ]
+}
