@@ -320,13 +320,25 @@ pub(crate) fn packed_verify_forward(
     }
 
     let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
-    let logits = lm_head_verify_window_projection(
-        &normed,
-        &weights.lm_head,
-        &cfg.model_family,
-        total as i32,
-        cfg.hidden_size as i32,
-    );
+    let project = |hidden: &MlxArray, rows: usize| {
+        lm_head_verify_window_projection(
+            hidden,
+            &weights.lm_head,
+            &cfg.model_family,
+            rows as i32,
+            cfg.hidden_size as i32,
+        )
+    };
+    let logits = if crate::fastpath::dflash2_cohort_lane_head_enabled() {
+        let parts: Vec<_> = lanes
+            .iter()
+            .zip(starts)
+            .map(|(lane, start)| project(&rows_of(&normed, start, lane.rows), lane.rows))
+            .collect();
+        join_rows(&parts)
+    } else {
+        project(&normed, total)
+    };
     let logits = mlx_sys::reshape(&logits, &[total as i32, cfg.vocab_size as i32], None);
     (logits, normed)
 }

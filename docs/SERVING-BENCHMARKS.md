@@ -55,6 +55,13 @@ python3 scripts/bench_ax_serving.py \
   --output benchmarks/results/serving/$(date +%F)-qwen3-dense-smoke.json
 ```
 
+For a timed mix, set an `arrival_s` offset on each corpus row, in ascending
+order, and pass `--corpus-arrivals --warmup-requests 0`. The harness submits
+every row once, subject to client concurrency, and records any delay past
+its scheduled offset. Use `--stream-gap-slo-ms` to include each request's
+largest observed SSE step gap in goodput. Output delivered in one step
+has no inter-step gap.
+
 Validate the artifact before citing it:
 
 ```text

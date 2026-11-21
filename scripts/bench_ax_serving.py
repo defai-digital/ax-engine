@@ -38,6 +38,7 @@ class PromptItem:
     input_tokens_count: int | None
     max_output_tokens: int
     metadata: dict[str, Any]
+    arrival_s: float | None = None
 
 
 def utc_now() -> str:
@@ -130,6 +131,13 @@ def load_corpus(path: Path) -> list[PromptItem]:
         if not isinstance(metadata, dict):
             raise SystemExit(f"{path}:{line_no}: metadata must be an object")
 
+        arrival_s = raw.get("arrival_s")
+        if arrival_s is not None and (
+            type(arrival_s) not in (int, float)
+            or not 0 <= arrival_s < math.inf
+        ):
+            raise SystemExit(f"{path}:{line_no}: arrival_s must be finite and non-negative")
+
         prompts.append(
             PromptItem(
                 id=prompt_id,
@@ -139,6 +147,7 @@ def load_corpus(path: Path) -> list[PromptItem]:
                 input_tokens_count=input_tokens_count,
                 max_output_tokens=max_output_tokens,
                 metadata=metadata,
+                arrival_s=arrival_s,
             )
         )
 
@@ -370,6 +379,7 @@ def observe_stream(
     scheduled_at_s: float,
     started_at_s: float,
     completed_at_s: float | None = None,
+    record_token_ids: bool = False,
 ) -> dict[str, Any]:
     status = 200
     error: str | None = None
@@ -380,6 +390,7 @@ def observe_stream(
     observed_text_parts: list[str] = []
     final_output_tokens: int | None = None
     route_decisions: dict[str, int | float | str | bool] = {}
+    token_record: dict[str, Any] = {}
     event_count = 0
 
     for event_name, payload, elapsed_s in events:
@@ -408,6 +419,14 @@ def observe_stream(
         if event_name == "response":
             final_output_tokens = final_output_token_count(payload)
             route_decisions = final_route_decisions(payload)
+            if record_token_ids and isinstance(payload, dict):
+                response = payload.get("response")
+                if isinstance(response, dict):
+                    token_record = {
+                        "request_id": response.get("request_id"),
+                        "prompt_token_ids": response.get("prompt_tokens"),
+                        "output_token_ids": response.get("output_tokens"),
+                    }
 
     if completed_at_s is None:
         completed_at_s = time.perf_counter()
@@ -452,6 +471,7 @@ def observe_stream(
         "events": event_count,
         "route_decisions": route_decisions,
         "metadata": prompt.metadata,
+        **token_record,
     }
 
 
@@ -469,6 +489,7 @@ def run_one_request(
     scheduled_offset_s: float,
     benchmark_started: float,
     timeout: float,
+    record_token_ids: bool = False,
     stream_func=http_sse_events,
 ) -> dict[str, Any]:
     scheduled_at_s = scheduled_offset_s
@@ -493,13 +514,19 @@ def run_one_request(
     try:
         events = list(stream_func(url, payload, timeout, started))
         completed = time.perf_counter()
-        return observe_stream(
+        observation = observe_stream(
             events,
             prompt=prompt,
             scheduled_at_s=scheduled_at_s,
             started_at_s=relative_started,
             completed_at_s=completed - benchmark_started,
+            record_token_ids=record_token_ids,
         )
+        if (observation["ok"] and record_token_ids and "input_tokens" in payload
+            and observation.get("prompt_token_ids") != payload["input_tokens"]):
+            observation["ok"] = False
+            observation["error"] = "terminal prompt tokens differ from the request"
+        return observation
     except Exception as error:  # noqa: BLE001 - benchmark artifacts should capture failures.
         completed = time.perf_counter()
         return {
@@ -533,6 +560,7 @@ def goodput_pass(
     ttft_slo_ms: float | None,
     tpot_slo_ms: float | None,
     e2e_slo_ms: float | None,
+    stream_gap_slo_ms: float | None = None,
 ) -> bool:
     if not observation.get("ok"):
         return False
@@ -544,7 +572,9 @@ def goodput_pass(
     for slo, value in checks:
         if slo is not None and (value is None or float(value) > slo):
             return False
-    return True
+    return stream_gap_slo_ms is None or (
+        max(observation.get("stream_step_interval_ms") or [0.0]) <= stream_gap_slo_ms
+    )
 
 
 def summarize_observations(
@@ -554,6 +584,7 @@ def summarize_observations(
     ttft_slo_ms: float | None,
     tpot_slo_ms: float | None,
     e2e_slo_ms: float | None,
+    stream_gap_slo_ms: float | None = None,
 ) -> dict[str, Any]:
     measured = [item for item in observations if item.get("phase") == "measured"]
     ok = [item for item in measured if item.get("ok")]
@@ -571,6 +602,7 @@ def summarize_observations(
             ttft_slo_ms=ttft_slo_ms,
             tpot_slo_ms=tpot_slo_ms,
             e2e_slo_ms=e2e_slo_ms,
+            stream_gap_slo_ms=stream_gap_slo_ms,
         )
     ]
     duration = max(wall_duration_s, 0.001)
@@ -594,6 +626,7 @@ def summarize_observations(
             "ttft_slo_ms": ttft_slo_ms,
             "client_tpot_slo_ms": tpot_slo_ms,
             "e2e_slo_ms": e2e_slo_ms,
+            "stream_gap_slo_ms": stream_gap_slo_ms,
         },
     }
 
@@ -623,6 +656,7 @@ def summarize_by_category(
     ttft_slo_ms: float | None,
     tpot_slo_ms: float | None,
     e2e_slo_ms: float | None,
+    stream_gap_slo_ms: float | None = None,
 ) -> dict[str, Any]:
     categories = sorted({str(item.get("category", "uncategorized")) for item in observations})
     return {
@@ -632,6 +666,7 @@ def summarize_by_category(
             ttft_slo_ms=ttft_slo_ms,
             tpot_slo_ms=tpot_slo_ms,
             e2e_slo_ms=e2e_slo_ms,
+            stream_gap_slo_ms=stream_gap_slo_ms,
         )
         for category in categories
     }
@@ -651,7 +686,18 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
     prompt_cycle = itertools.cycle(prompts)
 
     warmup_prompts = [next(prompt_cycle) for _ in range(args.warmup_requests)]
-    measured_prompts = [next(prompt_cycle) for _ in range(args.requests)]
+    if args.corpus_arrivals:
+        measured_prompts = prompts
+        offsets = []
+        for prompt in prompts:
+            if prompt.arrival_s is None:
+                raise SystemExit(f"{corpus_path}: {prompt.id} needs arrival_s")
+            if offsets and prompt.arrival_s < offsets[-1]:
+                raise SystemExit(f"{corpus_path}: arrival_s must be ordered")
+            offsets.append(prompt.arrival_s)
+    else:
+        measured_prompts = [next(prompt_cycle) for _ in range(args.requests)]
+        offsets = scheduled_offsets(args.requests, args.request_rate_rps)
 
     observations: list[dict[str, Any]] = []
     for prompt in warmup_prompts:
@@ -669,13 +715,13 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
             scheduled_offset_s=0.0,
             benchmark_started=started,
             timeout=args.timeout,
+            record_token_ids=args.record_token_ids,
             stream_func=stream_func,
         )
         observation["phase"] = "warmup"
         observations.append(observation)
 
     benchmark_started = time.perf_counter()
-    offsets = scheduled_offsets(args.requests, args.request_rate_rps)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         futures = [
             executor.submit(
@@ -692,6 +738,7 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
                 scheduled_offset_s=offset,
                 benchmark_started=benchmark_started,
                 timeout=args.timeout,
+                record_token_ids=args.record_token_ids,
                 stream_func=stream_func,
             )
             for prompt, offset in zip(measured_prompts, offsets)
@@ -736,8 +783,9 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
         "load": {
             "concurrency": args.concurrency,
             "request_rate_rps": args.request_rate_rps,
+            "corpus_arrivals": args.corpus_arrivals,
             "warmup_requests": args.warmup_requests,
-            "measured_requests": args.requests,
+            "measured_requests": len(measured_prompts),
         },
         "sampling": {
             "temperature": args.temperature,
@@ -758,6 +806,7 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
             ttft_slo_ms=args.slo_ttft_ms,
             tpot_slo_ms=args.slo_tpot_ms,
             e2e_slo_ms=args.slo_e2e_ms,
+            stream_gap_slo_ms=args.stream_gap_slo_ms,
         ),
         "by_category": summarize_by_category(
             measured_observations,
@@ -765,6 +814,7 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
             ttft_slo_ms=args.slo_ttft_ms,
             tpot_slo_ms=args.slo_tpot_ms,
             e2e_slo_ms=args.slo_e2e_ms,
+            stream_gap_slo_ms=args.stream_gap_slo_ms,
         ),
         "observations": ordered_observations,
     }
@@ -800,7 +850,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--requests", type=positive_int, default=12)
     parser.add_argument("--warmup-requests", type=non_negative_int, default=2)
     parser.add_argument("--concurrency", type=positive_int, default=1)
-    parser.add_argument("--request-rate-rps", type=optional_positive_float)
+    arrivals = parser.add_mutually_exclusive_group()
+    arrivals.add_argument("--request-rate-rps", type=optional_positive_float)
+    arrivals.add_argument(
+        "--corpus-arrivals",
+        action="store_true",
+        help="run every corpus row once at its ordered arrival_s offset",
+    )
+    parser.add_argument("--stream-gap-slo-ms", type=optional_positive_float)
     parser.add_argument("--timeout", type=optional_positive_float, default=600.0)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
@@ -810,6 +867,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--ignore-eos",
         action="store_true",
         help="force fixed-length native generations by ignoring terminal token IDs",
+    )
+    parser.add_argument(
+        "--record-token-ids",
+        action="store_true",
+        help="include native request IDs and terminal prompt/output token arrays",
     )
     parser.add_argument("--slo-ttft-ms", type=optional_positive_float)
     parser.add_argument("--slo-tpot-ms", type=optional_positive_float)

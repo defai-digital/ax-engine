@@ -3798,6 +3798,16 @@ impl MlxRunner {
         }
 
         let group_started = Instant::now();
+        // Flash Next reads a host token ID for PLE. Materialize the source
+        // tokens together before building the two independent forwards.
+        let flash_next = self.weights.qwen4_exp.is_some();
+        let eval_pending = |rows: &[Row]| {
+            let started = Instant::now();
+            let refs = rows.iter().map(|row| &row.pending).collect::<Vec<_>>();
+            eval(&refs);
+            elapsed_us(started)
+        };
+        let mut pending_eval_wall_us = if flash_next { eval_pending(&rows) } else { 0 };
         for row in &mut rows {
             match row.disposition {
                 CoalescedDirectDisposition::RequestDisabled { .. } => {
@@ -3851,12 +3861,9 @@ impl MlxRunner {
             0
         };
 
-        let pending_eval_started = Instant::now();
-        {
-            let refs = rows.iter().map(|row| &row.pending).collect::<Vec<_>>();
-            eval(&refs);
+        if !flash_next {
+            pending_eval_wall_us = eval_pending(&rows);
         }
-        let pending_eval_wall_us = elapsed_us(pending_eval_started);
         for row in &mut rows {
             let started = Instant::now();
             row.token = row.pending.first_u32_unchecked();
@@ -5661,13 +5668,26 @@ impl ExecutionRunner for MlxRunner {
         // certificate. The fallback below preserves each row's batch=1 graph
         // and therefore its sequential reduction order, but still coalesces
         // MLX submission/completion work across sibling Qwen/Gemma requests.
-        if batched_enabled && row_exact_coalescing_family(&self.cfg.model_family) {
+        let flash_next_coalescing = self.weights.qwen4_exp.is_some()
+            && self.weights.expert_stream.is_none()
+            && !self.mtp_requested
+            && self.disable_ngram_acceleration
+            && crate::fastpath::flash_next_direct_coalescing_enabled();
+        if batched_enabled
+            && (row_exact_coalescing_family(&self.cfg.model_family) || flash_next_coalescing)
+        {
             let pending_ids = self
                 .states
                 .lock()
                 .iter()
                 .filter_map(|(request_id, state)| {
-                    state.pending_direct.is_some().then_some(request_id.0)
+                    let text_state = !flash_next_coalescing
+                        || state
+                            .cache
+                            .qwen4_exp
+                            .as_ref()
+                            .is_some_and(|state| !state.has_media());
+                    (text_state && state.pending_direct.is_some()).then_some(request_id.0)
                 })
                 .collect::<std::collections::HashSet<_>>();
             let group = input
@@ -5687,6 +5707,7 @@ impl ExecutionRunner for MlxRunner {
                             false,
                         )
                 })
+                .take(if flash_next_coalescing { 2 } else { usize::MAX })
                 .collect::<Vec<_>>();
             if group.len() >= 2 {
                 let (runs, forward_rows) =
