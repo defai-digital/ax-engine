@@ -1,0 +1,12 @@
+{
+  "raw_sha256": "98c546fba8f2c9ff385467398674ab195d0d97df6975edac61505245e187965a",
+  "server_sha256": "ca42ade20522aed4773dcf42fee7bdcb4a8a86b50e410a1137cdfa2c5960605b",
+  "normal_pressure_samples": 119,
+  "peak_sampled_process_footprint_bytes": 92266569168,
+  "serial_baseline_requests": 2,
+  "full_outputs_matching_baselines": 9,
+  "short_decoder_output_ids_matched": 5,
+  "mixed_terminal_step_id": 527,
+  "disconnect_and_replacement_controls": 2,
+  "zero_gauge_lifecycle_samples": 8
+}
