@@ -54,3 +54,32 @@ and use each request's recorded prefill cursors and scheduler step counts
 to identify actual partitioning and overlap. The [raw observation](observation.json.gz)
 retains all 32 requests, their forwarded scheduler events, and one-second
 memory samples.
+
+## Fixed-chunk and aligned-cut follow-up
+
+The follow-up used the same hardware, binary, model inventory, and two
+prompts. Each single-request arm ran both prompts twice. Within an arm,
+both repeats matched across all 96 output tokens for each prompt.
+System pressure stayed normal and sampled process footprint stayed under
+74 GiB in every arm.
+
+| Scheduler budget | Configured chunk | Observed prompt cursors | Prompt 0 changed positions | Prompt 1 changed positions |
+| ---: | ---: | --- | ---: | ---: |
+| 2,048 | 1,024 | 2,048 | 0 | 0 |
+| 2,047 | 512 | 2,047, 2,048 | 11 | 57 |
+| 1,536 | 512 | 1,536, 2,048 | 0 | 85 |
+| 1,536 | 1,024 | 1,536, 2,048 | 1 | 93 |
+
+Every arm emitted first token 760 for both prompts. With the 2,047 cut
+and 512 chunk, the first changes were at zero-based output positions 41
+and 38. The 1,536 cut at the same chunk size changed prompt 1 starting
+at position 11. The 1,536 cut at chunk size 1,024 changed prompts 0 and 1
+starting at positions 41 and 3. Use the
+[raw follow-up](alignment-observation.json.gz) for the full trajectories.
+
+An intermediate greedy prefill item reserves a singleton forward for its
+own last token. An aligned scheduler cut therefore still changes the
+physical forward boundaries. The replay establishes the effect on these
+output trajectories. The serialized trunk state and logit margins need
+their own evidence. The existing two-request 4,096-budget control preserved
+the whole scheduled prompt for both requests.
