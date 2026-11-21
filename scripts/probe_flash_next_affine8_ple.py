@@ -62,6 +62,14 @@ def bfloat16_values(payload: bytes) -> np.ndarray:
     return (np.frombuffer(payload, dtype="<u2").astype("<u4") << 16).view("<f4")
 
 
+def dequantize_rows(payload: dict[str, bytes]) -> mx.array:
+    weights = np.frombuffer(payload["weight"], dtype="<u4").reshape(-1, 40)
+    scales = bfloat16_values(payload["scales"]).reshape(-1, 5)
+    biases = bfloat16_values(payload["biases"]).reshape(-1, 5)
+    return mx.dequantize(mx.array(weights), mx.array(scales, dtype=mx.bfloat16),
+                         mx.array(biases, dtype=mx.bfloat16), group_size=32, bits=8)
+
+
 def compare_shard(shard: int, prefix: str, files: dict[str, ShardFile]) -> dict:
     row_count = files["weight"].header[f"{prefix}.weight"]["shape"][0]
     interior = max(1, row_count * (shard + 1) // 129)
@@ -81,15 +89,13 @@ def compare_shard(shard: int, prefix: str, files: dict[str, ShardFile]) -> dict:
     take = mx.array(requested, dtype=mx.int32)
     resident = mx.dequantize(*(files[key].loaded[f"{prefix}.{key}"][take] for key in LAYOUT),
                             group_size=32, bits=8)
+    restore = [unique.index(index) for index in requested]
+    bounded = dequantize_rows(payload)[mx.array(restore, dtype=mx.int32)]
+
+    # A mathematically equivalent FP32 computation is a numerical negative control.
     weights = np.frombuffer(payload["weight"], dtype="<u4").reshape(-1, 40)
     scales = bfloat16_values(payload["scales"]).reshape(-1, 5)
     biases = bfloat16_values(payload["biases"]).reshape(-1, 5)
-    bounded = mx.dequantize(mx.array(weights), mx.array(scales, dtype=mx.bfloat16),
-                           mx.array(biases, dtype=mx.bfloat16), group_size=32, bits=8)
-    restore = [unique.index(index) for index in requested]
-    bounded = bounded[mx.array(restore, dtype=mx.int32)]
-
-    # A mathematically equivalent FP32 computation is a numerical negative control.
     u8 = weights.view(np.uint8).reshape(-1, 5, 32).astype(np.float32)
     analytic = (u8 * scales[..., None] + biases[..., None]).reshape(-1, 160)[restore]
     analytic = mx.array(analytic, dtype=mx.bfloat16)

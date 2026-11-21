@@ -267,6 +267,9 @@ bash scripts/check-qa.sh
   scripts/test_run_flash_next_generate_matrix.py \
   scripts/run_flash_next_reference.py \
   scripts/test_run_flash_next_reference.py \
+  scripts/probe_flash_next_affine8_ple.py \
+  scripts/run_flash_next_affine8_reference.py \
+  scripts/test_run_flash_next_affine8_reference.py \
   scripts/run_flash_next_delivery.py \
   scripts/test_run_flash_next_delivery.py \
   scripts/check_flash_next_release_gates.py \
@@ -374,6 +377,7 @@ bash scripts/check-qa.sh
   scripts/test_run_flash_next_lifecycle.py \
   scripts/test_run_flash_next_generate_matrix.py \
   scripts/test_run_flash_next_reference.py \
+  scripts/test_run_flash_next_affine8_reference.py \
   scripts/test_run_flash_next_delivery.py \
   scripts/test_check_flash_next_release_gates.py \
   scripts/test_verify_flash_next_runner_states.py \
