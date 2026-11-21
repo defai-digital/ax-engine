@@ -1,0 +1,318 @@
+{
+  "formats": {
+    "mxfp4": {
+      "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+      "shards": {
+        "model-00001-of-00025.safetensors": {
+          "BF16": 363,
+          "I64": 3,
+          "U32": 29,
+          "U8": 22
+        },
+        "model-00002-of-00025.safetensors": {
+          "BF16": 22,
+          "U32": 12
+        },
+        "model-00003-of-00025.safetensors": {
+          "BF16": 24,
+          "U32": 11
+        },
+        "model-00004-of-00025.safetensors": {
+          "BF16": 22,
+          "U32": 12
+        },
+        "model-00005-of-00025.safetensors": {
+          "BF16": 24,
+          "U32": 11
+        },
+        "model-00006-of-00025.safetensors": {
+          "BF16": 22,
+          "U32": 12
+        },
+        "model-00007-of-00025.safetensors": {
+          "BF16": 24,
+          "U32": 11
+        },
+        "model-00008-of-00025.safetensors": {
+          "BF16": 22,
+          "U32": 12
+        },
+        "model-00009-of-00025.safetensors": {
+          "BF16": 24,
+          "U32": 11
+        },
+        "model-00010-of-00025.safetensors": {
+          "BF16": 22,
+          "U32": 12
+        },
+        "model-00011-of-00025.safetensors": {
+          "BF16": 24,
+          "U32": 11
+        },
+        "model-00012-of-00025.safetensors": {
+          "BF16": 44,
+          "U32": 19,
+          "U8": 5
+        },
+        "model-00013-of-00025.safetensors": {
+          "BF16": 48,
+          "U32": 41,
+          "U8": 35
+        },
+        "model-00014-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00015-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00016-of-00025.safetensors": {
+          "BF16": 48,
+          "U32": 41,
+          "U8": 35
+        },
+        "model-00017-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00018-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00019-of-00025.safetensors": {
+          "BF16": 48,
+          "U32": 41,
+          "U8": 35
+        },
+        "model-00020-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00021-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00022-of-00025.safetensors": {
+          "BF16": 48,
+          "U32": 41,
+          "U8": 35
+        },
+        "model-00023-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00024-of-00025.safetensors": {
+          "BF16": 64,
+          "U32": 51,
+          "U8": 43
+        },
+        "model-00025-of-00025.safetensors": {
+          "BF16": 31,
+          "U32": 21,
+          "U8": 17
+        },
+        "mtp.safetensors": {
+          "BF16": 31
+        }
+      },
+      "elapsed_seconds": 0.014552917098626494
+    },
+    "mxfp8": {
+      "pack_revision": "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b",
+      "shards": {
+        "model-00001-of-00036.safetensors": {
+          "BF16": 349,
+          "U32": 21,
+          "U8": 21
+        },
+        "model-00002-of-00036.safetensors": {
+          "I64": 3,
+          "U32": 14,
+          "U8": 14
+        },
+        "model-00003-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00004-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00005-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00006-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00007-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00008-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00009-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00010-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00011-of-00036.safetensors": {
+          "U32": 13,
+          "U8": 13
+        },
+        "model-00012-of-00036.safetensors": {
+          "BF16": 28,
+          "U32": 25,
+          "U8": 25
+        },
+        "model-00013-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 26,
+          "U8": 25
+        },
+        "model-00014-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 25,
+          "U8": 26
+        },
+        "model-00015-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 24,
+          "U8": 24
+        },
+        "model-00016-of-00036.safetensors": {
+          "BF16": 20,
+          "U32": 25,
+          "U8": 25
+        },
+        "model-00017-of-00036.safetensors": {
+          "BF16": 25,
+          "U32": 24,
+          "U8": 24
+        },
+        "model-00018-of-00036.safetensors": {
+          "BF16": 23,
+          "U32": 25,
+          "U8": 25
+        },
+        "model-00019-of-00036.safetensors": {
+          "BF16": 22,
+          "U32": 26,
+          "U8": 26
+        },
+        "model-00020-of-00036.safetensors": {
+          "BF16": 20,
+          "U32": 26,
+          "U8": 26
+        },
+        "model-00021-of-00036.safetensors": {
+          "BF16": 23,
+          "U32": 26,
+          "U8": 26
+        },
+        "model-00022-of-00036.safetensors": {
+          "BF16": 23,
+          "U32": 22,
+          "U8": 21
+        },
+        "model-00023-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 25,
+          "U8": 26
+        },
+        "model-00024-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 26,
+          "U8": 25
+        },
+        "model-00025-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 25,
+          "U8": 26
+        },
+        "model-00026-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 26,
+          "U8": 25
+        },
+        "model-00027-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 25,
+          "U8": 26
+        },
+        "model-00028-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 24,
+          "U8": 24
+        },
+        "model-00029-of-00036.safetensors": {
+          "BF16": 21,
+          "U32": 24,
+          "U8": 23
+        },
+        "model-00030-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 25,
+          "U8": 26
+        },
+        "model-00031-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 26,
+          "U8": 25
+        },
+        "model-00032-of-00036.safetensors": {
+          "BF16": 24,
+          "U32": 25,
+          "U8": 26
+        },
+        "model-00033-of-00036.safetensors": {
+          "BF16": 21,
+          "U32": 26,
+          "U8": 26
+        },
+        "model-00034-of-00036.safetensors": {
+          "BF16": 20,
+          "U32": 26,
+          "U8": 26
+        },
+        "model-00035-of-00036.safetensors": {
+          "BF16": 23,
+          "U32": 26,
+          "U8": 26
+        },
+        "model-00036-of-00036.safetensors": {
+          "BF16": 10,
+          "U32": 1,
+          "U8": 1
+        },
+        "mtp.safetensors": {
+          "BF16": 31
+        }
+      },
+      "elapsed_seconds": 0.009664291981607676
+    }
+  },
+  "versions": {
+    "mlx": "0.32.4",
+    "mlx-metal": "0.32.4"
+  },
+  "baseline_peak_rss_bytes": 36732928,
+  "final_peak_rss_bytes": 38371328,
+  "active_mlx_bytes_before": 0,
+  "active_mlx_bytes_after": 0,
+  "scope": "Exact header names, shape and dtype with the MLX CPU safetensors reader; no array evaluation"
+}

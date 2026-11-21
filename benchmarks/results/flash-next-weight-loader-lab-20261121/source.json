@@ -1,0 +1,83 @@
+{
+  "engine_base_commit": "d492d191a285ecbfe8995e87b7f6b0d189b44369",
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo_profile": "release",
+  "probe_binary_sha256": "6cd04a2c286d2a86d17602603f2033178952003baee10531fb33f90d65e4babe",
+  "mlx_version": "0.32.4",
+  "m4_libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "m4_local_pack_pin": "b2c5354f779e430d0c1733143db848a72b71c16e",
+  "file_sha256": {
+    "loader-lab.patch": "f85650a6fd26a811aa36fb5d79421e53a2796edf7415d9fe2160473848cd8e1f",
+    "m4-unresident.jsonl": "498c46e612f3b98931e720559f857e40ac8e633628bd8087610393866c2bc41a",
+    "m4-warm.jsonl": "a6539297570d71dd45a8fd9bc932b5a1797666f9c1d9fab5e3fd5fa2f45cc886",
+    "run_load_order.py": "8a84d30928f6b53a572d5c9a571b1f6c3cd47fada771369b438417e7f63799cd",
+    "select_shards.py": "46c800b2bd2395958a47b4218d75ff5e10188940e352761a46eb92dc36e8f204",
+    "selection.json": "979ba04a1a0114f09735d2abb5eb8e060f1c495b3f6faabd9b96c3f08521b36c",
+    "flash-next-headers.json": "25e2920fb59a3905d0e39de1d8b0773f0a3824dcfb59ba7bb7577779c4fd834b"
+  },
+  "fixture_controls": {
+    "valid_all_modes_equal": true,
+    "invalid_excluded_dtype_filtered_mmap_succeeds": true,
+    "invalid_excluded_dtype_lazy_cpu_errors": true
+  },
+  "summary": {
+    "m4-warm": {
+      "name-order": {
+        "median_load_and_eval_seconds": 0.1817576665,
+        "median_process_rss_after_eval_bytes": 3241148416.0,
+        "selected_page_residency_fraction": [
+          1.0,
+          1.0
+        ],
+        "observations": 6
+      },
+      "offset-order": {
+        "median_load_and_eval_seconds": 0.1827310835,
+        "median_process_rss_after_eval_bytes": 3241156608.0,
+        "selected_page_residency_fraction": [
+          1.0,
+          1.0
+        ],
+        "observations": 6
+      },
+      "lazy-cpu": {
+        "median_load_and_eval_seconds": 0.061069833000000004,
+        "median_process_rss_after_eval_bytes": 1629667328.0,
+        "selected_page_residency_fraction": [
+          1.0,
+          1.0
+        ],
+        "observations": 6
+      }
+    },
+    "m4-unresident": {
+      "name-order": {
+        "median_load_and_eval_seconds": 1.9263527085,
+        "median_process_rss_after_eval_bytes": 3241107456.0,
+        "selected_page_residency_fraction": [
+          0.0,
+          1.0164151039284444e-05
+        ],
+        "observations": 6
+      },
+      "offset-order": {
+        "median_load_and_eval_seconds": 1.9399015204999999,
+        "median_process_rss_after_eval_bytes": 3241164800.0,
+        "selected_page_residency_fraction": [
+          0.0,
+          1.0164151039284444e-05
+        ],
+        "observations": 6
+      },
+      "lazy-cpu": {
+        "median_load_and_eval_seconds": 0.2597239375,
+        "median_process_rss_after_eval_bytes": 1629618176.0,
+        "selected_page_residency_fraction": [
+          0.0,
+          1.0164151039284444e-05
+        ],
+        "observations": 6
+      }
+    }
+  }
+}

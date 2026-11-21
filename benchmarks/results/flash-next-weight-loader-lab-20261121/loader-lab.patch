@@ -1,0 +1,130 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index a42d5b38d..d5d5c307f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1626,0 +1627 @@ dependencies = [
++ "sha2",
+diff --git a/crates/mlx-sys/Cargo.toml b/crates/mlx-sys/Cargo.toml
+index 4e6277efc..e13ed82c9 100644
+--- a/crates/mlx-sys/Cargo.toml
++++ b/crates/mlx-sys/Cargo.toml
+@@ -22,0 +23,3 @@ serde_json = { workspace = true }
++
++[dev-dependencies]
++sha2.workspace = true
+diff --git a/crates/mlx-sys/examples/flash_load_order_ab.rs b/crates/mlx-sys/examples/flash_load_order_ab.rs
+new file mode 100644
+index 000000000..8d999da80
+--- /dev/null
++++ b/crates/mlx-sys/examples/flash_load_order_ab.rs
+@@ -0,0 +1,81 @@
++use std::collections::HashSet;
++use std::io;
++use std::path::Path;
++use std::time::Instant;
++
++use mlx_sys::io::load_safetensors_filtered_by_offset;
++use mlx_sys::{SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, try_eval};
++use serde_json::{Value, json};
++use sha2::{Digest, Sha256};
++
++fn main() -> Result<(), Box<dyn std::error::Error>> {
++    let mut args = std::env::args().skip(1);
++    let plan = std::fs::read(args.next().ok_or("missing workload plan")?)?;
++    let mode = args.next().ok_or("missing loader mode")?;
++    if args.next().is_some() {
++        return Err("unexpected argument".into());
++    }
++    let plan: Value = serde_json::from_slice(&plan)?;
++    let files = plan["files"].as_array().ok_or("missing workload files")?;
++    if files.is_empty() {
++        return Err("empty workload".into());
++    }
++    let mut summary = Vec::new();
++    for row in files {
++        let path = Path::new(row["path"].as_str().ok_or("missing file path")?);
++        let expected = row["names"].as_array().ok_or("missing tensor names")?;
++        let names: HashSet<String> = expected.iter().map(|entry| {
++            entry.as_str().map(str::to_owned).ok_or("invalid tensor name")
++        }).collect::<Result<_,_>>()?;
++        if names.is_empty() || names.len() != expected.len() {
++            return Err("empty or duplicate selection".into());
++        }
++        let before = mlx_sys::host_resident_bytes();
++        let start = Instant::now();
++        let tensors = match mode.as_str() {
++            "name-order" => load_safetensors_filtered(path, SafetensorsNameFilter::Keep(&names)),
++            "offset-order" => load_safetensors_filtered_by_offset(path, SafetensorsNameFilter::Keep(&names)),
++            "lazy-cpu" => load_safetensors(path, None).map(|mut all| {
++                all.retain(|name, _| names.contains(name));
++                all
++            }),
++            _ => return Err("unsupported loader mode".into()),
++        }.map_err(io::Error::other)?;
++        if tensors.len() != names.len() || !tensors.keys().all(|name| names.contains(name)) {
++            return Err("loader returned a different tensor set".into());
++        }
++        try_eval(&tensors.values().collect::<Vec<_>>()).map_err(io::Error::other)?;
++        let loaded = start.elapsed().as_secs_f64();
++        let active = mlx_sys::host_resident_bytes();
++        let mut ordered: Vec<_> = tensors.iter().collect();
++        ordered.sort_by_key(|(name, _)| *name);
++        let mut digest = Sha256::new();
++        let mut selected_bytes = 0;
++        for (name, array) in ordered {
++            let bytes = array.nbytes();
++            digest.update(name.len().to_le_bytes());
++            digest.update(name.as_bytes());
++            let layout = format!("{:?}:{:?}", array.dtype(), array.shape());
++            digest.update(layout.len().to_le_bytes());
++            digest.update(layout.as_bytes());
++            digest.update(bytes.to_le_bytes());
++            if bytes != 0 {
++                let ptr = array.data_raw();
++                if ptr.is_null() {
++                    return Err("missing evaluated array data".into());
++                }
++                // The array owns this evaluated contiguous buffer until the digest returns.
++                digest.update(unsafe { std::slice::from_raw_parts(ptr, bytes) });
++            }
++            selected_bytes += bytes;
++        }
++        summary.push(json!({
++            "file": path.file_name().and_then(|value| value.to_str()),
++            "tensors": names.len(), "selected_bytes": selected_bytes,
++            "sha256": format!("{:x}", digest.finalize()), "load_eval_seconds": loaded,
++            "rss_before_bytes": before, "rss_after_eval_bytes": active,
++        }));
++    }
++    println!("{}", json!({"mode": mode, "files": summary}));
++    Ok(())
++}
+diff --git a/crates/mlx-sys/src/io.rs b/crates/mlx-sys/src/io.rs
+index 6c6ac18aa..3a9cda410 100644
+--- a/crates/mlx-sys/src/io.rs
++++ b/crates/mlx-sys/src/io.rs
+@@ -118 +118 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
+-    load_safetensors_mmap_filtered(path, None)
++    load_safetensors_mmap_filtered(path, None, false)
+@@ -136 +136,9 @@ pub fn load_safetensors_filtered(
+-    load_safetensors_mmap_filtered(path, Some(filter))
++    load_safetensors_mmap_filtered(path, Some(filter), false)
++}
++
++/// Compare physical offset order on selected safetensors in the load lab.
++pub fn load_safetensors_filtered_by_offset(
++    path: &Path,
++    filter: SafetensorsNameFilter<'_>,
++) -> Result<HashMap<String, MlxArray>, String> {
++    load_safetensors_mmap_filtered(path, Some(filter), true)
+@@ -141,0 +150 @@ fn load_safetensors_mmap_filtered(
++    file_order: bool,
+@@ -189 +198,7 @@ fn load_safetensors_mmap_filtered(
+-    for (name, entry) in obj {
++    let mut entries: Vec<_> = obj.iter().collect();
++    if file_order {
++        entries.sort_by_key(|(_, entry)| {
++            entry.pointer("/data_offsets/0").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX)
++        });
++    }
++    for (name, entry) in entries {
