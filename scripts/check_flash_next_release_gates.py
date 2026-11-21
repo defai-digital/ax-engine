@@ -286,23 +286,35 @@ def gate_lifecycle(lifecycle: dict[str, Any], th: dict[str, Any]) -> list[dict[s
                  f"{spec['actions_per_mode']} actions in each of {spec['modes_required']} with drained counters")]
 
 
-def cell_stats(rows: list[dict[str, Any]], tokens: Any) -> dict[str, Any]:
-    """Medians over measured runs of one cell; every measured run must be full length."""
+def cell_stats(rows: list[dict[str, Any]], *, streamed: bool) -> dict[str, Any]:
+    """Compute medians from complete outputs and their post-first-event windows."""
     measured = [r for r in rows if r.get("warmup") is False]
-    full = [r for r in measured if tokens(r) == OUTPUT_TOKENS]
     rates, ttfts = [], []
-    for row in full:
-        timing = row.get("timing", row)
+    full_length = 0
+    for row in measured:
+        ids = row.get("output_tokens" if streamed else "generated_ids")
+        if (not isinstance(ids, list) or len(ids) != OUTPUT_TOKENS
+                or any(type(token) is not int or token < 0 for token in ids)
+                or (not streamed and (type(row.get("generated_tokens")) is not int
+                                      or row["generated_tokens"] != len(ids)))):
+            continue
+        full_length += 1
+        timing = row.get("timing", row) if streamed else row
+        if not isinstance(timing, dict):
+            continue
         seconds = timing.get("decode_seconds")
         count = timing.get("decode_tokens")
         first = timing.get("ttft_seconds")
-        if all(map(positive_measurement, (seconds, count, first))):
+        first_count = timing.get("first_event_tokens") if streamed else 1
+        if (type(first_count) is int and 0 < first_count < len(ids)
+                and type(count) is int and count == len(ids) - first_count
+                and positive_measurement(seconds) and positive_measurement(first)):
             rate = count / seconds
             if positive_measurement(rate):
                 rates.append(rate)
                 ttfts.append(first)
     complete_timing = len(rates) == len(measured) == MEASURED
-    return {"measured": len(measured), "full_length": len(full),
+    return {"measured": len(measured), "full_length": full_length,
             "decode_tok_s": statistics.median(rates) if complete_timing else None,
             "ttft_s": statistics.median(ttfts) if complete_timing else None}
 
@@ -338,14 +350,14 @@ def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
         elif reference_hashes_valid and ax_hashes != ref_hashes:
             problems.append(f"{arm}: prompt token IDs differ from the reference's")
     for length in LENGTHS:
-        ref = cell_stats([c for c in ref_cells if c.get("length") == length], lambda r: r["generated_tokens"])
+        ref = cell_stats([c for c in ref_cells if c.get("length") == length], streamed=False)
         if ref["full_length"] != ref["measured"]:
-            problems.append(f"{length}: reference has short measured outputs")
+            problems.append(f"{length}: reference has short or invalid measured outputs")
         for arm in AX_ARMS:
             rows = [c for c in ax_cells[arm] if c.get("length") == length]
-            ax = cell_stats(rows, lambda r: len(r["output_tokens"]))
+            ax = cell_stats(rows, streamed=True)
             if ax["full_length"] != ax["measured"]:
-                problems.append(f"{length}/{arm}: AX has short measured outputs")
+                problems.append(f"{length}/{arm}: AX has short or invalid measured outputs")
             if not (ax["decode_tok_s"] and ref["decode_tok_s"] and ax["ttft_s"] and ref["ttft_s"]):
                 problems.append(f"{length}/{arm}: missing timing")
                 continue

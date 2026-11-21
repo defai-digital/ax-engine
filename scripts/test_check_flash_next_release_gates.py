@@ -41,7 +41,7 @@ def ax_cells(decode_seconds=7.0, ttft=(4.0, 16.0, 70.0), tokens=128):
             cells.append({"length": length, "run": run, "warmup": run < 2, "verified_steps": 0.0,
                           "output_tokens": [0] * tokens,
                           "timing": {"ttft_seconds": first, "decode_seconds": decode_seconds,
-                                     "decode_tokens": 127}})
+                                     "first_event_tokens": 1, "decode_tokens": 127}})
     return cells
 
 
@@ -50,6 +50,7 @@ def ref_cells(decode_seconds=7.0, ttft=(4.0, 16.0, 70.0)):
     for length, first in zip((512, 2048, 8192), ttft):
         for run in range(5):
             cells.append({"length": length, "run": run, "warmup": run < 2, "generated_tokens": 128,
+                          "generated_ids": [0] * 128,
                           "ttft_seconds": first, "decode_seconds": decode_seconds, "decode_tokens": 127})
     return cells
 
@@ -279,8 +280,8 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_reference_relative_rejects_nonfinite_derived_timing(self):
         r = good()
+        r["matrix"]["runs"]["default"]["cells"] = ax_cells(decode_seconds=0.1)
         for row in r["reference"]["matrix"]["cells"]:
-            row["decode_tokens"] = 1
             row["decode_seconds"] = 1e308
         self.assertEqual(failed(r), {"reference_relative"})
         json.dumps(verdict(r), allow_nan=False)
@@ -289,7 +290,7 @@ class ReleaseGateTests(unittest.TestCase):
         cells = r["matrix"]["runs"]["default"]["cells"]
         cells.pop(4)
         for row in cells[2:4]:
-            row["timing"].update(decode_tokens=1, decode_seconds=1e-308)
+            row["timing"].update(decode_seconds=1e-308)
         self.assertEqual(failed(r), {"reference_relative"})
         json.dumps(verdict(r), allow_nan=False)
 
@@ -342,13 +343,31 @@ class ReleaseGateTests(unittest.TestCase):
         r["reference"]["matrix"]["cells"][2]["ttft_seconds"] = float("nan")
         self.assertEqual(failed(r), {"reference_relative"})
 
+    def test_decode_window_must_match_the_emitted_output(self):
+        r = good()
+        for row in r["matrix"]["runs"]["default"]["cells"]:
+            row["timing"].update(decode_tokens=254)
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["reference"]["matrix"]["cells"][2]["decode_tokens"] = 126
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["reference"]["matrix"]["cells"][2]["generated_ids"].pop()
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        for row in r["matrix"]["runs"]["default"]["cells"]:
+            row["timing"].update(first_event_tokens=2, decode_tokens=126)
+        streamed = r["matrix"]["runs"]["default"]["cells"][2]
+        streamed.update(streamed.pop("timing"))
+        self.assertEqual(failed(r), set())
+
     def test_a_short_measured_output_is_reported_not_averaged_away(self):
         r = good()
         r["matrix"]["runs"]["default"]["cells"][3]["output_tokens"] = [0] * 106
         result = verdict(r)
         gate = next(g for g in result["gates"] if g["gate"] == "reference_relative")
         self.assertFalse(gate["passed"])
-        self.assertIn("short measured outputs", gate["detail"])
+        self.assertIn("short or invalid measured outputs", gate["detail"])
         r = good()
         r["reference"]["matrix"]["cells"][4]["generated_tokens"] = 100
         self.assertEqual(failed(r), {"reference_relative"})
