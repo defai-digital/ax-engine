@@ -1,0 +1,142 @@
+{
+  "formats": {
+    "mxfp4": {
+      "selected": {
+        "BF16": {
+          "file": "model-00001-of-00025.safetensors",
+          "name": "language_model.model.layers.0.linear_attn.A_log",
+          "bytes": 96
+        },
+        "I64": {
+          "file": "model-00001-of-00025.safetensors",
+          "name": "language_model.model.layers.1.ple.ple_embedding.layer_multipliers",
+          "bytes": 24
+        },
+        "U32": {
+          "file": "model-00001-of-00025.safetensors",
+          "name": "language_model.model.layers.0.mlp.shared_expert_gate.weight",
+          "bytes": 2560
+        },
+        "U8": {
+          "file": "model-00001-of-00025.safetensors",
+          "name": "language_model.model.layers.0.linear_attn.in_proj_a.scales",
+          "bytes": 3840
+        }
+      },
+      "file_sha256_by_mode": {
+        "name-order": {
+          "model-00001-of-00025.safetensors": "9fa81519e7653f882a60a53c7b1c6b99c1f78f2a607fd10321986d38bf8ea42a"
+        },
+        "offset-order": {
+          "model-00001-of-00025.safetensors": "9fa81519e7653f882a60a53c7b1c6b99c1f78f2a607fd10321986d38bf8ea42a"
+        },
+        "lazy-cpu": {
+          "model-00001-of-00025.safetensors": "9fa81519e7653f882a60a53c7b1c6b99c1f78f2a607fd10321986d38bf8ea42a"
+        }
+      },
+      "total_selected_bytes": 6520,
+      "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
+    },
+    "mxfp8": {
+      "selected": {
+        "BF16": {
+          "file": "model-00001-of-00036.safetensors",
+          "name": "language_model.model.layers.0.linear_attn.A_log",
+          "bytes": 96
+        },
+        "I64": {
+          "file": "model-00002-of-00036.safetensors",
+          "name": "language_model.model.layers.1.ple.ple_embedding.layer_multipliers",
+          "bytes": 24
+        },
+        "U32": {
+          "file": "model-00001-of-00036.safetensors",
+          "name": "language_model.model.layers.0.mlp.shared_expert_gate.weight",
+          "bytes": 2560
+        },
+        "U8": {
+          "file": "model-00001-of-00036.safetensors",
+          "name": "language_model.model.layers.0.mlp.shared_expert_gate.scales",
+          "bytes": 80
+        }
+      },
+      "file_sha256_by_mode": {
+        "name-order": {
+          "model-00001-of-00036.safetensors": "e094c5b877189b16b751a1857115e669541916045323a3c804643960f58392c9",
+          "model-00002-of-00036.safetensors": "432a94fd48f17426b1cec87a970974df410d081768ee403946c81b38c77a4925"
+        },
+        "offset-order": {
+          "model-00001-of-00036.safetensors": "e094c5b877189b16b751a1857115e669541916045323a3c804643960f58392c9",
+          "model-00002-of-00036.safetensors": "432a94fd48f17426b1cec87a970974df410d081768ee403946c81b38c77a4925"
+        },
+        "lazy-cpu": {
+          "model-00001-of-00036.safetensors": "e094c5b877189b16b751a1857115e669541916045323a3c804643960f58392c9",
+          "model-00002-of-00036.safetensors": "432a94fd48f17426b1cec87a970974df410d081768ee403946c81b38c77a4925"
+        }
+      },
+      "total_selected_bytes": 2760,
+      "pack_revision": "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b"
+    }
+  },
+  "excluded_fixture": {
+    "excluded_expert_bytes": 536870912,
+    "controls": [
+      {
+        "mode": "name-order",
+        "excluded_before": {
+          "selected_pages": 32769,
+          "resident_pages": 0
+        },
+        "excluded_after": {
+          "selected_pages": 32769,
+          "resident_pages": 0
+        },
+        "sha256": "f260d0c98dd4cc2801df9b473503aead6d413b3c949ecbf94dd4fb058183b44a"
+      },
+      {
+        "mode": "offset-order",
+        "excluded_before": {
+          "selected_pages": 32769,
+          "resident_pages": 0
+        },
+        "excluded_after": {
+          "selected_pages": 32769,
+          "resident_pages": 0
+        },
+        "sha256": "f260d0c98dd4cc2801df9b473503aead6d413b3c949ecbf94dd4fb058183b44a"
+      },
+      {
+        "mode": "lazy-cpu",
+        "excluded_before": {
+          "selected_pages": 32769,
+          "resident_pages": 0
+        },
+        "excluded_after": {
+          "selected_pages": 32769,
+          "resident_pages": 0
+        },
+        "sha256": "f260d0c98dd4cc2801df9b473503aead6d413b3c949ecbf94dd4fb058183b44a"
+      }
+    ],
+    "positive_sentinel_before": {
+      "selected_pages": 1025,
+      "resident_pages": 0
+    },
+    "positive_sentinel_after": {
+      "selected_pages": 1025,
+      "resident_pages": 1025
+    }
+  },
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "storage": {
+    "pack": "external SSD",
+    "fixture": "internal SSD, APFS"
+  },
+  "source": {
+    "engine_base_commit": "d492d191a285ecbfe8995e87b7f6b0d189b44369",
+    "probe_binary_sha256": "6cd04a2c286d2a86d17602603f2033178952003baee10531fb33f90d65e4babe",
+    "mlx_version": "0.32.4",
+    "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "verify_lazy_selection_sha256": "a1b042e21bd1506ee59d4211e942d16ae84a6d50e9beb7f16c2c35de88e0395c"
+  }
+}
