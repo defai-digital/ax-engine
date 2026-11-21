@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "returncodes": [
+    0,
+    0
+  ],
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "test_sha256": "cd7297309ba6936de7aa245e92471ef5d74eda8c98b1aac197823b5b4de2702d",
+  "prompts_sha256": "849f8af3077f89be0a49d9b86bd1032eed1513e54a53bac242285cd0d2076032",
+  "physical_chunk": 512,
+  "manifest_sha256": {
+    "model-manifest.json": "06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76"
+  },
+  "qualification": false
+}
