@@ -1,0 +1,111 @@
+{
+  "expected_tensor_digest": "3c110ca89b3e22236d2eb5d36095f760f3b89b7d8a20a41e8b2ecdcc11d48871",
+  "summary": {
+    "three-reader-fresh-clones.jsonl": {
+      "name-order": {
+        "observations": 2,
+        "load_and_eval_s": {
+          "median": 60.615238792,
+          "min": 30.147075209,
+          "max": 91.083402375
+        },
+        "initial_resident_pages": {
+          "1": 2
+        },
+        "median_process_rss_after_eval_bytes": 10445414400.0
+      },
+      "offset-order": {
+        "observations": 2,
+        "load_and_eval_s": {
+          "median": 61.1070601875,
+          "min": 28.419386417,
+          "max": 93.794733958
+        },
+        "initial_resident_pages": {
+          "1": 2
+        },
+        "median_process_rss_after_eval_bytes": 10445414400.0
+      },
+      "lazy-cpu": {
+        "observations": 2,
+        "load_and_eval_s": {
+          "median": 2.182588833,
+          "min": 2.174024083,
+          "max": 2.191153583
+        },
+        "initial_resident_pages": {
+          "1": 2
+        },
+        "median_process_rss_after_eval_bytes": 5231861760.0
+      }
+    },
+    "two-mode-original.jsonl": {
+      "name-order": {
+        "observations": 4,
+        "load_and_eval_s": {
+          "median": 1.376910229,
+          "min": 1.3697845,
+          "max": 1.384493667
+        },
+        "initial_resident_pages": {
+          "318256": 4
+        },
+        "median_process_rss_after_eval_bytes": 10445381632.0
+      },
+      "lazy-cpu": {
+        "observations": 4,
+        "load_and_eval_s": {
+          "median": 0.39803864600000005,
+          "min": 0.39138675,
+          "max": 0.40678425
+        },
+        "initial_resident_pages": {
+          "318256": 4
+        },
+        "median_process_rss_after_eval_bytes": 5232001024.0
+      }
+    },
+    "two-mode-fresh-clones.jsonl": {
+      "name-order": {
+        "observations": 4,
+        "load_and_eval_s": {
+          "median": 58.304263542,
+          "min": 28.217714916,
+          "max": 91.630296167
+        },
+        "initial_resident_pages": {
+          "1": 4
+        },
+        "median_process_rss_after_eval_bytes": 10445365248.0
+      },
+      "lazy-cpu": {
+        "observations": 4,
+        "load_and_eval_s": {
+          "median": 7.8461303749999995,
+          "min": 2.180460083,
+          "max": 11.897185083
+        },
+        "initial_resident_pages": {
+          "1": 4
+        },
+        "median_process_rss_after_eval_bytes": 5231878144.0
+      }
+    }
+  },
+  "file_sha256": {
+    "three-reader-fresh-clones.jsonl": "7890a34f07c82b3b578fc8fc1b53122b8ff7a55534038cd9d81758143f6aedf2",
+    "two-mode-original.jsonl": "79c95bfd7d583659a0318da05f616ef7f2828ff470bf388f9b2d105f0ac489db",
+    "two-mode-fresh-clones.jsonl": "ec1ba274c64b429f30c99131ba7d3ec0315288f23ae25187baff11da150d48d5",
+    "selection.json": "7535b3beee284fc565a578d2bd0627d79e24b38c63aae6382ab1d5ad3db87485",
+    "two_mode_sidecar.py": "185ddd62b20b5272c088b7da392d11a4cbb151548db84682d8b8abf581878209"
+  },
+  "engine_base_commit": "d492d191a285ecbfe8995e87b7f6b0d189b44369",
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo_profile": "release",
+  "mlx_version": "0.32.4",
+  "probe_binary_sha256": "6cd04a2c286d2a86d17602603f2033178952003baee10531fb33f90d65e4babe",
+  "m2_libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "shared_trial_runner_sha256": "8a84d30928f6b53a572d5c9a571b1f6c3cd47fada771369b438417e7f63799cd",
+  "publisher_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "sidecar_file_sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0"
+}
