@@ -1,0 +1,11 @@
+{
+  "scripts/run_flash_next_affine8_reference.py": "2a94805078547888b26b16f243e04af770a4491586a128fc699dd218079d4dd4",
+  "scripts/probe_flash_next_affine8_ple.py": "da471d8668494e698619e1b1af27d0f6d8ccb3027a0bbfc9535cff9d2c27958c",
+  "scripts/run_flash_next_reference.py": "f6bce7685b3a231ce56745c60559c94d260590053ff20b5e5c95677317385192",
+  "scripts/run_flash_next_generate_matrix.py": "e962a8c9b41f4002966ff8ec3d8f3d341619d5517833afe41154e40322a255cf",
+  "scripts/run_flash_next_qa_cohort.py": "a5abdec748e75d545372e52ce6dba7c2746d88d4e468f0ed16b5152b63f8a02a",
+  "scripts/check_flash_next_native_support.py": "321855c8a9002ffc5e3d357ffbdc1f5a3a0a0f13e59b25dc19afdea07468b0e3",
+  "scripts/qualify_qwen38_flash_next.py": "7044ed1d5552a2e32dd293150a036528cbfb4a77ce16db5356def63a32ad29db",
+  "benchmarks/results/qualification/2026-10-04-flash-next-mxfp4-native-support/pack-inventory.json": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "scripts/watch_flash_next_reference.py": "33c9f522ae0bc60ea96815e2176f66b2787bce03d917e1934aad0bd0ebb2fb7b"
+}

@@ -1,0 +1,39 @@
+{
+  "source_commit": "de3463474",
+  "runtime_files_bound": 1750,
+  "case_comparison": [
+    {
+      "prompt_tokens": 512,
+      "different_token_positions": []
+    },
+    {
+      "prompt_tokens": 2048,
+      "different_token_positions": []
+    },
+    {
+      "prompt_tokens": 8192,
+      "different_token_positions": []
+    }
+  ],
+  "matches": true,
+  "profile_receipts_sha256": {
+    "bounded": "1c54fdf423e22e8024af665311c3731feb5311e5eeb5af6aca5190190801bba7",
+    "resident": "cf1bc2f834ae97c2aef35a2029c6f76b3227f6bcf22f78476353caf474bbc68a"
+  },
+  "profiles": {
+    "bounded": {
+      "weights_materialized": 1942,
+      "active_after_load_bytes": 68520553568,
+      "row_reads": 173565,
+      "bounded_payload_bytes": 31241700,
+      "peak_mlx_memory_bytes": 71261711517,
+      "peak_process_rss_bytes": 68715937792
+    },
+    "resident": {
+      "weights_materialized": 2326,
+      "active_after_load_bytes": 126123027552,
+      "peak_mlx_memory_bytes": 128864087205,
+      "peak_process_rss_bytes": 106582294528
+    }
+  }
+}
