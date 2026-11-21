@@ -1,0 +1,774 @@
+{
+  "2048": {
+    "source": "../flash-next-mxfp4-prefill-partition-m5-20261121/reservation-observation.json.gz",
+    "source_sha256": "d884a7981737f78f9a4491622fcd9880ebc650faf960f32b638620ee4a6bb768",
+    "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "arms": {
+      "solo-default": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 24.9693802399663,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 7.62145087501267,
+              "output_tokens_per_second": 25.192053737364123,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.025142625003354624,
+                  "ttft_seconds": 1.6265342910191976,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 0.0295994580083061,
+                  "ttft_seconds": 1.6107095000043046,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 7.7586081250046846,
+              "output_tokens_per_second": 24.746706742568477,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.03196166700217873,
+                  "ttft_seconds": 1.6034930410096422,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 0.026714415987953544,
+                  "ttft_seconds": 1.6597471670247614,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "pair-reserve-decode": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 21.170278894949327,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 9.22576320799999,
+              "output_tokens_per_second": 20.811286358781672,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.03204583300976083,
+                  "ttft_seconds": 2.144801999995252,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 0.03596058301627636,
+                  "ttft_seconds": 2.3418135840038303,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.918090917024529,
+              "output_tokens_per_second": 21.529271431116978,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.02671458400436677,
+                  "ttft_seconds": 2.2510562090028543,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 0.026707459008321166,
+                  "ttft_seconds": 2.1877423329860903,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "simultaneous": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 21.521758935263158,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.92021658399608,
+              "output_tokens_per_second": 21.524141055551347,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.05297120800241828,
+                  "ttft_seconds": 4.478325083997333,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 2.2341222079994623,
+                  "ttft_seconds": 2.2446324579941574,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.922191457997542,
+              "output_tokens_per_second": 21.51937681497497,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.05068454198772088,
+                  "ttft_seconds": 4.467627792007988,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 2.204187625000486,
+                  "ttft_seconds": 2.26329012500355,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "decode-arrival": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 21.42365792811171,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.968402208003681,
+              "output_tokens_per_second": 21.408495688189944,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 2.215335957997013,
+                  "ttft_seconds": 2.2928375419869553,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 0.053036625002278015,
+                  "ttft_seconds": 2.2406359580054414,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.955716708995169,
+              "output_tokens_per_second": 21.438820168033473,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048",
+                  "max_stream_gap_seconds": 0.05206679098773748,
+                  "ttft_seconds": 2.2499089590273798,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                },
+                {
+                  "prompt_id": "prompt-1-2048",
+                  "max_stream_gap_seconds": 2.2249770410126075,
+                  "ttft_seconds": 2.2672777920088265,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "2049": {
+    "source": "../flash-next-mxfp4-prefill-partition-m5-20261121/holdout-2049-observation.json.gz",
+    "source_sha256": "db8270273232ccde55f9c2da0bf49f59524e3ab6ae785e054b483d463e9173b1",
+    "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "arms": {
+      "solo-default": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 22.93343963919765,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.262207542022225,
+              "output_tokens_per_second": 23.238341450934655,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.026755458995467052,
+                  "ttft_seconds": 1.9010447910113726,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.024983250012155622,
+                  "ttft_seconds": 2.0744100000010803,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.484861083998112,
+              "output_tokens_per_second": 22.628537827460644,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.024445458024274558,
+                  "ttft_seconds": 2.0728400840016548,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.024986083997646347,
+                  "ttft_seconds": 2.090992625016952,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "pair-reserve-decode": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 22.495965736307756,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.424796458013589,
+              "output_tokens_per_second": 22.78986809436463,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.027378625003620982,
+                  "ttft_seconds": 1.9594393340230454,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.03580824998789467,
+                  "ttft_seconds": 2.0171432079805527,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.647844874998555,
+              "output_tokens_per_second": 22.202063378250884,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.02620791702065617,
+                  "ttft_seconds": 2.1347118749981746,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.026038749987492338,
+                  "ttft_seconds": 2.102022041013697,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "simultaneous": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 22.506988528924115,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.476759916986339,
+              "output_tokens_per_second": 22.650163727682866,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 2.0195467919984367,
+                  "ttft_seconds": 2.0213727499940433,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.05075733398552984,
+                  "ttft_seconds": 4.118190290988423,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.58529791701585,
+              "output_tokens_per_second": 22.363813330165364,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.05009379200055264,
+                  "ttft_seconds": 4.261181458015926,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 2.0465704999805894,
+                  "ttft_seconds": 2.1362883750116453,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "decode-arrival": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 22.443165618907617,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.526745875016786,
+              "output_tokens_per_second": 22.51738269373743,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 2.037027082988061,
+                  "ttft_seconds": 2.0922080000163987,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.05020858399802819,
+                  "ttft_seconds": 2.1379698750097305,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.583327000000281,
+              "output_tokens_per_second": 22.368948544077803,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2049",
+                  "max_stream_gap_seconds": 0.05099070799769834,
+                  "ttft_seconds": 2.144722750002984,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2049",
+                  "max_stream_gap_seconds": 2.041200707986718,
+                  "ttft_seconds": 2.135167417000048,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "2050": {
+    "source": "../flash-next-mxfp4-prefill-partition-m5-20261121/holdout-2050-observation.json.gz",
+    "source_sha256": "bf542e25cc3a23a4fb5f88e846b773e31d264df10c9ac8cab5a8adf977d5fd31",
+    "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "arms": {
+      "solo-default": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 24.04883693608315,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 7.977598208992276,
+              "output_tokens_per_second": 24.067394091567476,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.026117041998077184,
+                  "ttft_seconds": 1.857778750010766,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.024688333010999486,
+                  "ttft_seconds": 1.8755649580270983,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 7.989919457992073,
+              "output_tokens_per_second": 24.03027978059882,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.024509750015567988,
+                  "ttft_seconds": 1.900066959002288,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.024274124996736646,
+                  "ttft_seconds": 1.888742250012001,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "pair-reserve-decode": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 24.01360757852082,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 7.98362116701901,
+              "output_tokens_per_second": 24.049237305142643,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.026011833018856123,
+                  "ttft_seconds": 1.8857845829916187,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.024567499989643693,
+                  "ttft_seconds": 1.8481191669998225,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 8.007347457983997,
+              "output_tokens_per_second": 23.977977851898995,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.02425620798021555,
+                  "ttft_seconds": 1.823670542013133,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.024710083001991734,
+                  "ttft_seconds": 1.9106681249977555,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "simultaneous": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 23.95929383952111,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 8.059614415979013,
+              "output_tokens_per_second": 23.822479598942138,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.05368466701474972,
+                  "ttft_seconds": 3.878930582985049,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 1.8844076250097714,
+                  "ttft_seconds": 1.899632999993628,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 7.968091749993619,
+              "output_tokens_per_second": 24.096108080100077,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.047931459004757926,
+                  "ttft_seconds": 3.7850570410082582,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 1.8648479169933125,
+                  "ttft_seconds": 1.826180125004612,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "decode-arrival": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 24.106710557699188,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 7.969547415996203,
+              "output_tokens_per_second": 24.09170684079552,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 1.8583807499962859,
+                  "ttft_seconds": 1.8373544170171954,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.04712791700148955,
+                  "ttft_seconds": 1.9777587499993388,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 7.959633291990031,
+              "output_tokens_per_second": 24.12171427460285,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-2050",
+                  "max_stream_gap_seconds": 0.04877133300760761,
+                  "ttft_seconds": 1.9741996249940712,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-2050",
+                  "max_stream_gap_seconds": 1.854539208987262,
+                  "ttft_seconds": 1.8192520839802455,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "8192": {
+    "source": "../flash-next-mxfp4-prefill-partition-m5-20261121/holdout-8192-observation.json.gz",
+    "source_sha256": "c711bee6703393282c169086a541891952d2b3aedc7f2b905facdb0d4f13e72d",
+    "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "arms": {
+      "solo-default": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 8.02165174374667,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 23.156059583008755,
+              "output_tokens_per_second": 8.291566158384047,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.025955084012821317,
+                  "ttft_seconds": 9.191160792019218,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.02739870801451616,
+                  "ttft_seconds": 9.45131158400909,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 24.76864112500334,
+              "output_tokens_per_second": 7.751737329109293,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.02676874998724088,
+                  "ttft_seconds": 10.068711500003701,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.026375665998784825,
+                  "ttft_seconds": 10.09118583300733,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "pair-reserve-decode": {
+        "serial": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 6.985231810675735,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 27.818067249987507,
+              "output_tokens_per_second": 6.901989209911275,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.026178000000072643,
+                  "ttft_seconds": 11.683279375021812,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.027838625013828278,
+                  "ttft_seconds": 11.668551207985729,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 27.162862708995817,
+              "output_tokens_per_second": 7.068474411440194,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.02519645800930448,
+                  "ttft_seconds": 12.35738829197362,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.02474912500474602,
+                  "ttft_seconds": 10.544149625027785,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "simultaneous": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 6.897953078323273,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 27.78188212501118,
+              "output_tokens_per_second": 6.910978857949594,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.051773249986581504,
+                  "ttft_seconds": 23.50054254202405,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 3.2411660000216216,
+                  "ttft_seconds": 11.842411917023128,
+                  "output_tokens": 96
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 27.887004709016765,
+              "output_tokens_per_second": 6.884927298696953,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 3.1697494169929996,
+                  "ttft_seconds": 12.159330000024056,
+                  "output_tokens": 96
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.048852624982828274,
+                  "ttft_seconds": 23.664425459021004,
+                  "output_tokens": 96
+                }
+              ]
+            }
+          ]
+        },
+        "decode-arrival": {
+          "trial_count": 2,
+          "median_output_tokens_per_second": 7.3974504001546215,
+          "trials": [
+            {
+              "repeat": 0,
+              "client_wall_seconds": 26.482320124981925,
+              "output_tokens_per_second": 7.2501200458972646,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 3.0540248329925817,
+                  "ttft_seconds": 11.198760041996138,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.049664791993563995,
+                  "ttft_seconds": 11.012194167007692,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                }
+              ]
+            },
+            {
+              "repeat": 1,
+              "client_wall_seconds": 25.448055583023233,
+              "output_tokens_per_second": 7.5447807544119785,
+              "streams": [
+                {
+                  "prompt_id": "prompt-0-2048-holdout-8192",
+                  "max_stream_gap_seconds": 0.05767470799037255,
+                  "ttft_seconds": 10.492564749991288,
+                  "output_tokens": 96,
+                  "role": "arriving_request"
+                },
+                {
+                  "prompt_id": "prompt-1-2048-holdout-8192",
+                  "max_stream_gap_seconds": 2.905488416989101,
+                  "ttft_seconds": 10.54875841701869,
+                  "output_tokens": 96,
+                  "role": "active_decoder"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

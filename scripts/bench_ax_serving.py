@@ -577,6 +577,14 @@ def goodput_pass(
     )
 
 
+def _latency_from_arrival(observation: dict[str, Any], latency_key: str) -> float | None:
+    queue = observation.get("queue_delay_ms")
+    latency = observation.get(latency_key)
+    if queue is None or latency is None:
+        return None
+    return float(queue) + float(latency)
+
+
 def summarize_observations(
     observations: list[dict[str, Any]],
     *,
@@ -613,9 +621,18 @@ def summarize_observations(
         "request_throughput_rps": len(ok) / duration,
         "output_token_throughput_tok_s": sum(output_tokens) / duration,
         "ttft_ms": summarize_values(item.get("ttft_ms") for item in ok),
+        "arrival_to_first_token_ms": summarize_values(
+            _latency_from_arrival(item, "ttft_ms") for item in ok
+        ),
         "client_tpot_ms": summarize_values(item.get("client_tpot_ms") for item in ok),
         "stream_step_interval_ms": summarize_values(intervals),
+        "max_stream_gap_per_request_ms": summarize_values(
+            max(item.get("stream_step_interval_ms") or (), default=None) for item in ok
+        ),
         "e2e_latency_ms": summarize_values(item.get("e2e_latency_ms") for item in ok),
+        "arrival_to_completion_ms": summarize_values(
+            _latency_from_arrival(item, "e2e_latency_ms") for item in ok
+        ),
         "queue_delay_ms": summarize_values(item.get("queue_delay_ms") for item in measured),
         "input_tokens": summarize_values(input_tokens),
         "output_tokens": summarize_values(output_tokens),
@@ -770,8 +787,12 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
             "timing_scope": "client_observed_sse",
             "notes": [
                 "TTFT is measured from client request start to first non-empty step event.",
+                "Arrival-to-first-token and arrival-to-completion latencies include the "
+                "client wait after the scheduled workload arrival.",
                 "client_tpot_ms is measured from first token/chunk to stream completion divided by output tokens after the first token.",
                 "stream_step_interval_ms is based on observed non-empty SSE step arrivals; multi-token steps are not split into synthetic per-token timestamps.",
+                "The per-request maximum stream gap weights each successful measured stream "
+                "with at least two non-empty SSE step events once.",
                 "Use this artifact for serving behavior, not raw model-kernel throughput.",
             ],
         },

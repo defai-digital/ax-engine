@@ -207,11 +207,15 @@ published prompt-mix table.
 Definitions:
 
 - `ttft_ms`: client request start to the first non-empty `step` SSE event.
+- `arrival_to_first_token_ms` and `arrival_to_completion_ms` add client
+  queue delay after the scheduled workload arrival to TTFT and E2E latency.
 - `client_tpot_ms`: stream completion minus TTFT, divided by output tokens
   after the first token.
 - `stream_step_interval_ms`: observed intervals between non-empty SSE `step`
   events. If one server step emits multiple tokens, the harness does not invent
   synthetic per-token timestamps.
+- `max_stream_gap_per_request_ms`: one maximum SSE step interval per
+  successful measured stream with at least two token-bearing events.
 - `route_decisions`: numeric route/runtime counters aggregated from final
   `response.route.crossover_decisions` SSE payloads.
 - `goodput`: measured requests that succeeded and met every configured SLO.

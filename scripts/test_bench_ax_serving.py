@@ -271,8 +271,32 @@ class AxServingBenchTests(unittest.TestCase):
         self.assertEqual(summary["goodput"]["requests"], 1)
         self.assertEqual(summary["output_token_throughput_tok_s"], 15.0)
         self.assertEqual(summary["ttft_ms"]["p50"], 200.0)
+        self.assertEqual(summary["arrival_to_first_token_ms"]["p50"], 205.0)
+        self.assertEqual(summary["arrival_to_completion_ms"]["p50"], 355.0)
         self.assertEqual(summary["route_decisions"]["ax_mlx_prefix_cache_disk_hits"], 5)
         self.assertEqual(summary["route_decisions"]["ax_mlx_prefix_cache_disk_enabled"], 2)
+
+    def test_request_gap_summary_keeps_a_stalled_stream_visible(self) -> None:
+        observations = [
+            {"phase": "measured", "ok": True, "stream_step_interval_ms": [20.0] * 100},
+            {"phase": "measured", "ok": True, "stream_step_interval_ms": [2000.0]},
+            {"phase": "measured", "ok": True, "stream_step_interval_ms": []},
+            {"phase": "warmup", "ok": True, "stream_step_interval_ms": [4000.0]},
+            {"phase": "measured", "ok": False, "stream_step_interval_ms": [8000.0]},
+        ]
+        summary = bench.summarize_observations(
+            observations,
+            wall_duration_s=10.0,
+            ttft_slo_ms=None,
+            tpot_slo_ms=None,
+            e2e_slo_ms=None,
+        )
+        self.assertEqual(summary["stream_step_interval_ms"]["p95"], 20.0)
+        per_request = summary["max_stream_gap_per_request_ms"]
+        self.assertEqual(per_request["count"], 2)
+        self.assertEqual(per_request["min"], 20.0)
+        self.assertEqual(per_request["max"], 2000.0)
+        self.assertGreater(per_request["p95"], 1000.0)
 
     def test_corpus_arrivals_and_gap_slo_reach_the_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

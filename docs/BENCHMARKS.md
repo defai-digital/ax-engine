@@ -216,8 +216,12 @@ python3 scripts/bench_ax_serving.py \
 Saved artifacts use schema `ax.serving_benchmark.v1`. They report
 client-observed streaming TTFT, client TPOT, streaming step intervals, E2E
 latency, queue delay, request throughput, output-token throughput, prompt
-category summaries, and SLO goodput. Use `--request-rate-rps` for open-loop
-arrival testing; otherwise the harness runs closed-loop concurrency.
+category summaries, and SLO goodput. `arrival_to_first_token_ms` and
+`arrival_to_completion_ms` include any client wait after the scheduled
+arrival. `max_stream_gap_per_request_ms` counts each measured stream with
+at least two token-bearing events once. Use `--request-rate-rps` for
+fixed-rate arrivals or `--corpus-arrivals` for a recorded timeline.
+Without either option, the harness runs closed-loop concurrency.
 
 The checked-in smoke corpus at `benchmarks/corpora/serving/smoke.jsonl` is a
 harness validation corpus, not a production claim. Public serving claims should
