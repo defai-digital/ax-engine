@@ -1,0 +1,17 @@
+{
+  "collection_valid": true,
+  "diagnostic_passed": true,
+  "aligned_positions": [
+    2050,
+    2051,
+    2052,
+    2054
+  ],
+  "qualification": false,
+  "release_ready": false,
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  }
+}

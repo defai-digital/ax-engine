@@ -1,0 +1,22 @@
+{
+  "artifacts": {
+    "long-reader.json": "8b21c092ae07b4a43c92bf96f2dd5ca50a7586e1dd3517bdc216aca1ad24977f",
+    "long.json.gz": "2c71f9465639edb3af4fd9a00e0afbca86eeb06f9c2496351196a830ac48c508",
+    "short-reader.json": "453534c9ae618e39792f50442960f93ee6464a7d5921058c4727290858557bd5",
+    "short.json.gz": "20dc4a23e88334f8e118480d9e9d9059446cb47ae3f9b12cc66174aed0b7097d"
+  },
+  "binary_sha256": "d966ad6fe458cdb0f60faeacbe7c5c589ae2376bb72171747a678743f1ff39a6",
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "macos": "27.2.1",
+  "mlx": "0.32.4",
+  "pack": {
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "manifest": {
+      "model-manifest.json": "06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76"
+    },
+    "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
+  },
+  "reader_sha256": "3e90f58be44cd8abb8277e1c53b4e6e523c359445bc25b9e094dd344899b2fe5",
+  "rust": "1.99.1",
+  "source_commit": "b36b7b287cf8764827925d6a7d07d4d10e321a9f"
+}
