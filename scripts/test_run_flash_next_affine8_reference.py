@@ -85,6 +85,12 @@ class Affine8TableTests(unittest.TestCase):
                     self.assertGreaterEqual(elapsed, 0.0)
             self.assertNotIn("ple_row_io", diagnostic.generate_case(None, [1], 1))
 
+    def test_rejects_profiled_resident_run_before_loading(self):
+        output = self.root / "resident"
+        with self.assertRaisesRegex(ValueError, "row profiling requires bounded mode"):
+            diagnostic.run(self.root, "resident", output, profile_row_io=True)
+        self.assertFalse(output.exists())
+
     def test_rejects_out_of_range_or_noninteger_ids(self):
         table = Affine8Table(self.root)
         for bad in (-1, 9, 1.25):

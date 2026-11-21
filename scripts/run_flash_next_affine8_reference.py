@@ -40,9 +40,11 @@ class Plane:
 @dataclass
 class RowIoTiming:
     lookups: int = 0
+    # Converting the lazy MLX indices can wait for upstream GPU work.
     index_host_seconds: float = 0.0
     plan_seconds: float = 0.0
     select_and_read_seconds: float = 0.0
+    # Includes the host payload copies used to construct the lazy graph.
     graph_build_seconds: float = 0.0
 
 
@@ -250,6 +252,8 @@ def run_full_workload(model, tokenizer, workload: FullWorkload, record: dict, sa
 
 def run(root: Path, mode: str, output: Path, ax_matrix: Path | None = None,
         profile_row_io: bool = False) -> None:
+    if profile_row_io and mode != "bounded":
+        raise ValueError("row profiling requires bounded mode")
     from mlx_vlm.models.qwen4_exp import language
 
     versions = {name: importlib.metadata.version(name) for name in reference.PINNED}
