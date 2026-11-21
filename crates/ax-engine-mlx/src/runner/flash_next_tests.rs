@@ -68,6 +68,17 @@ fn execute_with_block_size(
     mode: ExecutionMode,
     block_size_tokens: u32,
 ) -> RunnerOutput {
+    execute_with_route_decisions(runner, ctx, tokens, mode, block_size_tokens, Vec::new())
+}
+
+fn execute_with_route_decisions(
+    runner: &MlxRunner,
+    ctx: RunnerRequestContext,
+    tokens: &[u32],
+    mode: ExecutionMode,
+    block_size_tokens: u32,
+    crossover_decisions: Vec<(String, u32)>,
+) -> RunnerOutput {
     let position = if mode == ExecutionMode::Prefill {
         ctx.processed_prompt_tokens
     } else {
@@ -93,7 +104,7 @@ fn execute_with_block_size(
                 kv_mode: None,
                 prefix_cache_path: None,
                 barrier_mode: None,
-                crossover_decisions: Vec::new(),
+                crossover_decisions,
             },
             items: vec![ExecutionItem {
                 request_id: ctx.request_id,

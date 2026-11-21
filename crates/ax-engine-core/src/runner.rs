@@ -335,6 +335,11 @@ impl EmbeddingMatrix {
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn run(&self, input: RunnerInput) -> RunnerOutput;
 
+    /// Physical prefill geometry that can yield without changing forward widths.
+    fn prefill_split_geometry(&self) -> Option<crate::scheduler::PrefillSplitGeometry> {
+        None
+    }
+
     fn begin_ncm(
         &self,
         _request_id: RequestId,

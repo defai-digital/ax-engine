@@ -77,6 +77,68 @@ impl SchedulerInput {
     }
 }
 
+/// Forward sizes for a runner that can materialize each cache-only chunk
+/// independently. The logical item's last token keeps a singleton forward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrefillSplitGeometry {
+    pub logical_tokens: u32,
+    pub physical_tokens: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PrefillSplit {
+    pub geometry: PrefillSplitGeometry,
+    pub end: Option<u32>,
+}
+
+impl PrefillSplit {
+    fn next(
+        self,
+        snapshot: &RequestSnapshot,
+        alongside_decode: bool,
+        budget: u32,
+    ) -> Option<(u32, u32)> {
+        let cursor = snapshot.processed_prompt_tokens;
+        let logical = self.geometry.logical_tokens;
+        let end = match self.end {
+            Some(end) => end,
+            None if alongside_decode && budget >= logical && cursor.is_multiple_of(logical) => {
+                cursor.checked_add(logical)?
+            }
+            None => return None,
+        };
+        if end > snapshot.prompt_len || end <= cursor {
+            return None;
+        }
+        let prefix_remaining = end - cursor - 1;
+        Some((
+            end,
+            prefix_remaining.min(self.geometry.physical_tokens).max(1),
+        ))
+    }
+}
+
+const PREFILL_SPLIT_END_ROUTE_PREFIX: &str = "ax_scheduler_prefill_split_end.";
+
+fn prefill_split_end_route_key(request_id: RequestId) -> String {
+    format!("{PREFILL_SPLIT_END_ROUTE_PREFIX}{}", request_id.0)
+}
+
+/// Exclusive logical end carried by a physical prefill item for this request.
+pub fn published_prefill_split_end(
+    decisions: &[(String, u32)],
+    request_id: RequestId,
+) -> Option<u32> {
+    decisions.iter().find_map(|(name, end)| {
+        (name
+            .strip_prefix(PREFILL_SPLIT_END_ROUTE_PREFIX)?
+            .parse()
+            .ok()
+            == Some(request_id.0))
+        .then_some(*end)
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionMode {
     Prefill,
@@ -427,6 +489,14 @@ impl Scheduler {
     }
 
     pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
+        self.plan_with_prefill_splits(input, &BTreeMap::new())
+    }
+
+    pub(crate) fn plan_with_prefill_splits(
+        &self,
+        input: &SchedulerInput,
+        prefill_splits: &BTreeMap<RequestId, PrefillSplit>,
+    ) -> SchedulePlan {
         let mut frozen_quantum_defers = self.frozen_quantum_defers();
         frozen_quantum_defers.retain(|request_id, _| {
             input
@@ -485,7 +555,7 @@ impl Scheduler {
         let mut deferred_requests = Vec::new();
         let mut memory_blocked_requests = Vec::new();
         let mut route_deferred_requests = Vec::new();
-        let mut items = Vec::new();
+        let mut items: Vec<ExecutionItem> = Vec::new();
         // Generation kind of the first selected item (for batch telemetry).
         let mut selected_generation_kind: Option<GenerationKind> = None;
         let mut candidates = Vec::new();
@@ -560,6 +630,7 @@ impl Scheduler {
                 .iter()
                 .any(|(_, mode)| *mode == ExecutionMode::Decode);
         let mut scheduled_adaptive_quanta: Vec<(RequestId, u32)> = Vec::new();
+        let mut scheduled_prefill_splits = Vec::new();
         let mut non_reusable_chunk_requests: Vec<RequestId> = Vec::new();
 
         // Splittable-text prefill candidates share the fair chunk; multimodal
@@ -639,7 +710,10 @@ impl Scheduler {
                     let pool_tokens =
                         u64::from(input.total_kv_blocks) * u64::from(input.block_size_tokens);
                     if input.memory_pressure.as_deref() == Some(MEMORY_PRESSURE_KV_EXHAUSTED)
-                        && u64::from(snapshot.prompt_len) >= pool_tokens
+                        && (u64::from(snapshot.prompt_len) >= pool_tokens
+                            || prefill_splits
+                                .get(&snapshot.request_id)
+                                .is_some_and(|split| split.end.is_some()))
                     {
                         // No other request can release enough capacity for this
                         // prompt — and a prompt that exactly fills the pool
@@ -750,6 +824,29 @@ impl Scheduler {
                 }
             };
 
+            let fixed = if mode == ExecutionMode::Prefill {
+                prefill_splits.get(&snapshot.request_id).and_then(|split| {
+                    let alongside_decode =
+                        items.len() == 1 && items[0].mode == ExecutionMode::Decode;
+                    split.next(snapshot, alongside_decode, candidate_budget)
+                })
+            } else {
+                None
+            };
+            let candidate_budget = match fixed {
+                Some((_, tokens)) if tokens > candidate_budget => {
+                    token_budget.record_skipped(mode, requested_tokens);
+                    if pressure_prefill_budget.is_some() {
+                        memory_blocked_requests.push(snapshot.request_id);
+                    } else {
+                        deferred_requests.push(snapshot.request_id);
+                    }
+                    continue;
+                }
+                Some((_, tokens)) => tokens,
+                None => candidate_budget,
+            };
+
             let Some(item) = self.build_execution_item(snapshot, candidate_budget) else {
                 // Same accounting as the zero-budget and admission-cap defer
                 // paths above: a request that could not be built at all (the
@@ -806,6 +903,9 @@ impl Scheduler {
                 admitted_prefill_requests = admitted_prefill_requests.saturating_add(1);
                 fair_telemetry.admitted_prefills =
                     fair_telemetry.admitted_prefills.saturating_add(1);
+                if let Some((end, _)) = fixed {
+                    scheduled_prefill_splits.push((snapshot.request_id, end));
+                }
                 if !snapshot.has_multimodal_inputs
                     && let Some(quantum) = adaptive_quantum.filter(|quantum| *quantum > 0)
                 {
@@ -848,6 +948,13 @@ impl Scheduler {
                     &mut route_metadata.crossover_decisions,
                     &adaptive_prefill_request_route_key(request_id.0),
                     *quantum,
+                );
+            }
+            for (request_id, end) in scheduled_prefill_splits {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    &prefill_split_end_route_key(request_id),
+                    end,
                 );
             }
             for request_id in &non_reusable_chunk_requests {
@@ -1199,6 +1306,48 @@ mod tests {
         planned_chunk_history, prefix_adoption_allowed,
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn physical_prefill_split_defers_an_entire_forward_under_pressure() {
+        let snapshot = make_snapshot(1, 1, "flash", &vec![7; 2049], 1024, &[], 8);
+        let mut input = SchedulerInput::new(
+            StepId(1),
+            vec![snapshot],
+            Some("kv_low_free_blocks:1/512".into()),
+            2049,
+        );
+        let prefill_splits = BTreeMap::from([(
+            RequestId(1),
+            PrefillSplit {
+                geometry: PrefillSplitGeometry {
+                    logical_tokens: 2048,
+                    physical_tokens: 512,
+                },
+                end: Some(2048),
+            },
+        )]);
+        let scheduler = Scheduler::new();
+        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits);
+        assert!(blocked.execution_batch.is_none());
+        assert_eq!(blocked.memory_blocked_requests, [RequestId(1)]);
+
+        input.memory_pressure = None;
+        let resumed = scheduler
+            .plan_with_prefill_splits(&input, &prefill_splits)
+            .execution_batch
+            .unwrap();
+        assert_eq!(
+            resumed.items[0].position_range,
+            PositionRange {
+                start: 1024,
+                end_exclusive: 1536
+            }
+        );
+        assert_eq!(
+            published_prefill_split_end(&resumed.route_metadata.crossover_decisions, RequestId(1)),
+            Some(2048)
+        );
+    }
 
     fn make_snapshot(
         request_id: u64,

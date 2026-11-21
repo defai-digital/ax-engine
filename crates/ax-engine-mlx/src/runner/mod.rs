@@ -14,7 +14,7 @@ use mlx_sys::{
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
-use ax_engine_core::scheduler::ExecutionMode;
+use ax_engine_core::scheduler::{ExecutionMode, PrefillSplitGeometry, published_prefill_split_end};
 use ax_engine_core::{
     DiffusionScheduleUpdate, EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary,
     MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary,
@@ -61,7 +61,8 @@ use crate::generate::{
     chunked_prefill_unlimited_ocr_pages_with_sampling_buffers,
     chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
-    decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
+    clear_cache_after_split_prefill, decode_step, decode_step_with_sampling_buffers,
+    direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
     sample_token_from_prefill_logits, start_direct_pipeline, start_direct_pipeline_capturing,
 };
 use crate::kv_block_pool::{
@@ -4876,6 +4877,11 @@ impl MlxRunner {
     }
 }
 
+enum PrefillSchedule {
+    Adaptive(usize),
+    Split(u32),
+}
+
 /// One request's padded-batched-prefill result, staged by
 /// `MlxRunner::stage_batched_prefill` and consumed inside `run_item`'s plain
 /// prefill branch when its preconditions still hold there (cold cache, same
@@ -5180,6 +5186,41 @@ impl ExecutionRunner for MlxRunner {
             || self.cfg.deepseek_v4.is_some()
             || self.weights.qwen4_exp.is_some()
             || self.cfg.model_family == "qwen4_exp"
+    }
+
+    fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
+        if !crate::fastpath::flash_next_prefill_split_enabled()
+            || self.weights.qwen4_exp.is_none()
+            || self.weights.expert_stream.is_some()
+            || self.mtp_requested
+            || !self.disable_ngram_acceleration
+            || self.dflash2.is_some()
+            || crate::fastpath::flash_next_direct_coalescing_enabled()
+            || self.prefix_cache.lock().enabled()
+            || self.disk_prefix_cache.is_some()
+            || self.semantic_prefix_enabled()
+        {
+            return None;
+        }
+        let logical = 2048;
+        let physical = 512;
+        if crate::fastpath::skip_cache_only_split_for_family(&self.cfg.model_family, logical)
+            || [self.cold_prefill_chunk, self.prefill_chunk]
+                .into_iter()
+                .any(|base| {
+                    crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+                        base,
+                        logical,
+                        &self.cfg.model_family,
+                    ) != physical
+                })
+        {
+            return None;
+        }
+        Some(PrefillSplitGeometry {
+            logical_tokens: logical as u32,
+            physical_tokens: physical as u32,
+        })
     }
 
     fn touch_idle_residency(&self) -> bool {
@@ -5804,7 +5845,7 @@ impl ExecutionRunner for MlxRunner {
         // below, so per-request bookkeeping and ordering are unchanged.
         let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
         self.stage_dflash2_cohort(&input, &batched_idx, &mut route_metadata);
-        let adaptive_decisions = &input.execution_batch.route_metadata.crossover_decisions;
+        let scheduler_decisions = &input.execution_batch.route_metadata.crossover_decisions;
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
                 continue;
@@ -5813,12 +5854,17 @@ impl ExecutionRunner for MlxRunner {
                 .request_contexts
                 .iter()
                 .find(|c| c.request_id == item.request_id);
-            let adaptive_prefill_chunk =
-                ax_engine_core::prefill_handoff::published_adaptive_prefill_quantum(
-                    adaptive_decisions,
-                    item.request_id.0,
-                )
-                .map(|quantum| quantum as usize);
+            let prefill_schedule = (item.mode == ExecutionMode::Prefill)
+                .then(|| published_prefill_split_end(scheduler_decisions, item.request_id))
+                .flatten()
+                .map(PrefillSchedule::Split)
+                .or_else(|| {
+                    ax_engine_core::prefill_handoff::published_adaptive_prefill_quantum(
+                        scheduler_decisions,
+                        item.request_id.0,
+                    )
+                    .map(|quantum| PrefillSchedule::Adaptive(quantum as usize))
+                });
 
             // The request's `logit_bias` (if any) for the host sampler.
             let _logit_bias_scope =
@@ -5832,7 +5878,7 @@ impl ExecutionRunner for MlxRunner {
                 input.request_prefill_hints(item.request_id),
                 staged_prefill.remove(&item.request_id.0),
                 input.request_json_grammar(item.request_id),
-                adaptive_prefill_chunk,
+                prefill_schedule,
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -7415,8 +7461,13 @@ impl MlxRunner {
         prefill_hints: Option<&ax_engine_core::PrefillHints>,
         mut staged_batched_prefill: Option<StagedBatchedPrefill>,
         json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
-        adaptive_prefill_chunk: Option<usize>,
+        prefill_schedule: Option<PrefillSchedule>,
     ) -> MlxItemRun {
+        let (adaptive_prefill_chunk, prefill_split_end) = match prefill_schedule {
+            Some(PrefillSchedule::Adaptive(tokens)) => (Some(tokens), None),
+            Some(PrefillSchedule::Split(end)) => (None, Some(end)),
+            None => (None, None),
+        };
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
             return MlxItemRun {
@@ -8335,7 +8386,54 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
-                    let prefill_output_token = if prefill_tokens.is_empty() {
+                    let prefill_output_token = if let Some(logical_end) = prefill_split_end {
+                        let single = prefill_tokens.len() == 1;
+                        let end = item.position_range.end_exclusive;
+                        if !is_greedy
+                            || state.cache.seq_len() != item.position_range.start as usize
+                            || prefill_tokens.len() != token_ids.len()
+                            || end > logical_end
+                            || (end == logical_end && !single)
+                            || (prefill_completes_prompt && end != logical_end)
+                        {
+                            return errored_item_run(
+                                item.request_id,
+                                "invalid physical prefill continuation",
+                            );
+                        }
+                        if prefill_completes_prompt {
+                            let token = decode_step_with_sampling_buffers(
+                                &self.cfg,
+                                &self.weights,
+                                prefill_tokens[0],
+                                &mut state.cache,
+                                MlxSamplingRequest::new(sampling, &repetition_history),
+                                &mut state.rng,
+                                &mut state.sampling_probs_buf,
+                                &mut state.sampling_logits_buf,
+                                &mut state.sampling_candidates_buf,
+                            );
+                            if clear_cache_after_split_prefill(self.cfg.hidden_size_per_layer_input)
+                            {
+                                clear_cache();
+                            }
+                            Some(token)
+                        } else {
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                prefill_tokens,
+                                &mut state.cache,
+                                prefill_tokens.len(),
+                                CacheOnlyPrefillLayout::Batched,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                            state
+                                .decode_telemetry
+                                .record_prefill_cache_only_continuation();
+                            None
+                        }
+                    } else if prefill_tokens.is_empty() {
                         if !prefill_completes_prompt {
                             None
                         } else if let Some(tok) = state.cached_prefill_output_token.take() {

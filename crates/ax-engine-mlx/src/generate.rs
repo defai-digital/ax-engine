@@ -1486,7 +1486,7 @@ fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSampling
     }
 }
 
-fn clear_cache_after_split_prefill(hidden_size_per_layer_input: usize) -> bool {
+pub(crate) fn clear_cache_after_split_prefill(hidden_size_per_layer_input: usize) -> bool {
     hidden_size_per_layer_input == 0
 }
 

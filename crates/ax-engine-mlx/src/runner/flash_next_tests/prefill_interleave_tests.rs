@@ -1,7 +1,9 @@
 //! Compare the existing greedy prefill geometry with independently evaluated chunks.
 
 use super::{
-    MlxKVCache, MlxSamplingParams, MlxSamplingRequest, NativeModelArtifacts, PathBuf, Xorshift64,
+    ExecutionMode, MlxKVCache, MlxRunner, MlxSamplingParams, MlxSamplingRequest,
+    NativeModelArtifacts, PathBuf, RequestId, Xorshift64, context, execute_with_route_decisions,
+    flash_runner_state_bytes, snapshot_trunk,
 };
 use crate::generate::{
     CacheOnlyBarrier, CacheOnlyPrefillLayout, chunked_prefill, chunked_prefill_cache_only,
@@ -213,4 +215,69 @@ fn assert_prefill_interleave(
         );
     }
     assert_eq!(arm_results, [true, true]);
+}
+
+#[test]
+#[ignore = "requires a generated Flash Next fixture and MLX"]
+fn flash_next_runner_routes_physical_prefill_without_early_sampling() {
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_ORACLE_DIR").unwrap());
+    let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+    manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
+    manifest.runtime_status = ax_engine_core::NativeRuntimeStatus::default();
+    let artifacts = NativeModelArtifacts::from_manifest_and_root(root, manifest).unwrap();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 4, true).unwrap();
+    runner.set_mtp_requested(false);
+    assert!(!runner.mtp_requested);
+
+    let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    let logical_end = 11;
+    for tail in 0..=2 {
+        let prompt = &tokens[..logical_end + tail];
+        let run = |request, start, end, split_end| {
+            let mut ctx = context(request, prompt.len(), 8);
+            ctx.processed_prompt_tokens = start as u32;
+            let route = if split_end {
+                vec![(
+                    format!("ax_scheduler_prefill_split_end.{request}"),
+                    logical_end as u32,
+                )]
+            } else {
+                Vec::new()
+            };
+            let output = execute_with_route_decisions(
+                &runner,
+                ctx,
+                &prompt[start..end],
+                ExecutionMode::Prefill,
+                16,
+                route,
+            );
+            let update = &output.request_updates[0];
+            assert!(update.error.is_none(), "{:?}", update.error);
+            assert_eq!(update.tokens_executed, (end - start) as u32);
+            assert_eq!(update.output_token.is_some(), end == prompt.len());
+            assert!(update.output_tokens.is_empty());
+            update.output_token
+        };
+
+        let baseline_id = 2 * tail as u64 + 1;
+        let split_id = baseline_id + 1;
+        let mut baseline_token = run(baseline_id, 0, logical_end, false);
+        let mut split_token = None;
+        for (start, end) in [(0, 4), (4, 8), (8, 10), (10, 11)] {
+            split_token = run(split_id, start, end, true);
+        }
+        if tail > 0 {
+            baseline_token = run(baseline_id, logical_end, prompt.len(), false);
+            split_token = run(split_id, logical_end, prompt.len(), false);
+        }
+        assert_eq!(split_token, baseline_token);
+        let state = |id| {
+            flash_runner_state_bytes(
+                &snapshot_trunk(&runner, RequestId(id)).unwrap(),
+                runner.cfg.layer_count,
+            )
+        };
+        assert_eq!(state(split_id), state(baseline_id));
+    }
 }

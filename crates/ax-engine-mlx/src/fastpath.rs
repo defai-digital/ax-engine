@@ -1930,6 +1930,12 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_DIRECT_COALESCING"
 );
 
+env_flag!(
+    /// Yield after each physical forward in a resident Flash Next prefill.
+    flash_next_prefill_split_enabled,
+    "AX_MLX_FLASH_NEXT_PREFILL_SPLIT"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
     /// requests of one engine step take a DFlash2 round, verify them in one

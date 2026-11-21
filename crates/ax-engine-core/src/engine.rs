@@ -33,8 +33,8 @@ use crate::sampling::{
     sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
-    ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
-    chunk_history_marked_non_reusable,
+    ExecutionBatch, ExecutionItem, ExecutionMode, PrefillSplit, PrefillSplitGeometry, SchedulePlan,
+    Scheduler, SchedulerInput, chunk_history_marked_non_reusable, published_prefill_split_end,
 };
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
@@ -186,6 +186,7 @@ pub struct EngineCore {
     /// First committed chunk size for chunk-sensitive models. Kept for the
     /// life of the request so a later step does not change that quantum.
     frozen_prefill_quantums: BTreeMap<RequestId, u32>,
+    prefill_splits: BTreeMap<RequestId, PrefillSplit>,
     /// Committed prompt tokens to attach when a spilled or cancelled prefix
     /// resumes. The runner restores from this slice, not from a temp file.
     restore_prefix_tokens: BTreeMap<RequestId, Vec<u32>>,
@@ -264,6 +265,7 @@ impl EngineCore {
             cancel_checkpoints: Vec::new(),
             cancel_checkpoint_attempts: 0,
             frozen_prefill_quantums: BTreeMap::new(),
+            prefill_splits: BTreeMap::new(),
             restore_prefix_tokens: BTreeMap::new(),
         }
     }
@@ -650,11 +652,7 @@ impl EngineCore {
         );
 
         let request_snapshots = self.snapshots_with_refreshed_plan_refs()?;
-        let schedule_plan = self.scheduler.plan(&self.scheduler_input(
-            step_id,
-            request_snapshots,
-            global_token_budget,
-        ));
+        let schedule_plan = self.plan_step(step_id, request_snapshots, global_token_budget);
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
             deferred_requests = schedule_plan.deferred_requests.len(),
@@ -896,11 +894,11 @@ impl EngineCore {
                 .into_iter()
                 .filter(|snapshot| !blocked_request_ids.contains(&snapshot.request_id))
                 .collect();
-            let fallback_schedule_plan = self.scheduler.plan(&self.scheduler_input(
+            let fallback_schedule_plan = self.plan_step(
                 resolved_plan.step_id,
                 fallback_snapshots,
                 global_token_budget,
-            ));
+            );
             let (fallback_plan, fallback_prefix_hits, fallback_preemption_metrics) =
                 self.resolve_kv_schedule_plan_level(fallback_schedule_plan, global_token_budget)?;
 
@@ -975,11 +973,7 @@ impl EngineCore {
                 .into_iter()
                 .filter(|snapshot| snapshot.request_id != candidate)
                 .collect();
-            let replanned = self.scheduler.plan(&self.scheduler_input(
-                resolved_plan.step_id,
-                snapshots,
-                global_token_budget,
-            ));
+            let replanned = self.plan_step(resolved_plan.step_id, snapshots, global_token_budget);
             let (mut replanned, replanned_hits, replanned_metrics) =
                 self.resolve_kv_schedule_plan_level(replanned, global_token_budget)?;
             if !replanned.deferred_requests.contains(&candidate) {
@@ -1252,6 +1246,7 @@ impl EngineCore {
             );
         }
         self.release_reservation(request_id);
+        self.prefill_splits.remove(&request_id);
         self.runner.release_request_state(request_id);
         self.kv_manager.free(request_id)?;
         self.kv_manager.register_request_with_prefix_reuse(
@@ -1352,11 +1347,11 @@ impl EngineCore {
             // three requests and make the fourth recompute token by token
             // under KV pressure.
             let request_snapshots = self.snapshots_with_refreshed_plan_refs()?;
-            schedule_plan = self.scheduler.plan(&self.scheduler_input(
+            schedule_plan = self.plan_step(
                 schedule_plan.step_id,
                 request_snapshots,
                 global_token_budget,
-            ));
+            );
         }
 
         // Prefix reuse mutates both prompt progress and KV ownership before
@@ -1439,6 +1434,67 @@ impl EngineCore {
                 .retain(|snapshot| !self.spill_excluded.contains(&snapshot.request_id));
         }
         input
+    }
+
+    fn plan_step(
+        &self,
+        step_id: StepId,
+        snapshots: Vec<crate::request::RequestSnapshot>,
+        global_token_budget: u32,
+    ) -> SchedulePlan {
+        let input = self.scheduler_input(step_id, snapshots, global_token_budget);
+        let split_geometry = self.new_prefill_split_geometry(global_token_budget);
+        if split_geometry.is_none() && self.prefill_splits.is_empty() {
+            return self.scheduler.plan(&input);
+        }
+        let mut splits = BTreeMap::new();
+        for snapshot in &input.request_snapshots {
+            if snapshot.has_multimodal_inputs
+                || snapshot.processed_prompt_tokens >= snapshot.prompt_len
+            {
+                continue;
+            }
+            if let Some(split) = self.prefill_splits.get(&snapshot.request_id) {
+                splits.insert(snapshot.request_id, *split);
+            } else if let Some(geometry) = split_geometry
+                && self
+                    .request_manager
+                    .record(snapshot.request_id)
+                    .is_some_and(|record| {
+                        sampling_params_allow_deterministic_argmax_fast_path(
+                            &record.sampling_params,
+                        )
+                    })
+            {
+                splits.insert(
+                    snapshot.request_id,
+                    PrefillSplit {
+                        geometry,
+                        end: None,
+                    },
+                );
+            }
+        }
+        self.scheduler.plan_with_prefill_splits(&input, &splits)
+    }
+
+    fn new_prefill_split_geometry(&self, global_token_budget: u32) -> Option<PrefillSplitGeometry> {
+        if self.prefix_reuse_enabled
+            || self.handoff_enabled()
+            || self.adaptive_prefill
+            || self.prefill_stall.enabled()
+            || !self.multi_prefill_fair
+            || self.max_inflight_prefill_requests != 1
+            || self.live_sequence_cap != Some(2)
+        {
+            return None;
+        }
+        self.runner.prefill_split_geometry().filter(|geometry| {
+            geometry.physical_tokens > 0
+                && geometry.physical_tokens < geometry.logical_tokens
+                && self.max_prefill_tokens_per_request_per_step == geometry.logical_tokens
+                && global_token_budget.checked_sub(1) == Some(geometry.logical_tokens)
+        })
     }
 
     fn dispatch_runner(
@@ -1580,6 +1636,7 @@ impl EngineCore {
                 // Requests resolved before the failing update keep their
                 // multi-token progress, which still needs KV accounting; do
                 // that best-effort without masking the original error.
+                self.commit_prefill_splits(&execution_batch);
                 if let Err(reconcile_error) = self.reconcile_runner_appended_kv(&execution_batch) {
                     error!(
                         error = %reconcile_error,
@@ -1590,6 +1647,7 @@ impl EngineCore {
                 return Err(error.into());
             }
         };
+        self.commit_prefill_splits(&execution_batch);
         self.reconcile_runner_appended_kv(&execution_batch)?;
         self.latch_frozen_prefill_quantums(&execution_batch);
         self.publish_committed_prefixes(&execution_batch);
@@ -2410,6 +2468,40 @@ impl EngineCore {
         }
     }
 
+    fn commit_prefill_splits(&mut self, batch: &ExecutionBatch) {
+        for item in batch
+            .items
+            .iter()
+            .filter(|item| item.mode == ExecutionMode::Prefill)
+        {
+            let Some(end) = published_prefill_split_end(
+                &batch.route_metadata.crossover_decisions,
+                item.request_id,
+            ) else {
+                continue;
+            };
+            let continues = self
+                .request_manager
+                .record(item.request_id)
+                .is_some_and(|record| {
+                    !record.state.is_terminal()
+                        && record.processed_prompt_tokens == item.position_range.end_exclusive
+                        && record.processed_prompt_tokens < end
+                });
+            if !continues {
+                self.prefill_splits.remove(&item.request_id);
+            } else if let std::collections::btree_map::Entry::Vacant(entry) =
+                self.prefill_splits.entry(item.request_id)
+                && let Some(geometry) = self.runner.prefill_split_geometry()
+            {
+                entry.insert(PrefillSplit {
+                    geometry,
+                    end: Some(end),
+                });
+            }
+        }
+    }
+
     fn publish_committed_prefixes(&mut self, batch: &ExecutionBatch) {
         if !self.handoff_enabled() {
             return;
@@ -2729,6 +2821,7 @@ impl EngineCore {
         self.spill_attempts.remove(&request_id);
         self.spill_excluded.remove(&request_id);
         self.frozen_prefill_quantums.remove(&request_id);
+        self.prefill_splits.remove(&request_id);
         self.restore_prefix_tokens.remove(&request_id);
         self.cancel_checkpoint_ids.remove(&request_id);
         self.release_reservation(request_id);
@@ -3909,6 +4002,123 @@ mod tests {
         assert_eq!(
             merged, after_refresh,
             "patched snapshots must equal a fresh snapshot taken after the bindings were applied"
+        );
+    }
+
+    #[derive(Debug)]
+    struct PhysicalPrefillRunner;
+
+    impl ExecutionRunner for PhysicalPrefillRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            DeterministicRunner.run(input)
+        }
+
+        fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
+            Some(PrefillSplitGeometry {
+                logical_tokens: 2048,
+                physical_tokens: 512,
+            })
+        }
+    }
+
+    #[test]
+    fn physical_prefill_split_commits_the_same_cuts_after_the_decoder_cancels() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 16, 512),
+            PhysicalPrefillRunner,
+            DeterministicSampler,
+        );
+        engine.set_prefix_reuse_enabled(false);
+        engine.set_live_sequence_cap(Some(2));
+        engine.set_multi_prefill_fair(true, 2048, 1);
+        engine.submit(make_submission(1, 1, 64)).unwrap();
+        engine.step(2049, true).unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![7; 2049], 8))
+            .unwrap();
+
+        let first = engine.step(2049, true).unwrap();
+        let batch = first.schedule_plan.execution_batch.unwrap();
+        assert_eq!(
+            batch
+                .items
+                .iter()
+                .map(|item| item.scheduled_token_count)
+                .collect::<Vec<_>>(),
+            [1, 512]
+        );
+        assert_eq!(first.sampled_tokens.len(), 1);
+        assert_eq!(first.sampled_tokens[0].request_id, RequestId(1));
+        assert_eq!(engine.prefill_splits[&RequestId(2)].end, Some(2048));
+        engine.cancel(RequestId(1)).unwrap();
+
+        for (count, route_end) in [
+            (512, Some(2048)),
+            (512, Some(2048)),
+            (511, Some(2048)),
+            (1, Some(2048)),
+            (1, None),
+        ] {
+            let result = engine.step(2049, true).unwrap();
+            let batch = result.schedule_plan.execution_batch.unwrap();
+            assert_eq!(batch.items.len(), 1);
+            assert_eq!(batch.items[0].scheduled_token_count, count);
+            assert_eq!(
+                published_prefill_split_end(
+                    &batch.route_metadata.crossover_decisions,
+                    RequestId(2)
+                ),
+                route_end
+            );
+        }
+        assert!(engine.prefill_splits.is_empty());
+        assert_eq!(
+            engine
+                .request_manager
+                .record(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            2049
+        );
+    }
+
+    #[test]
+    fn preempting_and_cancelling_a_physical_prefill_split_releases_its_progress() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 16, 512),
+            PhysicalPrefillRunner,
+            DeterministicSampler,
+        );
+        engine.set_prefix_reuse_enabled(false);
+        engine.set_live_sequence_cap(Some(2));
+        engine.set_multi_prefill_fair(true, 2048, 1);
+        engine.submit(make_submission(1, 1, 64)).unwrap();
+        engine.step(2049, true).unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![7; 2048], 8))
+            .unwrap();
+        engine.step(2049, true).unwrap();
+        assert!(engine.prefill_splits.contains_key(&RequestId(2)));
+        engine
+            .preempt_request(RequestId(2), &mut PreemptionMetrics::default(), false)
+            .unwrap();
+        assert!(engine.prefill_splits.is_empty());
+        assert_eq!(
+            engine
+                .request_manager
+                .record(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            0
+        );
+        engine.step(2049, true).unwrap();
+        assert_eq!(engine.prefill_splits[&RequestId(2)].end, Some(2048));
+        engine.cancel(RequestId(2)).unwrap();
+        assert!(engine.prefill_splits.is_empty());
+        assert_eq!(engine.kv_manager.block_count_for(RequestId(2)), 0);
+        assert_eq!(
+            engine.step(2049, true).unwrap().sampled_tokens[0].request_id,
+            RequestId(1)
         );
     }
 
