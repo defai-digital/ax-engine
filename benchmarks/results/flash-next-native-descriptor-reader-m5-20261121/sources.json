@@ -1,0 +1,25 @@
+{
+  "archive_sha256": "1faff4ca6876f721eb30a724e7acf5eeb7a9d092727f7cdc6c6fb2d886ed0e84",
+  "members_sha256": {
+    "build.json": "3acc4448aedff4adccad2b012b03190f971acbab6c89ec5b2f429f3861f46319",
+    "check_fault_policy.py": "608d6e3fa1d2f54be7d6541c57d7f560c185b435597d0f012dfba48244d1100e",
+    "descriptor-1-samples.jsonl": "e8fd3280d0c41ead9428e93d80a435fe7c0e957282447704e6663014f6ecd066",
+    "descriptor-2-samples.jsonl": "342ea091f0c75c02f9b653ef1d5c9be0f34ee9bd3b44c323b225d36e3373f573",
+    "fault.json": "2ecd0be29b98483c0287629be5a5c58a305986f4244d2140abe5961653de6444",
+    "loader_footprint.c": "95d3a398126bb2dc7b5fd7390a06f57e85392ca898054a7c56c73f7d066c70d3",
+    "m5-sidecar.patch": "282287de71f084140d3a323aeda886de90ced34c4fe503d9004526f326b1ee80",
+    "mmap-1-samples.jsonl": "5232ec4ea47c8568819d3dcc7bc2f736ada17e929a9c15c510e7ce1af0f9864e",
+    "mmap-2-samples.jsonl": "2a6ba970c8afbfb843ac7ffcfed32d3febd27e851e37a70d7b8f98c066bab0db",
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+    "ordinary.json": "537e4c33ad45bad552a19a1c4a15a3d14031953ae55c11cf6d439bd1ba831e3a",
+    "prior-native-prefixes.json": "fc3bfab503f46923faf3a7f9300de887d0e7195d93414a4383db7368a82a519f",
+    "publisher-inventory.json": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "run_load_order.py": "8a84d30928f6b53a572d5c9a571b1f6c3cd47fada771369b438417e7f63799cd",
+    "run_m5_native_sidecar.py": "4e3cdb5c4118af9b148b1f1b8ed08556d04f9d4f6aae240a8a015573eec4b629",
+    "scripts/check_flash_next_native_support.py": "321855c8a9002ffc5e3d357ffbdc1f5a3a0a0f13e59b25dc19afdea07468b0e3",
+    "scripts/qualify_qwen38_flash_next.py": "7044ed1d5552a2e32dd293150a036528cbfb4a77ce16db5356def63a32ad29db",
+    "scripts/run_flash_next_generate_matrix.py": "e962a8c9b41f4002966ff8ec3d8f3d341619d5517833afe41154e40322a255cf",
+    "scripts/watch_flash_next_reference.py": "44b845ec7608e79e83d5f58658b9c324d2c3f0ca97ec866510ffd201e1557da3",
+    "sidecar-selection.json": "512b59c79fc1163715525f8def3e4cab7134520a3a36831962e78f1943f47d9a"
+  }
+}
