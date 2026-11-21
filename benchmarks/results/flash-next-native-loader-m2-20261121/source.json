@@ -1,0 +1,61 @@
+{
+  "source_base_commit": "d492d191a285ecbfe8995e87b7f6b0d189b44369",
+  "server_sha256": "8d83c0199ad59afe2725741c901b70ff84b55666868900f52ef433250fd5f52d",
+  "mlx_version": "0.32.4",
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo_profile": "release-server",
+  "selected_source_sha256": {
+    "crates/mlx-sys/src/io.rs": "c433a11ac00a44371a9072e726435edab0649e679265cfb2d47608d41264cad3",
+    "crates/ax-engine-mlx/src/weights/qwen4_exp.rs": "15d05752001fa799631aa795cafd30bdf4b88db519deffb53bc5ede4308fe47d"
+  },
+  "replay_patch_sha256": "fedae415c2063e290447630ba385dda090dd6d1e8c59c56f7ea5ff8e7c88f004",
+  "all_reconstructed_file_sha256": {
+    "Cargo.lock": "26af8e6eb9528a7e984f874f121693920235599fdfd20e8c0200c1de7cd86fdc",
+    "crates/ax-engine-mlx/src/weights/qwen4_exp.rs": "15d05752001fa799631aa795cafd30bdf4b88db519deffb53bc5ede4308fe47d",
+    "crates/mlx-sys/Cargo.toml": "1c371adfb58bcff663be8673b50a33fad952d4cee0cd6c0a09cc1745508be523",
+    "crates/mlx-sys/src/io.rs": "c433a11ac00a44371a9072e726435edab0649e679265cfb2d47608d41264cad3",
+    "crates/mlx-sys/examples/flash_load_order_ab.rs": "1a6e11a51b4175842c4ca3dcd718d74e055718fe4c49fe7e8da8d4e92b8c3933"
+  },
+  "macos_version": "27.2.1",
+  "mlx_library_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "server_version": "ax-engine-server 8.1.0",
+  "trial_summary": {
+    "name-order": {
+      "load_and_eval_seconds": 1377.851732042,
+      "spawn_to_ready_seconds": 1467.2361930420157,
+      "startup_pressure_levels": [
+        1
+      ],
+      "startup_peak_sampled_rss_bytes": 76300140544,
+      "startup_resource_samples": 91,
+      "ttft_seconds_by_prompt_length": {
+        "512": 2.165455,
+        "2048": 5.033311,
+        "8192": 36.94926
+      }
+    },
+    "lazy-cpu": {
+      "load_and_eval_seconds": 80.341160416,
+      "spawn_to_ready_seconds": 193.98443795798812,
+      "startup_pressure_levels": [
+        1
+      ],
+      "startup_peak_sampled_rss_bytes": 79071150080,
+      "startup_resource_samples": 13,
+      "ttft_seconds_by_prompt_length": {
+        "512": 2.151206,
+        "2048": 4.851955,
+        "8192": 21.149491
+      }
+    },
+    "matched_greedy_output_tokens": 96,
+    "name_order_to_lazy_ready_speedup": 7.563679893537543
+  },
+  "file_sha256": {
+    "result.json": "dbfa5493530693bd904969ca7425d68e5eedfe349b01496b11da2c37062b05a2",
+    "server-loader-lab.patch": "fedae415c2063e290447630ba385dda090dd6d1e8c59c56f7ea5ff8e7c88f004",
+    "pack-inventory.json": "55e42802b9cab056590dbb776a75d2583f3f77cc376c7be8580d4c02ad103dfc",
+    "name-order-samples.jsonl": "499226c6e1d880e7499ba36bc10335fd8be26b9d8542324ead2104f882834dcc",
+    "lazy-cpu-samples.jsonl": "fb033feef7fbf03a7d35363a8bfde03787c720992fbbe304f3fb372a2ec9c8af"
+  }
+}
