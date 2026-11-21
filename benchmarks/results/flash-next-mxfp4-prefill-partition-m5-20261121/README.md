@@ -131,3 +131,22 @@ tokens. The raw receipts and exact prompts are available for
 ([prompts](holdout-2049-prompts.jsonl.gz)) and
 [2,050 tokens](holdout-2050-observation.json.gz)
 ([prompts](holdout-2050-prompts.jsonl.gz)).
+
+### 8,192-token holdout
+
+The two original arrays were extended with deterministic repetitions
+from their own prefixes and retained their original 64-token tails.
+Both arms processed each prompt as four scheduled 2,048-token
+prefills. All 12 two-slot replies matched the solo control across
+the complete 96-token output. Each of the four overlapping trials
+shared all four prefills with the active decoder. The mixed steps
+produced per-trial maximum token gaps of 2.905–3.241 seconds.
+The two simultaneous trials served their first tokens for the
+later request in 23.501 and 23.664 seconds.
+
+Peak process footprint was 76.086 GiB with the two-slot schedule,
+and every pressure sample was normal. The run covers two prompt
+arrays, short generation and no sustained traffic or coalescing.
+The [raw receipt](holdout-8192-observation.json.gz) and
+[holdout prompts](holdout-8192-prompts.jsonl.gz) preserve the
+identities, per-request scheduler steps and memory samples.
