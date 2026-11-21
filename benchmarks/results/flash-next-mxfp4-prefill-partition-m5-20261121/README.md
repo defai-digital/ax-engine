@@ -83,3 +83,31 @@ physical forward boundaries. The replay establishes the effect on these
 output trajectories. The serialized trunk state and logit margins need
 their own evidence. The existing two-request 4,096-budget control preserved
 the whole scheduled prompt for both requests.
+
+## One decode token and one 2,048-token prefill
+
+The same binary, pack, token arrays and controls ran with two active
+slots and `--max-batch-tokens 2049 --multi-prefill-fair
+--max-prefill-tokens-per-request-per-step 2048
+--max-inflight-prefill-requests 1`. Each request kept a single
+2,048-token scheduled prefill. Both requests in each of the four
+overlapping trials reported the same shared 2,049-token step.
+Across all six trials, all 12 requests reproduced all 96 tokens from
+their single-request baselines.
+
+| Two-slot arrival | Median time for two replies | Trials |
+| --- | ---: | ---: |
+| Serial | 9.072 s | 2 |
+| Simultaneous | 8.921 s | 2 |
+| Second request enters during decode | 8.962 s | 2 |
+
+The largest interval between successive streamed tokens for the
+already-decoding request was 2.204–2.234 seconds in the four overlapping
+trials. Peak sampled process footprint was 72.277 GiB and peak RSS
+was 73.728 GiB. All pressure samples were normal. These observations
+cover two 2,048-token prompts with 96 generated tokens each and no
+native direct coalescing. Longer context, steady traffic, broader
+prompt coverage and any throughput claim need separate evidence.
+
+The [raw reservation receipt](reservation-observation.json.gz)
+records every streamed token, per-request step time and memory sample.
