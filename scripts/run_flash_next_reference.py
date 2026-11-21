@@ -225,6 +225,11 @@ def main() -> int:
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
     if not native.is_target_host(chip, memory):
         parser.error(f"live run requires the Flash Next standard host ({native.TARGET_DESCRIPTION})")
+    if "qa" in args.phases:
+        items = qa.load_items(qa.FROZEN / "full-qa-items.json")
+        prepared = json.loads((qa.FROZEN / "full-qa-inputs.json").read_text())["prepared"]
+        if [p["id"] for p in prepared] != [i["id"] for i in items]:
+            raise ValueError("frozen prepared inputs do not follow the frozen item order")
     versions = {name: importlib.metadata.version(name) for name in PINNED}
     if versions != PINNED:
         raise ValueError(f"reference environment differs from the pin: {versions}")
@@ -263,7 +268,6 @@ def main() -> int:
     mx.set_cache_limit(CACHE_LIMIT)
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, local_files_only=True,
                                               trust_remote_code=False)
-    items = qa.load_items(qa.FROZEN / "full-qa-items.json")
     if "matrix" in args.phases:
         vocab_size = matrix.pack_vocab_size(args.model_dir)
         window_ids = window_hashes(vocab_size, lengths)
@@ -275,9 +279,6 @@ def main() -> int:
     record["weights_materialized"] = materialize(model, mx)
     record["weights_materialize_seconds"] = round(time.monotonic() - loading_started, 3)
     if "qa" in args.phases:
-        prepared = json.loads((qa.FROZEN / "full-qa-inputs.json").read_text())["prepared"]
-        if [p["id"] for p in prepared] != [i["id"] for i in items]:
-            raise ValueError("frozen prepared inputs do not follow the frozen item order")
         rows: list[dict[str, Any]] = []
         record["qa"] = {"rows": rows}
         save("qa")

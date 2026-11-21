@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("run_flash_next_reference.py")
 sys.path.insert(0, str(SCRIPT.parent))
@@ -93,6 +95,22 @@ class ReferenceRunnerTests(unittest.TestCase):
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("live run requires", done.stderr)
+
+    def test_missing_prepared_qa_input_fails_before_reference_runtime_setup(self):
+        items = (mod.qa.FROZEN / "full-qa-items.json").read_bytes()
+        with TemporaryDirectory() as folder:
+            frozen = Path(folder)
+            (frozen / "full-qa-items.json").write_bytes(items)
+            args = [str(SCRIPT), "--model-dir", folder, "--inventory", "inventory.json",
+                    "--output", "result", "--phases", "qa"]
+            with (patch.object(sys, "argv", args), patch.object(mod.qa, "FROZEN", frozen),
+                  patch.object(mod.platform, "system", return_value="Darwin"),
+                  patch.object(mod.subprocess, "check_output", side_effect=["137438953472", "Apple M5 Max"]),
+                  patch.object(mod.native, "is_target_host", return_value=True),
+                  patch.object(mod.importlib.metadata, "version") as version):
+                with self.assertRaisesRegex(FileNotFoundError, "full-qa-inputs.json"):
+                    mod.main()
+            version.assert_not_called()
 
 
 if __name__ == "__main__":
