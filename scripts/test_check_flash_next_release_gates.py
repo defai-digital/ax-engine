@@ -109,8 +109,24 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_an_incomplete_reference_fails_quality_and_the_matrix_gate(self):
         r = good()
-        r["reference"]["completed"] = False
-        self.assertEqual(failed(r), {"quality", "reference_relative"})
+        r["reference"].update(completed=False, qa={"rows": [{}]})
+        del r["reference"]["matrix"]
+        result = {g["gate"]: g for g in verdict(r)["gates"]}
+        self.assertEqual({name for name, gate in result.items() if not gate["passed"]},
+                         {"quality", "reference_relative"})
+        self.assertIsNone(result["quality"]["reference_failures"])
+        self.assertEqual(result["quality"]["ax_only_failures"], {"disabled": None, "default": None})
+        self.assertNotIn("failures the reference passes", result["quality"]["detail"])
+        self.assertNotIn("prompt token IDs differ", result["reference_relative"]["detail"])
+
+    def test_a_complete_reference_without_grades_cannot_pass_quality(self):
+        for missing in (None, "", {"case": False}, [12]):
+            with self.subTest(failure_list=missing):
+                r = good()
+                r["reference"]["qa"]["failures"] = missing
+                for mode in ("disabled", "default"):
+                    r["qa"]["summary"]["modes"][mode]["quality_failures"] = []
+                self.assertEqual(failed(r), {"quality"})
 
     def test_default_mode_activating_the_drafter_fails_the_policy_gate(self):
         for mutate in (lambda r: r["qa"]["summary"]["modes"]["default"].update(verified_steps=3.0),

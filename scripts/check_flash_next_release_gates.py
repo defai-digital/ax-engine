@@ -165,26 +165,32 @@ def gate_quality(qa: dict[str, Any], reference: dict[str, Any], th: dict[str, An
     modes = qa["summary"]["modes"]
     ref_qa = reference.get("qa") or {}
     problems = []
-    if not reference.get("completed") or len(ref_qa.get("rows", [])) != 105:
+    rows = ref_qa.get("rows")
+    reference_complete = reference.get("completed") is True and isinstance(rows, list) and len(rows) == 105
+    recorded_failures = ref_qa.get("failures")
+    if not reference_complete:
         problems.append("reference QA is incomplete")
-    ref_failures = set(ref_qa.get("failures", []))
-    ax_only: dict[str, list[str]] = {}
+    elif not isinstance(recorded_failures, list) or not all(isinstance(item, str) for item in recorded_failures):
+        problems.append("reference QA has no valid failure list")
+    ref_failures = set(recorded_failures) if not problems else None
+    ax_only: dict[str, list[str] | None] = {}
     for mode in AX_ARMS:
         summary = modes.get(mode, {})
         if summary.get("completed") != 105 or not summary.get("normal_stops") or summary.get("route_errors"):
             problems.append(f"{mode}: incomplete cohort, abnormal stop or route error")
-        extra = sorted(set(summary.get("quality_failures", [])) - ref_failures)
+        extra = sorted(set(summary.get("quality_failures", [])) - ref_failures) if ref_failures is not None else None
         ax_only[mode] = extra
-        if len(extra) > th["quality"]["ax_only_failures_max"]:
+        if extra is not None and len(extra) > th["quality"]["ax_only_failures_max"]:
             problems.append(f"{mode}: failures the reference passes: {extra}")
     differing = qa["summary"]["text_identity_vs_disabled"]["default"]["differing_text_ids"]
     if differing:
         problems.append(f"default text differs from direct on {differing}")
     return [gate("quality", not problems, "; ".join(problems) or
                  "105/105 complete in both arms, default text equals direct text, every AX failure "
-                 f"also fails on the reference ({sorted(ref_failures)})",
+                 f"also fails on the reference ({sorted(ref_failures or [])})",
                  ax_failures={m: modes[m]["quality_failures"] for m in AX_ARMS},
-                 reference_failures=sorted(ref_failures), ax_only_failures=ax_only)]
+                 reference_failures=sorted(ref_failures) if ref_failures is not None else None,
+                 ax_only_failures=ax_only)]
 
 
 def gate_lifecycle(lifecycle: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
@@ -246,12 +252,16 @@ def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
         if len(rows) != len(expected_runs) or set(valid) != expected_runs:
             problems.append(f"{label}: expected two warmups and three measurements at each of {LENGTHS}")
     ref_hashes = ref_matrix.get("prompt_id_hashes") or {}
-    if ref_hashes.keys() != expected_hash_keys or not all(map(is_sha256, ref_hashes.values())):
+    reference_hashes_valid = (isinstance(ref_hashes, dict) and ref_hashes.keys() == expected_hash_keys
+                              and all(map(is_sha256, ref_hashes.values())))
+    if not reference_hashes_valid:
         problems.append("reference: expected a SHA-256 for every fixed-workload prompt")
     for arm in AX_ARMS:
         ax_hashes = {key: value for key, value in matrix["runs"][arm]["prompt_id_hashes"].items()
                      if key.startswith("cell-")}
-        if not ax_hashes or ax_hashes != ref_hashes:
+        if ax_hashes.keys() != expected_hash_keys or not all(map(is_sha256, ax_hashes.values())):
+            problems.append(f"{arm}: expected a SHA-256 for every fixed-workload prompt")
+        elif reference_hashes_valid and ax_hashes != ref_hashes:
             problems.append(f"{arm}: prompt token IDs differ from the reference's")
     for length in LENGTHS:
         ref = cell_stats([c for c in ref_cells if c.get("length") == length], lambda r: r["generated_tokens"])
