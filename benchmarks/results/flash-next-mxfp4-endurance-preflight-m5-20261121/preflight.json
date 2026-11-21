@@ -1,0 +1,556 @@
+{
+  "events": [
+    {
+      "health": {
+        "elapsed_ms": 1.5243329980876297,
+        "error": null,
+        "http_status": 200,
+        "ok": true,
+        "reported_status": "ok"
+      },
+      "kind": "readiness"
+    },
+    {
+      "capacity_pressure": {
+        "free_blocks": 1323.0,
+        "fresh_prompt_blocks": 268.0,
+        "fresh_prompt_tokens": 4280.0,
+        "reclamation_required": false,
+        "total_blocks": 2048.0,
+        "used_blocks": 725.0,
+        "utilization": 0.35400390625
+      },
+      "concerns": [],
+      "fill_index": 0,
+      "kind": "cache_capacity_anchor",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 1323.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 725.0,
+        "utilization": 0.35400390625
+      },
+      "phase": "cache_capacity_anchor",
+      "prompt_request_index": 2000001,
+      "shape": "long_unique",
+      "verdict": "filling"
+    },
+    {
+      "concerns": [],
+      "fill_index": 1,
+      "kind": "cache_capacity_fill",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 1056.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 992.0,
+        "utilization": 0.484375
+      },
+      "phase": "cache_capacity_fill",
+      "prefill_progress": {
+        "cache_only_continuations": 2.0,
+        "cache_only_continuations_per_1k_tokens": 0.467180565288484,
+        "prefill_steps": 3.0,
+        "prefill_steps_per_1k_tokens": 0.700770847932726,
+        "prompt_tokens": 4281.0
+      },
+      "prompt_request_index": 1900001,
+      "request": {
+        "error": null,
+        "ok": true,
+        "output_tokens": 128,
+        "prompt_token_count": 4281,
+        "status": 200
+      },
+      "shape": "long_unique",
+      "verdict": "pass"
+    },
+    {
+      "capacity_pressure": {
+        "free_blocks": 1056.0,
+        "fresh_prompt_blocks": 268.0,
+        "fresh_prompt_tokens": 4280.0,
+        "reclamation_required": false,
+        "total_blocks": 2048.0,
+        "used_blocks": 992.0,
+        "utilization": 0.484375
+      },
+      "concerns": [],
+      "fill_index": 1,
+      "kind": "cache_capacity_anchor",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 1056.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 992.0,
+        "utilization": 0.484375
+      },
+      "phase": "cache_capacity_anchor",
+      "prompt_request_index": 2000001,
+      "shape": "long_unique",
+      "verdict": "filling"
+    },
+    {
+      "concerns": [],
+      "fill_index": 2,
+      "kind": "cache_capacity_fill",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 789.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 1259.0,
+        "utilization": 0.61474609375
+      },
+      "phase": "cache_capacity_fill",
+      "prefill_progress": {
+        "cache_only_continuations": 2.0,
+        "cache_only_continuations_per_1k_tokens": 0.4672897196261682,
+        "prefill_steps": 3.0,
+        "prefill_steps_per_1k_tokens": 0.7009345794392523,
+        "prompt_tokens": 4280.0
+      },
+      "prompt_request_index": 1900002,
+      "request": {
+        "error": null,
+        "ok": true,
+        "output_tokens": 128,
+        "prompt_token_count": 4280,
+        "status": 200
+      },
+      "shape": "long_unique",
+      "verdict": "pass"
+    },
+    {
+      "capacity_pressure": {
+        "free_blocks": 789.0,
+        "fresh_prompt_blocks": 268.0,
+        "fresh_prompt_tokens": 4280.0,
+        "reclamation_required": false,
+        "total_blocks": 2048.0,
+        "used_blocks": 1259.0,
+        "utilization": 0.61474609375
+      },
+      "concerns": [],
+      "fill_index": 2,
+      "kind": "cache_capacity_anchor",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 789.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 1259.0,
+        "utilization": 0.61474609375
+      },
+      "phase": "cache_capacity_anchor",
+      "prompt_request_index": 2000001,
+      "shape": "long_unique",
+      "verdict": "filling"
+    },
+    {
+      "concerns": [],
+      "fill_index": 3,
+      "kind": "cache_capacity_fill",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 522.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 1526.0,
+        "utilization": 0.7451171875
+      },
+      "phase": "cache_capacity_fill",
+      "prefill_progress": {
+        "cache_only_continuations": 2.0,
+        "cache_only_continuations_per_1k_tokens": 0.4672897196261682,
+        "prefill_steps": 3.0,
+        "prefill_steps_per_1k_tokens": 0.7009345794392523,
+        "prompt_tokens": 4280.0
+      },
+      "prompt_request_index": 1900003,
+      "request": {
+        "error": null,
+        "ok": true,
+        "output_tokens": 128,
+        "prompt_token_count": 4280,
+        "status": 200
+      },
+      "shape": "long_unique",
+      "verdict": "pass"
+    },
+    {
+      "capacity_pressure": {
+        "free_blocks": 522.0,
+        "fresh_prompt_blocks": 268.0,
+        "fresh_prompt_tokens": 4280.0,
+        "reclamation_required": false,
+        "total_blocks": 2048.0,
+        "used_blocks": 1526.0,
+        "utilization": 0.7451171875
+      },
+      "concerns": [],
+      "fill_index": 3,
+      "kind": "cache_capacity_anchor",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 522.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 1526.0,
+        "utilization": 0.7451171875
+      },
+      "phase": "cache_capacity_anchor",
+      "prompt_request_index": 2000001,
+      "shape": "long_unique",
+      "verdict": "filling"
+    },
+    {
+      "concerns": [],
+      "fill_index": 4,
+      "kind": "cache_capacity_fill",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 255.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 1793.0,
+        "utilization": 0.87548828125
+      },
+      "phase": "cache_capacity_fill",
+      "prefill_progress": {
+        "cache_only_continuations": 2.0,
+        "cache_only_continuations_per_1k_tokens": 0.4672897196261682,
+        "prefill_steps": 3.0,
+        "prefill_steps_per_1k_tokens": 0.7009345794392523,
+        "prompt_tokens": 4280.0
+      },
+      "prompt_request_index": 1900004,
+      "request": {
+        "error": null,
+        "ok": true,
+        "output_tokens": 128,
+        "prompt_token_count": 4280,
+        "status": 200
+      },
+      "shape": "long_unique",
+      "verdict": "pass"
+    },
+    {
+      "capacity_pressure": {
+        "free_blocks": 255.0,
+        "fresh_prompt_blocks": 268.0,
+        "fresh_prompt_tokens": 4280.0,
+        "reclamation_required": true,
+        "total_blocks": 2048.0,
+        "used_blocks": 1793.0,
+        "utilization": 0.87548828125
+      },
+      "concerns": [],
+      "fill_index": 4,
+      "kind": "cache_capacity_anchor",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 0.0,
+          "ax_engine_kv_free_blocks": 255.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 1793.0,
+        "utilization": 0.87548828125
+      },
+      "phase": "cache_capacity_anchor",
+      "prompt_request_index": 2000001,
+      "shape": "long_unique",
+      "verdict": "pressure_reached"
+    },
+    {
+      "concerns": [],
+      "kind": "cache_capacity_probe",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 21.0,
+          "ax_engine_kv_free_blocks": 9.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 2039.0,
+        "utilization": 0.99560546875
+      },
+      "phase": "cache_capacity_probe",
+      "prefill_progress": {
+        "cache_only_continuations": 2.0,
+        "cache_only_continuations_per_1k_tokens": 0.4672897196261682,
+        "prefill_steps": 3.0,
+        "prefill_steps_per_1k_tokens": 0.7009345794392523,
+        "prompt_tokens": 4280.0
+      },
+      "probe_index": 1,
+      "prompt_request_index": 2000001,
+      "request": {
+        "error": null,
+        "ok": true,
+        "output_tokens": 128,
+        "prompt_token_count": 4280,
+        "status": 200
+      },
+      "shape": "long_unique",
+      "verdict": "pass"
+    },
+    {
+      "concerns": [],
+      "kind": "cache_capacity_probe",
+      "lifecycle": {
+        "metrics": {
+          "ax_engine_generation_active_streams": 0.0,
+          "ax_engine_generation_buffered_stream_events": 0.0,
+          "ax_engine_generation_commands_queued": 0.0,
+          "ax_engine_generation_jobs_pending": 0.0,
+          "ax_engine_jobs_in_flight": 0.0,
+          "ax_engine_kv_block_tables": 0.0,
+          "ax_engine_kv_cache_evictions_total": 88.0,
+          "ax_engine_kv_free_blocks": 8.0,
+          "ax_engine_request_active_owners": 0.0,
+          "ax_engine_request_active_records": 0.0
+        },
+        "missing": [],
+        "nonzero": {},
+        "state": "drained"
+      },
+      "logical_kv": {
+        "total_blocks": 2048.0,
+        "used_blocks": 2040.0,
+        "utilization": 0.99609375
+      },
+      "phase": "cache_capacity_probe",
+      "prefill_progress": {
+        "cache_only_continuations": 0.0,
+        "cache_only_continuations_per_1k_tokens": 0.0,
+        "prefill_steps": 1.0,
+        "prefill_steps_per_1k_tokens": 0.9174311926605505,
+        "prompt_tokens": 1090.0
+      },
+      "probe_index": 2,
+      "prompt_request_index": 2000002,
+      "request": {
+        "error": null,
+        "ok": true,
+        "output_tokens": 128,
+        "prompt_token_count": 1090,
+        "status": 200
+      },
+      "shape": "medium_unique",
+      "verdict": "pass"
+    },
+    {
+      "kind": "run_terminal",
+      "status": "preflight_passed"
+    },
+    {
+      "kind": "server_stopped",
+      "result": {
+        "exit_code": 0,
+        "forced": false
+      }
+    }
+  ],
+  "profile": {
+    "block_size_tokens": 16,
+    "concurrency": 1,
+    "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+    "macos": "27.2.1",
+    "max_batch_tokens": 2048,
+    "mlx": "0.32.4",
+    "mode": "disabled",
+    "pack_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "runner_sha256": "d2e5b5fd4ef51d647dc83099d40b63e6ba290ec2c3480485971387861a3a324c",
+    "rust": "1.99.1",
+    "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+    "server_source": "b36b7b287cf8764827925d6a7d07d4d10e321a9f",
+    "server_version": "ax-engine-server 8.1.0",
+    "stream_experts": "auto",
+    "total_blocks": 2048
+  },
+  "raw_artifact_sha256": {
+    "events.jsonl": "ff61080354ee10e23a2244199db9a493a3d27d585925d01a788be03298aafc44",
+    "manifest.json": "8cea5084b68d7366033837c5f71cf6791ea0a1618d6656bceee50444df1c309f",
+    "summary.json": "5eee4636d90b68285a0da993ff8398ae99b576ba126de3d8d897f5c8b8055462"
+  },
+  "schema_version": "ax.axq_endurance_soak.v4",
+  "summary": {
+    "alerts": [],
+    "assessment_concerns": [],
+    "last_error": null,
+    "lifecycle": {
+      "drain_timeouts": 0,
+      "inconclusive_drains": 0,
+      "kv_reports_unavailable": 0,
+      "quiescent_kv_logical_exceedances": 0
+    },
+    "memory": {
+      "sample_count": 0,
+      "series": {}
+    },
+    "memory_alerts": [],
+    "performance_alerts": [],
+    "preflight": {
+      "elapsed_seconds": 102.75490975001594,
+      "measurement_started": false,
+      "status": "passed"
+    },
+    "requests": {
+      "attempted": 0,
+      "client_error_rate": 0.0,
+      "consecutive_request_failures": 0,
+      "failed": 0,
+      "health_failures": 0,
+      "successful": 0
+    },
+    "status": "preflight_passed",
+    "successful_requests_by_event_kind": {
+      "cache_capacity_fill": 4,
+      "cache_capacity_probe": 2,
+      "warmup_request": 20
+    },
+    "verdict": "pass"
+  }
+}
