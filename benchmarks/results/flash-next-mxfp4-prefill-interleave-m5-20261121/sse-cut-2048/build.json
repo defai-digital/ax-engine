@@ -1,0 +1,12 @@
+{
+  "commit": "cdc7ce2e9e5bb7a3fb7c9dd26d62f6e4a07b8a51",
+  "tree": "3b86d71599965988329449e6bb7f6a1f3c6e1cb6",
+  "profile": "release-server",
+  "server_sha256": "ca42ade20522aed4773dcf42fee7bdcb4a8a86b50e410a1137cdfa2c5960605b",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "compiled_on": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "compiled_os": "27.2.1"
+}

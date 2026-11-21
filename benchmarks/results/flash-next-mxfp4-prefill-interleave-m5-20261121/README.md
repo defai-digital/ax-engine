@@ -78,3 +78,7 @@ disconnect and replacement trials. The original route audit rejected
 the receipt because the logical boundary was absent from the SSE
 progress frame. The linked receipt independently verifies the
 physical work and preserves the audit failure.
+
+The [corrected 2,048-token replay](sse-cut-2048/README.md) passed all
+28 exact output controls and six disconnect/replacement controls.
+Every physical piece of each split request carried its logical boundary.
