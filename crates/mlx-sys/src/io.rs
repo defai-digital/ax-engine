@@ -141,6 +141,25 @@ fn load_safetensors_mmap_filtered(
     filter: Option<SafetensorsNameFilter<'_>>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
+    load_safetensors_mmap_open_file(path, &file, filter)
+}
+
+/// Materialize selected tensors from the same open file used for admission.
+/// The path identifies the file in errors and checks that its directory
+/// entry still agrees with the descriptor after loading.
+pub fn load_safetensors_filtered_from_file(
+    path: &Path,
+    file: &std::fs::File,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_mmap_open_file(path, file, Some(filter))
+}
+
+fn load_safetensors_mmap_open_file(
+    path: &Path,
+    file: &std::fs::File,
+    filter: Option<SafetensorsNameFilter<'_>>,
+) -> Result<HashMap<String, MlxArray>, String> {
     // NAS/SMB-backed caches can replace or truncate a shard while it is
     // mapped. Stat before and after the copies and fail closed on any drift,
     // so a mutated file is refused instead of yielding torn tensors. This
@@ -148,7 +167,7 @@ fn load_safetensors_mmap_filtered(
     let stat_before = file
         .metadata()
         .map_err(|e| format!("stat {}: {}", path.display(), e))?;
-    let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {}: {}", path.display(), e))? };
+    let mmap = unsafe { Mmap::map(file).map_err(|e| format!("mmap {}: {}", path.display(), e))? };
     let mmap = Arc::new(mmap);
 
     if mmap.len() < 8 {
@@ -584,6 +603,53 @@ mod tests {
         assert!(error.contains("exceeds i32::MAX"), "{error}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filtered_load_from_file_does_not_follow_a_replaced_directory() {
+        let root = std::env::temp_dir().join(format!("ax-descriptor-swap-{}", std::process::id()));
+        let current = root.join("current");
+        let next = root.join("next");
+        let previous = root.join("previous");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir(&next).unwrap();
+        let path = current.join("weights.safetensors");
+        let next_path = next.join("weights.safetensors");
+        let header =
+            serde_json::json!({"t": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}});
+        write_safetensors_header_only(&path, &header, &1.0_f32.to_le_bytes());
+        write_safetensors_header_only(&next_path, &header, &2.0_f32.to_le_bytes());
+        let original = std::fs::File::open(&path).unwrap();
+        let original_metadata = original.metadata().unwrap();
+        let keep = HashSet::from(["t".to_string()]);
+        let read_path = || load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&keep));
+        let read_descriptor = || {
+            load_safetensors_filtered_from_file(
+                &path,
+                &original,
+                SafetensorsNameFilter::Keep(&keep),
+            )
+        };
+
+        std::fs::rename(&current, &previous).unwrap();
+        std::fs::rename(&next, &current).unwrap();
+        let changed = read_path().unwrap();
+        eval(&[&changed["t"]]);
+        assert_eq!(changed["t"].data_f32(), &[2.0]);
+        let error = read_descriptor().unwrap_err();
+        assert!(error.contains("changed while mapped"), "{error}");
+
+        std::fs::rename(&current, &next).unwrap();
+        std::fs::rename(&previous, &current).unwrap();
+        assert!(file_metadata_unchanged(
+            &original_metadata,
+            &std::fs::metadata(&path).unwrap()
+        ));
+        let restored = read_descriptor().unwrap();
+        eval(&[&restored["t"]]);
+        assert_eq!(restored["t"].data_f32(), &[1.0]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

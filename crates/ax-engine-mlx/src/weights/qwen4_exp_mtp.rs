@@ -13,14 +13,16 @@
 //! owned here, and nothing attaches this graph to a runner automatically.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::Metadata;
+use std::fs::{File, Metadata};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use ax_engine_core::{
     NativeModelManifest, NativeTensorDataType, NativeTensorRole, NativeTensorSpec,
 };
-use mlx_sys::{MlxArray, MlxDtype, SafetensorsNameFilter, add, astype, load_safetensors_filtered};
+use mlx_sys::{
+    MlxArray, MlxDtype, SafetensorsNameFilter, add, astype, io::load_safetensors_filtered_from_file,
+};
 
 use crate::model::shared::qwen4_exp_attention::Qwen4ExpAttentionConfig;
 use crate::qwen4_exp_qsa::QsaConfig;
@@ -502,7 +504,7 @@ pub(crate) fn load(
         .filter(|spec| spec.name.starts_with("mtp."))
         .cloned()
         .collect();
-    let (declared, header_source) = read_sidecar_header_specs(&sidecar)?;
+    let (declared, source) = read_sidecar_header_specs(&sidecar)?;
     let index = read_weight_index(root, &canonical_root)?;
     if !manifest_specs.is_empty() {
         let bound_manifest = bind_declared_specs(
@@ -547,7 +549,7 @@ pub(crate) fn load(
 
     // Payload IO starts only after the full metadata contract is admitted.
     let names: HashSet<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-    let mut name_map = load_sidecar_payload(&sidecar, &header_source, &names)?;
+    let mut name_map = load_sidecar_payload(&sidecar, &source, &names)?;
     validate_loaded(&specs, &name_map)?;
     apply_norm_layout(norm_layout, &expected, &mut name_map)?;
 
@@ -769,27 +771,33 @@ fn ensure_sidecar_unchanged(path: &Path, header_source: &Metadata) -> Result<(),
     Ok(())
 }
 
+struct SidecarSource {
+    file: File,
+    metadata: Metadata,
+}
+
 fn load_sidecar_payload(
     path: &Path,
-    header_source: &Metadata,
+    source: &SidecarSource,
     names: &HashSet<String>,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
-    ensure_sidecar_unchanged(path, header_source)?;
-    let tensors = load_safetensors_filtered(path, SafetensorsNameFilter::Keep(names))
-        .map_err(WeightLoadError::FileMissing)?;
+    ensure_sidecar_unchanged(path, &source.metadata)?;
+    let tensors =
+        load_safetensors_filtered_from_file(path, &source.file, SafetensorsNameFilter::Keep(names))
+            .map_err(WeightLoadError::FileMissing)?;
     mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>())
         .map_err(|e| WeightLoadError::InvalidLayer(format!("Flash Next MTP evaluation: {e}")))?;
-    ensure_sidecar_unchanged(path, header_source)?;
+    ensure_sidecar_unchanged(path, &source.metadata)?;
     Ok(tensors)
 }
 
 /// Read the safetensors header and retain the identity of the opened file.
 fn read_sidecar_header_specs(
     path: &Path,
-) -> Result<(Vec<NativeTensorSpec>, Metadata), WeightLoadError> {
+) -> Result<(Vec<NativeTensorSpec>, SidecarSource), WeightLoadError> {
     let io_error =
         |e: std::io::Error| WeightLoadError::FileMissing(format!("{}: {e}", path.display()));
-    let mut file = std::fs::File::open(path).map_err(io_error)?;
+    let mut file = File::open(path).map_err(io_error)?;
     let header_source = file.metadata().map_err(io_error)?;
     let mut len = [0_u8; 8];
     file.read_exact(&mut len).map_err(io_error)?;
@@ -868,7 +876,13 @@ fn read_sidecar_header_specs(
             length_bytes: end - start,
         });
     }
-    Ok((specs, header_source))
+    Ok((
+        specs,
+        SidecarSource {
+            file,
+            metadata: header_source,
+        },
+    ))
 }
 
 /// Admit the exact MTP tensor set and rebind each declared spec to its graph
@@ -1330,13 +1344,11 @@ mod tests {
         bytes.extend_from_slice(&0x3f80_u16.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
 
-        let (specs, header_source) = read_sidecar_header_specs(&path).unwrap();
+        let (specs, source) = read_sidecar_header_specs(&path).unwrap();
         let names = HashSet::from([name.to_string()]);
         assert_eq!(specs[0].name, name);
         assert_eq!(
-            load_sidecar_payload(&path, &header_source, &names)
-                .unwrap()
-                .len(),
+            load_sidecar_payload(&path, &source, &names).unwrap().len(),
             1
         );
 
@@ -1348,17 +1360,17 @@ mod tests {
             .write(true)
             .open(&replacement)
             .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(header_source.modified().unwrap()))
+            .set_times(std::fs::FileTimes::new().set_modified(source.metadata.modified().unwrap()))
             .unwrap();
         std::fs::rename(replacement, &path).unwrap();
         let current = std::fs::metadata(&path).unwrap();
-        assert_eq!(current.len(), header_source.len());
+        assert_eq!(current.len(), source.metadata.len());
         assert_eq!(
             current.modified().unwrap(),
-            header_source.modified().unwrap()
+            source.metadata.modified().unwrap()
         );
         assert!(
-            rejection(load_sidecar_payload(&path, &header_source, &names))
+            rejection(load_sidecar_payload(&path, &source, &names))
                 .contains("sidecar file changed")
         );
     }
