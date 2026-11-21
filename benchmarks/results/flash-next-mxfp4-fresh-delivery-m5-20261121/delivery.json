@@ -1,0 +1,98 @@
+{
+  "schema": "ax-engine.flash-next.fresh-delivery.v2",
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "alias": "qwen3.8-flash-next:mxfp4",
+  "published_members": 49,
+  "published_bytes": 132261877478,
+  "control_modes": [
+    "disabled",
+    "required",
+    "default"
+  ],
+  "downloader": "ax-engine download <alias> --progress-json (product CLI and helper)",
+  "page_cache": "not controlled",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "delivery integrity and functional controls on the delivered copy; quality, performance and MTP-S/P/D not assessed",
+  "completed": true,
+  "fresh_cache": true,
+  "previous_attempts": [],
+  "resumed": false,
+  "transport_override": {
+    "AX_ENGINE_HF_MAX_WORKERS": "2",
+    "HF_HUB_DOWNLOAD_TIMEOUT": "60"
+  },
+  "download": {
+    "exit_code": 0,
+    "elapsed_seconds": 1032.336,
+    "hub_client_version": "2.2.0",
+    "ax_engine_sha256": "d38c929db8c1b1a1f804236d4ae276dc04a80b73c5b7e4d4e62e4d0f15e6bed6",
+    "helper_sha256": "ac92d33ae5e1285bb4e3ee1ecbe077fa086a2e9c83cd7075c166f949c0bef07f",
+    "bench_sha256": "6a6daeb772f6d756d821fb36fd17e25e779c48e33a6d51c37878c1478eed4f8a",
+    "terminal": {
+      "alias": "ax-qwen3.8-flash-next-axq-mxfp4",
+      "schema_version": "ax.download_model.v1",
+      "status": "ready",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+      "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+      "config_present": true,
+      "manifest_present": true,
+      "safetensors_count": 26,
+      "errors": []
+    }
+  },
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "soc": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.2.1"
+  },
+  "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "verification_retry": {
+    "original_result_sha256": "488bbcabaf2d724c3374e36bf77bacde44ef67e893414c2e1a8d3f8d4eb1ddec",
+    "original_transfer_stdout_sha256": "8ff417f923537f5a2d1e7a03c256d04e5db0a684a061ca439f0f5e9cc51584ed",
+    "original_checker_failure_sha256": "d251ac493a3545e21c8ead58777eec0a92588c902d728b9213eaf5c36c91ea1f",
+    "native_download_state_sha256": "ffa71ede333854ce434b454670c279758c6df34c632b8de23fd719ab496dec5b",
+    "native_download_state": {
+      "commit": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+      "repository": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+      "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
+    },
+    "oracle_sha256": "321855c8a9002ffc5e3d357ffbdc1f5a3a0a0f13e59b25dc19afdea07468b0e3",
+    "prior_failure": "native transaction marker was absent from the oracle's local metadata contract",
+    "transfer_repeated": false,
+    "prior_control_log_sha256": "b4b5c2b5c8a5133e14021912b9feb37df5bea78c29aa019a9bf64300b6506231",
+    "prior_control_failure": "caffeinate removed the scratch binary's MLX library path"
+  },
+  "verification": {
+    "members_verified": 49,
+    "bytes_verified": 132261877478,
+    "all_sizes_and_sha256_match": true,
+    "native_manifest_runtime_ready": true,
+    "native_manifest_sha256": "5bb769d05077134e0cf3c612061e35bb9930c3904dbc2cb30ede02d27afc23b5"
+  },
+  "metadata_preflight_passed": true,
+  "native_support": {
+    "passed": true,
+    "modes": [
+      "disabled",
+      "required",
+      "default"
+    ],
+    "readiness_seconds": {
+      "disabled": 76.428,
+      "required": 79.438,
+      "default": 78.672
+    },
+    "page_cache": "not controlled",
+    "result_sha256": "51b2303db25d95f90804d6f873ebbbbd466ebb8dcc200e3b99ddcb95607cd935"
+  }
+}
