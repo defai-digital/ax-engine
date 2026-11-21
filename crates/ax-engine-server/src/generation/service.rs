@@ -491,7 +491,10 @@ const STREAM_EVENT_CHANNEL_CAPACITY: usize = 512;
 const STREAM_WORKER_BACKLOG_CAPACITY: usize = 256;
 
 enum ServiceCommand {
-    Execute(SessionJob),
+    Execute {
+        job: SessionJob,
+        idle_only: bool,
+    },
     StartStream {
         request_id: u64,
         request: GenerateRequest,
@@ -525,7 +528,7 @@ enum ServiceCommand {
 
 impl ServiceCommand {
     const fn is_bulk(&self) -> bool {
-        matches!(self, Self::Execute(_))
+        matches!(self, Self::Execute { .. })
     }
 }
 
@@ -844,7 +847,22 @@ impl NativeGenerationService {
     where
         F: FnOnce(&mut EngineSession) + Send + 'static,
     {
-        self.enqueue(ServiceCommand::Execute(Box::new(operation)))
+        self.enqueue(ServiceCommand::Execute {
+            job: Box::new(operation),
+            idle_only: false,
+        })
+    }
+
+    /// The worker checks ownership before executing a job that advances the
+    /// session itself. Dropping the closure releases its response sender.
+    pub(crate) fn submit_when_idle<F>(&self, operation: F) -> Result<(), GenerationServiceError>
+    where
+        F: FnOnce(&mut EngineSession) + Send + 'static,
+    {
+        self.enqueue(ServiceCommand::Execute {
+            job: Box::new(operation),
+            idle_only: true,
+        })
     }
 
     pub(crate) async fn generate(
@@ -1797,14 +1815,16 @@ fn handle_command(
     state: &ServiceState,
 ) -> bool {
     match command {
-        ServiceCommand::Execute(job) => {
-            let execution_target = state.execution_target.read().clone();
-            let _turn = execution_target.as_ref().map(|target| {
-                target
-                    .arbiter
-                    .acquire(target.model_id.as_ref(), ExecutionWorkClass::BulkCommand)
-            });
-            job(session);
+        ServiceCommand::Execute { job, idle_only } => {
+            if !idle_only || (active_streams.is_empty() && stepwise_permits.is_empty()) {
+                let execution_target = state.execution_target.read().clone();
+                let _turn = execution_target.as_ref().map(|target| {
+                    target
+                        .arbiter
+                        .acquire(target.model_id.as_ref(), ExecutionWorkClass::BulkCommand)
+                });
+                job(session);
+            }
             complete_job(state);
         }
         ServiceCommand::StartStream {
@@ -3117,9 +3137,14 @@ mod tests {
         let entered = entered_rx.recv_timeout(Duration::from_secs(2));
         let active_during_step = service.active_streams();
         let pending_during_step = service.pending_jobs();
+        let (warmup_tx, warmup_rx) = std_mpsc::channel();
+        let warmup_submitted = service.submit_when_idle(move |_| {
+            let _ = warmup_tx.send(());
+        });
         // Always release the worker before asserting, including on regression.
-        drop(events);
         let _ = release_tx.send(());
+        let warmup_result = warmup_rx.recv_timeout(Duration::from_secs(2));
+        drop(events);
         let deadline = Instant::now() + Duration::from_secs(2);
         while (service.is_busy() || service.active_streams() != 0) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -3129,6 +3154,8 @@ mod tests {
         service.shutdown().await.unwrap();
 
         assert!(entered.is_ok(), "worker must reach its first engine step");
+        assert!(warmup_submitted.is_ok());
+        assert_eq!(warmup_result, Err(std_mpsc::RecvTimeoutError::Disconnected));
         assert_eq!(pending_during_step, 1);
         assert_eq!(active_during_step, 1);
         assert_eq!(pending_after_disconnect, 0);
