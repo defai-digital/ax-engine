@@ -34,6 +34,10 @@ use mlx_sys::{
 #[path = "qwen4_exp_mtp_canonical_tests.rs"]
 mod canonical_tests;
 
+#[cfg(test)]
+#[path = "qwen4_exp_mtp_runner_audit.rs"]
+pub(crate) mod runner_audit;
+
 fn norm(input: &MlxArray, gain: &MlxArray, eps: f32) -> MlxArray {
     let unit = rms_norm(&astype(input, MlxDtype::Float32, None), None, eps, None);
     astype(&multiply(&unit, gain, None), input.dtype(), None)
@@ -1269,6 +1273,16 @@ impl Qwen4ExpDraftCursor {
         let committed_len = advanced.consumed.len();
         let mut emitted = advanced.consumed.into_iter().skip(1).collect::<Vec<_>>();
         emitted.push(advanced.next_primary);
+        #[cfg(test)]
+        runner_audit::record(
+            state.position(),
+            primary,
+            remaining,
+            terminal_ids,
+            &advanced.observation,
+            advanced.accepted_drafts,
+            &emitted,
+        );
         Ok(CursorStep {
             trunk_state: advanced.trunk_state,
             committed_len,

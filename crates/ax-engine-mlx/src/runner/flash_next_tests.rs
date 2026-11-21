@@ -12,6 +12,7 @@ use ax_engine_core::{
 use std::path::PathBuf;
 
 mod aligned_state_tests;
+mod mtp_runner_audit_tests;
 mod prefill_interleave_tests;
 
 fn artifacts() -> NativeModelArtifacts {

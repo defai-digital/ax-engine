@@ -227,8 +227,16 @@ fn flash_next_canonical_aligned_evidence_accepted() {
 fn synthetic_evidence(force_accept: bool) {
     let artifacts = artifacts();
     let mut weights = crate::weights::load_weights(&artifacts).unwrap();
-    weights.qwen4_exp.as_mut().unwrap().target_schedule =
-        Qwen4ExpTargetSchedule::CanonicalSingleton;
+    let trunk = weights.qwen4_exp.as_mut().unwrap();
+    trunk.target_schedule = Qwen4ExpTargetSchedule::CanonicalSingleton;
+    if weights.qwen4_exp_mtp.is_none() {
+        // This fixture supplies mixed floating-point and MX expert tensors.
+        // Attach its head after selecting the test's canonical target route.
+        let head =
+            crate::weights::qwen4_exp_mtp::load(artifacts.root_dir(), artifacts.manifest(), trunk)
+                .unwrap();
+        weights.qwen4_exp_mtp = Some(Box::new(head));
+    }
     if force_accept {
         let head = crate::weights::QuantizedWeight::new(
             mlx_sys::zeros(
@@ -258,8 +266,12 @@ fn synthetic_evidence(force_accept: bool) {
     )
     .unwrap();
     let output = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_ALIGNED_RESULT_DIR").unwrap());
-    let report = collect(&mut runner, &[1, 2, 3, 4, 5, 6, 7, 8, 9], &output);
+    let (report, audited) = crate::model::qwen4_exp_mtp::runner_audit::capture(|| {
+        collect(&mut runner, &[1, 2, 3, 4, 5, 6, 7, 8, 9], &output)
+    });
+    assert!(!audited.is_empty());
     if force_accept {
+        assert!(audited.iter().any(|step| step.accepted > 0));
         assert_eq!(report["mtp_ids"], serde_json::json!(vec![0; 8]));
         assert!(report["mtp_routes"].as_array().unwrap().iter().any(|row| {
             row.as_array().unwrap().iter().any(|gauge| {
