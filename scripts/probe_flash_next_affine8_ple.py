@@ -112,7 +112,7 @@ def compare_shard(shard: int, prefix: str, files: dict[str, ShardFile]) -> dict:
     }
 
 
-def probe(root: Path, selected: set[int]) -> dict:
+def probe(root: Path, selected: set[int], backend: str) -> dict:
     raw_inventory = INVENTORY.read_bytes()
     inventory = json.loads(raw_inventory)
     members = {entry["name"]: entry for entry in inventory["members"]}
@@ -143,7 +143,7 @@ def probe(root: Path, selected: set[int]) -> dict:
         for name in names.values():
             last_use[name] = shard
 
-    mx.set_default_device(mx.cpu)
+    mx.set_default_device({"cpu": mx.cpu, "metal": mx.gpu}[backend])
     results = []
     opened = {}
     with ExitStack() as stack:
@@ -166,7 +166,7 @@ def probe(root: Path, selected: set[int]) -> dict:
     return {
         "pack_revision": inventory["revision"],
         "inventory_sha256": hashlib.sha256(raw_inventory).hexdigest(),
-        "mlx": importlib.metadata.version("mlx"), "backend": "cpu",
+        "mlx": importlib.metadata.version("mlx"), "backend": backend,
         "members_sha256": checked, "table_shards": len(shards),
         "shards_with_separate_plane_files": sum(len(set(names.values())) > 1 for names in locations.values()),
         "decoded_values": sum(len(row["rows"]) for row in results) * 160,
@@ -179,8 +179,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model_dir", type=Path)
     parser.add_argument("--shard", type=int, action="append", help="limit the row probe to selected shards")
+    parser.add_argument("--backend", choices=("cpu", "metal"), default="cpu")
     args = parser.parse_args()
-    report = probe(args.model_dir, set(args.shard or range(128)))
+    report = probe(args.model_dir, set(args.shard or range(128)), args.backend)
     print(json.dumps(report, indent=2, allow_nan=False))
 
 

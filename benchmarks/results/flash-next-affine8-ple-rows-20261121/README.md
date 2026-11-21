@@ -29,3 +29,20 @@ storage for affine Q4 and NVFP4. The row results establish the
 dequantization primitive for a separate affine8 diagnostic.
 Full-graph token parity, process footprint, the frozen M5 comparison
 and release qualification require their own evidence.
+
+## Metal comparison
+
+The probe repeated the same rows on Metal with the workspace MLX
+0.32.4 environment and with isolated MLX and MLX Metal 0.32.2, the
+versions used by the pinned reference. Both matched the ordinary
+loaded route across all 128 shards. The two Metal environments
+produced identical output digests for all sampled shards. The CPU
+digest differed from Metal on all sampled shards. The FP32 formula
+matched Metal on these rows and differed from the CPU calculation.
+Storage-only comparisons need to use the graph's original MLX
+backend for dequantization.
+
+The [MLX 0.32.4](metal-0.32.4.json.gz) and
+[MLX 0.32.2](metal-0.32.2.json.gz) receipts retain the sampled
+rows, both output digests and the verified pack members. All 14
+consumed files matched the publisher hashes after both runs.
