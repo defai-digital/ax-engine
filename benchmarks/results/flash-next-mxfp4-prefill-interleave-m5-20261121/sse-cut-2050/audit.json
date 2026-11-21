@@ -1,0 +1,136 @@
+{
+  "arms": {
+    "pair-prefill-split-off": {
+      "peak_footprint_bytes": 77596857120,
+      "trials": [
+        {
+          "arrival": "serial",
+          "max_gap_seconds": 0.02477250000811182,
+          "median_ttft_seconds": 1.623806562507525,
+          "output_tokens_per_second": 25.964024861382214,
+          "p95_gap_seconds": 0.022630008454143535,
+          "repeat": 0
+        },
+        {
+          "arrival": "simultaneous",
+          "max_gap_seconds": 1.5609552919922862,
+          "median_ttft_seconds": 2.426912666502176,
+          "output_tokens_per_second": 26.446601403690323,
+          "p95_gap_seconds": 0.04363527718087425,
+          "repeat": 0
+        },
+        {
+          "arrival": "decode-arrival",
+          "max_gap_seconds": 1.5926152910105884,
+          "median_ttft_seconds": 1.655596021009842,
+          "output_tokens_per_second": 26.256883329090407,
+          "p95_gap_seconds": 0.04397579969809158,
+          "repeat": 0
+        },
+        {
+          "arrival": "decode-arrival",
+          "max_gap_seconds": 1.825375582993729,
+          "median_ttft_seconds": 1.8403758750064299,
+          "output_tokens_per_second": 24.535185620560977,
+          "p95_gap_seconds": 0.05051894346252084,
+          "repeat": 1
+        },
+        {
+          "arrival": "simultaneous",
+          "max_gap_seconds": 1.7649820410006214,
+          "median_ttft_seconds": 2.619559020997258,
+          "output_tokens_per_second": 25.097431874216067,
+          "p95_gap_seconds": 0.04601820189127466,
+          "repeat": 1
+        },
+        {
+          "arrival": "serial",
+          "max_gap_seconds": 0.024229625007137656,
+          "median_ttft_seconds": 1.7507783959881635,
+          "output_tokens_per_second": 25.200343690419583,
+          "p95_gap_seconds": 0.022793485059810336,
+          "repeat": 1
+        }
+      ]
+    },
+    "pair-prefill-split-on": {
+      "peak_footprint_bytes": 77451055856,
+      "trials": [
+        {
+          "arrival": "serial",
+          "max_gap_seconds": 0.027993083000183105,
+          "median_ttft_seconds": 2.289149145988631,
+          "output_tokens_per_second": 21.562663641479546,
+          "p95_gap_seconds": 0.02485211629391415,
+          "repeat": 0
+        },
+        {
+          "arrival": "simultaneous",
+          "max_gap_seconds": 0.5529084590089042,
+          "median_ttft_seconds": 3.4832176670024637,
+          "output_tokens_per_second": 21.9030812524054,
+          "p95_gap_seconds": 0.04799433765147114,
+          "repeat": 0
+        },
+        {
+          "arrival": "decode-arrival",
+          "max_gap_seconds": 0.5970295419974718,
+          "median_ttft_seconds": 2.3567891664861236,
+          "output_tokens_per_second": 22.119937139273283,
+          "p95_gap_seconds": 0.04782447674951982,
+          "repeat": 0
+        },
+        {
+          "arrival": "decode-arrival",
+          "max_gap_seconds": 0.47633554198546335,
+          "median_ttft_seconds": 1.8967125630006194,
+          "output_tokens_per_second": 24.79587167042721,
+          "p95_gap_seconds": 0.04699006090813782,
+          "repeat": 1
+        },
+        {
+          "arrival": "simultaneous",
+          "max_gap_seconds": 0.49377679100143723,
+          "median_ttft_seconds": 2.6977780000161147,
+          "output_tokens_per_second": 25.076298229012014,
+          "p95_gap_seconds": 0.04596604374964954,
+          "repeat": 1
+        },
+        {
+          "arrival": "serial",
+          "max_gap_seconds": 0.02475495802354999,
+          "median_ttft_seconds": 1.7439562705112621,
+          "output_tokens_per_second": 25.37113362703546,
+          "p95_gap_seconds": 0.022679826759849676,
+          "repeat": 1
+        }
+      ]
+    },
+    "solo-default": {
+      "peak_footprint_bytes": 77433983728,
+      "trials": [
+        {
+          "arrival": "serial",
+          "max_gap_seconds": 0.02566845901310444,
+          "median_ttft_seconds": 1.6147652079962427,
+          "output_tokens_per_second": 26.065906209426963,
+          "p95_gap_seconds": 0.023325368452060503,
+          "repeat": 0
+        },
+        {
+          "arrival": "serial",
+          "max_gap_seconds": 0.024317959003383294,
+          "median_ttft_seconds": 1.606364103994565,
+          "output_tokens_per_second": 26.025883067208277,
+          "p95_gap_seconds": 0.022650401762803085,
+          "repeat": 1
+        }
+      ]
+    }
+  },
+  "disconnect_reuse_trials": 6,
+  "output_arrays_matched": 28,
+  "prompt_tokens": 2050,
+  "receipt_sha256": "eb943692026f465e277c4ed1356f91dd1ff5b41ae59fd43dca298603a19cc552",
+  "split_requests": 4
+}

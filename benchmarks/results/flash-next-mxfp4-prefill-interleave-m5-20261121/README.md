@@ -84,3 +84,5 @@ The [corrected 2,048-token replay](sse-cut-2048/README.md) passed all
 Every physical piece of each split request carried its logical boundary.
 The [2,049-token holdout](sse-cut-2049/README.md) passed the same
 controls with a one-token tail after the logical boundary.
+The [2,050-token holdout](sse-cut-2050/README.md) passed the same
+controls with a two-token tail.
