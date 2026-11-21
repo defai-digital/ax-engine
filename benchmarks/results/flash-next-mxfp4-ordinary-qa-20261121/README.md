@@ -26,3 +26,23 @@ hashes, and per-arm advertised model metadata. The compressed
 CPU idle measured 90.40% before the replay and 88.76% afterward. Timing
 and RSS values are observations. The signed v7.9.0 record remains the
 release qualification. Flash Next remains Candidate.
+
+## Timing refresh
+
+The unchanged executable, pack inventory and QA runner repeated both
+32K arms with CPU idle at 96.16% before and 94.97% afterward. Both
+samples exceed the frozen 90% floor.
+
+| Serving arm | First readiness | 29,774-token lookup | Sampled RSS peak after readiness |
+| --- | ---: | ---: | ---: |
+| Explicit direct control | 40.295 s | 45.565 s | 78.743 GiB |
+| Ordinary startup | 49.238 s | 43.508 s | 78.735 GiB |
+
+All 210 response texts matched the first campaign and all requests
+stopped normally. Each arm passed 101 of 105 checks and recorded zero
+verifier steps and route errors. The
+[refresh receipt](timing-refresh-result.json) and
+[raw responses](timing-refresh-responses.json.gz) supply the current
+native QA timing, readiness and memory inputs for the release board.
+The current reference comparison, delivery and complete board verdict
+are pending.
