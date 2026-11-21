@@ -1,0 +1,285 @@
+{
+  "older_streams": {
+    "2048": {
+      "pair-prefill-split-off": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 1.5697709170053713,
+          "p95_gap_seconds": 0.043463316815905276,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 1.5768130420183297,
+          "p95_gap_seconds": 0.04408852861088235,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 1.762897457985673,
+          "p95_gap_seconds": 0.04490153758670203,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 1.6751900420058519,
+          "p95_gap_seconds": 0.044686641902080736,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        }
+      ],
+      "pair-prefill-split-on": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.4854569160088431,
+          "p95_gap_seconds": 0.05426300459366758,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.5150123329949565,
+          "p95_gap_seconds": 0.056648558101733214,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.49549687502440065,
+          "p95_gap_seconds": 0.056178403791273014,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.4856629999994766,
+          "p95_gap_seconds": 0.0543843750085216,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        }
+      ]
+    },
+    "2049": {
+      "pair-prefill-split-off": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 1.5549609999870881,
+          "p95_gap_seconds": 0.04370784569182433,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 1.558891249995213,
+          "p95_gap_seconds": 0.04379758289142046,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 1.7552272499888204,
+          "p95_gap_seconds": 0.04559982509235851,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 1.7156746670079883,
+          "p95_gap_seconds": 0.04572565440030303,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        }
+      ],
+      "pair-prefill-split-on": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.5004642910207622,
+          "p95_gap_seconds": 0.05483304629451595,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.4971500000101514,
+          "p95_gap_seconds": 0.05488786679634359,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.4959140830032993,
+          "p95_gap_seconds": 0.05447967498912476,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.4933777079859283,
+          "p95_gap_seconds": 0.054613595706177874,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        }
+      ]
+    },
+    "2050": {
+      "pair-prefill-split-off": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 1.5609552919922862,
+          "p95_gap_seconds": 0.043630191386910155,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 1.5926152910105884,
+          "p95_gap_seconds": 0.04419792510743718,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 1.825375582993729,
+          "p95_gap_seconds": 0.05119162509508897,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 1.7649820410006214,
+          "p95_gap_seconds": 0.04621232079225592,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 1,
+          "slow_gaps": 1
+        }
+      ],
+      "pair-prefill-split-on": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.5529084590089042,
+          "p95_gap_seconds": 0.0634395956993103,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.5970295419974718,
+          "p95_gap_seconds": 0.06184022500528954,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.47633554198546335,
+          "p95_gap_seconds": 0.06300692060904112,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.49377679100143723,
+          "p95_gap_seconds": 0.060057391796726735,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        }
+      ]
+    },
+    "8192": {
+      "pair-prefill-split-off": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 2.668908416002523,
+          "p95_gap_seconds": 0.050796782912220804,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 2.8609173749864567,
+          "p95_gap_seconds": 0.04910658749577124,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 2.9990994170075282,
+          "p95_gap_seconds": 0.05010032869759016,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 3.045029250002699,
+          "p95_gap_seconds": 0.05153245828405488,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 4,
+          "slow_gaps": 4
+        }
+      ],
+      "pair-prefill-split-on": [
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.7312951250059996,
+          "p95_gap_seconds": 0.7010740204859758,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 16,
+          "slow_gaps": 16
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.7367600419966038,
+          "p95_gap_seconds": 0.7086329330923036,
+          "repeat": 0,
+          "slow_adjacent_to_peer_prefill": 16,
+          "slow_gaps": 16
+        },
+        {
+          "arrival": "decode-arrival",
+          "maximum_gap_seconds": 0.7685921250085812,
+          "p95_gap_seconds": 0.7460028876870638,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 16,
+          "slow_gaps": 16
+        },
+        {
+          "arrival": "simultaneous",
+          "maximum_gap_seconds": 0.8275004999886733,
+          "p95_gap_seconds": 0.7576734875066904,
+          "repeat": 1,
+          "slow_adjacent_to_peer_prefill": 16,
+          "slow_gaps": 16
+        }
+      ]
+    }
+  },
+  "slow_gap_seconds": 0.1
+}

@@ -89,3 +89,18 @@ controls with a two-token tail.
 The [8,192-token holdout](sse-cut-8192/README.md) passed with multiple
 logical boundaries. Across four lengths, 112 output arrays and
 24 disconnect/replacement controls matched the serial baselines.
+
+## Gap frequency in the earlier decoder
+
+[Client gap analysis](client-gaps.json) replays the step IDs in all
+four audited receipts. In every nonserial 8,192-token trial, the
+earlier-decoding stream had four gaps of at least 100 ms with
+splitting disabled and 16 with it enabled. Each of these gaps had
+peer prefill on at least one of its adjacent engine steps. The
+median of this stream's per-trial p95 increased from 0.050 s to
+0.727 s. These are per-stream timing measurements. The holdout
+table uses p95 of the gaps pooled within each trial.
+
+Run `python3 summarize_client_gaps.py` from this directory to
+reproduce the analysis. The script checks the raw receipt hashes
+and uses engine step IDs to establish adjacency.
