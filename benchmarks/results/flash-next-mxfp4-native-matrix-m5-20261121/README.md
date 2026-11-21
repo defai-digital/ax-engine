@@ -37,3 +37,18 @@ timing samples, and prompt hashes. The
 [first raw runs](first-raw-runs.json.gz) and
 [retry raw runs](retry-raw-runs.json.gz) preserve both per-mode repeats
 for independent comparison.
+
+## Independent reference stop
+
+The pinned MLX-VLM process used the same verified inventory on the
+M5. Before launch, CPU idle was 92.77%. It materialized the weights
+in 19.971 seconds and completed one of 105 QA items in 406.908
+seconds. The monitor stopped the owned process at critical system
+memory pressure (level 4), before the performance matrix started.
+System swap usage rose from 1,433.94 MiB to 23,338.81 MiB.
+Peak compressor occupancy was 73.334 GiB.
+
+The [partial receipt](reference-partial.json.gz),
+[47 system samples](reference-monitor.jsonl.gz), and
+[terminal status](reference-status.json) preserve the attempt.
+The independent QA and timing gates remain open.

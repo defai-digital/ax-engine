@@ -1,0 +1,8 @@
+{
+  "completed": false,
+  "exit_code": -15,
+  "stop_reason": "critical system memory pressure",
+  "phase": "qa",
+  "qa_rows": 1,
+  "matrix_rows": 0
+}
