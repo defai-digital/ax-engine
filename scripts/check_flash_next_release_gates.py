@@ -13,11 +13,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
 import re
 import statistics
 import subprocess
+import sys
 from typing import Any
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -56,6 +56,15 @@ def is_sha256(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
+def positive_measurement(value: Any) -> bool:
+    return type(value) in (int, float) and 0 < value <= sys.float_info.max
+
+
+def delivered_modes(delivery: dict[str, Any]) -> list[str]:
+    modes = (delivery.get("native_support") or {}).get("modes")
+    return modes if isinstance(modes, list) and all(isinstance(mode, str) for mode in modes) else []
+
+
 def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
     spec, target = th["delivery"], th["target"]
     verification = delivery.get("verification") or {}
@@ -75,7 +84,7 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
         problems.append("members, bytes or hashes do not match the published pack")
     if not verification.get("native_manifest_runtime_ready"):
         problems.append("generated native manifest is not runtime ready")
-    if sorted(support.get("modes", [])) != sorted(spec["functional_controls_on_delivered_copy"]) \
+    if sorted(delivered_modes(delivery)) != sorted(spec["functional_controls_on_delivered_copy"]) \
             or not support.get("passed"):
         problems.append("functional controls did not pass in every required mode")
     attempts = delivery.get("previous_attempts") or []
@@ -89,23 +98,35 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
                  failed_attempts=len(attempts))]
 
 
-def gate_readiness(delivery: dict[str, Any], runs: list[tuple[str, float]],
+def gate_readiness(delivery: dict[str, Any], runs: list[tuple[str, Any]],
                    th: dict[str, Any]) -> list[dict[str, Any]]:
     spec = th["readiness"]
-    delivered = (delivery.get("native_support") or {}).get("readiness_seconds") or {}
-    first_mode = next(iter(delivered), None)
+    support = delivery.get("native_support") or {}
+    recorded = support.get("readiness_seconds")
+    delivered = {mode: seconds if positive_measurement(seconds) else None
+                 for mode, seconds in recorded.items()} if isinstance(recorded, dict) else {}
+    modes = delivered_modes(delivery)
+    first_mode = modes[0] if modes else None
+    required = th["delivery"]["functional_controls_on_delivered_copy"]
     problems = []
-    if first_mode is None:
-        problems.append("no first-load readiness recorded after delivery")
+    if sorted(modes) != sorted(required) or delivered.keys() != set(required):
+        problems.append("readiness must be recorded for all delivered modes, including the first load")
     for mode, seconds in delivered.items():
         limit = spec["first_load_after_delivery_seconds_max"] if mode == first_mode \
             else spec["warm_seconds_max"]
-        if seconds > limit:
+        if seconds is None:
+            problems.append(f"delivered {mode} readiness is missing or invalid")
+        elif seconds > limit:
             problems.append(f"delivered {mode} readiness {seconds}s exceeds {limit}s")
+    valid = []
     for label, seconds in runs:
-        if seconds > spec["warm_seconds_max"]:
-            problems.append(f"{label} readiness {seconds}s exceeds {spec['warm_seconds_max']}s")
-    worst = max([s for _, s in runs] or [0])
+        if not positive_measurement(seconds):
+            problems.append(f"{label} readiness is missing or invalid")
+        else:
+            valid.append(seconds)
+            if seconds > spec["warm_seconds_max"]:
+                problems.append(f"{label} readiness {seconds}s exceeds {spec['warm_seconds_max']}s")
+    worst = max(valid, default=0)
     return [gate("readiness", not problems, "; ".join(problems) or
                  f"first load after delivery {delivered.get(first_mode)}s; "
                  f"staged-pack worst {worst}s", delivered=delivered)]
@@ -113,16 +134,27 @@ def gate_readiness(delivery: dict[str, Any], runs: list[tuple[str, float]],
 
 def gate_memory(qa: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
     limit = th["memory"]["peak_server_rss_gib_max"]
-    peaks = {mode: qa["summary"]["modes"][mode]["peak_rss_kib"] * 1024 / GIB for mode in AX_ARMS}
-    over = {mode: round(peak, 2) for mode, peak in peaks.items() if peak > limit}
-    return [gate("memory", not over, f"peak server RSS {over} exceeds {limit} GiB" if over else
+    rss = {mode: qa["summary"]["modes"][mode].get("peak_rss_kib") for mode in AX_ARMS}
+    peaks = {mode: kib / (GIB // 1024) if positive_measurement(kib) else None
+             for mode, kib in rss.items()}
+    invalid = [mode for mode, peak in peaks.items() if peak is None]
+    over = {mode: round(peak, 2) for mode, peak in peaks.items() if peak is not None and peak > limit}
+    problems = []
+    if invalid:
+        problems.append(f"missing or invalid peak server RSS for {invalid}")
+    if over:
+        problems.append(f"peak server RSS {over} exceeds {limit} GiB")
+    return [gate("memory", not problems, "; ".join(problems) or
                  f"peak server RSS {{{', '.join(f'{m}: {p:.1f}' for m, p in peaks.items())}}} GiB "
-                 f"within {limit} GiB", peaks_gib={m: round(p, 3) for m, p in peaks.items()})]
+                 f"within {limit} GiB",
+                 peaks_gib={mode: round(peak, 3) if peak is not None else None for mode, peak in peaks.items()})]
 
 
 def gate_long_lookup(qa: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
     limit = th["long_lookup"]["wall_seconds_max"]
-    seconds = {mode: qa["summary"]["modes"][mode].get("long_context_elapsed_seconds") for mode in AX_ARMS}
+    recorded = {mode: qa["summary"]["modes"][mode].get("long_context_elapsed_seconds")
+                for mode in AX_ARMS}
+    seconds = {mode: value if positive_measurement(value) else None for mode, value in recorded.items()}
     bad = {mode: s for mode, s in seconds.items() if s is None or s > limit}
     return [gate("long_lookup", not bad, f"{bad} outside {limit}s" if bad else
                  f"{th['long_lookup']['prompt_tokens']}-token lookup took {seconds} s (limit {limit} s)",
@@ -184,11 +216,12 @@ def cell_stats(rows: list[dict[str, Any]], tokens: Any) -> dict[str, Any]:
         seconds = timing.get("decode_seconds")
         count = timing.get("decode_tokens")
         first = timing.get("ttft_seconds")
-        if all(type(value) in (int, float) and math.isfinite(value) and value > 0
-               for value in (seconds, count, first)):
-            rates.append(count / seconds)
-            ttfts.append(first)
-    complete_timing = bool(measured) and len(rates) == len(measured)
+        if all(map(positive_measurement, (seconds, count, first))):
+            rate = count / seconds
+            if positive_measurement(rate):
+                rates.append(rate)
+                ttfts.append(first)
+    complete_timing = len(rates) == len(measured) == MEASURED
     return {"measured": len(measured), "full_length": len(full),
             "decode_tok_s": statistics.median(rates) if complete_timing else None,
             "ttft_s": statistics.median(ttfts) if complete_timing else None}
@@ -234,6 +267,9 @@ def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
                 continue
             decode_ratio = ax["decode_tok_s"] / ref["decode_tok_s"]
             ttft_ratio = ax["ttft_s"] / ref["ttft_s"]
+            if not all(map(positive_measurement, (decode_ratio, ttft_ratio))):
+                problems.append(f"{length}/{arm}: invalid timing ratios")
+                continue
             table[f"{length}/{arm}"] = {"decode_ratio": round(decode_ratio, 4),
                                         "ttft_ratio": round(ttft_ratio, 4),
                                         "ax_decode_tok_s": round(ax["decode_tok_s"], 3),
@@ -252,8 +288,7 @@ def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
 def gate_mtp_policy(delivery: dict[str, Any], qa: dict[str, Any], lifecycle: dict[str, Any],
                     matrix: dict[str, Any], th: dict[str, Any], contract: dict[str, Any]) -> list[dict[str, Any]]:
     problems = []
-    support = ((delivery.get("native_support") or {}).get("modes")) or []
-    if "default" not in support:
+    if "default" not in delivered_modes(delivery):
         problems.append("default mode missing from the delivered-copy controls")
     verified = {"qa": qa["summary"]["modes"]["default"]["verified_steps"],
                 "matrix": sum(t["verified_steps"] for t in matrix["runs"]["default"]["trajectories"])
@@ -290,9 +325,11 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
             problems.append(f"{name}: a harness result claims qualification")
     floor = th["timing_host"]["min_cpu_idle_percent"]
     for name in ("qa", "lifecycle", "matrix", "reference"):
-        quiet = results[name].get("host_quiet") or {}
-        if quiet.get("cpu_idle_percent", -1) < floor or results[name].get("host_idle_after", -1) < floor:
-            problems.append(f"{name}: host was not recorded idle (CPU idle >= {floor}%)")
+        quiet = results[name].get("host_quiet")
+        before = quiet.get("cpu_idle_percent") if isinstance(quiet, dict) else None
+        samples = (before, results[name].get("host_idle_after"))
+        if not all(type(value) in (int, float) and floor <= value <= 100 for value in samples):
+            problems.append(f"{name}: before and after must record CPU idle between {floor}% and 100%")
     matrix = results["matrix"]
     repeats = matrix.get("repeat_token_identity") or {}
     if matrix.get("repeats_per_arm") != AX_REPEATS or repeats.keys() != set(AX_ARMS):
@@ -322,10 +359,10 @@ def evaluate(results: dict[str, dict[str, Any]], th: dict[str, Any],
              contract: dict[str, Any]) -> dict[str, Any]:
     qa, lifecycle, matrix = results["qa"], results["lifecycle"], results["matrix"]
     reference, delivery = results["reference"], results["delivery"]
-    runs = [(f"qa/{mode}", qa["summary"]["modes"][mode]["ready_seconds"]) for mode in AX_ARMS]
-    runs += [(f"lifecycle/{run['mode']}", run["ready_seconds"]) for run in lifecycle.get("runs", [])
+    runs = [(f"qa/{mode}", qa["summary"]["modes"][mode].get("ready_seconds")) for mode in AX_ARMS]
+    runs += [(f"lifecycle/{run['mode']}", run.get("ready_seconds")) for run in lifecycle.get("runs", [])
              if run["mode"] in AX_ARMS]
-    runs += [(f"matrix/{mode}", matrix["runs"][mode]["ready_seconds"]) for mode in AX_ARMS]
+    runs += [(f"matrix/{mode}", matrix["runs"][mode].get("ready_seconds")) for mode in AX_ARMS]
     gates = [*gate_delivery(delivery, th), *gate_integrity(results, th), *gate_quality(qa, reference, th),
              *gate_lifecycle(lifecycle, th), *gate_memory(qa, th), *gate_readiness(delivery, runs, th),
              *gate_long_lookup(qa, th), *gate_reference_relative(matrix, reference, th),

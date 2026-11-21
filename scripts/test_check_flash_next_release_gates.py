@@ -132,6 +132,15 @@ class ReleaseGateTests(unittest.TestCase):
         r["qa"]["summary"]["modes"]["default"]["long_context_elapsed_seconds"] = None
         self.assertEqual(failed(r), {"long_lookup"})
 
+    def test_invalid_memory_and_lookup_measurements_fail_without_nonfinite_verdict_values(self):
+        for field, gate in (("peak_rss_kib", "memory"), ("long_context_elapsed_seconds", "long_lookup")):
+            for invalid in (float("nan"), float("inf"), -1, 0, True, "31", None):
+                with self.subTest(field=field, invalid=invalid):
+                    r = good()
+                    r["qa"]["summary"]["modes"]["default"][field] = invalid
+                    self.assertEqual(failed(r), {gate})
+                    json.dumps(verdict(r), allow_nan=False)
+
     def test_first_load_and_warm_readiness_use_their_own_bounds(self):
         r = good()
         r["delivery"]["native_support"]["readiness_seconds"]["disabled"] = 301.0
@@ -146,6 +155,34 @@ class ReleaseGateTests(unittest.TestCase):
         r["delivery"]["native_support"]["readiness_seconds"] = {}
         self.assertEqual(failed(r), {"readiness"})
 
+    def test_readiness_requires_complete_finite_records_and_uses_recorded_mode_order(self):
+        r = good()
+        r["delivery"]["native_support"]["readiness_seconds"].pop("required")
+        self.assertEqual(failed(r), {"readiness"})
+        r = good()
+        r["delivery"]["native_support"]["readiness_seconds"] = {
+            "required": 121.0, "disabled": 120.0, "default": 40.0,
+        }
+        self.assertEqual(failed(r), {"readiness"})
+        for invalid in (float("nan"), -1, True, None):
+            r = good()
+            r["delivery"]["native_support"]["readiness_seconds"]["default"] = invalid
+            self.assertEqual(failed(r), {"readiness"})
+            json.dumps(verdict(r), allow_nan=False)
+            r = good()
+            r["qa"]["summary"]["modes"]["default"]["ready_seconds"] = invalid
+            self.assertEqual(failed(r), {"readiness"})
+        r = good()
+        r["matrix"]["runs"]["disabled"].pop("ready_seconds")
+        self.assertEqual(failed(r), {"readiness"})
+        for invalid_modes in (1, {"disabled": True, "default": True, "required": True}):
+            r = good()
+            r["delivery"]["native_support"]["modes"] = invalid_modes
+            self.assertEqual(failed(r), {"delivery", "readiness", "mtp_policy"})
+        r = good()
+        r["delivery"]["native_support"]["modes"] = ["disabled", "default", "default"]
+        self.assertEqual(failed(r), {"delivery", "readiness"})
+
     def test_reference_relative_bounds_apply_to_both_ax_arms_and_every_length(self):
         r = good()
         r["matrix"]["runs"]["default"]["cells"] = ax_cells(decode_seconds=7.0 / 0.89)
@@ -156,6 +193,22 @@ class ReleaseGateTests(unittest.TestCase):
         r = good()
         r["matrix"]["runs"]["disabled"]["cells"] = ax_cells(decode_seconds=7.0 / 0.9001, ttft=(4.0, 16.0, 80.0))
         self.assertEqual(failed(r), set(), "values just inside both bounds must pass")
+
+    def test_reference_relative_rejects_nonfinite_derived_timing(self):
+        r = good()
+        for row in r["reference"]["matrix"]["cells"]:
+            row["decode_tokens"] = 1
+            row["decode_seconds"] = 1e308
+        self.assertEqual(failed(r), {"reference_relative"})
+        json.dumps(verdict(r), allow_nan=False)
+
+        r = good()
+        cells = r["matrix"]["runs"]["default"]["cells"]
+        cells.pop(4)
+        for row in cells[2:4]:
+            row["timing"].update(decode_tokens=1, decode_seconds=1e-308)
+        self.assertEqual(failed(r), {"reference_relative"})
+        json.dumps(verdict(r), allow_nan=False)
 
     def test_the_reference_must_use_the_same_token_ids_as_both_ax_arms(self):
         r = good()
@@ -229,7 +282,7 @@ class ReleaseGateTests(unittest.TestCase):
                        lambda d: d["native_support"].update(passed=False)):
             r = good()
             mutate(r["delivery"])
-            self.assertEqual(failed(r), {"delivery", "mtp_policy"} if
+            self.assertEqual(failed(r), {"delivery", "readiness", "mtp_policy"} if
                              "default" not in r["delivery"]["native_support"]["modes"] else {"delivery"})
 
     def test_a_resumed_delivery_passes_but_reports_its_failed_attempts(self):
@@ -282,6 +335,16 @@ class ReleaseGateTests(unittest.TestCase):
             r = good()
             del r[name]["host_quiet"]
             self.assertEqual(failed(r), {"integrity"}, name)
+
+    def test_timing_idle_samples_must_be_real_percentages(self):
+        for value in (float("nan"), float("inf"), 101.0, True, "95", None):
+            with self.subTest(value=value):
+                r = good()
+                r["matrix"]["host_idle_after"] = value
+                self.assertEqual(failed(r), {"integrity"})
+                r = good()
+                r["lifecycle"]["host_quiet"] = {"cpu_idle_percent": value}
+                self.assertEqual(failed(r), {"integrity"})
 
     def test_repeats_of_one_arm_must_be_token_identical(self):
         r = good()
