@@ -1,0 +1,317 @@
+{
+  "versions": {
+    "mlx": "0.32.4",
+    "mlx-metal": "0.32.4"
+  },
+  "cases": [
+    {
+      "width": 48,
+      "context": 4096,
+      "padded": 2051,
+      "equal_bits": [
+        true,
+        true
+      ],
+      "samples": {
+        "separate": [
+          {
+            "seconds": 0.007318540941923857,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.005982291069813073,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006180541939102113,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006119832978583872,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006201541982591152,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006145459017716348,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006136083044111729,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006150917033664882,
+            "peak_bytes": 212844568,
+            "active_before_bytes": 8798208
+          }
+        ],
+        "shared": [
+          {
+            "seconds": 0.006158582982607186,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006107332999818027,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006062334054149687,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006204708945006132,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.005956416949629784,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.005958458059467375,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.006043375004082918,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          },
+          {
+            "seconds": 0.005921292002312839,
+            "peak_bytes": 211632140,
+            "active_before_bytes": 8798208
+          }
+        ]
+      },
+      "median_seconds": {
+        "separate": 0.006148188025690615,
+        "shared": 0.006052854529116303
+      },
+      "median_extra_bytes": {
+        "separate": 204046360.0,
+        "shared": 202833932.0
+      }
+    },
+    {
+      "width": 128,
+      "context": 8192,
+      "padded": 2051,
+      "equal_bits": [
+        true,
+        true
+      ],
+      "samples": {
+        "separate": [
+          {
+            "seconds": 0.0181275000795722,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.015758291934616864,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.01607850007712841,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.016250333981588483,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.016283415956422687,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.015499833971261978,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.0156704590190202,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.015488208970054984,
+            "peak_bytes": 561856536,
+            "active_before_bytes": 17842176
+          }
+        ],
+        "shared": [
+          {
+            "seconds": 0.01850104203913361,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.015942250029183924,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.016204708954319358,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.016568916966207325,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.016332458006218076,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.016351875034160912,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.01591120904777199,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          },
+          {
+            "seconds": 0.015127000049687922,
+            "peak_bytes": 558678028,
+            "active_before_bytes": 17842176
+          }
+        ]
+      },
+      "median_seconds": {
+        "separate": 0.015918396005872637,
+        "shared": 0.016268583480268717
+      },
+      "median_extra_bytes": {
+        "separate": 544014360.0,
+        "shared": 540835852.0
+      }
+    },
+    {
+      "width": 255,
+      "context": 16384,
+      "padded": 2051,
+      "equal_bits": [
+        true,
+        true
+      ],
+      "samples": {
+        "separate": [
+          {
+            "seconds": 0.03410233301110566,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.030422749929130077,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03105145797599107,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03149695903994143,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03076687501743436,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.031205000006593764,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03122712508775294,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03183174994774163,
+            "peak_bytes": 1119371288,
+            "active_before_bytes": 35667968
+          }
+        ],
+        "shared": [
+          {
+            "seconds": 0.030956250033341348,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03196895797736943,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.032047083019278944,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.031446291017346084,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03086329100187868,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03163574996870011,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.031181834056042135,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          },
+          {
+            "seconds": 0.03005145792849362,
+            "peak_bytes": 1113079820,
+            "active_before_bytes": 35667968
+          }
+        ]
+      },
+      "median_seconds": {
+        "separate": 0.03121606254717335,
+        "shared": 0.03131406253669411
+      },
+      "median_extra_bytes": {
+        "separate": 1083703320.0,
+        "shared": 1077411852.0
+      }
+    }
+  ]
+}

@@ -1180,36 +1180,26 @@ pub(crate) fn fused_gather_tiles_for_test() -> u64 {
     FUSED_GATHER_TILES.with(std::cell::Cell::get)
 }
 
-/// One padded sub-batch of selected K or V rows in the
-/// `[width, kv_heads, padded, head_dim]` layout the masked SDPA call consumes.
+/// Gather one padded K/V sub-batch into the layout used by masked SDPA.
 ///
-/// `rows` is one batch row of the K/V history as `[tokens, kv_heads,
-/// head_dim]` and `safe` the `[width, padded]` non-negative token indices
-/// (`-1` padding already clamped to `0`).
-///
-/// `fused` reads the rows out of the flattened `[tokens * kv_heads,
-/// head_dim]` view with a per-head index tile, so the single gather copy is
-/// already in SDPA order. The previous path gathers
-/// `[width, padded, kv_heads, head_dim]` and transposes it, which costs a
-/// second full-tile copy. Both read the same rows in the same order, so the
-/// tiles are bit-identical.
-fn gather_selected_tile(
-    rows: &MlxArray,
+/// Both sources use the same validated token indices. Share the index
+/// array so the two takes do not build or materialize a separate index tile.
+fn gather_selected_pair(
+    keys: &MlxArray,
+    values: &MlxArray,
     safe: &MlxArray,
-    width: i32,
-    padded: i32,
-    kv_heads: i32,
-    head_dim: i32,
     fused: bool,
-) -> MlxArray {
+) -> (MlxArray, MlxArray) {
+    let selected_shape = safe.shape();
+    let (width, padded) = (selected_shape[0], selected_shape[1]);
+    let key_shape = keys.shape();
+    debug_assert_eq!(key_shape, values.shape());
+    let (kv_heads, head_dim) = (key_shape[1], key_shape[2]);
     if fused {
-        let tokens = rows.shape().first().copied().unwrap_or(0);
         #[cfg(test)]
-        FUSED_GATHER_TILES.with(|counter| counter.set(counter.get().saturating_add(1)));
-        let flat_rows = reshape(rows, &[tokens * kv_heads, head_dim], None);
-        // Row `token * kv_heads + head` of `flat_rows` is `rows[token, head,
-        // :]`, so an index tile that carries the head offset lands the gather
-        // directly in `[width, kv_heads, padded, head_dim]`.
+        FUSED_GATHER_TILES.with(|counter| counter.set(counter.get().saturating_add(2)));
+        // Flatten the token and head axes so taking token * kv_heads +
+        // head lands directly in [width, kv_heads, padded, head_dim].
         let positions = reshape(safe, &[width, 1, padded], None);
         let strided = multiply(&positions, &int32_scalar(kv_heads), None);
         let heads = reshape(
@@ -1218,12 +1208,20 @@ fn gather_selected_tile(
             None,
         );
         let indices = add(&strided, &heads, None);
-        return take(&flat_rows, &indices, 0, None);
+        let gather = |rows: &MlxArray| {
+            let tokens = rows.shape().first().copied().unwrap_or(0);
+            let flat_rows = reshape(rows, &[tokens * kv_heads, head_dim], None);
+            take(&flat_rows, &indices, 0, None)
+        };
+        return (gather(keys), gather(values));
     }
     let flat = reshape(safe, &[width * padded], None);
-    let gathered = take(rows, &flat, 0, None);
-    let tile = reshape(&gathered, &[width, padded, kv_heads, head_dim], None);
-    transpose(&tile, &[0, 2, 1, 3], None)
+    let gather = |rows: &MlxArray| {
+        let gathered = take(rows, &flat, 0, None);
+        let tile = reshape(&gathered, &[width, padded, kv_heads, head_dim], None);
+        transpose(&tile, &[0, 2, 1, 3], None)
+    };
+    (gather(keys), gather(values))
 }
 
 /// Upper bound on the gathered K+V bytes of one sub-batch.
@@ -1354,11 +1352,7 @@ fn attend_selected_batched(
         };
         let valid = greater_equal(&indices, &int32_scalar(0), None);
         let safe = maximum(&indices, &int32_scalar(0), None);
-        let fused = fused_gather_enabled();
-        let gather = |source: &MlxArray| {
-            gather_selected_tile(source, &safe, width_i, padded_i, kv_heads, dim, fused)
-        };
-        let (k_sel, v_sel) = (gather(&keys), gather(&values));
+        let (k_sel, v_sel) = gather_selected_pair(&keys, &values, &safe, fused_gather_enabled());
         // Test-only attribution. `qsa_da_gather` is the gather copy;
         // `qsa_da_layout` the transpose copy, which is a no-op when the fused
         // gather already landed in SDPA order; `qsa_da_sdpa` the kernel.
@@ -1529,7 +1523,7 @@ fn validate_gain(tensor: &'static str, gain: &MlxArray, dim: i32) -> Result<()> 
 mod tests {
     use super::*;
     use crate::qwen4_exp_qsa::{QsaConfig, QsaIndexerWeights};
-    use mlx_sys::{contiguous, eval, repeat_axis, slice, zeros};
+    use mlx_sys::{contiguous, eval, negative, repeat_axis, slice, zeros};
     use serde_json::Value;
 
     const EPS: f32 = 1e-6;
@@ -2963,8 +2957,7 @@ mod tests {
         )
     }
 
-    /// Ragged `[width, padded]` token indices already clamped to `>= 0`: what
-    /// the batched path hands the tile gather after `maximum(indices, 0)`.
+    /// Ragged `[width, padded]` token indices with `-1` padding.
     /// Positions run out of order and repeat, and each row keeps a different
     /// prefix, so padding, order and duplicates are all exercised.
     fn ragged_selection(width: i32, padded: i32, tokens: i32) -> MlxArray {
@@ -2976,8 +2969,7 @@ mod tests {
                 let value = if column < keep {
                     (row * 31 + column * stride) % tokens
                 } else {
-                    // `-1` padding, clamped to token 0 by `safe`.
-                    0
+                    -1
                 };
                 data.push(value);
             }
@@ -3000,26 +2992,28 @@ mod tests {
                 for &(width, kv_heads, head_dim) in &[(3i32, 2i32, 8i32), (1, 2, 8), (17, 3, 16)] {
                     let tokens = padded + 37;
                     let rows = tile_rows(tokens, kv_heads, head_dim, dtype);
-                    let safe = ragged_selection(width, padded, tokens);
-                    let baseline = gather_selected_tile(
-                        &rows, &safe, width, padded, kv_heads, head_dim, false,
-                    );
-                    let fused =
-                        gather_selected_tile(&rows, &safe, width, padded, kv_heads, head_dim, true);
+                    let indices = ragged_selection(width, padded, tokens);
+                    let safe = maximum(&indices, &int32_scalar(0), None);
+                    let values = negative(&rows, None);
+                    let baseline = gather_selected_pair(&rows, &values, &safe, false);
+                    let fused = gather_selected_pair(&rows, &values, &safe, true);
                     let label = format!(
                         "{dtype:?} width={width} padded={padded} kv={kv_heads} d={head_dim}"
                     );
-                    assert_eq!(
-                        fused.shape(),
-                        vec![width, kv_heads, padded, head_dim],
-                        "{label}: SDPA layout"
-                    );
-                    assert_eq!(fused.shape(), baseline.shape(), "{label}: shape");
-                    assert_eq!(
-                        f32_value_bits(&fused),
-                        f32_value_bits(&baseline),
-                        "{label}: tile bits"
-                    );
+                    // Evaluate V first while K still owns the shared index.
+                    for (before, after) in [(&baseline.1, &fused.1), (&baseline.0, &fused.0)] {
+                        assert_eq!(
+                            after.shape(),
+                            vec![width, kv_heads, padded, head_dim],
+                            "{label}: SDPA layout"
+                        );
+                        assert_eq!(after.shape(), before.shape(), "{label}: shape");
+                        assert_eq!(
+                            f32_value_bits(after),
+                            f32_value_bits(before),
+                            "{label}: tile bits"
+                        );
+                    }
                 }
             }
         }
@@ -3036,7 +3030,9 @@ mod tests {
                 let (kv_heads, head_dim) = (2i32, 16i32);
                 let tokens = padded + 11;
                 let rows = tile_rows(tokens, kv_heads, head_dim, dtype);
-                let safe = ragged_selection(width, padded, tokens);
+                let indices = ragged_selection(width, padded, tokens);
+                let safe = maximum(&indices, &int32_scalar(0), None);
+                let values = negative(&rows, None);
                 let queries = astype(
                     &array_f32(
                         &(0..(cfg.query_heads * width * head_dim) as usize)
@@ -3047,16 +3043,11 @@ mod tests {
                     dtype,
                     None,
                 );
-                let valid = greater_equal(&safe, &int32_scalar(0), None);
+                let valid = greater_equal(&indices, &int32_scalar(0), None);
                 let mask = reshape(&valid, &[width, 1, 1, padded], None);
                 let q_sub = transpose(&queries, &[2, 1, 0, 3], None);
                 let run = |fused: bool| {
-                    let k = gather_selected_tile(
-                        &rows, &safe, width, padded, kv_heads, head_dim, fused,
-                    );
-                    let v = gather_selected_tile(
-                        &rows, &safe, width, padded, kv_heads, head_dim, fused,
-                    );
+                    let (k, v) = gather_selected_pair(&rows, &values, &safe, fused);
                     let k = contiguous(&k, None);
                     let v = contiguous(&v, None);
                     scaled_dot_product_attention_with_mask(
