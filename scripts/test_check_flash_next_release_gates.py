@@ -6,7 +6,9 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 
 SCRIPT = Path(__file__).with_name("check_flash_next_release_gates.py")
@@ -512,7 +514,22 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(TH["target"]["pack_revision"], qualify.PACK_REVISION)
         self.assertEqual(TH["target"]["pack_repo"], qualify.PRIMARY_REPO)
         self.assertEqual(TH["mtp"]["gate_state"], qualify.contract()["mtp_certification"])
-        self.assertIn("MTP", TH["release_scope"])
+        self.assertEqual(TH["release_scope"], qualify.RELEASE_SCOPE)
+
+    def test_cli_rejects_thresholds_for_another_release_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            thresholds = root / "thresholds.json"
+            thresholds.write_text(json.dumps({**TH, "release_scope": "other scope"}))
+            report = root / "verdict.json"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--evidence-dir", str(root),
+                 "--thresholds", str(thresholds), "--output", str(report)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("release_scope differs", result.stderr)
+            self.assertFalse(report.exists())
 
 
 if __name__ == "__main__":

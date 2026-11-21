@@ -505,6 +505,8 @@ def main() -> int:
     args = parser.parse_args()
     import qualify_qwen38_flash_next as qualify
     th = json.loads(args.thresholds.read_text())
+    if th.get("release_scope") != qualify.RELEASE_SCOPE:
+        raise SystemExit("thresholds release_scope differs from the pinned Flash Next direct-default scope")
     paths = {name: args.evidence_dir / relative for name, relative in RESULT_FILES.items()}
     missing = [str(path) for path in paths.values() if not path.is_file()]
     if missing:
@@ -512,7 +514,7 @@ def main() -> int:
     results = {name: json.loads(path.read_text()) for name, path in paths.items()}
     verdict = evaluate(results, th, qualify.contract())
     verdict.update(
-        schema="ax-engine.flash-next.release-verdict.v1", release_scope=th["release_scope"],
+        schema=qualify.RELEASE_VERDICT_SCHEMA, release_scope=th["release_scope"],
         pack_revision=th["target"]["pack_revision"], thresholds_sha256=sha256_file(args.thresholds),
         evidence_sha256={name: sha256_file(path) for name, path in paths.items()},
         mtp_certification=qualify.contract()["mtp_certification"], source=source_state(),

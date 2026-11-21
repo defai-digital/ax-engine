@@ -45,34 +45,49 @@ RELEASE_SCOPE = (
     "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in "
     "(--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed."
 )
-RELEASE_VERDICT = (
-    Path(__file__).resolve().parents[1]
-    / "benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/release-verdict.json"
+RELEASE_VERDICT_RELATIVE = Path(
+    "benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/release-verdict.json"
 )
+RELEASE_VERDICT = Path(__file__).resolve().parents[1] / RELEASE_VERDICT_RELATIVE
+RELEASE_VERDICT_SCHEMA = "ax-engine.flash-next.release-verdict.v1"
+RELEASE_GATES = frozenset({
+    "delivery", "integrity", "quality", "lifecycle", "memory", "readiness",
+    "long_lookup", "reference_relative", "mtp_policy",
+})
 MTP_NOT_ASSESSED = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
+MXFP8_PREVIEW_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP8-MTP"
+MXFP8_PREVIEW_REVISION = "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b"
+MXFP8_STATUS = (
+    "revision-pinned local functional preview. Catalog admission and SKU qualification are pending."
+)
+MXFP8_PREVIEW_OPT_IN = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1"
 
 
 def release_record(path: Path = RELEASE_VERDICT) -> dict[str, Any]:
     """Release state, derived from the committed evidence verdict.
 
-    The flags are never set by hand: they are true only when the verdict file is
-    present, binds this pack revision, passes every gate and leaves MTP-S/P/D
-    not assessed. Missing, malformed or failing evidence reads as not ready.
+    The verdict must bind the direct-default scope and pack revision, pass all
+    nine required gates exactly once, and leave MTP-S/P/D unassessed. Missing,
+    malformed or failing evidence reads as not ready.
     """
     try:
         verdict = json.loads(path.read_text(encoding="utf-8"))
         gates = verdict["gates"]
+        names = [gate["gate"] for gate in gates]
         ready = (
             verdict.get("release_ready") is True
+            and verdict.get("schema") == RELEASE_VERDICT_SCHEMA
+            and verdict.get("release_scope") == RELEASE_SCOPE
             and verdict.get("pack_revision") == PACK_REVISION
-            and bool(gates)
+            and len(names) == len(RELEASE_GATES)
+            and set(names) == RELEASE_GATES
             and all(gate.get("passed") is True for gate in gates)
             and verdict.get("mtp_certification") == MTP_NOT_ASSESSED
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return {"release_ready": False, "verdict": None}
     return {"release_ready": ready, "verdict": path.name,
-            "gates": [gate["gate"] for gate in gates], "source": verdict.get("source")}
+            "gates": names, "source": verdict.get("source")}
 EXPERIMENTAL_EXPERT_LAYOUTS = (
     {"mode": "mxfp4", "bits": 4, "group_size": 32},
 )
@@ -84,15 +99,17 @@ EXPERT_ROLES = {
 }
 
 
-def status() -> str:
+def status(path: Path = RELEASE_VERDICT) -> str:
     """The canonical status sentence for the current evidence state."""
-    return STATUS_RELEASED if release_record()["release_ready"] else STATUS_OPEN
+    return STATUS_RELEASED if release_record(path)["release_ready"] else STATUS_OPEN
 
 
 STATUS = status()
 
 
 def contract() -> dict[str, Any]:
+    verdict = release_record()
+    release_ready = verdict["release_ready"]
     return {
         "family": FAMILY,
         "alias": PRIMARY_ALIAS,
@@ -118,19 +135,24 @@ def contract() -> dict[str, Any]:
             "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+; "
             "2026-10-05 direct-default release gates stay bound to that host"
         ),
-        "status": status(),
+        "status": STATUS_RELEASED if release_ready else STATUS_OPEN,
         "ci": "dry-run only; do not mount Flash Next weights on CI",
         "fail_closed": True,
         "ready": False,
         "readiness_scope": "this qualifier covers MLX AXQ MXFP4 MTP; the affine 6-bit MTP pack is supported (ADR-050) but not qualified here",
         "format_scope": ["mxfp4", "mxfp8"],
         "mtp_sidecar_required": True,
-        "mxfp8_status": "in scope; audited pack pin and dedicated native-path validation pending",
+        "mxfp8_status": MXFP8_STATUS,
+        "mxfp8_preview": {
+            "repo_id": MXFP8_PREVIEW_REPO,
+            "revision": MXFP8_PREVIEW_REVISION,
+            "opt_in": MXFP8_PREVIEW_OPT_IN,
+        },
         "qualification_storage": "record the actual storage medium and connection; no cross-storage inference",
-        "release_ready": release_record()["release_ready"],
-        "qualification": release_record()["release_ready"],
+        "release_ready": release_ready,
+        "qualification": release_ready,
         "release_scope": RELEASE_SCOPE,
-        "release_verdict": release_record(),
+        "release_verdict": verdict,
         "validation_scope": "manifest and sidecar header metadata only; native loader validation required",
         "convert": "metadata mapping; affine 6-bit readiness is not MXFP4 readiness",
         "load_blocker": "none: MXFP4/group32 loads without an env var; target qualification pending",
@@ -194,7 +216,9 @@ def _print_contract(as_json: bool) -> None:
     print("target admission: MXFP4/group32 loads without an env var; certification stays Candidate "
           f"({'v7.9.0 direct-default release gates passed; MTP gates open' if payload['release_ready'] else 'gates open'})")
     print(f"release scope: {payload['release_scope']}")
-    print("affine 6-bit MTP supported but not qualified by this record; other affine widths unsupported; MXFP8 pack audit and admission pending")
+    print("Affine 6-bit MTP has runtime support. This qualification record covers MXFP4. "
+          "Other affine widths remain unsupported.")
+    print(f"MXFP8 is a {payload['mxfp8_status']} Set {MXFP8_PREVIEW_OPT_IN} for local preview.")
     print("fail-closed: convert must not remap onto qwen3_5")
     print("MTP gates (metadata preflight assesses none):")
     for gate, requirement in payload["mtp_gates"].items():
@@ -211,10 +235,10 @@ def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[str, int, int]]:
         quant = tensor.get("quantization")
         if not isinstance(quant, dict):
             raise SystemExit(f"expert tensor {tensor.get('name')} has no quantization metadata")
-        if quant.get("mode") not in ("affine", "mxfp4"):
+        if quant.get("mode") not in ("affine", "mxfp4", "mxfp8"):
             raise SystemExit(
                 f"expert tensor {tensor.get('name')} uses {quant.get('mode')!r}; "
-                "only affine and MXFP4 expert formats are recognized"
+                "expected an affine, MXFP4 or MXFP8 expert format"
             )
         bits = quant.get("bits")
         group = quant.get("group_size")
@@ -333,7 +357,10 @@ def _live_preflight(model_dir: Path) -> None:
     if not layouts:
         raise SystemExit("manifest has no quantized expert tensors")
     if layouts[0] not in allowed:
-        raise SystemExit(f"unsupported expert layout {layouts[0]}; this qualifier covers MXFP4 only (affine 6-bit is supported but not qualified here), MXFP8 admission pending")
+        raise SystemExit(
+            f"unsupported expert layout {layouts[0]} for this MXFP4 preflight. "
+            "Affine 6-bit has its own scope and MXFP8 is a local functional preview."
+        )
     sidecar = _mtp_metadata(model_dir)
     print(f"MTP sidecar metadata: {sidecar['tensor_count']} tensors; {sidecar['mtp_norm_layout']}")
     print("MXFP4/group32 preflight: no experimental opt-in required")

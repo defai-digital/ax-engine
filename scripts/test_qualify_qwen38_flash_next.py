@@ -72,6 +72,15 @@ class QualifyFlashNextTest(unittest.TestCase):
         self.assertEqual(payload["format_scope"], ["mxfp4", "mxfp8"])
         self.assertTrue(payload["mtp_sidecar_required"])
         self.assertIn("pending", payload["mxfp8_status"])
+        self.assertIn("local functional preview", payload["mxfp8_status"])
+        inventory = ROOT / (
+            "benchmarks/results/qualification/2026-11-18-flash-next-mxfp8-preview/pack-inventory.json"
+        )
+        preview = json.loads(inventory.read_text())
+        self.assertEqual(payload["mxfp8_preview"], {
+            "repo_id": preview["repo_id"], "revision": preview["revision"],
+            "opt_in": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1",
+        })
         self.assertEqual(payload["experimental_expert_layouts"], [{"mode": "mxfp4", "bits": 4, "group_size": 32}])
         self.assertIn("qwen3.8-27b:axq", payload["not"])
         self.assertIn("Candidate", payload["status"])
@@ -141,6 +150,19 @@ class QualifyFlashNextTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "unsupported expert layout"):
                 mod._live_preflight(model_dir)
 
+    def test_mxfp8_preview_is_outside_the_mxfp4_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            manifest = _product_manifest()
+            manifest["tensors"][0]["quantization"] = {
+                "mode": "mxfp8", "bits": 8, "group_size": 32,
+            }
+            (root / "model-manifest.json").write_text(json.dumps(manifest))
+            with patch.dict("os.environ", {"AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1"}):
+                with self.assertRaisesRegex(SystemExit, "MXFP8 is a local functional preview"):
+                    mod._live_preflight(root)
+
     def test_sidecar_metadata_fails_closed_before_any_payload_load(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -170,15 +192,20 @@ class QualifyFlashNextTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "release-verdict.json"
             self.assertEqual(mod.release_record(path), {"release_ready": False, "verdict": None})
-            good = {"release_ready": True, "pack_revision": mod.PACK_REVISION,
-                    "gates": [{"gate": "delivery", "passed": True}],
-                    "mtp_certification": {"MTP-S": "not_assessed", "MTP-P": "not_assessed",
-                                          "MTP-D": "not_assessed"}}
+            good = json.loads(mod.RELEASE_VERDICT.read_text())
+            gates = good["gates"]
             cases = {
                 "passing": (good, True),
                 "wrong revision": ({**good, "pack_revision": "other"}, False),
-                "failing gate": ({**good, "gates": [{"gate": "memory", "passed": False}]}, False),
+                "wrong schema": ({**good, "schema": "other"}, False),
+                "wrong scope": ({**good, "release_scope": "other"}, False),
+                "failing gate": ({**good, "gates": [*gates[:-1], {**gates[-1], "passed": False}]}, False),
+                "missing gate": ({**good, "gates": gates[:-1]}, False),
+                "one passing gate": ({**good, "gates": gates[:1]}, False),
+                "duplicate gate": ({**good, "gates": [*gates[:-1], gates[0]]}, False),
+                "extra gate": ({**good, "gates": [*gates, {"gate": "other", "passed": True}]}, False),
                 "no gates": ({**good, "gates": []}, False),
+                "malformed gate": ({**good, "gates": [*gates[:-1], {"passed": True}]}, False),
                 "mtp promoted": ({**good, "mtp_certification": {"MTP-S": "passed",
                                   "MTP-P": "not_assessed", "MTP-D": "not_assessed"}}, False),
                 "not marked ready": ({**good, "release_ready": False}, False),

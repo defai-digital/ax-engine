@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -36,7 +37,7 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
 
-    def write(self, relative: str, text: str) -> None:
+    def write(self, relative: str | Path, text: str) -> None:
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -52,31 +53,25 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
     def test_flash_next_status_follows_the_committed_release_verdict(self) -> None:
         self.seed_required()
         verdict_path = self.root / checker.FLASH_NEXT_RELEASE_VERDICT
-        gate = {"gate": "delivery", "passed": True}
+        release = checker.flash_next
+        good = json.loads(release.RELEASE_VERDICT.read_text())
+        gates = good["gates"]
         for verdict, expected in (
-            (None, checker.FLASH_NEXT_STATUS_OPEN),
-            ({"release_ready": True, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
-              "gates": [gate]}, checker.FLASH_NEXT_STATUS_RELEASED),
-            ({"release_ready": True, "pack_revision": "other", "gates": [gate]},
-             checker.FLASH_NEXT_STATUS_OPEN),
-            ({"release_ready": True, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
-              "gates": [gate, {"gate": "memory", "passed": False}]}, checker.FLASH_NEXT_STATUS_OPEN),
-            ({"release_ready": False, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
-              "gates": [gate]}, checker.FLASH_NEXT_STATUS_OPEN),
+            (None, release.STATUS_OPEN),
+            (good, release.STATUS_RELEASED),
+            ({**good, "pack_revision": "other"}, release.STATUS_OPEN),
+            ({**good, "gates": gates[:1]}, release.STATUS_OPEN),
+            ({**good, "gates": [*gates[:-1], {**gates[-1], "passed": False}]}, release.STATUS_OPEN),
+            ({**good, "release_ready": False}, release.STATUS_OPEN),
+            ({**good, "mtp_certification": {}}, release.STATUS_OPEN),
         ):
             if verdict is None:
                 verdict_path.unlink(missing_ok=True)
             else:
-                import json
-
                 self.write(checker.FLASH_NEXT_RELEASE_VERDICT, json.dumps(verdict))
             self.assertEqual(checker.flash_next_status_sentence(self.root), expected)
         # Docs still carrying the open sentence fail once the verdict passes.
-        import json
-
-        self.write(checker.FLASH_NEXT_RELEASE_VERDICT, json.dumps(
-            {"release_ready": True, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
-             "gates": [gate]}))
+        self.write(checker.FLASH_NEXT_RELEASE_VERDICT, json.dumps(good))
         with self.assertRaisesRegex(checker.PrimaryClaimError, "Flash Next status sentence"):
             checker.check_qwen38_primary_claims(self.root)
 

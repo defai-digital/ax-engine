@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Keep the Qwen 3.8 27B primary-pack contract honest in public docs."""
+"""Check public Qwen 3.8 27B and Flash Next claims against release evidence."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+try:
+    import qualify_qwen38_flash_next as flash_next
+except ImportError:
+    from scripts import qualify_qwen38_flash_next as flash_next
 
 PRIMARY_ALIAS = "qwen3.8-27b:axq"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
@@ -26,40 +30,15 @@ STATUS_FILES = (
     "docs/TESTING.md",
 )
 FLASH_NEXT_ALIAS = "qwen3.8-flash-next:axq"
-FLASH_NEXT_STATUS_OPEN = (
-    "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
-    "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
-    "MXFP4 MTP target; native functional controls verified; checkpoint qualification pending on this standard. "
-    "MTP Tier 2 pending. AX certification record: Candidate (gates open)."
-)
-FLASH_NEXT_STATUS_RELEASED = (
-    "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
-    "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
-    "MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. "
-    "AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending."
-)
-FLASH_NEXT_RELEASE_VERDICT = (
-    "benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/release-verdict.json"
-)
-FLASH_NEXT_PACK_REVISION = "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
+FLASH_NEXT_RELEASE_VERDICT = flash_next.RELEASE_VERDICT_RELATIVE
 
 
 def flash_next_status_sentence(root: Path) -> str:
     """The Flash Next status sentence docs must carry: released only when the committed verdict passes."""
-    try:
-        verdict = json.loads((root / FLASH_NEXT_RELEASE_VERDICT).read_text(encoding="utf-8"))
-        passed = (
-            verdict.get("release_ready") is True
-            and verdict.get("pack_revision") == FLASH_NEXT_PACK_REVISION
-            and bool(verdict["gates"])
-            and all(gate.get("passed") is True for gate in verdict["gates"])
-        )
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        passed = False
-    return FLASH_NEXT_STATUS_RELEASED if passed else FLASH_NEXT_STATUS_OPEN
+    return flash_next.status(root / FLASH_NEXT_RELEASE_VERDICT)
 
 
-FLASH_NEXT_STATUS_SENTENCE = FLASH_NEXT_STATUS_OPEN
+FLASH_NEXT_STATUS_SENTENCE = flash_next.STATUS_OPEN
 FLASH_NEXT_STATUS_FILES = (
     "README.md",
     "docs/SUPPORTED-MODELS.md",
