@@ -69,3 +69,12 @@ intermediate prefill event. The [partial receipt](split-activation-attempt.json)
 retains the inputs, outputs and startup decision for that failed
 activation attempt. Latency and cancellation still require a run that
 activates the split path.
+
+## SSE split-boundary negative control
+
+The [2,048-token follow-up](sse-cut-negative-control/README.md) activated
+the physical split, matched all 28 output arrays, and completed six
+disconnect and replacement trials. The original route audit rejected
+the receipt because the logical boundary was absent from the SSE
+progress frame. The linked receipt independently verifies the
+physical work and preserves the audit failure.

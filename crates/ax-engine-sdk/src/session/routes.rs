@@ -1,3 +1,8 @@
+use ax_engine_core::RequestId;
+use ax_engine_core::scheduler::{
+    ExecutionMode, PREFILL_SPLIT_END_ROUTE_PREFIX, prefill_split_end_route_key,
+};
+
 use crate::generate::GenerateRouteReport;
 use crate::request::{EngineStepReport, SessionRequestReport};
 
@@ -65,10 +70,9 @@ pub(super) fn route_has_decode_path_work(route: &GenerateRouteReport) -> bool {
 
 /// Decide whether this native step must materialise full route metadata.
 ///
-/// Prefill / multi-token / first-request / terminal steps always capture.
-/// Pure single-token decode can skip once a stored route already has decode
-/// path counters (perf); until then we must refresh so terminal telemetry is
-/// not stuck on a prefill-only bootstrap snapshot.
+/// Multi-token, initial and terminal updates capture the full route.
+/// A single-token step can skip it once the stored route has decode counters.
+/// Its step-local diagnostics remain available through `native_step_local_route`.
 pub(super) fn native_step_needs_route_capture(
     batch_tokens: u32,
     ttft_events: u32,
@@ -83,25 +87,59 @@ pub(super) fn native_step_needs_route_capture(
         || any_stored_route_lacks_decode_work
 }
 
-/// Step-local read deltas cannot be recovered from the terminal route.
-/// Preserve just these counters when full decode-route conversion is skipped.
-pub(super) fn native_step_read_deltas(
+/// Preserve step-local diagnostics when full route conversion is skipped.
+pub(super) fn native_step_local_route(
     outcome: &ax_engine_core::EngineStepOutcome,
 ) -> Option<GenerateRouteReport> {
     let batch = outcome.schedule_plan.execution_batch.as_ref()?;
+    let has_prefill = batch
+        .items
+        .iter()
+        .any(|item| item.mode == ExecutionMode::Prefill);
     let mut route = GenerateRouteReport::default();
     for (key, value) in &batch.route_metadata.crossover_decisions {
         if *value != 0
-            && matches!(
-                key.as_str(),
-                "ax_mlx_flash_next_selected_expert_gathers"
-                    | "ax_mlx_flash_next_selected_expert_payload_kib"
-            )
+            && ((has_prefill && key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX))
+                || matches!(
+                    key.as_str(),
+                    "ax_mlx_flash_next_selected_expert_gathers"
+                        | "ax_mlx_flash_next_selected_expert_payload_kib"
+                ))
         {
             route.crossover_decisions.insert(key.clone(), *value);
         }
     }
     (!route.crossover_decisions.is_empty()).then_some(route)
+}
+
+pub(super) fn stream_prefill_split_route(
+    step: &EngineStepReport,
+    request_id: u64,
+) -> Option<GenerateRouteReport> {
+    let route = step.route.as_ref()?;
+    let key = prefill_split_end_route_key(RequestId(request_id));
+    let end = route.decision(&key).filter(|end| *end > 0)?;
+    Some(GenerateRouteReport {
+        crossover_decisions: [(key, end)].into(),
+        ..GenerateRouteReport::default()
+    })
+}
+
+pub(super) fn restrict_prefill_split_telemetry(
+    route: &mut GenerateRouteReport,
+    request_id: Option<u64>,
+) {
+    let mut allowed_key = None;
+    route.crossover_decisions.retain(|key, value| {
+        !key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX)
+            || (*value > 0
+                && request_id.is_some_and(|id| {
+                    key.as_str()
+                        == allowed_key
+                            .get_or_insert_with(|| prefill_split_end_route_key(RequestId(id)))
+                            .as_str()
+                }))
+    });
 }
 
 // Apply per-step route metadata onto the route accumulated so far for the same
@@ -468,5 +506,72 @@ mod tests {
         assert!(native_step_needs_route_capture(1, 0, true, false, false));
         assert!(native_step_needs_route_capture(1, 0, false, true, false));
         assert!(native_step_needs_route_capture(1, 0, false, false, true));
+    }
+
+    #[test]
+    fn native_step_local_route_retains_split_end_on_single_token_step() {
+        use ax_engine_core::scheduler::{
+            ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, SchedulePlan,
+        };
+        use ax_engine_core::{EngineStepOutcome, StepId, StepMetrics, WorkUnitKind};
+
+        let key = prefill_split_end_route_key(RequestId(7));
+        let mut route_metadata = RouteMetadata::empty();
+        route_metadata.crossover_decisions = vec![
+            (key.clone(), 2048),
+            (prefill_split_end_route_key(RequestId(8)), 0),
+            ("ax_mlx_flash_next_selected_expert_gathers".into(), 4),
+            ("unrelated_counter".into(), 3),
+        ];
+        let step_id = StepId(13);
+        let outcome = EngineStepOutcome {
+            admitted_requests: Vec::new(),
+            cleanup_results: Vec::new(),
+            metrics: StepMetrics {
+                scheduled_tokens: 1,
+                ..StepMetrics::default()
+            },
+            schedule_plan: SchedulePlan {
+                step_id,
+                selected_requests: vec![RequestId(7)],
+                deferred_requests: Vec::new(),
+                memory_blocked_requests: Vec::new(),
+                route_deferred_requests: Vec::new(),
+                execution_batch: Some(ExecutionBatch {
+                    step_id,
+                    model_id: "flash-next".into(),
+                    execution_plan_ref: None,
+                    items: vec![ExecutionItem {
+                        request_id: RequestId(7),
+                        mode: ExecutionMode::Prefill,
+                        planned_work_unit: WorkUnitKind::PrefillChunk,
+                        input_token_slice: vec![9],
+                        reused_prefix_token_slice: Vec::new(),
+                        position_range: PositionRange {
+                            start: 2047,
+                            end_exclusive: 2048,
+                        },
+                        scheduled_token_count: 1,
+                        block_table_ref: RequestId(7),
+                        prefix_tokens_reused: 0,
+                        prefix_blocks_reused: 0,
+                    }],
+                    total_scheduled_tokens: 1,
+                    route_metadata,
+                }),
+            },
+            runner_output: None,
+            sampled_tokens: Vec::new(),
+        };
+        assert_eq!(
+            native_step_local_route(&outcome).map(|route| route.crossover_decisions),
+            Some(
+                [
+                    (key, 2048),
+                    ("ax_mlx_flash_next_selected_expert_gathers".into(), 4)
+                ]
+                .into()
+            ),
+        );
     }
 }

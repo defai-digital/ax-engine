@@ -1,0 +1,8 @@
+{
+  "commit": "0f597f13cdbdd532c8d93cbe3f762eb65665784e",
+  "profile": "release-server",
+  "server_sha256": "68cf084d90603f7dbac2116f8e97d9e7998aa398161efcc672952eb0a9c8a08a",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4"
+}

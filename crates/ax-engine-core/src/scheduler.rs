@@ -118,9 +118,11 @@ impl PrefillSplit {
     }
 }
 
-const PREFILL_SPLIT_END_ROUTE_PREFIX: &str = "ax_scheduler_prefill_split_end.";
+/// Prefix for the request-specific logical end of a physical prefill item.
+pub const PREFILL_SPLIT_END_ROUTE_PREFIX: &str = "ax_scheduler_prefill_split_end.";
 
-fn prefill_split_end_route_key(request_id: RequestId) -> String {
+/// Route key for the logical split end of this request.
+pub fn prefill_split_end_route_key(request_id: RequestId) -> String {
     format!("{PREFILL_SPLIT_END_ROUTE_PREFIX}{}", request_id.0)
 }
 

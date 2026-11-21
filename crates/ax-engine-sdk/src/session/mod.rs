@@ -43,8 +43,8 @@ use native::build_native_core;
 use native::{build_native_core_with_mlx_shares, load_native_whisper_model};
 use routes::{
     apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
-    native_step_needs_route_capture, native_step_read_deltas, route_has_decode_path_work,
-    strip_prefix_reuse_telemetry,
+    native_step_local_route, native_step_needs_route_capture, restrict_prefill_split_telemetry,
+    route_has_decode_path_work, stream_prefill_split_route, strip_prefix_reuse_telemetry,
 };
 pub use stream::{GenerateStream, GenerateStreamPerformance, GenerateStreamState};
 use stream::{
@@ -507,9 +507,10 @@ impl EngineSession {
     fn store_native_request_route(
         &mut self,
         request_id: u64,
-        route: GenerateRouteReport,
+        mut route: GenerateRouteReport,
         keep: &[u64],
     ) {
+        restrict_prefill_split_telemetry(&mut route, Some(request_id));
         if let Some(existing) = self.native_request_routes.get_mut(&request_id) {
             merge_native_route_into(existing, route);
         } else {
@@ -961,10 +962,10 @@ impl EngineSession {
         // full GenerateRouteReport (String clones + BTreeMap) per token was a
         // multi-ms tax on M5 Max Qwen3.5-9B SSE. Skip intermediate pure
         // single-token decode conversion only after a stored route already
-        // carries real decode-path counters. Always capture prefill, first
-        // decode after prefill (bootstrap-only → pipeline/single), multi-token
-        // steps, and the terminal step so cumulative pipeline_steps reach the
-        // harness (2026-07-26 Gemma@2048 froze prefill-only bootstrap).
+        // carries real decode-path counters. Capture first decode after
+        // prefill, multi-token steps, and terminal steps so cumulative
+        // pipeline_steps reach the harness. A singleton physical prefill can
+        // take the fast path, which keeps its split boundary separately.
         let has_terminal_update = outcome.runner_output.as_ref().is_some_and(|output| {
             output
                 .request_updates
@@ -1054,7 +1055,7 @@ impl EngineSession {
         } else {
             let mut report =
                 EngineStepReport::from_native_outcome_without_route(&outcome, metal_dispatch);
-            report.route = native_step_read_deltas(&outcome);
+            report.route = native_step_local_route(&outcome);
             report
         };
         // Memory starvation can terminate a request without executing
@@ -1578,7 +1579,7 @@ impl EngineSession {
     fn apply_native_stream_step(
         &self,
         state: &mut NativeGenerateStreamState,
-        step: EngineStepReport,
+        mut step: EngineStepReport,
     ) -> Result<GenerateStreamEvent, EngineSessionError> {
         // Fast path: borrow the live record and copy only the new token slice.
         // Full `request_report()` clones prompt + full output history + route
@@ -1590,6 +1591,8 @@ impl EngineSession {
         // step may serve other requests or leave this one untouched, and
         // counting those against this request's termination budget
         // spuriously fails long generations in multi-request sessions.
+        let prefill_advanced =
+            progress.processed_prompt_tokens > state.current_report.processed_prompt_tokens;
         let advanced = !progress.delta_tokens.is_empty()
             || progress.processed_prompt_tokens != state.current_report.processed_prompt_tokens
             || progress.terminal;
@@ -1641,6 +1644,12 @@ impl EngineSession {
         if progress.terminal {
             // Restore full token histories once for the terminal Step contract;
             // the following Response event also reloads this final snapshot.
+            if let Some(route) = &mut step.route {
+                restrict_prefill_split_telemetry(
+                    route,
+                    prefill_advanced.then_some(state.request_id),
+                );
+            }
             let mut final_report = self.request_report(state.request_id).ok_or(
                 EngineSessionError::MissingRequestSnapshot {
                     request_id: state.request_id,
@@ -1656,9 +1665,8 @@ impl EngineSession {
             state.current_report = final_report;
         }
 
-        // Intermediate step events do not need the heavy EngineStepReport
-        // (route map / metal dispatch). Keep scalars only via Default unless
-        // this is a terminal transition.
+        // Keep ordinary progress frames scalar-only. A physical prefill step
+        // carries its own request's logical split end for live diagnostics.
         let step_for_event = if progress.terminal {
             step
         } else {
@@ -1675,7 +1683,11 @@ impl EngineSession {
                 preempted_tokens: step.preempted_tokens,
                 cpu_time_us: step.cpu_time_us,
                 runner_time_us: step.runner_time_us,
-                route: None,
+                route: if prefill_advanced {
+                    stream_prefill_split_route(&step, state.request_id)
+                } else {
+                    None
+                },
                 metal_dispatch: None,
                 ..EngineStepReport::default()
             }

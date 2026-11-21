@@ -2558,6 +2558,8 @@ fn native_route_store_defers_a_kept_route_to_a_later_store() {
 
 #[test]
 fn shared_native_step_advances_multiple_stream_states_once() {
+    use ax_engine_core::scheduler::prefill_split_end_route_key;
+
     let core = EngineCore::with_runtime_components(
         KvManagerConfig::validated(CacheGroupId(0), 16, 64),
         DeterministicRunner,
@@ -2583,7 +2585,7 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         input_tokens: vec![token, token + 1],
         input_text: None,
         multimodal_inputs: Default::default(),
-        max_output_tokens: 2,
+        max_output_tokens: 3,
         sampling: Default::default(),
         stop_sequences: Vec::new(),
         metadata: None,
@@ -2603,10 +2605,16 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         Ok(Some(GenerateStreamEvent::Request(_)))
     ));
 
-    let (shared_step, request_ids) = session
+    let (mut shared_step, request_ids) = session
         .step_report_with_request_ids()
         .expect("shared step should succeed");
     assert_eq!(request_ids, vec![1, 2]);
+    let split_key = prefill_split_end_route_key(ax_engine_core::RequestId(1));
+    let route = shared_step.route.get_or_insert_with(Default::default);
+    route.crossover_decisions.insert(split_key.clone(), 2);
+    route
+        .crossover_decisions
+        .insert("other_diagnostic".into(), 9);
     let first_event = session
         .next_native_stream_event_after_step(&mut first, shared_step.clone())
         .expect("first stream should observe the shared step");
@@ -2622,8 +2630,20 @@ fn shared_native_step_advances_multiple_stream_states_once() {
     };
     assert_eq!(first_step.step.step_id, shared_step.step_id);
     assert_eq!(second_step.step.step_id, shared_step.step_id);
+    let first_route = first_step
+        .step
+        .route
+        .expect("prefill progress carries its split end");
+    assert_eq!(
+        first_route.crossover_decisions,
+        [(split_key.clone(), 2)].into()
+    );
+    assert!(
+        second_step.step.route.is_none(),
+        "the sibling has no split end on this step"
+    );
 
-    let next_step = session
+    let mut next_step = session
         .step_report()
         .expect("next engine step should succeed");
     assert_eq!(
@@ -2632,9 +2652,45 @@ fn shared_native_step_advances_multiple_stream_states_once() {
             .step_id
             .and_then(|step_id| step_id.checked_add(1))
     );
-    let mut observed_step = next_step;
+    next_step
+        .route
+        .get_or_insert_with(Default::default)
+        .crossover_decisions
+        .insert(split_key, 2);
+    let GenerateStreamEvent::Step(decode) = session
+        .next_native_stream_event_after_step(&mut first, next_step)
+        .expect("first stream should observe the decode step")
+    else {
+        panic!("the native stream should emit a decode step");
+    };
+    assert_eq!(decode.request.processed_prompt_tokens, 2);
+    assert!(!decode.delta_tokens.is_empty());
+    assert!(
+        decode.step.route.is_none(),
+        "decode must omit a previous split end"
+    );
+    let late_request = 3;
+    session
+        .submit_generate_with_request_id(late_request, request(20))
+        .expect("late prefill should be submitted");
+    let late_split_key = prefill_split_end_route_key(ax_engine_core::RequestId(late_request));
     let mut terminal_event = None;
     for _ in 0..8 {
+        let (mut observed_step, advanced_ids) = session
+            .step_report_with_request_ids()
+            .expect("native stream should reach a terminal step");
+        if advanced_ids.contains(&late_request)
+            && session
+                .request_report(late_request)
+                .is_some_and(|report| report.processed_prompt_tokens == 2 && report.output_len < 2)
+        {
+            let route = observed_step.route.get_or_insert_with(Default::default);
+            route.crossover_decisions.insert(late_split_key.clone(), 2);
+            route
+                .crossover_decisions
+                .insert("other_diagnostic".into(), 9);
+            session.store_native_request_route(1, route.clone(), &advanced_ids);
+        }
         let event = session
             .next_native_stream_event_after_step(&mut first, observed_step)
             .expect("first stream should observe the shared step");
@@ -2646,18 +2702,20 @@ fn shared_native_step_advances_multiple_stream_states_once() {
             terminal_event = Some(event);
             break;
         }
-        observed_step = session
-            .step_report()
-            .expect("native stream should reach a terminal step");
     }
     let terminal_event = terminal_event.expect("first stream should terminate");
-    assert!(matches!(
-        terminal_event,
-        GenerateStreamEvent::Step(ref step)
-            if step.request.state == SessionRequestState::Finished
-                && step.request.prompt_tokens == vec![1, 2]
-                && step.request.output_tokens.len() == 2
-    ));
+    let GenerateStreamEvent::Step(terminal) = terminal_event else {
+        panic!("first stream should emit a terminal step");
+    };
+    assert_eq!(terminal.request.prompt_tokens, vec![1, 2]);
+    assert_eq!(terminal.request.output_tokens.len(), 3);
+    let terminal_route = terminal
+        .step
+        .route
+        .expect("terminal route should be preserved");
+    assert_eq!(terminal_route.decision("other_diagnostic"), Some(9));
+    assert_eq!(terminal_route.decision(&late_split_key), None);
+    assert_eq!(terminal.request.route.decision(&late_split_key), None);
     let response = session
         .next_stream_event(&mut first)
         .expect("terminal response should build")
@@ -2666,7 +2724,8 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         response,
         GenerateStreamEvent::Response(ref response)
             if response.response.prompt_tokens == vec![1, 2]
-                && response.response.output_tokens.len() == 2
+                && response.response.output_tokens.len() == 3
+                && response.response.route.decision(&late_split_key).is_none()
     ));
 }
 
