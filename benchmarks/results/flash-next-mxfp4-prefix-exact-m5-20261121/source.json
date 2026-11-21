@@ -1,0 +1,26 @@
+{
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "macos": "27.2.1",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest_sha256": "06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76",
+  "original_receipt_sha256": "bd3914d8b4aa1a78961e3ca8e47bf6c165362a95a609c7b07d56143388fec94c",
+  "artifacts_sha256": {
+    "run_warm_prefix.py": "ef86c6ede313649e3500bd26817334a39bbba501611be7342e37db683ca9ff10",
+    "cold-samples.jsonl": "1952a91460902833314d435a4c4ff0bf065ec8592202a8045d4c23753f9dc76b",
+    "l1-samples.jsonl": "911f7c10a68d5d23b919c205a1524a4289bbc6a1228c49665d09b48b89131963",
+    "receipt.json.gz": "cd4ea25564cd2d18dce361031e35e9fb9bf8938cc60eb395a14d53fb1f0e3af7"
+  },
+  "frozen_inputs_sha256": {
+    "build.json": "c2bf8344d87cfc99f7ba9cebb8d38f329fe8b8fa886665384619d56bda0724a8",
+    "check_flash_next_native_support.py": "8bfe9ccd2377bde1a26a4f8a691a27376591c78d77bc803ac306b1af4529d7d7",
+    "mixed-corpus.jsonl": "2c0c205d803207df6316dbd0076eef97451a55c80c0413fdc6b3bee5ffef7e9a",
+    "mxfp4-inventory.json": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "qualify_qwen38_flash_next.py": "7044ed1d5552a2e32dd293150a036528cbfb4a77ce16db5356def63a32ad29db",
+    "run_flash_next_lifecycle.py": "94fa8665fee8c38bf3aa91140cb78952f72cf35d687c4f08a28a4564df3bbaef",
+    "run_flash_next_prefill_split_probe.py": "bb90f4b8e42fce0204e7025fb4aaeedb1190b9eba8035cf62d36f3a593079e7f",
+    "run_qwen38_reference_serving.py": "981f5ca1e3f0748a60924b3f51d4caf2007f4fff6e7bfccbe9c4512f57af985e",
+    "split_step_route.py": "7d8a772f1554c72d48e96888dcdbd9c9b1d0926a78a26ef73725022fb93c7ec5"
+  }
+}
