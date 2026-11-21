@@ -111,3 +111,23 @@ prompt coverage and any throughput claim need separate evidence.
 
 The [raw reservation receipt](reservation-observation.json.gz)
 records every streamed token, per-request step time and memory sample.
+
+### Prompt-length boundary controls
+
+The same experiment extended both prompt arrays by one or two tokens
+before their last 64 tokens. Six two-slot trials per length matched the
+corresponding single-request outputs. Each request retained the same
+scheduled prefill sizes as its solo control. In the 2,050-token trials,
+the two-token tail also shared a scheduler step with the decoder.
+
+| Prompt tokens | Scheduled prefill sizes | Exact replies | Shared prefill/decode steps per overlapping trial | Largest per-trial token gap | Peak process footprint |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 2,049 | 2,048 + 1 | 12/12 | 1 | 2.020–2.047 s | 72.208 GiB |
+| 2,050 | 2,048 + 2 | 12/12 | 2 | 1.855–1.884 s | 72.303 GiB |
+
+Both arms kept normal system pressure. Each reply contained 96 output
+tokens. The raw receipts and exact prompts are available for
+[2,049 tokens](holdout-2049-observation.json.gz)
+([prompts](holdout-2049-prompts.jsonl.gz)) and
+[2,050 tokens](holdout-2050-observation.json.gz)
+([prompts](holdout-2050-prompts.jsonl.gz)).
