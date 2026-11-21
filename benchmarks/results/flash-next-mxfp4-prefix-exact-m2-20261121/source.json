@@ -1,0 +1,54 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "macos": "27.2.1",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "build": {
+    "commit": "0f597f13cdbdd532c8d93cbe3f762eb65665784e",
+    "profile": "release-server",
+    "server_sha256": "68cf084d90603f7dbac2116f8e97d9e7998aa398161efcc672952eb0a9c8a08a",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4"
+  },
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "original_corpus_sha256": "2c0c205d803207df6316dbd0076eef97451a55c80c0413fdc6b3bee5ffef7e9a",
+  "original_result_sha256": "14762f923eb86f0e8ac83b65f9e2a0ef2b8ead8a79128644e2ddec0f29b470ca",
+  "observations": {
+    "exact_prompt_reused_tokens": 2048,
+    "exact_ids": 96,
+    "cold_exact_ttft_seconds": 4.526081374962814,
+    "restored_exact_ttft_seconds": 0.04610858391970396,
+    "strict_extension_prompt_tokens": 2112,
+    "strict_extension_reused_tokens": 0,
+    "shared_steps": {
+      "paired": [
+        226,
+        227
+      ],
+      "disconnect": [
+        419,
+        420
+      ]
+    },
+    "cancelled_prefix_output_tokens_verified": 1,
+    "replacement_output_tokens_verified": 96,
+    "drained_snapshots": 7
+  },
+  "artifacts_sha256": {
+    "cold-samples.jsonl": "c63570328abb86b3bcf33b51de775d0e570bb160411f1c7ab1d109b5b6796354",
+    "l1-samples.jsonl": "79c1a035a4355a4d75d5fe195854d443397a57ef51633003960157280e93384d",
+    "result.json.gz": "caf58301c29c24db1e71bc30230fc930e573fde5592ddc3739f9103e6c4c0355",
+    "corpus.jsonl": "8d273c65f2814a9c964ce169ef6d5359471dd7defd4de942fe71dab4e73293e9",
+    "runners.tar.gz": "9bc57b939c1e0c156437d51d417d7156b8690631861ac3bddd716c0470c03565"
+  },
+  "driver_sha256": {
+    "check_flash_next_native_support.py": "8bfe9ccd2377bde1a26a4f8a691a27376591c78d77bc803ac306b1af4529d7d7",
+    "qualify_qwen38_flash_next.py": "7044ed1d5552a2e32dd293150a036528cbfb4a77ce16db5356def63a32ad29db",
+    "run_after_software.py": "4793e808837465776652c766b5383187d04381a2de0eca3891c5f04553d25e9a",
+    "run_flash_next_lifecycle.py": "94fa8665fee8c38bf3aa91140cb78952f72cf35d687c4f08a28a4564df3bbaef",
+    "run_flash_next_prefill_split_probe.py": "1397b6de2ee83924c57176b6b1b0cba4a256a811f5e68dd4406b50280764bef9",
+    "run_qwen38_reference_serving.py": "981f5ca1e3f0748a60924b3f51d4caf2007f4fff6e7bfccbe9c4512f57af985e",
+    "run_warm_prefix.py": "77669f0ab398bab2978e3ce1697c154565445adbd5b305b2f44780e7ee6ddd3d"
+  }
+}
