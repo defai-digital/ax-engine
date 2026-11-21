@@ -1888,8 +1888,8 @@ fn run_production_path_warmup_shapes(
 }
 
 /// Submit one greedy warmup generate request on the worker thread and wait for
-/// the result. Returns `false` when the worker queue is already closed so
-/// callers can stop warming without failing start-up.
+/// the result. Returns `false` when the worker is busy or unavailable so
+/// callers can stop warming without disturbing admitted requests.
 fn run_warmup_generate_request(
     generation_service: &NativeGenerationService,
     model_id: &str,
@@ -1906,7 +1906,7 @@ fn run_warmup_generate_request(
         .saturating_add(offset)
         .saturating_add(nonce);
     if generation_service
-        .submit(move |session| {
+        .submit_when_idle(move |session| {
             let request = GenerateRequest {
                 prefill_hints: Default::default(),
                 model_id,
@@ -1931,8 +1931,7 @@ fn run_warmup_generate_request(
     {
         return false;
     }
-    let _ = rx.recv();
-    true
+    rx.recv().is_ok()
 }
 
 pub(crate) fn unix_now_secs() -> u64 {

@@ -1305,8 +1305,9 @@ curl -s http://127.0.0.1:31418/v1/model/unload -H 'content-type: application/jso
 ```
 
 **Allowlist (`load_mode=add`, and `replace` once more than one model is
-resident):** Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen3-Coder-Next,
-Gemma 4 12B/26B/31B, EmbeddingGemma 300M, and Qwen3-Embedding 0.6B/4B/8B only.
+resident):** Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen 3.8 27B MXFP4 MTP,
+Qwen3-Coder-Next, Gemma 4 12B/26B/31B, EmbeddingGemma 300M/2, and
+Qwen3-Embedding 0.6B/4B/8B only.
 [AutomatosX](https://huggingface.co/AutomatosX) `AX-`-branded package names
 (e.g. `AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`) resolve to the same targets. The
 retained
@@ -1314,6 +1315,11 @@ retained
 architecture signature against the requested id. Directory names, HF config
 hints, and substring matches cannot admit a mismatched model. A sole-model
 `replace` remains the unrestricted historical hot-swap.
+Qwen 3.8 27B shares its architecture signature with Qwen 3.6 27B. Its
+native manifest must also declare MXFP4 feed-forward weights, and its AXQuant
+metadata must identify Qwen 3.8 27B with an MTP sidecar present.
+Post-load warmup runs on idle workers so already-admitted generation stays
+with its streaming or stepwise request owner.
 
 The embedding targets make chat + embeddings co-residency a first-class
 setup: keep a chat model as the default and add an embedding model (or the

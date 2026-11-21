@@ -63,6 +63,7 @@ enum MultiModelTarget {
     Qwen35_9b,
     Qwen36_35b,
     Qwen36_27b,
+    Qwen38_27b,
     Qwen3CoderNext,
     Gemma4_12b,
     Gemma4_26b,
@@ -75,7 +76,7 @@ enum MultiModelTarget {
 }
 
 /// One-line product scope used by every multi-model rejection message.
-const MULTI_MODEL_SCOPE: &str = "Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen3-Coder-Next, \
+const MULTI_MODEL_SCOPE: &str = "Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen 3.8 27B MXFP4 MTP, Qwen3-Coder-Next, \
      Gemma 4 12B/26B/31B, EmbeddingGemma 300M/2, and Qwen3-Embedding 0.6B/4B/8B";
 const MULTI_MODEL_PREFILL_ISOLATION_ENV: &str = "AX_SERVER_MULTI_MODEL_PREFILL_ISOLATION";
 // Keep the no-contention prefill geometry large enough for throughput. The
@@ -106,6 +107,7 @@ impl MultiModelTarget {
             Self::Qwen35_9b => "qwen3.5-9b",
             Self::Qwen36_35b => "qwen3.6-35b",
             Self::Qwen36_27b => "qwen3.6-27b",
+            Self::Qwen38_27b => "qwen3.8-27b",
             Self::Qwen3CoderNext => "qwen3-coder-next",
             Self::Gemma4_12b => "gemma-4-12b",
             Self::Gemma4_26b => "gemma-4-26b",
@@ -132,6 +134,18 @@ struct MultiModelManifestIdentity {
     vocab_size: u32,
     #[serde(default)]
     moe: MultiModelMoeIdentity,
+}
+
+#[derive(Deserialize)]
+struct AxqPackIdentity {
+    source_model: AxqSourceModel,
+    #[serde(default)]
+    mtp_present: bool,
+}
+
+#[derive(Deserialize)]
+struct AxqSourceModel {
+    model_id: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1272,6 +1286,14 @@ fn multi_model_target_for_label(label: &str) -> Option<MultiModelTarget> {
         Some(MultiModelTarget::Qwen36_35b)
     } else if target_label_matches(label, &["qwen3-6-27b", "qwen36-27b"]) {
         Some(MultiModelTarget::Qwen36_27b)
+    } else if matches!(
+        label,
+        "qwen3-8-27b"
+            | "qwen3-8-27b-axq"
+            | "qwen3-8-27b-axq-mxfp4"
+            | "qwen3-8-27b-mlx-axq-mxfp4-mtp"
+    ) {
+        Some(MultiModelTarget::Qwen38_27b)
     } else if target_label_matches(label, &["qwen3-coder-next", "qwen3-next-80b"]) {
         Some(MultiModelTarget::Qwen3CoderNext)
     } else if target_label_matches(label, &["gemma-4-12b", "gemma4-12b"]) {
@@ -1339,7 +1361,46 @@ fn multi_model_artifact_target(
                 format!("cannot parse {}: {error}", manifest_path.display()),
             )
         })?;
-    Ok(multi_model_target_from_manifest(&identity))
+    let target = multi_model_target_from_manifest(&identity);
+    if target != Some(MultiModelTarget::Qwen36_27b) {
+        return Ok(target);
+    }
+
+    // Both 27B generations use the same dense-hybrid geometry. Check product
+    // provenance before treating that signature as Qwen 3.6.
+    let pack = std::fs::read(model_path.join("axquant_manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AxqPackIdentity>(&bytes).ok());
+    if let Some(pack) = pack
+        && pack
+            .source_model
+            .model_id
+            .eq_ignore_ascii_case("Qwen/Qwen3.8-27B")
+    {
+        let mxfp4 = serde_json::from_slice::<ax_engine_core::NativeModelManifest>(&bytes)
+            .ok()
+            .is_some_and(|manifest| {
+                use ax_engine_core::NativeTensorRole;
+                let mut down = manifest
+                    .tensors
+                    .iter()
+                    .filter(|tensor| tensor.role == NativeTensorRole::FfnDown);
+                let mut layers = std::collections::BTreeSet::new();
+                down.all(|tensor| {
+                    tensor
+                        .layer_index
+                        .is_some_and(|layer| layer < identity.layer_count && layers.insert(layer))
+                        && tensor.quantization.as_ref().is_some_and(|quant| {
+                            quant.mode == "mxfp4" && quant.bits == 4 && quant.group_size == 32
+                        })
+                }) && layers.len() == identity.layer_count as usize
+            });
+        return Ok(
+            (mxfp4 && pack.mtp_present && model_path.join("mtp.safetensors").is_file())
+                .then_some(MultiModelTarget::Qwen38_27b),
+        );
+    }
+    Ok(target)
 }
 
 fn multi_model_target_from_manifest(
@@ -1603,6 +1664,8 @@ mod tests {
             "mlx-community/Qwen3.5-9B-MLX-4bit",
             "qwen3.6-35b-a3b",
             "mlx-community/Qwen3.6-27B-6bit",
+            "qwen3.8-27b:axq",
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
             "gemma-4-12b-it",
             "gemma-4-26b-a4b-it",
             "gemma-4-31b-it",
@@ -1639,6 +1702,8 @@ mod tests {
             "prefix-qwen3.5-9b",
             "prefix-qwen3.6-35b",
             "qwen3.65-35b",
+            "qwen3.8-27b:axq-6bit",
+            "qwen3.8-flash-next:axq",
             "qwen3-coder-nextgen",
             "qwen3-embedding-1b",
             "embeddinggemma2-300m",
@@ -1712,6 +1777,63 @@ mod tests {
             .expect_err("an unknown architecture signature must fail closed");
         assert_eq!(unknown.1.0.error.code.as_deref(), Some("unsupported_model"));
         std::fs::remove_dir_all(dir).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn qwen38_27b_multimodel_requires_its_own_mxfp4_mtp_pack() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-qwen38-multi-model-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be valid")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).expect("artifact directory");
+        let mut manifest = serde_json::json!({
+            "schema_version": "ax.native_model.v1",
+            "model_family": "qwen3_5",
+            "tensor_format": "safetensors",
+            "layer_count": 64,
+            "hidden_size": 5120,
+            "intermediate_size": 17408,
+            "attention_head_count": 24,
+            "attention_head_dim": 256,
+            "kv_head_count": 4,
+            "vocab_size": 248320,
+            "tensors": (0..64).map(|layer| serde_json::json!({
+                "name": format!("layer.{layer}.down"),
+                "role": "ffn_down",
+                "layer_index": layer,
+                "dtype": "u32",
+                "shape": [5120, 2176],
+                "quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32},
+                "file": "model.safetensors",
+                "offset_bytes": 0,
+                "length_bytes": 32
+            })).collect::<Vec<_>>()
+        });
+        let write_json = |name: &str, value: &serde_json::Value| {
+            std::fs::write(dir.join(name), value.to_string()).expect("write pack metadata");
+        };
+        write_json("model-manifest.json", &manifest);
+        write_json(
+            "axquant_manifest.json",
+            &serde_json::json!({
+                "mtp_present": true,
+                "source_model": {"model_id": "Qwen/Qwen3.8-27B"}
+            }),
+        );
+        assert!(validate_multi_model_target("qwen3.8-27b:axq", &dir).is_err());
+        std::fs::File::create(dir.join("mtp.safetensors")).expect("write sidecar");
+        assert!(validate_multi_model_target("qwen3.8-27b:axq", &dir).is_ok());
+        assert!(validate_multi_model_target("qwen3.6-27b", &dir).is_err());
+
+        manifest["tensors"][0]["quantization"]["mode"] = "affine".into();
+        write_json("model-manifest.json", &manifest);
+        assert!(validate_multi_model_target("qwen3.8-27b:axq", &dir).is_err());
+        assert!(validate_multi_model_target("qwen3.6-27b", &dir).is_err());
+        std::fs::remove_dir_all(dir).expect("clean artifact directory");
     }
 
     #[test]
