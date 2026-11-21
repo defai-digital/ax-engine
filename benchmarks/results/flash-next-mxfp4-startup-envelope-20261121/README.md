@@ -16,6 +16,26 @@ bound to the published MXFP4 MTP revision
 | [Mac mini M4 Pro 64 GB control](qwen27b-m4-control.json) | The same candidate binary serves the pinned 27B MXFP4 pack with 16,384 advertised tokens. The Flash Next profile is absent. |
 | [Model replacement](replacement-control.json) | A failed load restores the Flash Next session and its 32,768-token budget. A successful replacement with 27B uses 16,384 tokens. The reverse replacement is refused by the memory preflight at an estimated 141.9 GiB. |
 
+## Replacement with disk-served table accounting
+
+The follow-up `release-server` build
+(`0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5`)
+ran on the same M5 Max, OS, Rust and MLX stack. The pinned Flash Next pack and
+the pinned 27B MXFP4 pack (`b2c5354f779e430d0c1733143db848a72b71c16e`)
+were installed on the internal SSD. The return path used a Hub-shaped
+snapshot with 49 symlinked files backed by the same pinned Flash Next pack.
+Its native manifest was produced by the successful loader.
+
+- [Two-way replacement](replacement-after.json) changes the budget from
+  32,768 to 16,384 and back to 32,768. Returning to Flash Next took 48.0 s.
+  After rollback and after returning, an overlapping short request received
+  HTTP 429. The 27B generation accepted the overlapping short request.
+  The recovered Flash Next completion has identical text, finish reason,
+  and token counts.
+- [Discount disabled](discount-disabled.json) retains the 141.9 GiB
+  projected estimate, rejects the replacement with HTTP 422, and continues
+  serving the existing 27B session at 16,384 tokens.
+
 The boundary probe sends pre-tokenized synthetic input with a one-token output
 budget. Readiness and request timings are diagnostic observations. The
 [signed v7.9.0 direct-default record](../qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)

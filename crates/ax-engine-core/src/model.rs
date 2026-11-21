@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,6 +29,23 @@ pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
 /// 2-bit opt-in. MXFP8 pack admission and dedicated-path validation remain
 /// pending.
 pub const AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL";
+pub const AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM_ENV: &str = "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM";
+
+/// Price the disk-served n-gram table consistently in session and load admission.
+/// `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM=0` restores the full weight estimate.
+pub fn expert_stream_discount_ngram_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM_ENV)
+            .as_deref()
+            .map_or(true, |value| {
+                let value = value.trim_ascii();
+                ["1", "true", "yes", "on"]
+                    .iter()
+                    .any(|truthy| value.eq_ignore_ascii_case(truthy))
+            })
+    })
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -435,9 +453,7 @@ impl NativeTensorRole {
 /// Tensor names whose weights must not be opened or eval'd at load.
 pub fn tensor_names_skipped_at_load(manifest: &NativeModelManifest) -> Vec<String> {
     manifest
-        .tensors
-        .iter()
-        .filter(|tensor| tensor.role.skip_eval_at_load(manifest))
+        .tensors_skipped_at_load()
         .map(|tensor| tensor.name.clone())
         .collect()
 }
@@ -1282,6 +1298,13 @@ pub struct NativeModelArtifacts {
 }
 
 impl NativeModelManifest {
+    /// Tensors the loader leaves on disk.
+    pub fn tensors_skipped_at_load(&self) -> impl Iterator<Item = &NativeTensorSpec> {
+        self.tensors
+            .iter()
+            .filter(|tensor| tensor.role.skip_eval_at_load(self))
+    }
+
     /// Generation paradigm derived from this manifest (ADR-038).
     pub fn generation_kind(&self) -> crate::generation::GenerationKind {
         crate::generation::GenerationKind::from_manifest(self)

@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -5,6 +6,10 @@ use std::time::Duration;
 
 use ax_engine_core::memory_budget::{
     ManifestKvGeometry, estimated_footprint_bytes, estimated_kv_pool_bytes,
+};
+use ax_engine_core::{
+    AX_NATIVE_MODEL_MANIFEST_FILE, NativeModelArtifacts, NativeTensorFormat, NativeTensorSpec,
+    expert_stream_discount_ngram_enabled,
 };
 use ax_engine_sdk::{EngineSessionConfig, KvManagerConfig};
 use axum::Json;
@@ -264,8 +269,26 @@ pub(crate) async fn load_model(
         let outgoing = state.snapshot();
         ensure_no_active_stepwise(&outgoing.generation_service).await?;
     }
-    let (live, mut new_config) =
-        validate_load_preflight(&state, &model_id, &model_path, load_mode, load_policy)?;
+    let preflight_state = state.clone();
+    let preflight_model_id = model_id.clone();
+    let (live, mut new_config, loading_guard) = tokio::task::spawn_blocking(move || {
+        let (live, config) = validate_load_preflight(
+            &preflight_state,
+            &preflight_model_id,
+            &model_path,
+            load_mode,
+            load_policy,
+        )?;
+        Ok::<_, HttpErrorResponse>((live, config, loading_guard))
+    })
+    .await
+    .map_err(|error| {
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            format!("model load preflight failed: {error}"),
+        )
+    })??;
     let resident_count = state.model_ids().len();
     let multi_model_after_load = match load_mode {
         LoadModelMode::Add => resident_count.saturating_add(1) > 1,
@@ -802,22 +825,114 @@ fn kv_pool_tokens(kv_config: &KvManagerConfig) -> u64 {
     u64::from(kv_config.total_blocks).saturating_mul(u64::from(kv_config.block_size_tokens))
 }
 
-/// Sum of `*.safetensors` file sizes directly in the artifacts dir; `None`
-/// when there are none (unknown layout — the preflight then skips rather
-/// than guessing).
-pub(crate) fn model_weight_bytes(dir: &std::path::Path) -> Option<u64> {
+/// Shard sizes directly in the artifacts directory, following Hub snapshot links.
+fn model_weight_shards(dir: &std::path::Path) -> Option<BTreeMap<PathBuf, u64>> {
     let entries = std::fs::read_dir(dir).ok()?;
-    let mut total = 0u64;
+    let mut shards = BTreeMap::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("safetensors")
-            && let Ok(metadata) = entry.metadata()
+            && let Ok(metadata) = path.metadata()
             && metadata.is_file()
         {
-            total = total.saturating_add(metadata.len());
+            shards.insert(PathBuf::from(entry.file_name()), metadata.len());
         }
     }
+    Some(shards)
+}
+
+pub(crate) fn model_weight_bytes(dir: &std::path::Path) -> Option<u64> {
+    total_weight_bytes(&model_weight_shards(dir)?)
+}
+
+fn total_weight_bytes(shards: &BTreeMap<PathBuf, u64>) -> Option<u64> {
+    let total = shards.values().copied().fold(0, u64::saturating_add);
     (total > 0).then_some(total)
+}
+
+fn resident_model_weight_bytes(
+    dir: &std::path::Path,
+    geometry: Option<&ManifestKvGeometry>,
+) -> Option<u64> {
+    let shards = model_weight_shards(dir)?;
+    let total = total_weight_bytes(&shards)?;
+    if !expert_stream_discount_ngram_enabled() {
+        return Some(total);
+    }
+    let disk_table_bytes = disk_served_qwen4_exp_bytes(dir, geometry, &shards).unwrap_or(0);
+    Some(
+        total
+            .checked_sub(disk_table_bytes)
+            .filter(|bytes| *bytes > 0)
+            .unwrap_or(total),
+    )
+}
+
+fn disk_served_qwen4_exp_bytes(
+    dir: &std::path::Path,
+    geometry: Option<&ManifestKvGeometry>,
+    shards: &BTreeMap<PathBuf, u64>,
+) -> Option<u64> {
+    let artifacts = match geometry.map(ManifestKvGeometry::model_family) {
+        Some("qwen4_exp") => NativeModelArtifacts::from_dir(dir).ok()?,
+        // The Qwen4Exp conversion reads tensor headers. Keep preflight
+        // read-only when a raw snapshot has no persisted native manifest.
+        None if matches!(
+            dir.join(AX_NATIVE_MODEL_MANIFEST_FILE).try_exists(),
+            Ok(false)
+        ) =>
+        {
+            let config = std::fs::read(dir.join("config.json")).ok()?;
+            let config: serde_json::Value = serde_json::from_slice(&config).ok()?;
+            let model_type = config.get("model_type")?.as_str()?;
+            if !ax_engine_core::convert::is_qwen4_exp_family(model_type) {
+                return None;
+            }
+            let manifest = ax_engine_core::convert::convert_hf_model_dir(dir).ok()?;
+            NativeModelArtifacts::from_manifest_and_root(dir.to_path_buf(), manifest).ok()?
+        }
+        _ => return None,
+    };
+    let manifest = artifacts.manifest();
+    if manifest.model_family != "qwen4_exp"
+        || manifest.tensor_format != NativeTensorFormat::Safetensors
+    {
+        return None;
+    }
+    disk_bytes_within_weight_shards(
+        &manifest.tensors,
+        manifest.tensors_skipped_at_load(),
+        shards,
+    )
+}
+
+fn disk_bytes_within_weight_shards<'a>(
+    tensors: &[NativeTensorSpec],
+    skipped: impl Iterator<Item = &'a NativeTensorSpec>,
+    shards: &BTreeMap<PathBuf, u64>,
+) -> Option<u64> {
+    let skipped: Vec<_> = skipped
+        .filter(|tensor| shards.contains_key(&tensor.file))
+        .collect();
+    let skipped_shards: BTreeSet<_> = skipped.iter().map(|tensor| &tensor.file).collect();
+    let mut ranges: Vec<_> = tensors
+        .iter()
+        .filter(|tensor| skipped_shards.contains(&tensor.file))
+        .collect();
+    ranges.sort_unstable_by_key(|&tensor| (&tensor.file, tensor.offset_bytes));
+    // A shard with ambiguous ranges retains its full charge.
+    if ranges.windows(2).any(|pair| {
+        pair[0].file == pair[1].file
+            && pair[0].offset_bytes.saturating_add(pair[0].length_bytes) > pair[1].offset_bytes
+    }) {
+        return None;
+    }
+    Some(
+        skipped
+            .iter()
+            .map(|tensor| tensor.length_bytes)
+            .fold(0, u64::saturating_add),
+    )
 }
 
 /// Peak resident estimate for the load: `add` keeps every resident model;
@@ -964,12 +1079,15 @@ fn validate_load_memory_preflight(
     if budget == 0 {
         return Ok(());
     }
-    let Some(incoming_weights) = model_weight_bytes(model_path) else {
+    let incoming_geometry = manifest_kv_geometry(model_path);
+    let Some(incoming_weights) =
+        resident_model_weight_bytes(model_path, incoming_geometry.as_ref())
+    else {
         return Ok(());
     };
     let incoming_pool = kv_pool_tokens(incoming_kv_config);
-    let incoming_kv = manifest_kv_geometry(model_path)
-        .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
+    let incoming_kv =
+        incoming_geometry.and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
     let incoming = estimated_footprint_bytes(incoming_weights, incoming_kv);
 
     let outgoing_model_id = state.snapshot().model_id;
@@ -979,12 +1097,13 @@ fn validate_load_memory_preflight(
         let Some(dir) = live.session_config.mlx_model_artifacts_dir() else {
             continue;
         };
-        let Some(weights) = model_weight_bytes(dir) else {
+        let geometry = manifest_kv_geometry(dir);
+        let Some(weights) = resident_model_weight_bytes(dir, geometry.as_ref()) else {
             continue;
         };
         // A resident manifest that cannot be read keeps the legacy flat
         // floor — someone else's load must never fail on it.
-        let resident_kv = manifest_kv_geometry(dir).and_then(|geometry| {
+        let resident_kv = geometry.and_then(|geometry| {
             estimated_kv_pool_bytes(&geometry, kv_pool_tokens(&live.session_config.kv_config))
         });
         let footprint = estimated_footprint_bytes(weights, resident_kv);
@@ -2084,7 +2203,52 @@ mod tests {
             .expect("weight shard should write");
         std::fs::write(dir.join("tokenizer.json"), b"{}").expect("tokenizer should write");
         assert_eq!(model_weight_bytes(&dir), Some(1536));
+        assert_eq!(resident_model_weight_bytes(&dir, None), Some(1536));
         std::fs::remove_dir_all(&dir).expect("test dir should clean up");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn weight_bytes_follows_hub_snapshot_shard_links() {
+        let dir =
+            std::env::temp_dir().join(format!("ax-model-symlink-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("test dir should create");
+        std::fs::write(dir.join("blob"), vec![0u8; 512]).expect("blob should write");
+        std::os::unix::fs::symlink("blob", dir.join("model-00001.safetensors"))
+            .expect("snapshot link should create");
+        assert_eq!(resident_model_weight_bytes(&dir, None), Some(512));
+        std::fs::remove_dir_all(&dir).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn disk_weight_discount_is_limited_to_counted_disjoint_ranges() {
+        let tensor = |file: &str, role: &str, offset_bytes: u64| {
+            serde_json::from_value::<NativeTensorSpec>(serde_json::json!({
+                "name": format!("{role}-{offset_bytes}"),
+                "role": role,
+                "file": file,
+                "shape": [16],
+                "dtype": "u32",
+                "offset_bytes": offset_bytes,
+                "length_bytes": 64,
+            }))
+            .expect("tensor spec should parse")
+        };
+        let mut tensors = [
+            tensor("model.safetensors", "ngram_embedding", 128),
+            tensor("model.safetensors", "other", 192),
+            tensor("unpriced.safetensors", "ngram_embedding", 128),
+        ];
+        let shards = BTreeMap::from([(PathBuf::from("model.safetensors"), 512)]);
+        let discounted = |specs: &[NativeTensorSpec]| {
+            let table = specs
+                .iter()
+                .filter(|tensor| tensor.role == ax_engine_core::NativeTensorRole::NgramEmbedding);
+            disk_bytes_within_weight_shards(specs, table, &shards)
+        };
+        assert_eq!(discounted(&tensors), Some(64));
+        tensors[1].offset_bytes -= 1;
+        assert_eq!(discounted(&tensors), None);
     }
 
     #[test]
@@ -2094,7 +2258,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).expect("test dir should create");
-        assert_eq!(model_weight_bytes(&dir), None);
+        assert_eq!(resident_model_weight_bytes(&dir, None), None);
         std::fs::remove_dir_all(&dir).expect("test dir should clean up");
     }
 

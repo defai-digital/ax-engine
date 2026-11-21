@@ -1012,7 +1012,9 @@ fn direct_env_var_names(source: &str) -> std::collections::BTreeSet<String> {
 #[test]
 fn numerics_switch_table_covers_every_fastpath_env() {
     let source = include_str!("../fastpath.rs");
-    let owned = quoted_fastpath_env_names(source);
+    let mut owned = quoted_fastpath_env_names(source);
+    // The model loader and server share the residency discount policy.
+    owned.insert(ax_engine_core::AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM_ENV.to_string());
     let mut table: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut tokens = std::collections::BTreeSet::new();
     for row in NUMERICS_SWITCH_TABLE {
@@ -1069,7 +1071,7 @@ fn numerics_switch_table_covers_every_fastpath_env() {
     let missing: Vec<_> = owned.difference(&table).cloned().collect();
     let extra: Vec<_> = table.difference(&owned).cloned().collect();
     assert!(missing.is_empty(), "unclassified fastpath env: {missing:?}");
-    assert!(extra.is_empty(), "table names absent from fastpath.rs: {extra:?}");
+    assert!(extra.is_empty(), "table names absent from runtime controls: {extra:?}");
     let direct = direct_env_var_names(source);
     let unaudited: Vec<_> = direct.difference(&table).cloned().collect();
     assert!(unaudited.is_empty(), "env::var name missing from the table: {unaudited:?}");

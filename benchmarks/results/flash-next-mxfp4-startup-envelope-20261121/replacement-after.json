@@ -1,0 +1,189 @@
+{
+  "initial": {
+    "model_id": "qwen3.8-flash-next",
+    "context_length": 32768
+  },
+  "baseline": {
+    "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 30,
+      "completion_tokens": 37,
+      "total_tokens": 67,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 30,
+        "prefill_time_us": 302997,
+        "decode_tokens": 36,
+        "decode_time_us": 739342
+      }
+    }
+  },
+  "invalid_replacement": {
+    "status": 422,
+    "seconds": 46.536,
+    "payload": {
+      "error": {
+        "type": "invalid_request_error",
+        "code": "load_failed",
+        "param": null,
+        "message": "failed to load model: failed to auto-generate native model manifest for [artifacts]: unsupported model type unsupported_test_fixture; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, embedding_gemma2, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl, hy_v3; previous model qwen3.8-flash-next was restored"
+      }
+    }
+  },
+  "recovered": {
+    "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 30,
+      "completion_tokens": 37,
+      "total_tokens": 67,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 30,
+        "prefill_time_us": 288856,
+        "decode_tokens": 36,
+        "decode_time_us": 738965
+      }
+    }
+  },
+  "dense_replacement": {
+    "status": 200,
+    "seconds": 21.419,
+    "payload": {
+      "model_id": "qwen3.8-27b",
+      "state": "loaded",
+      "context_length": 16384,
+      "load_policy": "memory_constrained",
+      "load_mode": "replace",
+      "default_model_id": "qwen3.8-27b"
+    }
+  },
+  "dense_completion": {
+    "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 30,
+      "completion_tokens": 37,
+      "total_tokens": 67,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 30,
+        "prefill_time_us": 200329,
+        "decode_tokens": 36,
+        "decode_time_us": 282876
+      }
+    }
+  },
+  "return_to_flash": {
+    "status": 200,
+    "seconds": 47.982,
+    "payload": {
+      "model_id": "qwen3.8-flash-next",
+      "state": "loaded",
+      "context_length": 32768,
+      "load_policy": "memory_constrained",
+      "load_mode": "replace",
+      "default_model_id": "qwen3.8-flash-next"
+    }
+  },
+  "last_seen": {
+    "model_id": "qwen3.8-flash-next",
+    "context_length": 32768
+  },
+  "return_artifacts": {
+    "manifest_before": false,
+    "manifest_after": true
+  },
+  "rollback_admission": {
+    "active": 1.0,
+    "second_request": {
+      "status": 429,
+      "seconds": 0.013,
+      "payload": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "concurrency_limit",
+          "param": null,
+          "message": "server is at its maximum concurrent engine-job limit; retry shortly"
+        }
+      }
+    },
+    "drained": {
+      "ax_engine_jobs_in_flight": 0.0,
+      "ax_engine_generation_jobs_pending": 0.0,
+      "ax_engine_generation_commands_queued": 0.0,
+      "ax_engine_generation_active_streams": 0.0,
+      "ax_engine_generation_buffered_stream_events": 0.0
+    }
+  },
+  "dense_admission": {
+    "active": 1.0,
+    "second_request": {
+      "status": 200,
+      "seconds": 0.828,
+      "payload": {
+        "id": "chatcmpl-9",
+        "object": "chat.completion",
+        "created": 1795246729,
+        "model": "qwen3.8-27b",
+        "system_fingerprint": null,
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 30,
+          "completion_tokens": 37,
+          "total_tokens": 67,
+          "prompt_tokens_details": {
+            "cached_tokens": 30
+          },
+          "ax_engine": {
+            "metrics_version": 1,
+            "prefill_tokens": 0,
+            "prefill_time_us": 57314,
+            "decode_tokens": 36,
+            "decode_time_us": 699536
+          }
+        }
+      }
+    },
+    "drained": {
+      "ax_engine_jobs_in_flight": 0.0,
+      "ax_engine_generation_jobs_pending": 0.0,
+      "ax_engine_generation_commands_queued": 0.0,
+      "ax_engine_generation_active_streams": 0.0,
+      "ax_engine_generation_buffered_stream_events": 0.0
+    }
+  },
+  "restored_admission": {
+    "active": 1.0,
+    "second_request": {
+      "status": 429,
+      "seconds": 0.014,
+      "payload": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "concurrency_limit",
+          "param": null,
+          "message": "server is at its maximum concurrent engine-job limit; retry shortly"
+        }
+      }
+    },
+    "drained": {
+      "ax_engine_jobs_in_flight": 0.0,
+      "ax_engine_generation_jobs_pending": 0.0,
+      "ax_engine_generation_commands_queued": 0.0,
+      "ax_engine_generation_active_streams": 0.0,
+      "ax_engine_generation_buffered_stream_events": 0.0
+    }
+  },
+  "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5"
+}

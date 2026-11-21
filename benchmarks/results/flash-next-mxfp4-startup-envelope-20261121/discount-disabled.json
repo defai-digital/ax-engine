@@ -1,0 +1,20 @@
+{
+  "disabled_discount": {
+    "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM": "0"
+  },
+  "response": {
+    "status": 422,
+    "seconds": 0.016,
+    "payload": {
+      "error": {
+        "type": "invalid_request_error",
+        "code": "insufficient_memory",
+        "param": null,
+        "message": "projected peak device allocation 141.9 GiB (measured MLX active resident baseline 21.9 GiB + incoming model 139.8 GiB estimated (incl. 0.8 GiB KV pool)) exceeds the Metal working-set budget 107.5 GiB; unload a model first, use load_policy=memory_constrained for replace, or set AX_SERVER_LOAD_MEMORY_PREFLIGHT=off to override"
+      }
+    }
+  },
+  "retained_model_id": "qwen3.8-27b",
+  "retained_context_length": 16384,
+  "server_sha256": "0a7c6049a5af88ed1ebdfce02c648416349b2b1eed301381cb6eff5b310e6af5"
+}

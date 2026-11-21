@@ -105,6 +105,12 @@ pub struct ManifestKvGeometry {
     diffusion: NativeDiffusionConfig,
 }
 
+impl ManifestKvGeometry {
+    pub fn model_family(&self) -> &str {
+        &self.model_family
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ManifestKvTensorGeometry {
     #[serde(default)]

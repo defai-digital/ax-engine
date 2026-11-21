@@ -2079,20 +2079,7 @@ env_flag!(
     "AX_MLX_TREE_VERIFY"
 );
 
-env_flag_default_on!(
-    /// `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM` - price Flash Next Auto expert
-    /// streaming on the bytes the loader actually makes resident, excluding
-    /// the disk-served n-gram table (about 53.6 GiB of the 132 GB pinned
-    /// MXFP4 pack; about 69.5 GiB stays resident). A 128 GiB host then loads
-    /// the pack resident instead of paging; a host where even the discounted
-    /// estimate does not fit still pages.
-    ///
-    /// **Default: ON** since ADR-044 admitted the M5 Max 128 GiB single-stream
-    /// resident tier (`AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM=0` restores pricing
-    /// on the whole file set).
-    expert_stream_discount_ngram_enabled,
-    "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM"
-);
+pub(crate) use ax_engine_core::expert_stream_discount_ngram_enabled;
 
 env_flag_default_on!(
     /// `AX_MLX_MTP_QUANTIZED_HEAD_DRAFT` - requantize a quantized target

@@ -5996,6 +5996,23 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             "{model_type}: n-gram shard must map to NgramEmbedding"
         );
         let skipped = crate::tensor_names_skipped_at_load(&manifest);
+        let disk_bytes: u64 = manifest
+            .tensors_skipped_at_load()
+            .map(|t| t.length_bytes)
+            .sum();
+        assert!(disk_bytes > 0, "{model_type}");
+        assert_eq!(
+            disk_bytes,
+            manifest
+                .tensors
+                .iter()
+                .filter(|tensor| tensor.role == NativeTensorRole::NgramEmbedding)
+                .map(|tensor| tensor.length_bytes)
+                .sum::<u64>(),
+        );
+        let mut undiscounted = manifest.clone();
+        undiscounted.qwen4_exp.never_eval_ngram_at_load = false;
+        assert_eq!(undiscounted.tensors_skipped_at_load().count(), 0);
         assert!(
             skipped
                 .iter()
