@@ -8,6 +8,7 @@ use crate::generate::{
     decode_step,
 };
 use crate::model::ModelConfig;
+use crate::weights::ModelWeights;
 
 #[test]
 #[ignore = "requires generated or pinned Flash Next weights and MLX"]
@@ -43,9 +44,6 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
             4,
         )
     };
-    let (&last, prefix) = prompt.split_last().unwrap();
-    assert!(chunk_size > 1 && prefix.len() > chunk_size);
-    assert!(!sibling_prompt.is_empty());
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
     assert_eq!(cfg.model_family, "qwen4_exp");
     assert!(!crate::fastpath::skip_cache_only_split_for_family(
@@ -55,17 +53,50 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
     assert!(!crate::fastpath::cache_only_chunk_eval_enabled());
     let weights = crate::weights::load_weights(&artifacts).unwrap();
     assert!(weights.expert_stream.is_none());
+    if real_pack.is_some() {
+        let logical_len = match prompt.len() {
+            2049 | 2050 => 2048,
+            len => len,
+        };
+        let (logical_prompt, tail) = prompt.split_at(logical_len);
+        assert_prefill_interleave(
+            &cfg,
+            &weights,
+            logical_prompt,
+            tail,
+            &sibling_prompt,
+            chunk_size,
+        );
+    } else {
+        for tail in [&[][..], &[12][..], &[12, 13][..]] {
+            assert_prefill_interleave(&cfg, &weights, &prompt, tail, &sibling_prompt, chunk_size);
+        }
+    }
+}
+
+fn assert_prefill_interleave(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    logical_prompt: &[u32],
+    tail: &[u32],
+    sibling_prompt: &[u32],
+    chunk_size: usize,
+) {
+    let (&last, prefix) = logical_prompt.split_last().unwrap();
+    assert!(chunk_size > 1 && prefix.len() > chunk_size);
+    assert!(!sibling_prompt.is_empty());
+    let prompt_len = logical_prompt.len() + tail.len();
     let sampling = MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]);
-    let chunk_count = prefix.chunks(chunk_size).len();
+    let sibling_steps = prefix.chunks(chunk_size).len() + usize::from(!tail.is_empty());
 
     let decode = |cache: &mut MlxKVCache, rng: &mut Xorshift64, token| {
-        decode_step(&cfg, &weights, token, cache, sampling, rng)
+        decode_step(cfg, weights, token, cache, sampling, rng)
     };
     let prefill_sibling = |cache: &mut MlxKVCache, rng: &mut Xorshift64| {
         chunked_prefill(
-            &cfg,
-            &weights,
-            &sibling_prompt,
+            cfg,
+            weights,
+            sibling_prompt,
             cache,
             chunk_size,
             sampling,
@@ -76,7 +107,7 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
     let mut sibling_cache = MlxKVCache::new_contiguous(cfg.layer_count);
     let mut sibling_rng = Xorshift64::new(42);
     let mut expected_sibling = vec![prefill_sibling(&mut sibling_cache, &mut sibling_rng)];
-    for _ in 0..chunk_count {
+    for _ in 0..sibling_steps {
         expected_sibling.push(decode(
             &mut sibling_cache,
             &mut sibling_rng,
@@ -88,16 +119,37 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
 
     let mut baseline = MlxKVCache::new_contiguous(cfg.layer_count);
     let mut rng = Xorshift64::new(42);
-    let first = chunked_prefill(
-        &cfg,
-        &weights,
-        &prompt,
-        &mut baseline,
-        chunk_size,
-        sampling,
-        &mut rng,
-    );
-    assert_eq!(baseline.seq_len(), prompt.len());
+    let first = if tail.is_empty() {
+        chunked_prefill(
+            cfg,
+            weights,
+            logical_prompt,
+            &mut baseline,
+            chunk_size,
+            sampling,
+            &mut rng,
+        )
+    } else {
+        chunked_prefill_cache_only(
+            cfg,
+            weights,
+            logical_prompt,
+            &mut baseline,
+            chunk_size,
+            CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+            CacheOnlyBarrier::AsyncSubmit,
+        );
+        chunked_prefill(
+            cfg,
+            weights,
+            tail,
+            &mut baseline,
+            chunk_size,
+            sampling,
+            &mut rng,
+        )
+    };
+    assert_eq!(baseline.seq_len(), prompt_len);
     let expected_prefill_state = baseline.serialize_to_bytes();
     let mut expected = [first; 8];
     for index in 1..expected.len() {
@@ -115,25 +167,35 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
         let mut sibling_token =
             with_sibling.then(|| prefill_sibling(&mut sibling, &mut sibling_rng));
         let mut sibling_matched = sibling_token.is_none_or(|token| token == expected_sibling[0]);
-        for (index, chunk) in prefix.chunks(chunk_size).enumerate() {
+        let cache_only_singleton = (!tail.is_empty()).then(|| std::slice::from_ref(&last));
+        for (index, chunk) in prefix
+            .chunks(chunk_size)
+            .chain(cache_only_singleton)
+            .enumerate()
+        {
             chunked_prefill_cache_only(
-                &cfg,
-                &weights,
+                cfg,
+                weights,
                 chunk,
                 &mut cache,
                 chunk_size,
                 CacheOnlyPrefillLayout::Batched,
                 CacheOnlyBarrier::Blocking,
             );
-            // The final prefix chunk still leaves a separate prompt singleton.
             if let Some(token) = sibling_token {
                 let next = decode(&mut sibling, &mut sibling_rng, token);
                 sibling_matched &= next == expected_sibling[index + 1];
                 sibling_token = Some(next);
             }
         }
-        let mut token = decode(&mut cache, &mut rng, last);
-        assert_eq!(cache.seq_len(), prompt.len());
+        let mut token = if tail.is_empty() {
+            decode(&mut cache, &mut rng, last)
+        } else {
+            chunked_prefill(
+                cfg, weights, tail, &mut cache, chunk_size, sampling, &mut rng,
+            )
+        };
+        assert_eq!(cache.seq_len(), prompt_len);
         let prefill_state_matched = cache.serialize_to_bytes() == expected_prefill_state;
         let mut output_matched = token == first;
         for &next in &expected[1..] {
@@ -143,7 +205,8 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
         let decode_state_matched = cache.serialize_to_bytes() == expected_decode_state;
         sibling_matched &= !with_sibling || sibling.serialize_to_bytes() == expected_sibling_state;
         eprintln!(
-            "Flash Next fixed chunks {chunk_count} with_sibling={with_sibling}: output={output_matched} prefill_state={prefill_state_matched} decode_state={decode_state_matched} sibling={sibling_matched}"
+            "Flash Next fixed chunks {sibling_steps} tail={} with_sibling={with_sibling}: output={output_matched} prefill_state={prefill_state_matched} decode_state={decode_state_matched} sibling={sibling_matched}",
+            tail.len(),
         );
         arm_results.push(
             output_matched && prefill_state_matched && decode_state_matched && sibling_matched,
