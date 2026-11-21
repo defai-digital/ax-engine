@@ -1485,7 +1485,7 @@ impl EngineCore {
             || self.prefill_stall.enabled()
             || !self.multi_prefill_fair
             || self.max_inflight_prefill_requests != 1
-            || self.live_sequence_cap != Some(2)
+            || self.live_sequence_cap.is_some_and(|cap| cap < 2)
         {
             return None;
         }
@@ -4029,8 +4029,12 @@ mod tests {
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
-        engine.set_live_sequence_cap(Some(2));
         engine.set_multi_prefill_fair(true, 2048, 1);
+        assert_eq!(engine.live_sequence_cap(), None);
+        assert!(engine.new_prefill_split_geometry(2049).is_some());
+        engine.set_live_sequence_cap(Some(1));
+        assert!(engine.new_prefill_split_geometry(2049).is_none());
+        engine.set_live_sequence_cap(None);
         engine.submit(make_submission(1, 1, 64)).unwrap();
         engine.step(2049, true).unwrap();
         engine

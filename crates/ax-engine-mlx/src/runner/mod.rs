@@ -1693,6 +1693,8 @@ pub struct MlxRunner {
     /// Effective MLX memory limit in bytes (`0` when the limit is unknown).
     /// Pressure requeue uses 90% / 80% of this value and stays off at `0`.
     mlx_memory_limit: u64,
+    /// Explicit session concurrency used by serving experiments.
+    configured_live_sequences: Option<u32>,
     /// Live decode sequences this session may run concurrently, resolved by the
     /// priced memory plan at load time.
     ///
@@ -2722,10 +2724,9 @@ impl MlxRunner {
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&c| c >= 1)
             .unwrap_or(8);
-        let live_sequences = crate::expert_stream::resolved_live_sequences(
-            session_budget.and_then(|budget| budget.max_live_sequences),
-            batched_cap,
-        );
+        let configured_live_sequences = session_budget.and_then(|budget| budget.max_live_sequences);
+        let live_sequences =
+            crate::expert_stream::resolved_live_sequences(configured_live_sequences, batched_cap);
         // Priced residency of the pack about to load, estimated from the
         // manifest and headers only: the working set sizes the wired limit, and
         // the live-sequence cap it resolves is the concurrency this session may
@@ -3482,6 +3483,7 @@ impl MlxRunner {
             rotating_sliding_decode,
             direct_clear_cache_cadence,
             mlx_memory_limit: u64::try_from(memory_limit).unwrap_or(u64::MAX),
+            configured_live_sequences,
             live_sequence_cap,
             last_prefix_model_id: Mutex::new(String::new()),
             last_block_size_tokens: std::sync::atomic::AtomicU32::new(0),
@@ -5190,6 +5192,7 @@ impl ExecutionRunner for MlxRunner {
 
     fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
         if !crate::fastpath::flash_next_prefill_split_enabled()
+            || self.configured_live_sequences != Some(2)
             || self.weights.qwen4_exp.is_none()
             || self.weights.expert_stream.is_some()
             || self.mtp_requested
