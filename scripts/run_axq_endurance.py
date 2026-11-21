@@ -504,25 +504,35 @@ def source_control_metadata(script_path: Path) -> dict[str, Any]:
     """Capture the exact reusable runner and checkout provenance."""
     resolved_script = script_path.resolve()
     source_root = resolved_script.parent.parent
-    commit = command_output("git", "-C", str(source_root), "rev-parse", "HEAD")
-    describe = command_output("git", "-C", str(source_root), "describe", "--tags", "--always")
-    status = command_output(
-        "git",
-        "-C",
-        str(source_root),
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=normal",
+
+    def git(*arguments: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ("git", "-C", str(source_root), *arguments),
+                check=True,
+                capture_output=True,
+                timeout=30.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return os.fsdecode(result.stdout.removesuffix(b"\n"))
+
+    checkout = git("rev-parse", "--show-toplevel")
+    commit = (
+        git("rev-parse", "--verify", "HEAD")
+        if checkout and Path(checkout).resolve() == source_root
+        else None
     )
-    git_available = not commit.startswith("unavailable:") and bool(commit)
+    describe = git("describe", "--tags", "--always") if commit else None
+    status = git("status", "--porcelain=v1", "--untracked-files=normal") if commit else None
     return {
         "runner_path": str(resolved_script),
         "runner_sha256": sha256_file(resolved_script),
         "source_root": str(source_root),
-        "source_git_commit": commit if git_available else None,
-        "source_git_describe": describe if git_available else None,
-        "source_git_dirty": bool(status) if git_available else None,
-        "source_git_status": status if git_available else None,
+        "source_git_commit": commit,
+        "source_git_describe": describe,
+        "source_git_dirty": bool(status) if status is not None else None,
+        "source_git_status": status,
     }
 
 

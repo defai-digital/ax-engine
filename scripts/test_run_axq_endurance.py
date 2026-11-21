@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -975,22 +976,89 @@ class AxqEnduranceTests(unittest.TestCase):
                 runner.validate_server_version(server, "6.13.4")
 
     def test_source_metadata_records_runner_hash_commit_and_clean_state(self) -> None:
-        def output(*command, **_kwargs):
-            if "rev-parse" in command:
-                return "a" * 40
-            if "describe" in command:
-                return "v6.13.5-10-gaaaaaaaa"
-            if "status" in command:
-                return ""
-            return "unavailable"
-
-        with unittest.mock.patch.object(runner, "command_output", side_effect=output):
+        outputs = [
+            os.fsencode(SCRIPT_PATH.resolve().parent.parent) + b"\n",
+            b"a" * 40 + b"\n",
+            b"v6.13.5-10-gaaaaaaaa\n",
+            b"",
+        ]
+        with unittest.mock.patch.object(runner.subprocess, "run") as run:
+            run.side_effect = [
+                runner.subprocess.CompletedProcess("git", 0, stdout=output) for output in outputs
+            ]
             metadata = runner.source_control_metadata(SCRIPT_PATH)
 
         self.assertEqual(metadata["source_git_commit"], "a" * 40)
         self.assertEqual(metadata["source_git_describe"], "v6.13.5-10-gaaaaaaaa")
         self.assertFalse(metadata["source_git_dirty"])
         self.assertEqual(metadata["runner_sha256"], runner.sha256_file(SCRIPT_PATH))
+
+    def test_source_metadata_from_staged_runner_has_only_file_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scripts" / SCRIPT_PATH.name
+            path.parent.mkdir()
+            path.write_bytes(SCRIPT_PATH.read_bytes())
+            metadata = runner.source_control_metadata(path)
+
+        self.assertEqual(metadata["runner_sha256"], runner.sha256_file(SCRIPT_PATH))
+        self.assertIsNone(metadata["source_git_commit"])
+        self.assertIsNone(metadata["source_git_describe"])
+        self.assertIsNone(metadata["source_git_dirty"])
+        self.assertIsNone(metadata["source_git_status"])
+
+    def test_source_metadata_does_not_use_an_enclosing_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            enclosing = Path(temp).resolve()
+            path = enclosing / "staged" / "scripts" / SCRIPT_PATH.name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(SCRIPT_PATH.read_bytes())
+            with unittest.mock.patch.object(runner.subprocess, "run") as run:
+                run.return_value = runner.subprocess.CompletedProcess(
+                    "git", 0, stdout=os.fsencode(enclosing) + b"\n"
+                )
+                metadata = runner.source_control_metadata(path)
+                run.assert_called_once()
+
+        self.assertEqual(metadata["runner_sha256"], runner.sha256_file(SCRIPT_PATH))
+        self.assertIsNone(metadata["source_git_commit"])
+
+    def test_source_metadata_preserves_commit_when_status_unavailable(self) -> None:
+        with unittest.mock.patch.object(runner.subprocess, "run") as run:
+            run.side_effect = [
+                runner.subprocess.CompletedProcess(
+                    "git", 0, stdout=os.fsencode(SCRIPT_PATH.resolve().parent.parent) + b"\n"
+                ),
+                runner.subprocess.CompletedProcess("git", 0, stdout=b"a" * 40 + b"\n"),
+                runner.subprocess.CompletedProcess("git", 0, stdout=b"a" * 12 + b"\n"),
+                runner.subprocess.CalledProcessError(128, "git status"),
+            ]
+            metadata = runner.source_control_metadata(SCRIPT_PATH)
+        self.assertEqual(metadata["source_git_commit"], "a" * 40)
+        self.assertIsNone(metadata["source_git_dirty"])
+        self.assertIsNone(metadata["source_git_status"])
+
+    def test_source_metadata_preserves_checkout_path_and_status_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve() / "source "
+            path = root / "scripts" / SCRIPT_PATH.name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(SCRIPT_PATH.read_bytes())
+            raw_status = b" M data/\xff.pack\n"
+            with unittest.mock.patch.object(runner.subprocess, "run") as run:
+                run.side_effect = [
+                    runner.subprocess.CompletedProcess("git", 0, stdout=output)
+                    for output in (
+                        os.fsencode(root) + b"\n",
+                        b"a" * 40 + b"\n",
+                        b"a" * 12 + b"\n",
+                        raw_status,
+                    )
+                ]
+                metadata = runner.source_control_metadata(path)
+
+        self.assertEqual(metadata["source_git_commit"], "a" * 40)
+        self.assertTrue(metadata["source_git_dirty"])
+        self.assertEqual(os.fsencode(metadata["source_git_status"]), raw_status[:-1])
 
     def test_bounded_state_analysis_relates_growth_to_completed_requests(self) -> None:
         samples = []
