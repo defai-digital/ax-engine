@@ -1,0 +1,77 @@
+{
+  "build": {
+    "source_base_commit": "863889cd6a63010f6453854e60bf267d93ee8b26",
+    "source_patch_sha256": "443998097c0bca885f1e620a3e2a096aee61ca9b33cb4716e1aec12e28bb7472",
+    "server_sha256": "045868888f092e6704b10d625113efd84e71df4282c2aa2085c02b2bb546346c",
+    "runner_sha256": "8161b7e0bf606cfd369caa9c56db0868cc134208110122d9bd363826679937a1",
+    "mlx_version": "0.32.4",
+    "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "cargo_profile": "release-server"
+  },
+  "publisher_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "publisher_member_count": 49,
+  "original_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "archived_inventory": "../flash-next-native-loader-m2-20261121/pack-inventory.json",
+  "archived_inventory_sha256": "55e42802b9cab056590dbb776a75d2583f3f77cc376c7be8580d4c02ad103dfc",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "exact_outputs_per_policy": 96,
+  "summary": [
+    {
+      "policy": "disabled",
+      "reader": "name-order",
+      "ready_seconds": 185.85111370799132,
+      "resident_seconds": 28.482037458,
+      "sidecar_seconds": 135.112622833,
+      "peak_sampled_startup_rss_gib": 73.34884643554688,
+      "startup_samples": 12,
+      "greedy_output_tokens": 96,
+      "verified_steps": 0,
+      "accepted_drafts": 0
+    },
+    {
+      "policy": "disabled",
+      "reader": "lazy-cpu",
+      "ready_seconds": 81.00097845902201,
+      "resident_seconds": 63.006989791,
+      "sidecar_seconds": 2.164061416,
+      "peak_sampled_startup_rss_gib": 69.08723449707031,
+      "startup_samples": 6,
+      "greedy_output_tokens": 96,
+      "verified_steps": 0,
+      "accepted_drafts": 0
+    },
+    {
+      "policy": "required",
+      "reader": "lazy-cpu",
+      "ready_seconds": 101.19410770805553,
+      "resident_seconds": 81.604452209,
+      "sidecar_seconds": 2.18219325,
+      "peak_sampled_startup_rss_gib": 65.92292785644531,
+      "startup_samples": 7,
+      "greedy_output_tokens": 96,
+      "verified_steps": 56,
+      "accepted_drafts": 37
+    },
+    {
+      "policy": "required",
+      "reader": "name-order",
+      "ready_seconds": 135.5569045000011,
+      "resident_seconds": 89.961979167,
+      "sidecar_seconds": 27.816163042,
+      "peak_sampled_startup_rss_gib": 71.85862731933594,
+      "startup_samples": 9,
+      "greedy_output_tokens": 96,
+      "verified_steps": 56,
+      "accepted_drafts": 37
+    }
+  ],
+  "file_sha256": {
+    "disabled-lazy-cpu-samples.jsonl": "a2dade51ba67acbeb0f1cc29733ba3d1a52286ec5e9da89f58d58a1874a4bdae",
+    "disabled-name-order-samples.jsonl": "36b0c0de33c42e74291e64bca5be0d79546c55126c06032800610ebdbb858f54",
+    "required-lazy-cpu-samples.jsonl": "d95f1bc74a67b7ceca02da4fca86f77d8273dd00d31ca198749bb3faef05c0a8",
+    "required-name-order-samples.jsonl": "7932801620e71bbddf99ceb0de31ef0cfe6966e6f3be5bf50c7655334d953bf3",
+    "result.json": "8a25190602aeec1594f50149698cc89c0b4007602a0d1cd43b486ca137ff7acd",
+    "server-sidecar-lab.patch.gz": "cf23f24ebf4c990a5aaaa0f1864f6dbf8b9dbbbbad0ec8e634c57a350a8ba6dd"
+  }
+}
