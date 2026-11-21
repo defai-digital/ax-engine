@@ -443,7 +443,7 @@ when even the fixed part does not fit.
 
 Concurrency is part of that pricing. Per-request gated-delta-net state is
 charged once per live decode sequence, so a pack can fit at one row and not at
-the runner's default eight-row cohort: the affine 6-bit Flash Next pack prices
+the generic eight-row cohort. The affine 6-bit Flash Next pack prices
 116.17 GiB at eight rows and 115.15 GiB at one against the same 115.20 GiB
 ceiling. When the configured live-sequence count `N` does not fit but some
 smaller `L` does, the plan stays resident and publishes `live_sequence_cap = L`;
@@ -452,8 +452,9 @@ model and leaves the rest in the scheduler's queue, in arrival order. Only when
 even `L = 1` does not fit does the plan fall back to the stream/refuse ladder
 unchanged. The effective admission is `min(explicit --max-concurrent-requests,
 L)`, and the reduction is announced once with a `configured=N admitted=L`
-warning. MXFP4 Flash Next keeps its full cohort: nothing is capped when the
-configured count fits. `GET /v1/memory` reports `memory_plan.live_sequences`
+warning. On the standard host, the ordinary server sets a one-request limit
+for the pinned MXFP4 Flash Next pack. The memory planner uses the configured
+count when it fits. `GET /v1/memory` reports `memory_plan.live_sequences`
 (the configured count) and `memory_plan.live_sequence_cap` (the admitted one),
 so lower parallelism than requested is diagnosable without reading logs. Both
 fields are `null` when the configured count fits (no cap) or when priced memory

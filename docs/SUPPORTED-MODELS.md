@@ -135,15 +135,19 @@ Qwen 3.8 caveat:
   MTP pack (ADR-050). On MacBook Pro M5 Max 128 GB it stays resident under
   Auto at one live sequence and decodes about 41-46 tok/s at about 103 GiB.
   The priced plan charges per-request state once per live sequence, so at the
-  default eight-row cohort this pack prices 116.17 GiB against the 115.20 GiB
+  generic eight-row cohort this pack prices 116.17 GiB against the 115.20 GiB
   ceiling and used to stream its experts at 0.17 tok/s. It now stays resident
   and caps concurrency instead: the plan publishes `live_sequence_cap = 1`
   (the 6-bit pack fits no more than one row), the engine serves one request at
   a time and queues the rest, and start-up logs one warning naming the
   configured and admitted counts. `--max-concurrent-requests 1` is still the
   way to make that single-stream intent explicit, and `--stream-experts off`
-  remains a valid override for operators who have measured it. MXFP4 Flash Next
-  keeps the full eight-row cohort on the same host.
+  remains a valid override for operators who have measured it. For the pinned
+  MXFP4 pack on the standard host, the ordinary server applies one model-local
+  request slot and a combined 32,768-token prompt and output budget. An explicit
+  concurrency override uses the corresponding memory plan. The measured
+  product profile covers a single active request.
+  [Startup envelope controls](../benchmarks/results/flash-next-mxfp4-startup-envelope-20261121/README.md)
   The affine 6-bit pack is the one Flash Next format that needs a raised wired
   limit on a 128 GB Mac: the runner wires 0.9 x Metal's 107.5 GiB
   recommendation (96.8 GiB) while the resident working set prices at about
