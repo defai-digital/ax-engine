@@ -23,6 +23,11 @@ memory pressure stayed at level 1 in both series. The measurements
 sample RSS at roughly 15-second intervals during startup. They exclude
 inference memory peaks and the time spent verifying and cloning the
 publisher files. This pair observed a higher RSS peak with lazy CPU.
+The [phase analysis](startup-phase-rss.json) locates both peaks after
+resident weight evaluation and before the HTTP listener. Samples whose
+one-second UTC interval overlaps a phase marker are unclassified. The
+sampled RSS identifies the phase of the higher peak. Allocator and
+kernel footprint accounting are separate measurements.
 
 The first arm used mmap. The APFS files share the same underlying
 storage, and their controller cache and full-model OS page state were

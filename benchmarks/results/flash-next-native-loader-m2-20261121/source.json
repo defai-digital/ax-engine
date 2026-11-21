@@ -56,6 +56,7 @@
     "server-loader-lab.patch": "fedae415c2063e290447630ba385dda090dd6d1e8c59c56f7ea5ff8e7c88f004",
     "pack-inventory.json": "55e42802b9cab056590dbb776a75d2583f3f77cc376c7be8580d4c02ad103dfc",
     "name-order-samples.jsonl": "499226c6e1d880e7499ba36bc10335fd8be26b9d8542324ead2104f882834dcc",
-    "lazy-cpu-samples.jsonl": "fb033feef7fbf03a7d35363a8bfde03787c720992fbbe304f3fb372a2ec9c8af"
+    "lazy-cpu-samples.jsonl": "fb033feef7fbf03a7d35363a8bfde03787c720992fbbe304f3fb372a2ec9c8af",
+    "startup-phase-rss.json": "5d2af9ab0caa106172eed448606cdbb86c70e2e295d9bf09d5bcfbf1e688cae8"
   }
 }

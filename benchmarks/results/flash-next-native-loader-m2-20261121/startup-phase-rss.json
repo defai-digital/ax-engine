@@ -1,0 +1,54 @@
+{
+  "sample_clock": "UTC with one-second granularity",
+  "arms": {
+    "name-order": {
+      "resident_load_completed_at_utc": "2026-11-21T15:28:21.045802+00:00",
+      "server_listening_at_utc": "2026-11-21T15:29:49.061881+00:00",
+      "post_load_elapsed_seconds": 88.016079,
+      "sample_source": "name-order-samples.jsonl",
+      "sample_source_sha256": "499226c6e1d880e7499ba36bc10335fd8be26b9d8542324ead2104f882834dcc",
+      "phases": {
+        "through_resident_load": {
+          "samples": 86,
+          "peak_sampled_rss_bytes": 72102887424,
+          "peak_sampled_at_utc": "2026-11-21T15:28:15+00:00"
+        },
+        "after_resident_load_before_ready": {
+          "samples": 5,
+          "peak_sampled_rss_bytes": 76300140544,
+          "peak_sampled_at_utc": "2026-11-21T15:29:19+00:00"
+        }
+      },
+      "unclassified_boundary_samples": []
+    },
+    "lazy-cpu": {
+      "resident_load_completed_at_utc": "2026-11-21T15:32:00.093198+00:00",
+      "server_listening_at_utc": "2026-11-21T15:33:52.162458+00:00",
+      "post_load_elapsed_seconds": 112.06926,
+      "sample_source": "lazy-cpu-samples.jsonl",
+      "sample_source_sha256": "fb033feef7fbf03a7d35363a8bfde03787c720992fbbe304f3fb372a2ec9c8af",
+      "phases": {
+        "through_resident_load": {
+          "samples": 5,
+          "peak_sampled_rss_bytes": 29577248768,
+          "peak_sampled_at_utc": "2026-11-21T15:31:43+00:00"
+        },
+        "after_resident_load_before_ready": {
+          "samples": 6,
+          "peak_sampled_rss_bytes": 79071150080,
+          "peak_sampled_at_utc": "2026-11-21T15:33:37+00:00"
+        }
+      },
+      "unclassified_boundary_samples": [
+        {
+          "sample_utc": "2026-11-21T15:32:00+00:00",
+          "sampled_rss_bytes": 68660969472
+        },
+        {
+          "sample_utc": "2026-11-21T15:33:53+00:00",
+          "sampled_rss_bytes": 74184196096
+        }
+      ]
+    }
+  }
+}
