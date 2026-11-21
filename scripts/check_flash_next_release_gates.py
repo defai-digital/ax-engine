@@ -38,6 +38,12 @@ MEASURED = 3
 TRAJECTORIES = 16
 AX_REPEATS = 2
 LONG_ID = "long_context_record_mass"
+REFERENCE_VERSIONS = {"mlx": "0.32.2", "mlx-metal": "0.32.2", "mlx-vlm": "0.7.0rc0",
+                      "transformers": "5.18.0.dev0", "tokenizers": "0.23.2"}
+REFERENCE_LANGUAGE_SHA256 = "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199"
+REFERENCE_COMMIT = "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb"
+REFERENCE_EXECUTION_SETTINGS = {"prefill_chunk": 1024, "memory_limit_bytes": 144 * GIB,
+                                "cache_limit_bytes": GIB}
 LIFECYCLE_ACTIONS = ("baseline", "sse", "budget_1", "budget_2", "stop", "disconnect", "recovery")
 LIFECYCLE_COUNTERS = frozenset({
     "ax_engine_jobs_in_flight",
@@ -262,7 +268,7 @@ def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
                      for run in range(WARMUPS + MEASURED)}
     expected_hash_keys = {f"cell-{length}-{run}" for length, run, _ in expected_runs}
     problems, table = [], {}
-    if not reference.get("completed") or not ref_cells:
+    if reference.get("completed") is not True or not ref_cells:
         problems.append("reference matrix is incomplete")
     for label, rows in {"reference": ref_cells, **ax_cells}.items():
         valid = [(row.get("length"), row.get("run"), row.get("warmup")) for row in rows
@@ -378,10 +384,27 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
             problems.append(f"matrix/{mode}: expected {expected_pairs} repeat token comparisons")
         elif identity.get("identical") != expected_pairs:
             problems.append(f"matrix/{mode}: repeats of the same arm emitted different tokens")
-    if results["reference"].get("versions", {}).get("mlx-vlm") != "0.7.0rc0":
-        problems.append("reference runtime is not the pinned MLX-VLM")
+    reference = results["reference"]
+    pinned = reference.get("reference")
+    if not isinstance(pinned, dict):
+        pinned = {}
+    if pinned.get("runtime") != "mlx-vlm" or pinned.get("commit") != REFERENCE_COMMIT:
+        problems.append("reference: expected the pinned MLX-VLM checkout")
+    if reference.get("versions") != REFERENCE_VERSIONS or pinned.get("versions") != REFERENCE_VERSIONS:
+        problems.append("reference: package versions differ from the frozen runtime")
+    if (reference.get("language_sha256") != REFERENCE_LANGUAGE_SHA256
+            or pinned.get("language_sha256") != REFERENCE_LANGUAGE_SHA256):
+        problems.append("reference: language module hash differs from the audited source")
+    changed_settings = [name for name, expected in REFERENCE_EXECUTION_SETTINGS.items()
+                        if type(reference.get(name)) is not int or reference[name] != expected]
+    if changed_settings:
+        problems.append(f"reference: frozen execution settings differ for {changed_settings}")
+    if reference.get("completed") is True:
+        runtime_files = reference.get("runtime_files_bound")
+        if reference.get("phase") != "complete" or type(runtime_files) is not int or runtime_files <= 0:
+            problems.append("reference: no completed runtime-file recheck")
     return [gate("integrity", not problems, "; ".join(problems) or
-                 "one server binary and one pack inventory across all results; hardware is the target SKU")]
+                 "one server binary and pack inventory, the pinned reference runtime, and the target host")]
 
 
 def evaluate(results: dict[str, dict[str, Any]], th: dict[str, Any],

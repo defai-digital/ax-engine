@@ -70,7 +70,12 @@ def good():
                               "prompt_id_hashes": {**TRAJECTORY_HASHES, **CELL_HASHES},
                               "cells": ax_cells()} for mode in ("disabled", "default")}}
     reference = {**{key: value for key, value in COMMON.items() if key != "server_sha256"},
-                 "completed": True, "versions": {"mlx-vlm": "0.7.0rc0"},
+                 "reference": {"runtime": "mlx-vlm", "commit": mod.REFERENCE_COMMIT,
+                               "versions": dict(mod.REFERENCE_VERSIONS),
+                               "language_sha256": mod.REFERENCE_LANGUAGE_SHA256},
+                 "completed": True, "phase": "complete", "runtime_files_bound": 1750,
+                 "versions": dict(mod.REFERENCE_VERSIONS), "language_sha256": mod.REFERENCE_LANGUAGE_SHA256,
+                 **mod.REFERENCE_EXECUTION_SETTINGS,
                  "qa": {"rows": [0] * 105, "failures": list(FAILURES)},
                  "matrix": {"cells": ref_cells(), "prompt_id_hashes": dict(CELL_HASHES)}}
     delivery = {**COMMON, "completed": True, "fresh_cache": True, "revision": TH["target"]["pack_revision"],
@@ -111,7 +116,8 @@ class ReleaseGateTests(unittest.TestCase):
 
     def test_an_incomplete_reference_fails_quality_and_the_matrix_gate(self):
         r = good()
-        r["reference"].update(completed=False, qa={"rows": [{}]})
+        r["reference"].update(completed=False, phase="qa", qa={"rows": [{}]})
+        del r["reference"]["runtime_files_bound"]
         del r["reference"]["matrix"]
         result = {g["gate"]: g for g in verdict(r)["gates"]}
         self.assertEqual({name for name, gate in result.items() if not gate["passed"]},
@@ -120,6 +126,25 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(result["quality"]["ax_only_failures"], {"disabled": None, "default": None})
         self.assertNotIn("failures the reference passes", result["quality"]["detail"])
         self.assertNotIn("prompt token IDs differ", result["reference_relative"]["detail"])
+
+    def test_altered_reference_provenance_fails_integrity(self):
+        for label, mutate in (
+            ("missing description", lambda ref: ref.pop("reference")),
+            ("other commit", lambda ref: ref["reference"].update(commit="0" * 40)),
+            ("other declared package", lambda ref: ref["reference"]["versions"].pop("tokenizers")),
+            ("other installed package", lambda ref: ref["versions"].update(mlx="0.32.4")),
+            ("other language hash", lambda ref: ref.update(language_sha256="0" * 64)),
+            ("other prefill chunk", lambda ref: ref.update(prefill_chunk=512)),
+            ("other memory cap", lambda ref: ref.update(memory_limit_bytes=128 * mod.GIB)),
+            ("other cache cap", lambda ref: ref.update(cache_limit_bytes=0)),
+            ("recheck not complete", lambda ref: ref.update(phase="posthash")),
+            ("missing recheck", lambda ref: ref.pop("runtime_files_bound")),
+            ("invalid recheck count", lambda ref: ref.update(runtime_files_bound=True)),
+        ):
+            with self.subTest(label=label):
+                r = good()
+                mutate(r["reference"])
+                self.assertEqual(failed(r), {"integrity"})
 
     def test_a_complete_reference_without_grades_cannot_pass_quality(self):
         for missing in (None, "", {"case": False}, [12]):
