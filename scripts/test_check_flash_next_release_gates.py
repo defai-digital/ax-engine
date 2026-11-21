@@ -56,9 +56,11 @@ def good():
     qa = {**COMMON, "summary": {"modes": {"disabled": dict(arm), "default": dict(arm)},
                                 "text_identity_vs_disabled": {"default": {
                                     "matching_text_pairs": 105, "differing_text_ids": []}}}}
-    action = {"drained": {"ax_engine_jobs_in_flight": 0.0}}
     lifecycle = {**COMMON, "lifecycle_passed": True, "runs": [
-        {"mode": mode, "ready_seconds": 33.0, "actions": [action] * 7, "final_verified_steps": 0.0,
+        {"mode": mode, "ready_seconds": 33.0,
+         "actions": [{"mode": mode, "action": action,
+                      "drained": dict.fromkeys(sorted(mod.LIFECYCLE_COUNTERS), 0.0)}
+                     for action in mod.LIFECYCLE_ACTIONS], "final_verified_steps": 0.0,
          "exit_code_after_stop": 0} for mode in ("disabled", "default")]}
     matrix = {**COMMON, "repeats_per_arm": 2,
               "repeat_token_identity": {mode: {"compared": 31, "identical": 31}
@@ -382,10 +384,29 @@ class ReleaseGateTests(unittest.TestCase):
         r["lifecycle"]["runs"][1]["actions"] = r["lifecycle"]["runs"][1]["actions"][:6]
         self.assertEqual(failed(r), {"lifecycle"})
         r = good()
-        r["lifecycle"]["runs"][0]["actions"][2] = {"drained": {"ax_engine_jobs_in_flight": 1.0}}
+        r["lifecycle"]["runs"][0]["actions"][2]["drained"]["ax_engine_jobs_in_flight"] = 1.0
+        self.assertEqual(failed(r), {"lifecycle"})
+
+    def test_lifecycle_requires_recorded_action_identities_and_all_drain_counters(self):
+        for mutate in (
+            lambda run: run.update(actions=None),
+            lambda run: run["actions"].__setitem__(6, None),
+            lambda run: run["actions"].__setitem__(6, run["actions"][0]),
+            lambda run: run["actions"][6].update(mode="default"),
+            lambda run: run["actions"][6].update(drained={}),
+            lambda run: run["actions"][6]["drained"].pop("ax_engine_generation_buffered_stream_events"),
+            lambda run: run["actions"][6]["drained"].update(ax_engine_jobs_in_flight=False),
+            lambda run: run.update(exit_code_after_stop=False),
+            lambda run: run.update(exit_code_after_stop=1),
+        ):
+            r = good()
+            mutate(r["lifecycle"]["runs"][0])
+            self.assertEqual(failed(r), {"lifecycle"})
+        r = good()
+        r["lifecycle"]["runs"].append(copy.deepcopy(r["lifecycle"]["runs"][0]))
         self.assertEqual(failed(r), {"lifecycle"})
         r = good()
-        r["lifecycle"]["runs"][0]["exit_code_after_stop"] = 1
+        r["lifecycle"]["lifecycle_passed"] = 1
         self.assertEqual(failed(r), {"lifecycle"})
 
     def test_the_contract_must_keep_mtp_s_p_d_not_assessed(self):

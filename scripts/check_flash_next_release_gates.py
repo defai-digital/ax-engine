@@ -38,6 +38,14 @@ MEASURED = 3
 TRAJECTORIES = 16
 AX_REPEATS = 2
 LONG_ID = "long_context_record_mass"
+LIFECYCLE_ACTIONS = ("baseline", "sse", "budget_1", "budget_2", "stop", "disconnect", "recovery")
+LIFECYCLE_COUNTERS = frozenset({
+    "ax_engine_jobs_in_flight",
+    "ax_engine_generation_jobs_pending",
+    "ax_engine_generation_commands_queued",
+    "ax_engine_generation_active_streams",
+    "ax_engine_generation_buffered_stream_events",
+})
 RESULT_FILES = {"delivery": "delivery/result.json", "qa": "qa/result.json",
                 "lifecycle": "lifecycle/result.json", "matrix": "generate-matrix/result.json",
                 "reference": "reference/result.json"}
@@ -195,18 +203,29 @@ def gate_quality(qa: dict[str, Any], reference: dict[str, Any], th: dict[str, An
 
 def gate_lifecycle(lifecycle: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
     spec = th["lifecycle"]
-    by_mode = {run["mode"]: run for run in lifecycle.get("runs", [])}
     problems = []
     for mode in spec["modes_required"]:
-        run = by_mode.get(mode)
-        if run is None or len(run["actions"]) != spec["actions_per_mode"]:
-            problems.append(f"{mode}: missing or incomplete actions")
+        runs = [run for run in lifecycle.get("runs", []) if run["mode"] == mode]
+        if len(runs) != 1:
+            problems.append(f"{mode}: expected one lifecycle run")
             continue
-        if any(any(value != 0 for value in action["drained"].values()) for action in run["actions"]):
-            problems.append(f"{mode}: counters did not drain")
-        if run.get("exit_code_after_stop") != 0:
+        (run,) = runs
+        actions = run.get("actions")
+        if (not isinstance(actions, list) or len(actions) != spec["actions_per_mode"]
+                or not all(isinstance(action, dict) for action in actions)
+                or tuple(action.get("action") for action in actions) != LIFECYCLE_ACTIONS
+                or any(action.get("mode") != mode for action in actions)):
+            problems.append(f"{mode}: missing, repeated, misordered or mislabeled actions")
+            continue
+        for action in actions:
+            counters = action.get("drained")
+            if (not isinstance(counters, dict) or not LIFECYCLE_COUNTERS.issubset(counters)
+                    or any(type(value) not in (int, float) or value != 0 for value in counters.values())):
+                problems.append(f"{mode}/{action['action']}: missing or nonzero drain counters")
+        exit_code = run.get("exit_code_after_stop")
+        if type(exit_code) is not int or exit_code != 0:
             problems.append(f"{mode}: server did not exit cleanly")
-    if not lifecycle.get("lifecycle_passed"):
+    if lifecycle.get("lifecycle_passed") is not True:
         problems.append("lifecycle result is not marked passed")
     return [gate("lifecycle", not problems, "; ".join(problems) or
                  f"{spec['actions_per_mode']} actions in each of {spec['modes_required']} with drained counters")]
