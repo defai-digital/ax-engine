@@ -74,6 +74,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(body["stop"], ["4"])
 
+    def test_recovery_allows_timing_and_cache_reuse_to_change(self):
+        usage = USAGE["usage"]
+        baseline = {"text": "1, 2", "finish_reason": "stop",
+                    "usage": {**usage, "ax_engine": {"prefill_time_us": 1000}}}
+        recovery = {**baseline, "usage": {**usage, "ax_engine": {"prefill_time_us": 500},
+                                          "prompt_tokens_details": {"cached_tokens": 3}}}
+        mod.check_recovery(baseline, recovery)
+
+    def test_recovery_rejects_changes_to_completion_or_token_counts(self):
+        usage = USAGE["usage"]
+        baseline = {"text": "1, 2", "finish_reason": "stop", "usage": usage}
+        for field, value in (("text", "1, 3"), ("finish_reason", "length")):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                mod.check_recovery(baseline, {**baseline, field: value})
+        for field in mod.TOKEN_USAGE_FIELDS:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                mod.check_recovery(baseline, {**baseline, "usage": {**usage, field: 0}})
+
     def test_dry_run_declares_fourteen_actions_and_cannot_claim_qualification(self):
         out = subprocess.run([sys.executable, str(SCRIPT), "--dry-run"], capture_output=True,
                              text=True, check=True)
