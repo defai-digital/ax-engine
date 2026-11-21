@@ -40,9 +40,11 @@ samples exceed the frozen 90% floor.
 
 All 210 response texts matched the first campaign and all requests
 stopped normally. Each arm passed 101 of 105 checks and recorded zero
-verifier steps and route errors. The
+verifier steps and route errors. Joining the refresh responses to the
+[signed v7.9.0 QA rows](../qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/qa/)
+by arm and case ID also matched all 210 texts, finish reasons, prompt
+token counts, completion token counts and totals. The
 [refresh receipt](timing-refresh-result.json) and
 [raw responses](timing-refresh-responses.json.gz) supply the current
 native QA timing, readiness and memory inputs for the release board.
-The current reference comparison, delivery and complete board verdict
-are pending.
+The same-host independent reference comparison remains open.

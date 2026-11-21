@@ -18,7 +18,10 @@ separately records the normal 32K profile.
 
 The selected repeats in both runs used identical prompt IDs and
 generated identical token arrays for every recorded trajectory and
-fixed cell. Route errors and MTP verifier steps were zero. The
+fixed cell. Compared with the [signed v7.9.0 matrix](../qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/generate-matrix/result.json),
+both runs match all input hashes and all 62 output arrays across the
+two arms, including every warmup, measured cell and trajectory.
+Route errors and MTP verifier steps were zero. The
 following medians describe the selected repeats in the second run.
 
 | Input tokens | Explicit direct TTFT | Default TTFT | Explicit direct decode | Default decode |
