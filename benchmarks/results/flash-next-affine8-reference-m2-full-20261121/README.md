@@ -44,3 +44,28 @@ page cache. Timings include the actual byte copy.
 The [raw observations](row-io.json) retain the underlying rotations and
 include one-token windows. The repeated-window gain measures packed-row
 access. Prefill also includes index synchronization and the model graph.
+
+## Row timing during inference
+
+The `3de6f14da` host profiler ran the three 32-token bounded smoke
+cases on the same M2 with the same pack and pinned runtime. Its pre- and
+postflight hashes passed, and every sampled pressure reading was normal.
+All three prompt hashes and 96 output IDs match the previous [bounded
+smoke](../flash-next-affine8-reference-m2-20261121/bounded.json).
+
+| Prompt tokens | Wall time | First token | PLE row selection and reads |
+| ---: | ---: | ---: | ---: |
+| 512 | 5.990 s | 4.567 s | 3.652 s |
+| 2,048 | 20.753 s | 18.588 s | 14.971 s |
+| 8,192 | 122.467 s | 121.014 s | 104.299 s |
+
+The selection and read stage includes file operations and payload
+assembly across prefill and generation. Its 104.299 seconds account for
+85.2% of the 8,192-token case wall time. The separate index conversion
+bucket can wait for Metal. The graph-construction bucket includes host
+payload copies. Other model work runs outside the measured callbacks.
+The diagnostic uses Python serial reads. The AX native runner uses its
+own parallel positional reads and bounded read-ahead.
+
+The [raw smoke receipt](profiled-smoke.json), [memory samples](profiled-smoke-samples.jsonl.gz)
+and [source binding](profiled-smoke-source.json) preserve the measurement.
