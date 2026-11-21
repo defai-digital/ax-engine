@@ -86,3 +86,6 @@ The [2,049-token holdout](sse-cut-2049/README.md) passed the same
 controls with a one-token tail after the logical boundary.
 The [2,050-token holdout](sse-cut-2050/README.md) passed the same
 controls with a two-token tail.
+The [8,192-token holdout](sse-cut-8192/README.md) passed with multiple
+logical boundaries. Across four lengths, 112 output arrays and
+24 disconnect/replacement controls matched the serial baselines.
