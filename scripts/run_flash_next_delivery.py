@@ -16,16 +16,19 @@ quality, performance, MTP-S/P/D or release qualification.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Iterator
 
 try:
     import check_flash_next_native_support as native
@@ -39,6 +42,7 @@ ALIAS = "qwen3.8-flash-next:mxfp4"
 CONTROL_MODES = ("disabled", "required", "default")
 SPACE_MARGIN = 1.1
 SCRIPTS = Path(__file__).resolve().parent
+SCHEMA = "ax-engine.flash-next.fresh-delivery.v2"
 
 
 def sha256_file(path: Path) -> str:
@@ -67,24 +71,74 @@ def check_fresh(cache_root: Path, resume: bool) -> bool:
     return empty
 
 
-def load_previous_attempts(directory: Path) -> tuple[bool, list[dict[str, Any]]]:
-    """Summaries of the failed attempts a resumed run continues, and whether the first started empty.
+@contextmanager
+def lock_cache(cache_root: Path) -> Iterator[int]:
+    """Keep two delivery harnesses from claiming the same cache concurrently."""
+    descriptor = os.open(cache_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("another delivery is using the cache root") from error
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
-    A resumed delivery is still a fresh-cache delivery only if its first attempt
-    started from an empty cache and nothing but the downloader wrote to it, so the
-    chain is carried forward and every failed attempt stays in the record.
-    """
+
+def check_cache_directory(cache_root: Path, descriptor: int) -> None:
+    if not os.path.samestat(cache_root.stat(), os.fstat(descriptor)):
+        raise ValueError("cache root changed during delivery")
+
+
+def cache_resume_state(cache_root: Path, descriptor: int) -> str:
+    """Fingerprint actual local cache entries without reading large partial blobs."""
+    check_cache_directory(cache_root, descriptor)
+    digest = hashlib.sha256()
+
+    def record(path: Path) -> None:
+        info = path.lstat()
+        if path.name == ".DS_Store" and stat.S_ISREG(info.st_mode):
+            return
+        fields = (str(path.relative_to(cache_root)), info.st_dev, info.st_ino, info.st_mode)
+        # Directory entries are fingerprinted separately. Ignore Finder
+        # metadata changes without ignoring changes to the downloaded files.
+        if not stat.S_ISDIR(info.st_mode):
+            fields += (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        digest.update(json.dumps(fields).encode())
+        digest.update(b"\n")
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    record(cache_root)
+    for directory, dirs, files in cache_root.walk(on_error=fail):
+        dirs.sort()
+        for name in sorted(dirs + files):
+            record(directory / name)
+    check_cache_directory(cache_root, descriptor)
+    return digest.hexdigest()
+
+
+def load_previous_attempts(directory: Path, cache_state: str,
+                           inventory_sha256: str) -> tuple[bool, list[dict[str, Any]]]:
+    """Carry forward failed attempts only from the same unchanged local cache."""
     previous = json.loads((directory / "result.json").read_text())
     if previous.get("completed") or (previous.get("download") or {}).get("exit_code") in (0, None):
         raise ValueError("the previous attempt did not fail; there is nothing to resume")
-    if previous.get("schema") != "ax-engine.flash-next.fresh-delivery.v2":
+    if previous.get("schema") != SCHEMA:
         raise ValueError("the previous attempt is not a v2 delivery record")
+    if (previous.get("repo_id") != native.PRIMARY_REPO
+            or previous.get("revision") != native.PACK_REVISION
+            or previous.get("inventory_sha256") != inventory_sha256):
+        raise ValueError("the previous attempt used a different pack inventory")
+    if previous.get("resume_cache_sha256") != cache_state:
+        raise ValueError("the previous attempt does not bind this unchanged cache root")
     stderr = directory / "download.stderr.log"
     tail = stderr.read_text(errors="replace").splitlines()[-12:] if stderr.is_file() else []
     summary = {"exit_code": previous["download"]["exit_code"],
                "elapsed_seconds": previous["download"]["elapsed_seconds"],
                "stderr_tail": scrub(tail)}
-    return bool(previous.get("fresh_cache")), [*previous.get("previous_attempts", []), summary]
+    return previous.get("fresh_cache") is True, [*previous.get("previous_attempts", []), summary]
 
 
 def snapshot_dir(cache_root: Path) -> Path:
@@ -190,7 +244,7 @@ def main() -> int:
                         help="output directory of a failed attempt on this same cache root; "
                              "this run resumes it and records the failed attempt(s)")
     args = parser.parse_args()
-    contract = {"schema": "ax-engine.flash-next.fresh-delivery.v2", "repo_id": native.PRIMARY_REPO,
+    contract = {"schema": SCHEMA, "repo_id": native.PRIMARY_REPO,
                 "revision": native.PACK_REVISION, "alias": ALIAS, "published_members": PUBLISHED_MEMBERS,
                 "published_bytes": PUBLISHED_BYTES, "control_modes": list(CONTROL_MODES),
                 "downloader": "ax-engine download <alias> --progress-json (product CLI and helper)",
@@ -210,12 +264,28 @@ def main() -> int:
     if not native.is_target_host(chip, memory):
         parser.error(f"live run requires the Flash Next standard host ({native.TARGET_DESCRIPTION})")
     transport = parse_transport(args.transport_env)
+    args.cache_root = args.cache_root.resolve()
+    if args.output.resolve().is_relative_to(args.cache_root):
+        raise ValueError("delivery output must be outside the download cache")
+    if args.cache_root.exists() and not args.cache_root.is_dir():
+        raise ValueError("cache root exists and is not a directory")
+    args.cache_root.mkdir(parents=True, exist_ok=True)
+    with lock_cache(args.cache_root) as descriptor:
+        return run_delivery(args, contract, transport, memory, chip, descriptor)
+
+
+def run_delivery(args: argparse.Namespace, contract: dict[str, Any],
+                 transport: dict[str, str], memory: int, chip: str, descriptor: int) -> int:
+    inventory_bytes = args.inventory.read_bytes()
+    inventory = json.loads(inventory_bytes)
+    inventory_sha256 = hashlib.sha256(inventory_bytes).hexdigest()
     resuming = args.previous_attempt is not None
     started_empty = check_fresh(args.cache_root, resuming)
     fresh, attempts = started_empty, []
+    cache_state = None
     if resuming:
-        fresh, attempts = load_previous_attempts(args.previous_attempt)
-    args.cache_root.mkdir(parents=True, exist_ok=True)
+        cache_state = cache_resume_state(args.cache_root, descriptor)
+        fresh, attempts = load_previous_attempts(args.previous_attempt, cache_state, inventory_sha256)
     storage = native.storage_info(args.cache_root)
     free = shutil.disk_usage(args.cache_root).free
     if free < PUBLISHED_BYTES * SPACE_MARGIN:
@@ -225,11 +295,15 @@ def main() -> int:
                          capture_output=True, text=True)
     if hub.returncode != 0:
         raise ValueError("the downloader interpreter cannot import huggingface_hub")
-    inventory = json.loads(args.inventory.read_text())
     args.output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     with (args.output / "download.ndjson").open("wb") as out, \
             (args.output / "download.stderr.log").open("wb") as err:
+        check_cache_directory(args.cache_root, descriptor)
+        if cache_state is None:
+            check_fresh(args.cache_root, False)
+        elif cache_resume_state(args.cache_root, descriptor) != cache_state:
+            raise ValueError("cache contents changed before resuming delivery")
         done = subprocess.run([str(args.ax_engine), "download", ALIAS, "--progress-json"],
                               stdout=out, stderr=err, env=clean_env(args.cache_root, args.python, args.helper, args.bench_bin,
                                             transport))
@@ -248,7 +322,10 @@ def main() -> int:
         "hardware": {"form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
                      "storage": {"declared": inventory["storage"], **storage},
                      "os": platform.mac_ver()[0]},
-        "server_sha256": sha256_file(args.server_bin), "inventory_sha256": sha256_file(args.inventory)}
+        "server_sha256": sha256_file(args.server_bin), "inventory_sha256": inventory_sha256}
+    check_cache_directory(args.cache_root, descriptor)
+    if done.returncode != 0:
+        record["resume_cache_sha256"] = cache_resume_state(args.cache_root, descriptor)
     (args.output / "result.json").write_text(json.dumps(record, indent=2) + "\n")
     if done.returncode != 0:
         raise RuntimeError(f"downloader exited with {done.returncode}; see download.stderr.log")
@@ -265,6 +342,7 @@ def main() -> int:
     if record["server_sha256"] != sha256_file(args.server_bin):
         raise ValueError("server binary changed during delivery controls")
     native.validate_inventory(snapshot, inventory, args.cache_root)
+    check_cache_directory(args.cache_root, descriptor)
     record["completed"] = True
     (args.output / "result.json").write_text(json.dumps(record, indent=2) + "\n")
     print("Fresh delivery verified; qualification and MTP-S/P/D remain unassessed.")

@@ -2,6 +2,7 @@
 """Weight-free regressions for the Flash Next fresh-delivery harness."""
 from __future__ import annotations
 
+from argparse import Namespace
 import importlib.util
 import json
 from pathlib import Path
@@ -37,13 +38,20 @@ class DeliveryTests(unittest.TestCase):
 
     def test_resuming_carries_the_failed_attempts_and_the_original_fresh_state(self):
         with tempfile.TemporaryDirectory() as td:
+            cache = Path(td) / "cache"
+            cache.mkdir()
+            with mod.lock_cache(cache) as descriptor:
+                cache_state = mod.cache_resume_state(cache, descriptor)
             first = Path(td) / "attempt-1"
             first.mkdir()
-            record = {"schema": "ax-engine.flash-next.fresh-delivery.v2", "completed": False,
+            inventory = "a" * 64
+            record = {"schema": mod.SCHEMA, "completed": False, "repo_id": mod.native.PRIMARY_REPO,
+                      "revision": mod.native.PACK_REVISION, "inventory_sha256": inventory,
+                      "resume_cache_sha256": cache_state,
                       "fresh_cache": True, "download": {"exit_code": 1, "elapsed_seconds": 450.0}}
             (first / "result.json").write_text(json.dumps(record))
             (first / "download.stderr.log").write_text("Error while downloading\nMax retries exceeded.\n")
-            fresh, attempts = mod.load_previous_attempts(first)
+            fresh, attempts = mod.load_previous_attempts(first, cache_state, inventory)
             self.assertTrue(fresh)
             self.assertEqual(attempts[0]["exit_code"], 1)
             self.assertIn("Max retries exceeded.", attempts[0]["stderr_tail"])
@@ -52,18 +60,125 @@ class DeliveryTests(unittest.TestCase):
             (second / "result.json").write_text(json.dumps({
                 **record, "previous_attempts": attempts, "resumed": True,
                 "download": {"exit_code": 1, "elapsed_seconds": 90.0}}))
-            _, chain = mod.load_previous_attempts(second)
+            _, chain = mod.load_previous_attempts(second, cache_state, inventory)
             self.assertEqual([a["exit_code"] for a in chain], [1, 1])
             # A cache that already holds data was not fresh to begin with.
             (first / "result.json").write_text(json.dumps({**record, "fresh_cache": False}))
-            self.assertFalse(mod.load_previous_attempts(first)[0])
+            self.assertFalse(mod.load_previous_attempts(first, cache_state, inventory)[0])
             # Successful or foreign records cannot be resumed.
             (first / "result.json").write_text(json.dumps({**record, "completed": True}))
             with self.assertRaisesRegex(ValueError, "did not fail"):
-                mod.load_previous_attempts(first)
+                mod.load_previous_attempts(first, cache_state, inventory)
             (first / "result.json").write_text(json.dumps({**record, "schema": "other"}))
             with self.assertRaisesRegex(ValueError, "v2 delivery record"):
-                mod.load_previous_attempts(first)
+                mod.load_previous_attempts(first, cache_state, inventory)
+
+    def test_resume_rejects_different_or_modified_cache_and_inventory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cache = root / "cache"
+            cache.mkdir()
+            attempt = root / "attempt"
+            attempt.mkdir()
+            partial = cache / "weight.incomplete"
+            partial.write_bytes(b"first")
+            inventory = "a" * 64
+            with mod.lock_cache(cache) as descriptor:
+                original = mod.cache_resume_state(cache, descriptor)
+                (cache / ".DS_Store").write_bytes(b"finder metadata")
+                self.assertEqual(mod.cache_resume_state(cache, descriptor), original)
+                record = {"schema": mod.SCHEMA, "completed": False, "repo_id": mod.native.PRIMARY_REPO,
+                          "revision": mod.native.PACK_REVISION, "inventory_sha256": inventory,
+                          "download": {"exit_code": 1, "elapsed_seconds": 1},
+                          "fresh_cache": True, "resume_cache_sha256": original}
+                result = attempt / "result.json"
+                result.write_text(json.dumps(record))
+                self.assertTrue(mod.load_previous_attempts(attempt, original, inventory)[0])
+                with self.assertRaisesRegex(ValueError, "different pack inventory"):
+                    mod.load_previous_attempts(attempt, original, "b" * 64)
+                original_stat = partial.stat()
+                replacement = cache / "replacement"
+                replacement.write_bytes(b"other")
+                mod.os.utime(replacement, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+                replacement.replace(partial)
+                changed = mod.cache_resume_state(cache, descriptor)
+                with self.assertRaisesRegex(ValueError, "unchanged cache root"):
+                    mod.load_previous_attempts(attempt, changed, inventory)
+                result.write_text(json.dumps({key: value for key, value in record.items()
+                                              if key != "resume_cache_sha256"}))
+                with self.assertRaisesRegex(ValueError, "unchanged cache root"):
+                    mod.load_previous_attempts(attempt, original, inventory)
+                result.write_text(json.dumps(record))
+            another = root / "another"
+            another.mkdir()
+            (another / partial.name).write_bytes(b"first")
+            with mod.lock_cache(another) as descriptor:
+                unrelated = mod.cache_resume_state(another, descriptor)
+                with self.assertRaisesRegex(ValueError, "unchanged cache root"):
+                    mod.load_previous_attempts(attempt, unrelated, inventory)
+
+    def test_shared_cache_lock_refuses_concurrent_owner_and_detects_path_replacement(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "cache"
+            root.mkdir()
+            with mod.lock_cache(root) as descriptor:
+                with self.assertRaisesRegex(ValueError, "another delivery"):
+                    with mod.lock_cache(root):
+                        self.fail("overlapping delivery acquired the lock")
+                root.rename(root.with_name("moved"))
+                root.mkdir()
+                with self.assertRaisesRegex(ValueError, "cache root changed"):
+                    mod.cache_resume_state(root, descriptor)
+            with mod.lock_cache(root) as descriptor:
+                mod.check_cache_directory(root, descriptor)
+
+    def test_failed_download_binds_local_cache_for_next_attempt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cache = root / "cache"
+            cache.mkdir()
+            cli = root / "ax-engine"
+            cli.touch()
+            inventory = root / "inventory.json"
+            inventory.write_text('{"storage":"internal SSD"}')
+            args = Namespace(cache_root=cache, previous_attempt=None, ax_engine=cli, python=Path(sys.executable),
+                             helper=None, bench_bin=None, inventory=inventory, server_bin=cli, output=root / "first")
+            contract = {"schema": mod.SCHEMA, "repo_id": mod.native.PRIMARY_REPO,
+                        "revision": mod.native.PACK_REVISION}
+
+            def failed_download(command, **kwargs):
+                if command[1] == "-c":
+                    return subprocess.CompletedProcess(command, 0, stdout="test-hub")
+                (cache / "download.incomplete").write_bytes(b"partial")
+                return subprocess.CompletedProcess(command, 1)
+
+            with (patch.object(mod.native, "storage_info", return_value={}),
+                  patch.object(mod.native, "form_factor", return_value="MacBook Pro"),
+                  patch.object(mod.shutil, "disk_usage", return_value=Namespace(free=1 << 40)),
+                  patch.object(mod.subprocess, "run", side_effect=failed_download) as subprocess_run,
+                  mod.lock_cache(cache) as descriptor):
+                with self.assertRaisesRegex(RuntimeError, "downloader exited"):
+                    mod.run_delivery(args, contract, {}, 128 << 30, "Apple M5 Max", descriptor)
+                receipt = json.loads((args.output / "result.json").read_text())
+                cache_state = mod.cache_resume_state(cache, descriptor)
+                self.assertFalse(receipt["completed"])
+                self.assertEqual(receipt["resume_cache_sha256"], cache_state)
+                fresh, attempts = mod.load_previous_attempts(args.output, cache_state, mod.sha256_file(inventory))
+                self.assertTrue(fresh)
+                self.assertEqual(len(attempts), 1)
+                self.assertNotIn(str(cache), json.dumps(receipt))
+
+                def populate_during_preflight(command, **kwargs):
+                    (cache / "unrelated").write_bytes(b"pre-existing weights")
+                    return subprocess.CompletedProcess(command, 0, stdout="test-hub")
+
+                args.previous_attempt = args.output
+                args.output = root / "second"
+                subprocess_run.reset_mock(side_effect=True)
+                subprocess_run.side_effect = populate_during_preflight
+                with self.assertRaisesRegex(ValueError, "cache contents changed"):
+                    mod.run_delivery(args, contract, {}, 128 << 30, "Apple M5 Max", descriptor)
+                self.assertEqual(subprocess_run.call_count, 1)
 
     def test_snapshot_dir_requires_exactly_the_pinned_revision(self):
         with tempfile.TemporaryDirectory() as td:
