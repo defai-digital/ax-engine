@@ -83,6 +83,7 @@ impl SchedulerInput {
 pub struct PrefillSplitGeometry {
     pub logical_tokens: u32,
     pub physical_tokens: u32,
+    pub min_prompt_tokens: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,7 +103,11 @@ impl PrefillSplit {
         let logical = self.geometry.logical_tokens;
         let end = match self.end {
             Some(end) => end,
-            None if alongside_decode && budget >= logical && cursor.is_multiple_of(logical) => {
+            None if alongside_decode
+                && snapshot.prompt_len >= self.geometry.min_prompt_tokens
+                && budget >= logical
+                && cursor.is_multiple_of(logical) =>
+            {
                 cursor.checked_add(logical)?
             }
             None => return None,
@@ -1310,6 +1315,37 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn physical_prefill_split_minimum_applies_only_to_new_items() {
+        let split = PrefillSplit {
+            geometry: PrefillSplitGeometry {
+                logical_tokens: 2048,
+                physical_tokens: 512,
+                min_prompt_tokens: 8192,
+            },
+            end: None,
+        };
+        for length in [512, 2048, 8191] {
+            let snapshot = make_snapshot(1, 1, "flash", &vec![7; length], 0, &[], 8);
+            assert_eq!(split.next(&snapshot, true, 2048), None);
+        }
+        let prompt = vec![7; 8192];
+        let initial = make_snapshot(1, 1, "flash", &prompt, 0, &[], 8);
+        assert_eq!(split.next(&initial, true, 2048), Some((2048, 512)));
+        assert_eq!(split.next(&initial, false, 2048), None);
+        assert_eq!(split.next(&initial, true, 2047), None);
+        let last_item = make_snapshot(1, 1, "flash", &prompt, 6144, &[], 8);
+        assert_eq!(split.next(&last_item, true, 2048), Some((8192, 512)));
+        let active = PrefillSplit {
+            end: Some(8192),
+            ..split
+        };
+        for (cursor, width) in [(6656, 512), (7168, 512), (7680, 511), (8191, 1)] {
+            let snapshot = make_snapshot(1, 1, "flash", &prompt, cursor, &[], 8);
+            assert_eq!(active.next(&snapshot, false, 512), Some((8192, width)));
+        }
+    }
+
+    #[test]
     fn physical_prefill_split_defers_an_entire_forward_under_pressure() {
         let snapshot = make_snapshot(1, 1, "flash", &vec![7; 2049], 1024, &[], 8);
         let mut input = SchedulerInput::new(
@@ -1324,6 +1360,7 @@ mod tests {
                 geometry: PrefillSplitGeometry {
                     logical_tokens: 2048,
                     physical_tokens: 512,
+                    min_prompt_tokens: 2048,
                 },
                 end: Some(2048),
             },

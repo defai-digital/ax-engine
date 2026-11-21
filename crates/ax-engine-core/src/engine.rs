@@ -4059,6 +4059,7 @@ mod tests {
             Some(PrefillSplitGeometry {
                 logical_tokens: 2048,
                 physical_tokens: 512,
+                min_prompt_tokens: 2048,
             })
         }
     }

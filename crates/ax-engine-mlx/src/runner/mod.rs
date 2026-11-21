@@ -5227,6 +5227,11 @@ impl ExecutionRunner for MlxRunner {
         Some(PrefillSplitGeometry {
             logical_tokens: logical as u32,
             physical_tokens: physical as u32,
+            min_prompt_tokens: if crate::fastpath::flash_next_prefill_split_long_only() {
+                8192
+            } else {
+                logical as u32
+            },
         })
     }
 
