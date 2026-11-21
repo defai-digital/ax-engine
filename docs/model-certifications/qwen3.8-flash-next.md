@@ -24,7 +24,18 @@ from **Apple M2 Ultra, 192 GB**. The 2026-10-05 direct-default release gates
 were measured on that larger host and stay bound to it. The M5 Max
 [release record for signed v7.9.0](../../benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)
 is a separate run and applies to that release and pack revision. Last reviewed:
-**2026-11-20**.
+**2026-11-21**.
+
+In v8.1.0, the native server recognizes the published MXFP4 pack metadata on
+the standard host (hardware model `Mac17,6`). An ordinary launch defaults to
+one active engine job for Flash Next and a 32,768-token budget shared by
+prompt and output. Explicit concurrency and KV settings take precedence,
+including a concurrency value of `0` to remove the corresponding cap. The
+32,768-token default requires an effective one-job cap, direct decoding and
+the standard block size. An unlimited or higher effective cap, required MTP,
+forced expert streaming or a custom KV block size uses the general block pool
+unless `--total-blocks` is set. Other hosts and packs use the general server
+defaults. See the [startup envelope controls](../../benchmarks/results/flash-next-mxfp4-startup-envelope-20261121/README.md).
 
 **MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
 pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
@@ -172,8 +183,8 @@ processes because the host showed time-varying interference; prefill arithmetic 
 long prompts changed and there is no teacher-forced comparison against the official
 graphs on this pack revision. Not covered: model MTP (MTP-S/P/D), MXFP8, NAS or
 other storage, other hosts, endurance, multi-model residency and multimodal use. The
-16,384-token default KV pool is unchanged; use `--total-blocks 4096` for contexts up
-to 65,536 tokens.
+release's 16,384-token default KV pool required `--total-blocks 4096` to
+configure up to 65,536 tokens for that campaign.
 
 Image input is a functional preview outside this certification. The pack's
 Qwen3-VL style vision tower (333 BF16 `vision_tower.*` tensors, about 0.85 GB)

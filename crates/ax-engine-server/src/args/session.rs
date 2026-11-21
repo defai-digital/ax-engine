@@ -123,7 +123,7 @@ impl ServerArgs {
         EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             cache_group_id: ax_engine_sdk::CacheGroupId(self.cache_group_id),
             block_size_tokens: self.block_size_tokens,
-            total_blocks: self.total_blocks,
+            total_blocks: self.total_blocks.unwrap_or(1024),
             deterministic: self.deterministic,
             max_batch_tokens: effective_max_batch_tokens,
             max_output_tokens: self.max_output_tokens,

@@ -243,7 +243,7 @@ impl AppState {
     pub(crate) fn publish_live(&self, mut new: LiveState, make_default: bool) -> Option<LiveState> {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
         new.admission = Arc::new(AdmissionController::new(
-            self.limits.max_concurrent_requests_per_model,
+            self.limits.model_admission_limit(&new.session_config),
         ));
         attach_live_state(
             &new,
@@ -272,7 +272,7 @@ impl AppState {
     pub(crate) fn swap_live(&self, mut new: LiveState) -> LiveState {
         new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
         new.admission = Arc::new(AdmissionController::new(
-            self.limits.max_concurrent_requests_per_model,
+            self.limits.model_admission_limit(&new.session_config),
         ));
         attach_live_state(
             &new,
@@ -419,7 +419,7 @@ impl AppState {
         self.admission = Arc::new(AdmissionController::new(limits.max_concurrent_requests));
         for live in self.live.write().models.values_mut() {
             live.admission = Arc::new(AdmissionController::new(
-                limits.max_concurrent_requests_per_model,
+                limits.model_admission_limit(&live.session_config),
             ));
         }
         self.limits = Arc::new(limits);
@@ -549,6 +549,7 @@ fn record_terminal_request_owner(
 pub(crate) struct ServerLimits {
     pub(crate) max_concurrent_requests: Option<usize>,
     pub(crate) max_concurrent_requests_per_model: Option<usize>,
+    pub(crate) model_serving_defaults: Option<crate::args::ModelServingDefaults>,
     pub(crate) max_request_body_bytes: usize,
     pub(crate) request_timeout: Option<Duration>,
     pub(crate) grpc_request_timeout: Option<Duration>,
@@ -557,11 +558,34 @@ pub(crate) struct ServerLimits {
     pub(crate) generate_max_duration: Option<Duration>,
 }
 
+impl ServerLimits {
+    pub(crate) fn configure_model(&self, config: &mut EngineSessionConfig) {
+        if let Some(defaults) = self.model_serving_defaults {
+            defaults.apply(
+                config,
+                self.max_concurrent_requests,
+                self.max_concurrent_requests_per_model,
+            );
+        }
+    }
+
+    fn model_admission_limit(&self, config: &EngineSessionConfig) -> Option<usize> {
+        self.max_concurrent_requests_per_model.or_else(|| {
+            if self.model_serving_defaults.is_some() && self.max_concurrent_requests.is_none() {
+                config.max_concurrent_requests
+            } else {
+                None
+            }
+        })
+    }
+}
+
 impl Default for ServerLimits {
     fn default() -> Self {
         Self {
             max_concurrent_requests: None,
             max_concurrent_requests_per_model: None,
+            model_serving_defaults: None,
             max_request_body_bytes: crate::DEFAULT_MAX_REQUEST_BODY_BYTES,
             request_timeout: None,
             grpc_request_timeout: None,

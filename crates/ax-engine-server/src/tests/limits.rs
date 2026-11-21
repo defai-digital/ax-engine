@@ -1,5 +1,5 @@
 use crate::admission::AdmissionError;
-use crate::app_state::{ServerLimits, build_live_state};
+use crate::app_state::{AppState, ServerLimits, build_live_state};
 use crate::grpc::AxEngineGrpcService;
 use crate::grpc::proto;
 use crate::grpc::proto::ax_engine_server::AxEngine;
@@ -26,9 +26,32 @@ async fn concurrency_limit_is_shared_by_http_and_grpc_engine_jobs() {
         max_concurrent_requests: Some(1),
         ..Default::default()
     });
+    assert_http_and_grpc_share_admission(state).await;
+}
+
+#[tokio::test]
+async fn model_config_limit_is_shared_by_http_and_grpc_engine_jobs() {
+    use clap::Parser;
+
+    let base = llama_cpp_state().snapshot();
+    let mut config = base.session_config.as_ref().clone();
+    let args = crate::args::ServerArgs::try_parse_from(["ax-engine-server"])
+        .expect("default server arguments should parse");
+    let limits = ServerLimits {
+        model_serving_defaults: Some(args.model_serving_defaults(&config)),
+        ..Default::default()
+    };
+    config.max_concurrent_requests = Some(1);
+    let env = crate::args::ServerEnvConfig::default();
+    let live = build_live_state(base.model_id.as_ref().clone(), config, &env)
+        .expect("model with a local cap should build");
+    let state = AppState::new(live, env).with_limits(limits);
+    assert_http_and_grpc_share_admission(state).await;
+}
+
+async fn assert_http_and_grpc_share_admission(state: AppState) {
     let held_permit = state
-        .admission
-        .try_admit()
+        .try_admit(&state.snapshot())
         .expect("first engine job should be admitted");
     let app = build_router(state.clone());
 

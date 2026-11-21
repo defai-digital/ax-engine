@@ -4,12 +4,14 @@ use std::path::PathBuf;
 
 mod artifacts;
 pub(crate) mod env_config;
+mod flash_next;
 mod presets;
 mod session;
 
 pub use presets::{ServerPreset, render_presets};
 
 pub(crate) use env_config::ServerEnvConfig;
+pub(crate) use flash_next::ModelServingDefaults;
 
 pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
 pub const DEFAULT_INFERENCE_PORT: u16 = 31_418;
@@ -167,8 +169,9 @@ pub struct ServerArgs {
     #[arg(long = "block-size-tokens", default_value_t = 16)]
     pub block_size_tokens: u32,
 
-    #[arg(long = "total-blocks", default_value_t = 1024)]
-    pub total_blocks: u32,
+    /// KV pool blocks. Defaults to 1024, or 2048 for the standard Flash Next profile.
+    #[arg(long = "total-blocks")]
+    pub total_blocks: Option<u32>,
 
     #[arg(long = "mlx", default_value_t = false)]
     pub mlx: bool,
@@ -299,20 +302,21 @@ pub struct ServerArgs {
     #[arg(long = "grpc-bind-address")]
     pub grpc_bind_address: Option<String>,
 
-    /// Opt-in cap on engine jobs shared by HTTP and gRPC. A permit remains
+    /// Cap on engine jobs shared by HTTP and gRPC. A permit remains
     /// held until blocking generation, streaming, embedding, or stepwise work
     /// reaches a terminal state, even if its transport times out or disconnects.
-    /// Unset (or non-positive) means no limit. Falls back to
-    /// AX_ENGINE_MAX_CONCURRENT_REQUESTS. Saturated HTTP calls receive 429 and
-    /// saturated gRPC calls receive RESOURCE_EXHAUSTED.
+    /// Falls back to AX_ENGINE_MAX_CONCURRENT_REQUESTS. Unset or 0 means no
+    /// process-wide cap. Saturated HTTP calls receive 429 and saturated gRPC
+    /// calls receive RESOURCE_EXHAUSTED.
     #[arg(long = "max-concurrent-requests")]
     pub max_concurrent_requests: Option<usize>,
 
-    /// Opt-in cap on concurrent engine jobs for each loaded model. This is
+    /// Cap on concurrent engine jobs for each loaded model. This is
     /// enforced in addition to the process-wide cap, so one hot model cannot
-    /// consume every configured slot. Unset (or non-positive) means no
-    /// per-model cap. Falls back to
-    /// AX_ENGINE_MAX_CONCURRENT_REQUESTS_PER_MODEL.
+    /// consume every configured slot. Falls back to
+    /// AX_ENGINE_MAX_CONCURRENT_REQUESTS_PER_MODEL. With no explicit
+    /// concurrency settings, the standard Flash Next profile defaults to one
+    /// job for that model. A value of 0 disables the per-model cap.
     #[arg(long = "max-concurrent-requests-per-model")]
     pub max_concurrent_requests_per_model: Option<usize>,
 

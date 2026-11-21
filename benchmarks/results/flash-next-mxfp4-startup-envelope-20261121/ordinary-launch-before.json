@@ -1,0 +1,43 @@
+{
+  "mode": "baseline",
+  "server_sha256": "405b98b07e1e88a1f541cf531916a2f9466ec7bcce974e88a3a8c96dfaca7f1c",
+  "model_id": "qwen3.8-flash-next",
+  "context_length": 16384,
+  "ready_seconds": 60.58,
+  "memory_plan": "resident-non-expert=15.70GiB expert=59.77GiB ngram-table=47.68GiB(not-resident) kv=384.00MiB hybrid-state=1.40GiB prefill-scratch=1.69GiB mlx-buffer-cache=2.00GiB runtime-reserve=1.00GiB host-ram=128.00GiB metal-recommended=107.52GiB metal-recommended-exceeded=false wired-limit=96.77GiB wired-shortfall=0B live-sequences=8 live-sequence-cap=uncapped os-reserve=12.80GiB ceiling-source=ram ceiling=115.20GiB working-set=81.94GiB decision=resident",
+  "context_overflow": {
+    "status": 400,
+    "payload": {
+      "error": {
+        "type": "invalid_request_error",
+        "code": "context_length_exceeded",
+        "param": null,
+        "message": "request prompt requires 16384 tokens, leaving no room for output within model context length 16384"
+      }
+    }
+  },
+  "completion": {
+    "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 30,
+      "completion_tokens": 37,
+      "total_tokens": 67,
+      "ax_engine": {
+        "metrics_version": 1,
+        "prefill_tokens": 30,
+        "prefill_time_us": 311360,
+        "decode_tokens": 36,
+        "decode_time_us": 743060
+      }
+    }
+  },
+  "drained": {
+    "ax_engine_jobs_in_flight": 0.0,
+    "ax_engine_generation_jobs_pending": 0.0,
+    "ax_engine_generation_commands_queued": 0.0,
+    "ax_engine_generation_active_streams": 0.0,
+    "ax_engine_generation_buffered_stream_events": 0.0
+  },
+  "verified_steps": 0.0
+}

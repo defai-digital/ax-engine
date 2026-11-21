@@ -264,7 +264,8 @@ pub(crate) async fn load_model(
         let outgoing = state.snapshot();
         ensure_no_active_stepwise(&outgoing.generation_service).await?;
     }
-    let live = validate_load_preflight(&state, &model_id, &model_path, load_mode, load_policy)?;
+    let (live, mut new_config) =
+        validate_load_preflight(&state, &model_id, &model_path, load_mode, load_policy)?;
     let resident_count = state.model_ids().len();
     let multi_model_after_load = match load_mode {
         LoadModelMode::Add => resident_count.saturating_add(1) > 1,
@@ -296,11 +297,6 @@ pub(crate) async fn load_model(
                 Arc::clone(&live.session_config),
             )
         });
-        // Clone the current config and swap in the new model artifacts dir.
-        // Only MLX-native consumes this field; delegated backends would keep
-        // serving the old model under a new identifier.
-        let mut new_config = Arc::unwrap_or_clone(Arc::clone(&live.session_config))
-            .with_mlx_model_artifacts_dir(model_path);
         if enforce_prefill_isolation && !new_config.multi_prefill_fair {
             let quantum = multi_model_prefill_quantum(&new_config);
             new_config = new_config.with_multi_prefill_fair(quantum, 0);
@@ -710,7 +706,7 @@ fn validate_load_preflight(
     model_path: &std::path::Path,
     load_mode: LoadModelMode,
     load_policy: LoadModelPolicy,
-) -> Result<crate::app_state::LiveState, HttpErrorResponse> {
+) -> Result<(crate::app_state::LiveState, EngineSessionConfig), HttpErrorResponse> {
     let live = state.snapshot();
     if !live
         .session_config
@@ -775,8 +771,20 @@ fn validate_load_preflight(
             }
         }
     }
-    validate_load_memory_preflight(state, model_path, load_mode, load_policy)?;
-    Ok(live)
+    let mut new_config = live
+        .session_config
+        .as_ref()
+        .clone()
+        .with_mlx_model_artifacts_dir(model_path.to_path_buf());
+    state.limits.configure_model(&mut new_config);
+    validate_load_memory_preflight(
+        state,
+        model_path,
+        &new_config.kv_config,
+        load_mode,
+        load_policy,
+    )?;
+    Ok((live, new_config))
 }
 
 /// Reads and deserializes the model manifest's KV-geometry projection from
@@ -945,6 +953,7 @@ fn mlx_device_active_bytes() -> Option<u64> {
 fn validate_load_memory_preflight(
     state: &AppState,
     model_path: &std::path::Path,
+    incoming_kv_config: &KvManagerConfig,
     load_mode: LoadModelMode,
     load_policy: LoadModelPolicy,
 ) -> Result<(), HttpErrorResponse> {
@@ -958,15 +967,12 @@ fn validate_load_memory_preflight(
     let Some(incoming_weights) = model_weight_bytes(model_path) else {
         return Ok(());
     };
-    // The incoming session inherits the default model's config (see the
-    // load task), so its KV pool is sized from that config.
-    let default_live = state.snapshot();
-    let incoming_pool = kv_pool_tokens(&default_live.session_config.kv_config);
+    let incoming_pool = kv_pool_tokens(incoming_kv_config);
     let incoming_kv = manifest_kv_geometry(model_path)
         .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
     let incoming = estimated_footprint_bytes(incoming_weights, incoming_kv);
 
-    let outgoing_model_id = default_live.model_id;
+    let outgoing_model_id = state.snapshot().model_id;
     let mut resident_total = 0u64;
     let mut outgoing = 0u64;
     for live in state.snapshots() {

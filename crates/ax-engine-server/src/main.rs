@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effective_model_id()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     let support_tier = args.effective_support_tier();
-    let session_config = args
+    let mut session_config = args
         .session_config()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     log_host_detection_warnings(&session_config);
@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let limits = ServerLimits {
         max_concurrent_requests: args.resolved_max_concurrent_requests(),
         max_concurrent_requests_per_model: args.resolved_max_concurrent_requests_per_model(),
+        model_serving_defaults: Some(args.model_serving_defaults(&session_config)),
         max_request_body_bytes: args.resolved_max_request_body_bytes(),
         request_timeout: args.resolved_request_timeout(),
         grpc_request_timeout: args.resolved_grpc_request_timeout(),
@@ -115,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stream_deadlines: args.resolved_stream_deadlines(),
         generate_max_duration: args.resolved_generate_max_duration(),
     };
+    limits.configure_model(&mut session_config);
     let api_key = args.resolved_api_key();
     let discovery_instance_id = new_instance_id();
     let lan_cluster = args.resolved_lan_cluster();

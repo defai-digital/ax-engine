@@ -47,7 +47,8 @@ Product SKUs:
 - **Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)** — optimized on M5-class Macs (32 GB+ recommended). The existing qualification record was measured on a Mac mini M4 Pro 64 GB, a supported M4-tier configuration; MXFP4 SKU qualification pending
 - **Qwen 3.8 Flash Next MXFP4 MTP** (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending.
   `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned
-  MXFP4 MTP pack. Start the server with `--max-concurrent-requests 1`.
+  MXFP4 MTP pack. Launching this pack on the standard host defaults to one
+  engine job and a 32,768-token context budget, including output tokens.
 - **Mac Studio, Ultra-class Apple Silicon with 192 GB+ RAM** (M3 Ultra or newer; M2 Ultra is best-effort) — larger-memory host for the same Flash Next pack.
   The 2026-10-05 direct-default release gates were measured here and stay bound to this host.
 

@@ -284,7 +284,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         max_output_tokens: None,
         cache_group_id: 0,
         block_size_tokens: 16,
-        total_blocks: 1024,
+        total_blocks: None,
         mlx: false,
         support_tier: args::PreviewSupportTier::LlamaCpp,
         llama_cli_path: "llama-cli".to_string(),

@@ -56,7 +56,7 @@ fn base_args() -> ServerArgs {
         max_output_tokens: None,
         cache_group_id: 0,
         block_size_tokens: 16,
-        total_blocks: 1024,
+        total_blocks: None,
         mlx: false,
         support_tier: PreviewSupportTier::MlxPreview,
         llama_cli_path: "llama-cli".to_string(),
@@ -183,7 +183,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
     let args = ServerArgs {
         model_id: "qwen3".to_string(),
         cache_group_id: 3,
-        total_blocks: 2048,
+        total_blocks: Some(2048),
         support_tier: PreviewSupportTier::MlxPreview,
         ..base_args()
     };
@@ -233,7 +233,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         deterministic: false,
         max_batch_tokens: 1024,
         cache_group_id: 9,
-        total_blocks: 512,
+        total_blocks: Some(512),
         support_tier: PreviewSupportTier::LlamaCpp,
         llama_server_url: Some("http://127.0.0.1:8088".to_string()),
         ..base_args()
@@ -453,7 +453,7 @@ fn session_config_preserves_explicit_mlx_model_artifacts_dir() {
         port: 8081,
         max_batch_tokens: 1024,
         cache_group_id: 9,
-        total_blocks: 512,
+        total_blocks: Some(512),
         support_tier: PreviewSupportTier::MlxPreview,
         mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
         ..base_args()
@@ -1524,7 +1524,7 @@ fn session_config_preserves_explicit_gguf_model_path_source() {
         port: 8081,
         max_batch_tokens: 1024,
         cache_group_id: 9,
-        total_blocks: 512,
+        total_blocks: Some(512),
         support_tier: PreviewSupportTier::MlxPreview,
         mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
         ..base_args()
