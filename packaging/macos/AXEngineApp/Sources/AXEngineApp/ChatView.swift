@@ -374,12 +374,10 @@ private struct MarkdownMessage: View {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
     }
     var body: some View {
-        let parts = text.components(separatedBy: "```")
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                if index % 2 == 1 {
-                    let code = CodeFence.body(part)
-                    let language = CodeFence.language(part)
+            ForEach(Array(MarkdownBlocks.split(text).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .code(let language, let code):
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(language ?? "code").font(.system(size: 11)).foregroundStyle(Brand.text3)
@@ -394,16 +392,11 @@ private struct MarkdownMessage: View {
                     .padding(14)
                     .background(Brand.inset, in: RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous).strokeBorder(Brand.hairlineColor))
-                } else {
-                    ForEach(Array(MarkdownBlocks.split(part).enumerated()), id: \.offset) { _, block in
-                        switch block {
-                        case .heading(let level, let text):
-                            Text(inline(text)).font(.system(size: level == 1 ? 18 : level == 2 ? 15.5 : 14, weight: .bold))
-                                .padding(.top, 4).textSelection(.enabled)
-                        case .text(let text):
-                            Text(inline(text)).font(.system(size: 13.5)).lineSpacing(3).textSelection(.enabled)
-                        }
-                    }
+                case .heading(let level, let text):
+                    Text(inline(text)).font(.system(size: level == 1 ? 18 : level == 2 ? 15.5 : 14, weight: .bold))
+                        .padding(.top, 4).textSelection(.enabled)
+                case .text(let text):
+                    Text(inline(text)).font(.system(size: 13.5)).lineSpacing(3).textSelection(.enabled)
                 }
             }
         }
@@ -426,22 +419,6 @@ struct CopyButton: View {
         } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 11.5)) }
         .buttonStyle(.plain).foregroundStyle(Brand.text3).help(copied ? "Copied" : label)
         .accessibilityLabel(copied ? "Copied" : label)
-    }
-}
-
-enum CodeFence {
-    /// The fence's language tag ("rust"), when it has one.
-    static func language(_ fenced: String) -> String? {
-        guard let newline = fenced.firstIndex(of: "\n") else { return nil }
-        let info = String(fenced[..<newline]).trimmingCharacters(in: .whitespaces)
-        return body(fenced) != fenced && !info.isEmpty ? info : nil
-    }
-    /// The code inside a fence, without a language tag on its first line.
-    static func body(_ fenced: String) -> String {
-        guard let newline = fenced.firstIndex(of: "\n") else { return fenced }
-        let info = String(fenced[..<newline])
-        let isLanguageTag = info.count <= 24 && info.range(of: #"^[A-Za-z0-9+#._-]*$"#, options: .regularExpression) != nil
-        return isLanguageTag ? String(fenced[fenced.index(after: newline)...]) : fenced
     }
 }
 

@@ -47,4 +47,23 @@ import Testing
     let blocks = MarkdownBlocks.split("# Title\nfirst line\nsecond\n\n## Part\n#hashtag stays text\n")
     #expect(blocks == [.heading(1, "Title"), .text("first line\nsecond"), .heading(2, "Part"), .text("#hashtag stays text")])
     #expect(MarkdownBlocks.split("") == [])
+    #expect(MarkdownBlocks.split("# Title\r\nBody\r\n") == [.heading(1, "Title"), .text("Body")])
+}
+
+@Test func markdownBlocksKeepNestedFencesAndHeadingsInsideCode() {
+    let reply = "# Example\r\n````markdown\r\n# Literal heading\r\n```swift\r\nlet x = 1\r\n```\r\n````\r\n## Done"
+    #expect(MarkdownBlocks.split(reply) == [
+        .heading(1, "Example"),
+        .code(language: "markdown", body: "# Literal heading\n```swift\nlet x = 1\n```\n"),
+        .heading(2, "Done"),
+    ])
+}
+
+@Test func markdownBlocksKeepInlineBackticksAndRenderAnOpenFenceDuringStreaming() {
+    let reply = "Use `` `quoted` `` here.\n  ~~~python options\n  print(1)\n  ```\n  # comment"
+    #expect(MarkdownBlocks.split(reply) == [
+        .text("Use `` `quoted` `` here."),
+        .code(language: "python", body: "print(1)\n```\n# comment"),
+    ])
+    #expect(MarkdownBlocks.split("```\nplain\n```") == [.code(language: nil, body: "plain\n")])
 }

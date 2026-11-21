@@ -45,13 +45,6 @@ private func tempSettings() throws -> (URL, URL) {
     #expect(app.startBlockReason != nil)
 }
 
-@Test func codeFenceDropsOnlyALanguageTag() {
-    #expect(CodeFence.body("swift\nlet x = 1\n") == "let x = 1\n")
-    #expect(CodeFence.body("\nplain\n") == "plain\n")
-    #expect(CodeFence.body("let x = 1\nprint(x)") == "let x = 1\nprint(x)")
-    #expect(CodeFence.body("single line") == "single line")
-}
-
 @Test @MainActor func menuBarInsertionDoesNotRepublishUnchangedValues() throws {
     let (root, file) = try tempSettings(); defer { try? FileManager.default.removeItem(at: root) }
     let app = ApplicationModel(settingsURL: file)
