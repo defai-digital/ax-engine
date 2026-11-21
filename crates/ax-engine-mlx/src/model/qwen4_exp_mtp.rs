@@ -35,7 +35,7 @@ use mlx_sys::{
 mod canonical_tests;
 
 #[cfg(test)]
-#[path = "qwen4_exp_mtp_runner_audit.rs"]
+#[path = "qwen4_exp_mtp_runner_audit_tests.rs"]
 pub(crate) mod runner_audit;
 
 fn norm(input: &MlxArray, gain: &MlxArray, eps: f32) -> MlxArray {
