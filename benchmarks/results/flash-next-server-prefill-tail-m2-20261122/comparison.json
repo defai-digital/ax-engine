@@ -1,0 +1,23 @@
+{
+  "scope": "M2 functional",
+  "qualification": false,
+  "runtime_commit": "2b905c012787e84fed75961674c5dd388e34e2d8",
+  "arms": {
+    "physical-1": {
+      "matching_generated_ids": 192,
+      "normal_pressure_samples": 265,
+      "held_decode_steps": 0,
+      "prefill_overlapped": true
+    },
+    "held-1": {
+      "matching_generated_ids": 192,
+      "normal_pressure_samples": 220,
+      "held_decode_steps": 1,
+      "prefill_overlapped": false
+    }
+  },
+  "differs_from_m5_archive_by_prompt": {
+    "512": true,
+    "8192": true
+  }
+}
