@@ -155,20 +155,38 @@ pub fn load_safetensors_filtered_from_file(
     load_safetensors_mmap_open_file(path, file, Some(filter))
 }
 
-/// Materialize selected tensors through page-aligned Darwin reads into owned arrays.
+/// Materialize selected tensors with page-aligned reads that use the file cache.
+#[cfg(target_os = "macos")]
+pub fn load_safetensors_filtered_aligned_buffered(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_filtered_aligned(path, filter, false)
+}
+
+/// Materialize selected tensors with page-aligned reads that bypass the file cache.
 #[cfg(target_os = "macos")]
 pub fn load_safetensors_filtered_aligned_nocache(
     path: &Path,
     filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_filtered_aligned(path, filter, true)
+}
+
+#[cfg(target_os = "macos")]
+fn load_safetensors_filtered_aligned(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+    nocache: bool,
 ) -> Result<HashMap<String, MlxArray>, String> {
     use std::os::fd::AsRawFd;
 
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     // File-local cache policy. The staged reads verify 16 KiB alignment before using the buffer.
     if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } != 16 * 1024 {
-        return Err("aligned no-cache tensor reads require 16 KiB pages".into());
+        return Err("aligned tensor reads require 16 KiB pages".into());
     }
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
+    if nocache && unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
         return Err(format!(
             "F_NOCACHE {}: {}",
             path.display(),
@@ -459,18 +477,21 @@ mod tests {
         drop(file);
 
         let selected = HashSet::from(["packed".into(), "empty".into(), "bools".into()]);
-        let loaded = load_safetensors_filtered_aligned_nocache(
-            &path,
-            SafetensorsNameFilter::Keep(&selected),
-        )
-        .unwrap();
+        let readers = [
+            load_safetensors_filtered_aligned_buffered,
+            load_safetensors_filtered_aligned_nocache,
+        ];
+        let loaded =
+            readers.map(|load| load(&path, SafetensorsNameFilter::Keep(&selected)).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(loaded.len(), 3);
-        assert_eq!(loaded["empty"].shape(), vec![0]);
-        assert_eq!(loaded["packed"].data_u32(), packed);
-        let booleans = crate::ops::astype(&loaded["bools"], MlxDtype::Uint32, None);
-        eval(&[&booleans]);
-        assert_eq!(booleans.data_u32(), &[0, 1, 1]);
+        for arrays in loaded {
+            assert_eq!(arrays.len(), 3);
+            assert_eq!(arrays["empty"].shape(), vec![0]);
+            assert_eq!(arrays["packed"].data_u32(), packed);
+            let booleans = crate::ops::astype(&arrays["bools"], MlxDtype::Uint32, None);
+            eval(&[&booleans]);
+            assert_eq!(booleans.data_u32(), &[0, 1, 1]);
+        }
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

@@ -394,6 +394,12 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_ALIGNED_NOCACHE"
 );
 
+env_flag!(
+    /// Opt-in page-aligned buffered reads for the resident Flash Next MXFP4 trunk.
+    flash_next_aligned_buffered,
+    "AX_MLX_FLASH_NEXT_ALIGNED_BUFFERED"
+);
+
 /// Whether `AX_MLX_SKIP_MTP_SIDECAR` disables loading `mtp.safetensors`.
 pub fn mtp_sidecar_loading_disabled() -> bool {
     env_flag("AX_MLX_SKIP_MTP_SIDECAR")

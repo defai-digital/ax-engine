@@ -370,9 +370,10 @@ fn load_with_schedule_admission(
         .transpose()?;
     startup.phase("trunk_admission");
     let specs = manifest.tensors.as_slice();
-    let aligned_nocache = use_aligned_resident_reader(
+    let resident_reader = select_resident_reader(
         audited_mx,
         expert_stream.is_some(),
+        crate::fastpath::flash_next_aligned_buffered(),
         crate::fastpath::flash_next_aligned_nocache(),
     );
     let mut name_map = load_resident_tensors(
@@ -381,7 +382,7 @@ fn load_with_schedule_admission(
         weight_index.as_ref(),
         manifest,
         &stream_skip,
-        aligned_nocache,
+        resident_reader,
     )?;
     startup.phase("resident_tensors");
     let mut schedule_index = weight_index.unwrap_or_default();
@@ -1390,15 +1391,31 @@ fn validate_expert_paging_contract(
     Ok((layers, modes))
 }
 
-fn use_aligned_resident_reader(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResidentReader {
+    Mapped,
+    AlignedBuffered,
+    AlignedNoCache,
+}
+
+fn select_resident_reader(
     audited_mx: Option<ExpertQuantizationMode>,
     streaming: bool,
-    requested: bool,
-) -> bool {
-    cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        && requested
-        && !streaming
-        && audited_mx == Some(ExpertQuantizationMode::Mxfp4)
+    buffered: bool,
+    nocache: bool,
+) -> ResidentReader {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        || streaming
+        || audited_mx != Some(ExpertQuantizationMode::Mxfp4)
+    {
+        ResidentReader::Mapped
+    } else if nocache {
+        ResidentReader::AlignedNoCache
+    } else if buffered {
+        ResidentReader::AlignedBuffered
+    } else {
+        ResidentReader::Mapped
+    }
 }
 
 /// Select the exact trunk tensors and their named sidecars before opening
@@ -1409,7 +1426,7 @@ fn load_resident_tensors(
     weight_index: Option<&HashMap<String, PathBuf>>,
     manifest: &NativeModelManifest,
     stream_skip: &HashSet<String>,
-    aligned_nocache: bool,
+    reader: ResidentReader,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
     let mut startup = StartupTrace::new();
     let mut files = std::collections::BTreeMap::<PathBuf, HashSet<String>>::new();
@@ -1450,14 +1467,16 @@ fn load_resident_tensors(
     }
     startup.phase("resident_selection");
     #[cfg(target_os = "macos")]
-    let load = if aligned_nocache {
-        mlx_sys::load_safetensors_filtered_aligned_nocache
-    } else {
-        load_safetensors_filtered
+    let load = match reader {
+        ResidentReader::Mapped => load_safetensors_filtered,
+        ResidentReader::AlignedBuffered => mlx_sys::load_safetensors_filtered_aligned_buffered,
+        ResidentReader::AlignedNoCache => mlx_sys::load_safetensors_filtered_aligned_nocache,
     };
     #[cfg(not(target_os = "macos"))]
     let load = load_safetensors_filtered;
-    tracing::debug!(target: STARTUP_TRACE_TARGET, aligned_nocache, "Flash Next resident reader");
+    tracing::debug!(target: STARTUP_TRACE_TARGET,
+        aligned_nocache = reader == ResidentReader::AlignedNoCache,
+        ?reader, "Flash Next resident reader");
     let mut result = HashMap::new();
     for (path, names) in files {
         let mut shard = StartupTrace(startup.0.map(|_| Instant::now()));
@@ -3221,7 +3240,7 @@ mod tests {
             index.as_ref(),
             &manifest,
             &HashSet::new(),
-            false,
+            ResidentReader::Mapped,
         )
         .unwrap();
         let loaded_names: Vec<_> = {
@@ -3616,19 +3635,38 @@ mod tests {
 
     #[test]
     fn aligned_reader_requires_a_requested_resident_mxfp4_trunk() {
+        use ResidentReader::{AlignedBuffered, AlignedNoCache, Mapped};
         let mx = Some(ExpertQuantizationMode::Mxfp4);
-        assert_eq!(
-            use_aligned_resident_reader(mx, false, true),
-            cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        );
-        assert!(!use_aligned_resident_reader(mx, false, false));
-        assert!(!use_aligned_resident_reader(mx, true, true));
-        assert!(!use_aligned_resident_reader(
-            Some(ExpertQuantizationMode::Mxfp8),
-            false,
-            true
-        ));
-        assert!(!use_aligned_resident_reader(None, false, true));
+        for (buffered, nocache, aligned) in [
+            (false, false, Mapped),
+            (true, false, AlignedBuffered),
+            (false, true, AlignedNoCache),
+            (true, true, AlignedNoCache),
+        ] {
+            let expected = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                aligned
+            } else {
+                Mapped
+            };
+            assert_eq!(
+                select_resident_reader(mx, false, buffered, nocache),
+                expected
+            );
+            assert_eq!(select_resident_reader(mx, true, buffered, nocache), Mapped);
+            assert_eq!(
+                select_resident_reader(
+                    Some(ExpertQuantizationMode::Mxfp8),
+                    false,
+                    buffered,
+                    nocache
+                ),
+                Mapped
+            );
+            assert_eq!(
+                select_resident_reader(None, false, buffered, nocache),
+                Mapped
+            );
+        }
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -3650,9 +3688,13 @@ mod tests {
         shard.extend(values.iter().flat_map(|value| value.to_le_bytes()));
         shard.extend([0; 8]);
         std::fs::write(root.join(&tensor.file), shard).unwrap();
-        for aligned in [false, true] {
+        for reader in [
+            ResidentReader::Mapped,
+            ResidentReader::AlignedBuffered,
+            ResidentReader::AlignedNoCache,
+        ] {
             let loaded =
-                load_resident_tensors(&root, &canonical, None, &manifest, &HashSet::new(), aligned)
+                load_resident_tensors(&root, &canonical, None, &manifest, &HashSet::new(), reader)
                     .unwrap();
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded[name].data_f32(), &values);
