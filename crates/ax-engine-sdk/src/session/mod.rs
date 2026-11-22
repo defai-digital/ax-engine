@@ -1683,11 +1683,7 @@ impl EngineSession {
                 preempted_tokens: step.preempted_tokens,
                 cpu_time_us: step.cpu_time_us,
                 runner_time_us: step.runner_time_us,
-                route: if prefill_advanced {
-                    stream_prefill_split_route(&step, state.request_id)
-                } else {
-                    None
-                },
+                route: stream_prefill_split_route(&step, state.request_id, prefill_advanced),
                 metal_dispatch: None,
                 ..EngineStepReport::default()
             }

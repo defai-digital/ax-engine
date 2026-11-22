@@ -149,14 +149,16 @@ pub struct PrefillLayerGeometry {
     pub total_layers: std::num::NonZeroU32,
 }
 
-pub(crate) const PREFILL_LAYER_PROGRESS_ROUTE_PREFIX: &str = "ax_runner_prefill_layers_completed.";
+pub const PREFILL_LAYER_PROGRESS_ROUTE_PREFIX: &str = "ax_runner_prefill_layers_completed.";
 
 pub fn prefill_layer_progress_route_key(request_id: RequestId) -> String {
     format!("{PREFILL_LAYER_PROGRESS_ROUTE_PREFIX}{}", request_id.0)
 }
 
+pub const PREFILL_LAYER_RESUME_ROUTE_PREFIX: &str = "ax_scheduler_prefill_layers_completed.";
+
 pub fn prefill_layer_resume_route_key(request_id: RequestId) -> String {
-    format!("ax_scheduler_prefill_layers_completed.{}", request_id.0)
+    format!("{PREFILL_LAYER_RESUME_ROUTE_PREFIX}{}", request_id.0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

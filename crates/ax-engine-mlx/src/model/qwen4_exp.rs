@@ -1090,7 +1090,7 @@ fn forward_prepared_rows(
 
 /// Owns the residual and staged cache until the last layer is evaluated. The
 /// original request cache stays at the token boundary throughout suspension.
-struct PreparedForward<'a> {
+pub(crate) struct PreparedForward<'a> {
     tokens: Cow<'a, [u32]>,
     hidden: MlxArray,
     next: Qwen4ExpState,
@@ -1102,12 +1102,46 @@ struct PreparedForward<'a> {
     rows: LogitRows,
 }
 
-enum ForwardAdvance<'a> {
+pub(crate) enum ForwardAdvance<'a> {
     Pending(PreparedForward<'a>),
     Complete(Qwen4ExpOutput),
 }
 
+impl PreparedForward<'static> {
+    pub(crate) fn resident_cache_only(
+        weights: &Qwen4ExpWeights,
+        tokens: &[u32],
+        state: &Qwen4ExpState,
+        owner: u64,
+    ) -> Result<Self, String> {
+        if weights.expert_stream.is_some() || state.has_media() || tokens.len() <= 1 {
+            return Err("layered prefill requires a resident text cache-only forward".into());
+        }
+        let hidden = prepare_text_hidden(weights, tokens, state, owner)?;
+        Self::new(
+            weights,
+            Cow::Owned(tokens.to_vec()),
+            hidden,
+            state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+            ProjectionBatchPolicy::Shared,
+            LogitRows::Skip,
+        )
+    }
+}
+
 impl<'a> PreparedForward<'a> {
+    pub(crate) fn matches_prefill(&self, offset: usize, tokens: &[u32], completed: u32) -> bool {
+        self.next.position == offset
+            && self.tokens.as_ref() == tokens
+            && self.layers_completed == completed as usize
+    }
+
+    pub(crate) fn completed_layers(&self) -> usize {
+        self.layers_completed
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         weights: &Qwen4ExpWeights,
@@ -1135,7 +1169,7 @@ impl<'a> PreparedForward<'a> {
 
     /// Advancing consumes the staged graph. An evaluation error cannot leave
     /// the caller with a partially mutated graph to retry or publish.
-    fn advance(
+    pub(crate) fn advance(
         self,
         weights: &Qwen4ExpWeights,
         owner: u64,

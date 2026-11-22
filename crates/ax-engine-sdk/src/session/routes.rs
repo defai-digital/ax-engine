@@ -1,6 +1,8 @@
 use ax_engine_core::RequestId;
 use ax_engine_core::scheduler::{
-    ExecutionMode, PREFILL_SPLIT_END_ROUTE_PREFIX, prefill_split_end_route_key,
+    ExecutionMode, PREFILL_LAYER_PROGRESS_ROUTE_PREFIX, PREFILL_LAYER_RESUME_ROUTE_PREFIX,
+    PREFILL_SPLIT_END_ROUTE_PREFIX, prefill_layer_progress_route_key,
+    prefill_layer_resume_route_key, prefill_split_end_route_key,
 };
 
 use crate::generate::GenerateRouteReport;
@@ -99,7 +101,8 @@ pub(super) fn native_step_local_route(
     let mut route = GenerateRouteReport::default();
     for (key, value) in &batch.route_metadata.crossover_decisions {
         if *value != 0
-            && ((has_prefill && key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX))
+            && ((has_prefill
+                && (key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX) || is_layer_progress_key(key)))
                 || matches!(
                     key.as_str(),
                     "ax_mlx_flash_next_selected_expert_gathers"
@@ -112,17 +115,37 @@ pub(super) fn native_step_local_route(
     (!route.crossover_decisions.is_empty()).then_some(route)
 }
 
+fn is_layer_progress_key(key: &str) -> bool {
+    key.starts_with(PREFILL_LAYER_PROGRESS_ROUTE_PREFIX)
+        || key.starts_with(PREFILL_LAYER_RESUME_ROUTE_PREFIX)
+}
+
 pub(super) fn stream_prefill_split_route(
     step: &EngineStepReport,
     request_id: u64,
+    prefill_advanced: bool,
 ) -> Option<GenerateRouteReport> {
     let route = step.route.as_ref()?;
-    let key = prefill_split_end_route_key(RequestId(request_id));
-    let end = route.decision(&key).filter(|end| *end > 0)?;
-    Some(GenerateRouteReport {
-        crossover_decisions: [(key, end)].into(),
+    let request_id = RequestId(request_id);
+    let split_key = prefill_split_end_route_key(request_id);
+    let end = route.decision(&split_key).filter(|end| *end > 0)?;
+    let progress_key = prefill_layer_progress_route_key(request_id);
+    let completed = route.decision(&progress_key).filter(|layers| *layers > 0);
+    if !prefill_advanced && completed.is_none() {
+        return None;
+    }
+    let mut result = GenerateRouteReport {
+        crossover_decisions: [(split_key, end)].into(),
         ..GenerateRouteReport::default()
-    })
+    };
+    if let Some(completed) = completed {
+        result.crossover_decisions.insert(progress_key, completed);
+        let resume_key = prefill_layer_resume_route_key(request_id);
+        if let Some(previous) = route.decision(&resume_key) {
+            result.crossover_decisions.insert(resume_key, previous);
+        }
+    }
+    Some(result)
 }
 
 pub(super) fn restrict_prefill_split_telemetry(
@@ -131,14 +154,15 @@ pub(super) fn restrict_prefill_split_telemetry(
 ) {
     let mut allowed_key = None;
     route.crossover_decisions.retain(|key, value| {
-        !key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX)
-            || (*value > 0
-                && request_id.is_some_and(|id| {
-                    key.as_str()
-                        == allowed_key
-                            .get_or_insert_with(|| prefill_split_end_route_key(RequestId(id)))
-                            .as_str()
-                }))
+        !is_layer_progress_key(key)
+            && (!key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX)
+                || (*value > 0
+                    && request_id.is_some_and(|id| {
+                        key.as_str()
+                            == allowed_key
+                                .get_or_insert_with(|| prefill_split_end_route_key(RequestId(id)))
+                                .as_str()
+                    })))
     });
 }
 
@@ -219,6 +243,45 @@ pub(super) fn apply_native_step_route_to_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspended_prefill_route_is_step_local_and_request_scoped() {
+        let request_id = RequestId(41);
+        let peer_id = RequestId(42);
+        let split = prefill_split_end_route_key(request_id);
+        let resume = prefill_layer_resume_route_key(request_id);
+        let progress = prefill_layer_progress_route_key(request_id);
+        let mut batch = GenerateRouteReport {
+            crossover_decisions: [
+                (split.clone(), 2048),
+                (resume.clone(), 8),
+                (progress.clone(), 16),
+            ]
+            .into(),
+            ..GenerateRouteReport::default()
+        };
+        let step = EngineStepReport {
+            route: Some(batch.clone()),
+            ..EngineStepReport::default()
+        };
+        assert_eq!(
+            stream_prefill_split_route(&step, request_id.0, false).unwrap(),
+            batch
+        );
+        assert!(stream_prefill_split_route(&step, peer_id.0, false).is_none());
+
+        restrict_prefill_split_telemetry(&mut batch, Some(request_id.0));
+        assert_eq!(batch.crossover_decisions, [(split, 2048)].into());
+        let completed = EngineStepReport {
+            route: Some(batch.clone()),
+            ..EngineStepReport::default()
+        };
+        assert!(stream_prefill_split_route(&completed, request_id.0, false).is_none());
+        assert_eq!(
+            stream_prefill_split_route(&completed, request_id.0, true).unwrap(),
+            batch
+        );
+    }
 
     #[test]
     fn merge_native_route_preserves_prefix_reuse_counters_across_steps() {

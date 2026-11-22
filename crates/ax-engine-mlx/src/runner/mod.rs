@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use parking_lot::Mutex;
@@ -14,7 +15,10 @@ use mlx_sys::{
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
-use ax_engine_core::scheduler::{ExecutionMode, PrefillSplitGeometry, published_prefill_split_end};
+use ax_engine_core::scheduler::{
+    ExecutionMode, PrefillLayerGeometry, PrefillSplitGeometry, prefill_layer_progress_route_key,
+    prefill_layer_resume_route_key, published_prefill_split_end,
+};
 use ax_engine_core::{
     DiffusionScheduleUpdate, EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary,
     MultimodalPrefillAdapter, NativeModelArtifacts, NativeModelBindingSummary,
@@ -382,6 +386,9 @@ struct Gemma4AssistantMtpRuntime {
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
     cache: MlxKVCache,
+    // A suspended physical forward belongs only to this request. Its evaluated
+    // tensors are released by the same cancellation/preemption path as its KV.
+    flash_next_prefill_forward: Option<Box<crate::model::qwen4_exp::PreparedForward<'static>>>,
     /// Set only by successful native media prefill, never by a prefix restore.
     multimodal_prefill_complete: bool,
     prompt_prefix_tokens: Vec<u32>,
@@ -1271,6 +1278,7 @@ impl RequestState {
         };
         Self {
             cache,
+            flash_next_prefill_forward: None,
             multimodal_prefill_complete: false,
             prompt_prefix_tokens: Vec::new(),
             frozen_prefill_chunk: None,
@@ -1695,6 +1703,7 @@ pub struct MlxRunner {
     mlx_memory_limit: u64,
     /// Explicit session concurrency used by serving experiments.
     configured_live_sequences: Option<u32>,
+    flash_next_layer_prefill: bool,
     /// Live decode sequences this session may run concurrently, resolved by the
     /// priced memory plan at load time.
     ///
@@ -3491,6 +3500,8 @@ impl MlxRunner {
             checkpoint_unsupported: std::sync::atomic::AtomicU32::new(0),
             dflash2: None,
             weight_layout_telemetry,
+            flash_next_layer_prefill: crate::fastpath::flash_next_prefill_layer_yield_enabled()
+                && artifacts.audited_qwen4_exp_mxfp4(),
             affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
@@ -3981,6 +3992,7 @@ impl MlxRunner {
                 .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
             let mut sampled_iter = sampled.into_iter();
             let run = MlxItemRun {
+                prefill_layers_completed: None,
                 update: RequestExecutionUpdate {
                     request_id: row.request_id,
                     tokens_executed: row.scheduled_token_count,
@@ -4537,6 +4549,7 @@ impl MlxRunner {
                 .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
             let mut sampled_iter = sampled.into_iter();
             let run = MlxItemRun {
+                prefill_layers_completed: None,
                 update: RequestExecutionUpdate {
                     request_id: row.request_id,
                     tokens_executed: row.scheduled_token_count,
@@ -4881,7 +4894,13 @@ impl MlxRunner {
 
 enum PrefillSchedule {
     Adaptive(usize),
-    Split(u32),
+    Split(u32, Option<LayerPrefillStep>),
+}
+
+struct LayerPrefillStep {
+    completed_layers: u32,
+    budget: Option<NonZeroUsize>,
+    normal_pressure: bool,
 }
 
 /// One request's padded-batched-prefill result, staged by
@@ -5227,6 +5246,21 @@ impl ExecutionRunner for MlxRunner {
         Some(PrefillSplitGeometry {
             logical_tokens: logical as u32,
             physical_tokens: physical as u32,
+        })
+    }
+
+    fn prefill_layer_geometry(&self) -> Option<PrefillLayerGeometry> {
+        if !self.flash_next_layer_prefill {
+            return None;
+        }
+        self.prefill_split_geometry()?;
+        let trunk = self.weights.qwen4_exp.as_ref()?;
+        if trunk.layers.len() != 48 {
+            return None;
+        }
+        Some(PrefillLayerGeometry {
+            layers_per_step: NonZeroU32::new(8)?,
+            total_layers: NonZeroU32::new(48)?,
         })
     }
 
@@ -5853,6 +5887,16 @@ impl ExecutionRunner for MlxRunner {
         let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
         self.stage_dflash2_cohort(&input, &batched_idx, &mut route_metadata);
         let scheduler_decisions = &input.execution_batch.route_metadata.crossover_decisions;
+        let layer_geometry = self.prefill_layer_geometry();
+        let greedy_peer = layer_geometry.is_some()
+            && input.execution_batch.items.len() == 2
+            && input.execution_batch.items.iter().any(|item| {
+                item.mode == ExecutionMode::Decode
+                    && input.request_contexts.iter().any(|ctx| {
+                        ctx.request_id == item.request_id && ctx.deterministic_argmax_sampling
+                    })
+            });
+        let mut suspended_tokens = 0;
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
                 continue;
@@ -5864,7 +5908,30 @@ impl ExecutionRunner for MlxRunner {
             let prefill_schedule = (item.mode == ExecutionMode::Prefill)
                 .then(|| published_prefill_split_end(scheduler_decisions, item.request_id))
                 .flatten()
-                .map(PrefillSchedule::Split)
+                .map(|end| {
+                    let continuation = layer_geometry.and_then(|geometry| {
+                        let key = prefill_layer_resume_route_key(item.request_id);
+                        let completed_layers = scheduler_decisions
+                            .iter()
+                            .find_map(|(name, value)| (*name == key).then_some(*value))
+                            .unwrap_or(0);
+                        let normal_pressure =
+                            pressure == crate::host_pressure::HostPressure::Normal;
+                        let budget = (greedy_peer && normal_pressure)
+                            .then(|| NonZeroUsize::new(geometry.layers_per_step.get() as usize))
+                            .flatten();
+                        (completed_layers > 0
+                            || (budget.is_some()
+                                && item.scheduled_token_count > 1
+                                && item.position_range.end_exclusive < end))
+                            .then_some(LayerPrefillStep {
+                                completed_layers,
+                                budget,
+                                normal_pressure,
+                            })
+                    });
+                    PrefillSchedule::Split(end, continuation)
+                })
                 .or_else(|| {
                     ax_engine_core::prefill_handoff::published_adaptive_prefill_quantum(
                         scheduler_decisions,
@@ -5902,6 +5969,14 @@ impl ExecutionRunner for MlxRunner {
             decode_profile.merge_from(result.decode_profile);
             kv_cache.merge_from(result.kv_usage);
             prefix_cache.merge_from(result.prefix_cache);
+            if let Some(completed) = result.prefill_layers_completed {
+                suspended_tokens += item.scheduled_token_count;
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    &prefill_layer_progress_route_key(item.request_id),
+                    completed,
+                );
+            }
             request_updates.push(result.update);
         }
         if std::env::var_os("AX_MLX_MTP_DEBUG_SUMMARY").is_some() && mtp_telemetry.decode_steps > 0
@@ -6072,12 +6147,13 @@ impl ExecutionRunner for MlxRunner {
             }
         }
 
-        let tokens_written: u32 = input
+        let tokens_written = input
             .execution_batch
             .items
             .iter()
-            .map(|i| i.scheduled_token_count)
-            .sum();
+            .map(|item| item.scheduled_token_count)
+            .sum::<u32>()
+            - suspended_tokens;
 
         // A recoverable expert paging failure during any forward of this
         // step cannot return through the generic MoE path; it is recorded
@@ -7457,6 +7533,64 @@ impl MlxRunner {
         );
     }
 
+    fn advance_flash_next_prefill(
+        &self,
+        state: &mut RequestState,
+        tokens: &[u32],
+        step: LayerPrefillStep,
+    ) -> Result<Option<u32>, String> {
+        use crate::model::qwen4_exp::{ForwardAdvance, PreparedForward, Qwen4ExpState};
+
+        if !step.normal_pressure {
+            return Err("suspended Flash Next prefill stopped under memory pressure".into());
+        }
+        let trunk = self
+            .weights
+            .qwen4_exp
+            .as_ref()
+            .ok_or("missing Flash Next prefill weights")?;
+        let owner = self.cfg.compile_cache_identity;
+        let offset = state.cache.seq_len();
+        let forward = if let Some(pending) = state.flash_next_prefill_forward.take() {
+            if !pending.matches_prefill(offset, tokens, step.completed_layers) {
+                return Err(
+                    "suspended Flash Next prefill does not match the scheduled range".into(),
+                );
+            }
+            *pending
+        } else {
+            let fresh;
+            let checkpoint = if let Some(checkpoint) = state.cache.qwen4_exp.as_ref() {
+                checkpoint
+            } else {
+                fresh = Qwen4ExpState::new(trunk, owner);
+                &fresh
+            };
+            if checkpoint.position() != offset
+                || state.cache.rope_offset != 0
+                || state.cache.mrope_position_delta() != 0
+            {
+                return Err("Flash Next prefill cache has an invalid position".into());
+            }
+            PreparedForward::resident_cache_only(trunk, tokens, checkpoint, owner)?
+        };
+        match forward.advance(trunk, owner, step.budget)? {
+            ForwardAdvance::Pending(pending) => {
+                let completed = saturating_u32(pending.completed_layers());
+                state.flash_next_prefill_forward = Some(Box::new(pending));
+                Ok(Some(completed))
+            }
+            ForwardAdvance::Complete(output) => {
+                state.cache.qwen4_exp = Some(output.state);
+                state.cache.advance(tokens.len());
+                if clear_cache_after_split_prefill(self.cfg.hidden_size_per_layer_input) {
+                    clear_cache();
+                }
+                Ok(None)
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_item(
         &self,
@@ -7470,14 +7604,15 @@ impl MlxRunner {
         json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
         prefill_schedule: Option<PrefillSchedule>,
     ) -> MlxItemRun {
-        let (adaptive_prefill_chunk, prefill_split_end) = match prefill_schedule {
-            Some(PrefillSchedule::Adaptive(tokens)) => (Some(tokens), None),
-            Some(PrefillSchedule::Split(end)) => (None, Some(end)),
-            None => (None, None),
+        let (adaptive_prefill_chunk, prefill_split_end, layer_prefill) = match prefill_schedule {
+            Some(PrefillSchedule::Adaptive(tokens)) => (Some(tokens), None, None),
+            Some(PrefillSchedule::Split(end, layers)) => (None, Some(end), layers),
+            None => (None, None, None),
         };
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
             return MlxItemRun {
+                prefill_layers_completed: None,
                 update: RequestExecutionUpdate {
                     request_id: item.request_id,
                     tokens_executed: 0,
@@ -7597,6 +7732,14 @@ impl MlxRunner {
                 )
             })
         };
+        if state.flash_next_prefill_forward.is_some()
+            != layer_prefill
+                .as_ref()
+                .is_some_and(|step| step.completed_layers > 0)
+        {
+            return errored_item_run(item.request_id, "missing or unexpected suspended prefill");
+        }
+
         // Grammar-constrained requests sample every row through the host
         // sampler with the mask of the current grammar position.
         let grammar_vocab = sampling
@@ -8127,9 +8270,11 @@ impl MlxRunner {
                         )
                     });
                     let repetition_history = state.repetition_history(prefill_tokens, sampling);
-                    if crate::fastpath::should_clear_mlx_cache_before_cold_prefill(
-                        state.cache.seq_len(),
-                    ) {
+                    if state.flash_next_prefill_forward.is_none()
+                        && crate::fastpath::should_clear_mlx_cache_before_cold_prefill(
+                            state.cache.seq_len(),
+                        )
+                    {
                         clear_cache();
                     }
                     let prefill_forward_started = Instant::now();
@@ -8426,15 +8571,40 @@ impl MlxRunner {
                             }
                             Some(token)
                         } else {
-                            chunked_prefill_cache_only(
-                                &self.cfg,
-                                &self.weights,
-                                prefill_tokens,
-                                &mut state.cache,
-                                prefill_tokens.len(),
-                                CacheOnlyPrefillLayout::Batched,
-                                crate::generate::CacheOnlyBarrier::Blocking,
-                            );
+                            if let Some(step) = layer_prefill {
+                                match self.advance_flash_next_prefill(
+                                    &mut state,
+                                    prefill_tokens,
+                                    step,
+                                ) {
+                                    Ok(Some(completed)) => {
+                                        self.states.lock().insert(item.request_id, state);
+                                        let mut partial = empty_item_run(RequestExecutionUpdate {
+                                            request_id: item.request_id,
+                                            tokens_executed: 0,
+                                            output_token: None,
+                                            output_tokens: Vec::new(),
+                                            stop_reason: None,
+                                            error: None,
+                                            diffusion_schedule: None,
+                                        });
+                                        partial.prefill_layers_completed = Some(completed);
+                                        return partial;
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => return errored_item_run(item.request_id, error),
+                                }
+                            } else {
+                                chunked_prefill_cache_only(
+                                    &self.cfg,
+                                    &self.weights,
+                                    prefill_tokens,
+                                    &mut state.cache,
+                                    prefill_tokens.len(),
+                                    CacheOnlyPrefillLayout::Batched,
+                                    crate::generate::CacheOnlyBarrier::Blocking,
+                                );
+                            }
                             state
                                 .decode_telemetry
                                 .record_prefill_cache_only_continuation();
@@ -9067,6 +9237,7 @@ impl MlxRunner {
         };
 
         MlxItemRun {
+            prefill_layers_completed: None,
             update: RequestExecutionUpdate {
                 request_id: item.request_id,
                 tokens_executed,
@@ -19774,6 +19945,7 @@ fn runner_probe_over_claim(cache_seq_len: usize, item: &ax_engine_core::Executio
 
 struct MlxItemRun {
     update: RequestExecutionUpdate,
+    prefill_layers_completed: Option<u32>,
     ngram_acceleration: NgramAccelerationTelemetry,
     mtp_telemetry: MtpTelemetry,
     flash_next_mtp_telemetry: FlashNextMtpTelemetry,
@@ -19791,16 +19963,21 @@ struct MlxItemRun {
 }
 
 fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemRun {
+    empty_item_run(RequestExecutionUpdate {
+        request_id,
+        tokens_executed: 0,
+        output_token: None,
+        output_tokens: Vec::new(),
+        stop_reason: None,
+        error: Some(error.into()),
+        diffusion_schedule: None,
+    })
+}
+
+fn empty_item_run(update: RequestExecutionUpdate) -> MlxItemRun {
     MlxItemRun {
-        update: RequestExecutionUpdate {
-            request_id,
-            tokens_executed: 0,
-            output_token: None,
-            output_tokens: Vec::new(),
-            stop_reason: None,
-            error: Some(error.into()),
-            diffusion_schedule: None,
-        },
+        prefill_layers_completed: None,
+        update,
         ngram_acceleration: NgramAccelerationTelemetry::default(),
         mtp_telemetry: MtpTelemetry::default(),
         flash_next_mtp_telemetry: FlashNextMtpTelemetry::default(),
