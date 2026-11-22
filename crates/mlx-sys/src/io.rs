@@ -4,7 +4,7 @@ use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
 
-use memmap2::Mmap;
+use memmap2::{Advice, Mmap};
 
 use crate::array::{MlxArray, MlxDtype};
 use crate::error::{last_error_message, prepare_error_capture};
@@ -141,7 +141,7 @@ fn load_safetensors_mmap_filtered(
     filter: Option<SafetensorsNameFilter<'_>>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
-    load_safetensors_mmap_open_file(path, &file, filter)
+    load_safetensors_mmap_open_file(path, &file, filter, None)
 }
 
 /// Materialize selected tensors from the same open file used for admission.
@@ -152,13 +152,64 @@ pub fn load_safetensors_filtered_from_file(
     file: &std::fs::File,
     filter: SafetensorsNameFilter<'_>,
 ) -> Result<HashMap<String, MlxArray>, String> {
-    load_safetensors_mmap_open_file(path, file, Some(filter))
+    load_safetensors_mmap_open_file(path, file, Some(filter), None)
+}
+
+/// Counts kernel hints for the experimental guarded mmap reader.
+#[derive(Debug, Default)]
+pub struct SafetensorsReadAhead {
+    pub attempts: usize,
+    pub accepted: usize,
+    pub accepted_bytes: usize,
+}
+
+/// Materialize selected tensors with bounded lookahead for each next tensor.
+/// The hint affects file pages only. The guarded MLX-owned copy is unchanged.
+pub fn load_safetensors_filtered_read_ahead(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<(HashMap<String, MlxArray>, SafetensorsReadAhead), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
+    let mut stats = SafetensorsReadAhead::default();
+    let arrays = load_safetensors_mmap_open_file(path, &file, Some(filter), Some(&mut stats))?;
+    Ok((arrays, stats))
+}
+
+const MIN_READ_AHEAD_BYTES: usize = 256 * 1024;
+const MAX_READ_AHEAD_BYTES: usize = 64 * 1024 * 1024;
+
+fn read_ahead_range(start: usize, bytes: usize, page_size: usize) -> Option<(usize, usize)> {
+    // Advise only complete pages inside the selected prefix. A page shared
+    // with an adjacent tensor should never be part of the explicit hint.
+    let page_mask = page_size - 1;
+    let aligned_start = start.checked_add(page_mask)? & !page_mask;
+    let aligned_end = start.checked_add(bytes.min(MAX_READ_AHEAD_BYTES))? & !page_mask;
+    let len = aligned_end.checked_sub(aligned_start)?;
+    (len >= MIN_READ_AHEAD_BYTES).then_some((aligned_start, len))
+}
+
+fn advise_tensor(
+    mmap: &Mmap,
+    tensor: &MappedTensor<'_>,
+    page_size: usize,
+    stats: &mut SafetensorsReadAhead,
+) {
+    let Some((offset, len)) = read_ahead_range(tensor.absolute_start, tensor.byte_len, page_size)
+    else {
+        return;
+    };
+    stats.attempts += 1;
+    if mmap.advise_range(Advice::WillNeed, offset, len).is_ok() {
+        stats.accepted += 1;
+        stats.accepted_bytes += len;
+    }
 }
 
 fn load_safetensors_mmap_open_file(
     path: &Path,
     file: &std::fs::File,
     filter: Option<SafetensorsNameFilter<'_>>,
+    mut read_ahead: Option<&mut SafetensorsReadAhead>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     // NAS/SMB-backed caches can replace or truncate a shard while it is
     // mapped. Stat before and after the copies and fail closed on any drift,
@@ -204,100 +255,33 @@ fn load_safetensors_mmap_open_file(
         )
     })?;
 
-    let mut result: HashMap<String, MlxArray> = HashMap::new();
-    for (name, entry) in obj {
-        if name == "__metadata__" {
-            continue;
+    let mut selected = obj
+        .iter()
+        .filter(|(name, _)| {
+            name.as_str() != "__metadata__"
+                && filter.as_ref().is_none_or(|filter| match filter {
+                    SafetensorsNameFilter::Keep(names) => names.contains(name.as_str()),
+                    SafetensorsNameFilter::Exclude(names) => !names.contains(name.as_str()),
+                })
+        })
+        .map(|(name, entry)| parse_mapped_tensor(name, entry, data_base, mmap.len()))
+        .peekable();
+    let page_size = read_ahead.as_ref().and_then(|_| {
+        // SAFETY: sysconf reads the machine page size without dereferencing a pointer.
+        usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+            .ok()
+            .filter(|value| value.is_power_of_two())
+    });
+    let mut result = HashMap::new();
+    while let Some(tensor) = selected.next() {
+        let tensor = tensor?;
+        if let Some(stats) = read_ahead.as_deref_mut()
+            && let Some(page_size) = page_size
+            && let Some(Ok(next)) = selected.peek()
+        {
+            advise_tensor(&mmap, next, page_size, stats);
         }
-        if let Some(filter) = &filter {
-            let selected = match filter {
-                SafetensorsNameFilter::Keep(names) => names.contains(name),
-                SafetensorsNameFilter::Exclude(names) => !names.contains(name),
-            };
-            if !selected {
-                continue;
-            }
-        }
-        let entry_obj = entry
-            .as_object()
-            .ok_or_else(|| format!("tensor entry {name} is not an object"))?;
-        let dtype_str = entry_obj
-            .get("dtype")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("tensor entry {name} missing dtype"))?;
-        let dtype = parse_safetensors_dtype(dtype_str)
-            .ok_or_else(|| format!("tensor entry {name}: unsupported dtype {dtype_str}"))?;
-        let shape_json = entry_obj
-            .get("shape")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| format!("tensor entry {name} missing shape"))?;
-        let mut shape: Vec<i32> = Vec::with_capacity(shape_json.len());
-        let mut numel: usize = 1;
-        for (i, v) in shape_json.iter().enumerate() {
-            let d = v
-                .as_u64()
-                .ok_or_else(|| format!("shape dim is not a u64 in {name}"))?;
-            let dim = i32::try_from(d)
-                .map_err(|_| format!("tensor entry {name}: shape dim {i}={d} exceeds i32::MAX"))?;
-            shape.push(dim);
-            numel = numel.checked_mul(d as usize).ok_or_else(|| {
-                format!("tensor entry {name}: shape {shape_json:?} overflows usize")
-            })?;
-        }
-        let expected_byte_len = numel
-            .checked_mul(dtype.size_bytes())
-            .ok_or_else(|| format!("tensor entry {name}: byte length overflows usize"))?;
-        let offsets = entry_obj
-            .get("data_offsets")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| format!("tensor entry {name} missing data_offsets"))?;
-        if offsets.len() != 2 {
-            return Err(format!(
-                "tensor entry {name} data_offsets must have 2 elements"
-            ));
-        }
-        let start_u64 = offsets[0]
-            .as_u64()
-            .ok_or_else(|| format!("tensor entry {name} data_offsets[0] not u64"))?;
-        let end_u64 = offsets[1]
-            .as_u64()
-            .ok_or_else(|| format!("tensor entry {name} data_offsets[1] not u64"))?;
-        if start_u64 > end_u64 {
-            return Err(format!(
-                "tensor entry {name}: data_offsets [{start_u64},{end_u64}] has start > end"
-            ));
-        }
-        let start = usize::try_from(start_u64).map_err(|_| {
-            format!("tensor entry {name}: data_offsets[0]={start_u64} does not fit usize")
-        })?;
-        let end = usize::try_from(end_u64).map_err(|_| {
-            format!("tensor entry {name}: data_offsets[1]={end_u64} does not fit usize")
-        })?;
-        let absolute_start = data_base.checked_add(start).ok_or_else(|| {
-            format!(
-                "tensor entry {name}: data_offsets start {start} overflows relative to data_base"
-            )
-        })?;
-        let absolute_end = data_base.checked_add(end).ok_or_else(|| {
-            format!("tensor entry {name}: data_offsets end {end} overflows relative to data_base")
-        })?;
-        if absolute_end > mmap.len() || absolute_start > mmap.len() {
-            return Err(format!(
-                "tensor entry {name}: data_offsets [{start},{end}] out of bounds (file {} bytes)",
-                mmap.len()
-            ));
-        }
-        let byte_len = absolute_end - absolute_start;
-        // A payload shorter than the shape would trip the copy-time assert in
-        // `from_raw_data` and abort the process; a longer one would silently
-        // load the wrong tensor. Fail closed like the strict row reader.
-        if byte_len != expected_byte_len {
-            return Err(format!(
-                "tensor entry {name}: data_offsets byte length {byte_len} does not match \
-                 shape {shape:?} dtype {dtype_str} expected {expected_byte_len}"
-            ));
-        }
-        let ptr = unsafe { mmap.as_ptr().add(absolute_start) };
+        let ptr = unsafe { mmap.as_ptr().add(tensor.absolute_start) };
 
         // We use the copy-on-create C entry (`mlx_array_new_data` via
         // `from_raw_data`) rather than the managed/borrowed variant.
@@ -309,14 +293,114 @@ fn load_safetensors_mmap_open_file(
         // no userspace heap allocation for the safetensors file, no
         // libc read() into a temp buffer, and any pages already in
         // the OS page cache are reused directly.
-        let arr = MlxArray::from_raw_data(ptr, byte_len, &shape, dtype);
-        result.insert(name.clone(), arr);
+        let arr = MlxArray::from_raw_data(ptr, tensor.byte_len, &tensor.shape, tensor.dtype);
+        result.insert(tensor.name.to_owned(), arr);
     }
     // Drop the mmap explicitly at function end so the mapping outlives
     // every `from_raw_data` copy above; MLX owns its own buffer by then.
     drop(mmap);
     ensure_unchanged_since(path, &stat_before)?;
     Ok(result)
+}
+
+struct MappedTensor<'a> {
+    name: &'a str,
+    shape: Vec<i32>,
+    dtype: MlxDtype,
+    absolute_start: usize,
+    byte_len: usize,
+}
+
+fn parse_mapped_tensor<'a>(
+    name: &'a str,
+    entry: &serde_json::Value,
+    data_base: usize,
+    map_len: usize,
+) -> Result<MappedTensor<'a>, String> {
+    let entry_obj = entry
+        .as_object()
+        .ok_or_else(|| format!("tensor entry {name} is not an object"))?;
+    let dtype_str = entry_obj
+        .get("dtype")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("tensor entry {name} missing dtype"))?;
+    let dtype = parse_safetensors_dtype(dtype_str)
+        .ok_or_else(|| format!("tensor entry {name}: unsupported dtype {dtype_str}"))?;
+    let shape_json = entry_obj
+        .get("shape")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("tensor entry {name} missing shape"))?;
+    let mut shape: Vec<i32> = Vec::with_capacity(shape_json.len());
+    let mut numel: usize = 1;
+    for (i, v) in shape_json.iter().enumerate() {
+        let d = v
+            .as_u64()
+            .ok_or_else(|| format!("shape dim is not a u64 in {name}"))?;
+        let dim = i32::try_from(d)
+            .map_err(|_| format!("tensor entry {name}: shape dim {i}={d} exceeds i32::MAX"))?;
+        shape.push(dim);
+        numel = numel
+            .checked_mul(d as usize)
+            .ok_or_else(|| format!("tensor entry {name}: shape {shape_json:?} overflows usize"))?;
+    }
+    let expected_byte_len = numel
+        .checked_mul(dtype.size_bytes())
+        .ok_or_else(|| format!("tensor entry {name}: byte length overflows usize"))?;
+    let offsets = entry_obj
+        .get("data_offsets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("tensor entry {name} missing data_offsets"))?;
+    if offsets.len() != 2 {
+        return Err(format!(
+            "tensor entry {name} data_offsets must have 2 elements"
+        ));
+    }
+    let start_u64 = offsets[0]
+        .as_u64()
+        .ok_or_else(|| format!("tensor entry {name} data_offsets[0] not u64"))?;
+    let end_u64 = offsets[1]
+        .as_u64()
+        .ok_or_else(|| format!("tensor entry {name} data_offsets[1] not u64"))?;
+    if start_u64 > end_u64 {
+        return Err(format!(
+            "tensor entry {name}: data_offsets [{start_u64},{end_u64}] has start > end"
+        ));
+    }
+    let start = usize::try_from(start_u64).map_err(|_| {
+        format!("tensor entry {name}: data_offsets[0]={start_u64} does not fit usize")
+    })?;
+    let end = usize::try_from(end_u64).map_err(|_| {
+        format!("tensor entry {name}: data_offsets[1]={end_u64} does not fit usize")
+    })?;
+    let absolute_start = data_base.checked_add(start).ok_or_else(|| {
+        format!("tensor entry {name}: data_offsets start {start} overflows relative to data_base")
+    })?;
+    let absolute_end = data_base.checked_add(end).ok_or_else(|| {
+        format!("tensor entry {name}: data_offsets end {end} overflows relative to data_base")
+    })?;
+    if absolute_end > map_len || absolute_start > map_len {
+        return Err(format!(
+            "tensor entry {name}: data_offsets [{start},{end}] out of bounds (file {} bytes)",
+            map_len
+        ));
+    }
+    let byte_len = absolute_end - absolute_start;
+    // A payload shorter than the shape would trip the copy-time assert in
+    // `from_raw_data` and abort the process; a longer one would silently
+    // load the wrong tensor. Fail closed like the strict row reader.
+    if byte_len != expected_byte_len {
+        return Err(format!(
+            "tensor entry {name}: data_offsets byte length {byte_len} does not match \
+             shape {shape:?} dtype {dtype_str} expected {expected_byte_len}"
+        ));
+    }
+    Ok(MappedTensor {
+        name,
+        shape,
+        dtype,
+        absolute_start,
+        byte_len,
+    })
 }
 
 /// Compare file metadata used to detect drift during a load.
@@ -603,6 +687,99 @@ mod tests {
         assert!(error.contains("exceeds i32::MAX"), "{error}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_ahead_preserves_filtered_tensor_data_and_validation() {
+        let dir = std::env::temp_dir().join(format!("ax-mmap-read-ahead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("guarded.safetensors");
+        let selected_bytes = 2 * MIN_READ_AHEAD_BYTES;
+        let count = selected_bytes / 4;
+        let header = serde_json::json!({
+            "a": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]},
+            "excluded": {"dtype": "U32", "shape": [count], "data_offsets": [4, 4 + selected_bytes]},
+            "z": {"dtype": "U32", "shape": [count], "data_offsets": [4 + selected_bytes, 4 + 2 * selected_bytes]},
+        });
+        let mut bytes = 1.5_f32.to_le_bytes().to_vec();
+        bytes.resize(4 + selected_bytes, 0);
+        bytes.extend((0..count as u32).flat_map(u32::to_le_bytes));
+        write_safetensors_header_only(&path, &header, &bytes);
+        let names = HashSet::from(["a".into(), "z".into()]);
+        let load =
+            || load_safetensors_filtered_read_ahead(&path, SafetensorsNameFilter::Keep(&names));
+        let normal = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names)).unwrap();
+        let (advised, stats) = load().unwrap();
+        assert_eq!(stats.attempts, 1);
+        assert!(stats.accepted <= 1);
+        if stats.accepted == 1 {
+            assert!((MIN_READ_AHEAD_BYTES..=selected_bytes).contains(&stats.accepted_bytes));
+        }
+        assert_eq!(advised.len(), 2);
+        assert!(!advised.contains_key("excluded"));
+        eval(&[&normal["a"], &normal["z"], &advised["a"], &advised["z"]]);
+        assert_eq!(advised["a"].data_f32(), normal["a"].data_f32());
+        assert_eq!(advised["z"].data_u32(), normal["z"].data_u32());
+        assert_eq!(advised["z"].data_u32()[count - 1], count as u32 - 1);
+
+        let mut bad = header;
+        bad["z"]["shape"] = serde_json::json!([count + 1]);
+        write_safetensors_header_only(&path, &bad, &bytes);
+        let error = load().unwrap_err();
+        assert!(error.contains("does not match"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn read_ahead_range_stays_inside_selected_pages_and_cap() {
+        let page = 16 * 1024;
+        assert_eq!(
+            read_ahead_range(page + 1, 2 * MAX_READ_AHEAD_BYTES, page),
+            Some((2 * page, MAX_READ_AHEAD_BYTES - page))
+        );
+        assert_eq!(
+            read_ahead_range(page, MAX_READ_AHEAD_BYTES, page),
+            Some((page, MAX_READ_AHEAD_BYTES))
+        );
+        assert_eq!(read_ahead_range(1, MIN_READ_AHEAD_BYTES, page), None);
+        assert_eq!(read_ahead_range(1, 0, page), None);
+        assert_eq!(
+            read_ahead_range(usize::MAX - 1, MAX_READ_AHEAD_BYTES, page),
+            None
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a pinned Flash Next MXFP4 embedding shard"]
+    fn flash_next_read_ahead_matches_real_embedding_bytes() {
+        let path = std::env::var_os("AX_FLASH_NEXT_READ_AHEAD_TEST_SHARD").unwrap();
+        let path = Path::new(&path);
+        let names = ["biases", "scales", "weight"]
+            .map(|suffix| format!("language_model.model.embed_tokens.{suffix}"));
+        let selected = HashSet::from(names.clone());
+        let normal =
+            load_safetensors_filtered(path, SafetensorsNameFilter::Keep(&selected)).unwrap();
+        let (advised, hints) =
+            load_safetensors_filtered_read_ahead(path, SafetensorsNameFilter::Keep(&selected))
+                .unwrap();
+        assert_eq!(normal.len(), names.len());
+        assert_eq!(advised.len(), names.len());
+        assert_eq!(hints.attempts, 2);
+        let mut compared_bytes = 0;
+        for name in names {
+            let original = &normal[&name];
+            let candidate = &advised[&name];
+            assert_eq!(original.dtype(), candidate.dtype());
+            assert_eq!(original.shape(), candidate.shape());
+            eval(&[original, candidate]);
+            let size = original.nbytes();
+            // SAFETY: Evaluated contiguous arrays stay alive for both byte views.
+            let original = unsafe { std::slice::from_raw_parts(original.data_raw(), size) };
+            let candidate = unsafe { std::slice::from_raw_parts(candidate.data_raw(), size) };
+            assert!(original == candidate, "changed bytes in {name}");
+            compared_bytes += size;
+        }
+        println!("compared_bytes={compared_bytes} hints={hints:?}");
     }
 
     #[cfg(unix)]

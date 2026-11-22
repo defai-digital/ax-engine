@@ -26,6 +26,7 @@ use ax_engine_core::{
 };
 #[cfg(test)]
 use mlx_sys::eval;
+use mlx_sys::io::{SafetensorsReadAhead, load_safetensors_filtered_read_ahead};
 use mlx_sys::{
     DEFAULT_MAX_GATHER_BYTES, MlxArray, MlxDtype, SafetensorsNameFilter, add, astype, contiguous,
     load_safetensors_filtered, slice, transpose,
@@ -1431,11 +1432,23 @@ fn load_resident_tensors(
         }
     }
     startup.phase("resident_selection");
+    let read_ahead = stream_skip.is_empty()
+        && std::env::var_os("AX_FLASH_NEXT_RESIDENT_READ_AHEAD").is_some_and(|value| value == "1");
+    let mut advice = SafetensorsReadAhead::default();
     let mut result = HashMap::new();
     for (path, names) in files {
         let mut shard = StartupTrace(startup.0.map(|_| Instant::now()));
-        let tensors = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names))
-            .map_err(WeightLoadError::FileMissing)?;
+        let filter = SafetensorsNameFilter::Keep(&names);
+        let tensors = if read_ahead {
+            let (tensors, stats) = load_safetensors_filtered_read_ahead(&path, filter)
+                .map_err(WeightLoadError::FileMissing)?;
+            advice.attempts += stats.attempts;
+            advice.accepted += stats.accepted;
+            advice.accepted_bytes += stats.accepted_bytes;
+            tensors
+        } else {
+            load_safetensors_filtered(&path, filter).map_err(WeightLoadError::FileMissing)?
+        };
         let read = shard.elapsed();
         mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>()).map_err(|e| {
             WeightLoadError::InvalidLayer(format!("qwen4_exp weight evaluation: {e}"))
@@ -1453,6 +1466,14 @@ fn load_resident_tensors(
                 )));
             }
         }
+    }
+    if read_ahead {
+        tracing::info!(
+            attempts = advice.attempts,
+            accepted = advice.accepted,
+            accepted_bytes = advice.accepted_bytes,
+            "Flash Next resident read-ahead lab"
+        );
     }
     Ok(result)
 }
