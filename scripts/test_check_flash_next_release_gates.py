@@ -22,7 +22,6 @@ import qualify_qwen38_flash_next as qualify  # noqa: E402
 
 TH = json.loads(mod.THRESHOLDS.read_text())
 GIB_KIB = 1024 * 1024
-FAILURES = ["format_csv_pair", "format_status_colon", "instruction_alphabet_first", "knowledge_water_formula"]
 HARDWARE = {"form_factor": "MacBook Pro", "soc": "Apple M5 Max", "memory_bytes": 128 * 1024**3,
             "os": "27.2.1"}
 CELL_HASHES = {f"cell-{length}-{run}": f"{length * 10 + run:064x}" for length in (512, 2048, 8192)
@@ -36,6 +35,10 @@ COHORT_IDS = [item["id"] for item in mod.qa_cohort.load_items(COHORT_PATH)]
 SIGNED_REFERENCE = (SCRIPT.parent.parent / "benchmarks/results/qualification"
                     / "2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/reference/result.json")
 REFERENCE_QA = json.loads(SIGNED_REFERENCE.read_text())["qa"]
+SIGNED_QA_DIR = SIGNED_REFERENCE.parent.parent / "qa"
+SIGNED_QA_ROWS, SIGNED_QA_DIGESTS = mod.read_qa_rows(SIGNED_QA_DIR)
+SIGNED_QA = json.loads((SIGNED_QA_DIR / "result.json").read_text())
+FAILURES = SIGNED_QA["summary"]["modes"]["disabled"]["quality_failures"]
 
 
 def ax_cells(decode_seconds=7.0, ttft=(4.0, 16.0, 70.0), tokens=128):
@@ -65,8 +68,7 @@ def good():
            "verified_steps": 0.0, "route_errors": 0.0, "ready_seconds": 33.0,
            "peak_rss_kib": 80 * GIB_KIB, "long_context_elapsed_seconds": 270.0}
     qa = {**COMMON, "items": len(COHORT_IDS), "items_sha256": mod.sha256_file(COHORT_PATH),
-          "grades": {mode: {item_id: {"passed": item_id not in FAILURES} for item_id in COHORT_IDS}
-                     for mode in mod.AX_ARMS},
+          "grades": {mode: copy.deepcopy(SIGNED_QA["grades"][mode]) for mode in mod.AX_ARMS},
           "summary": {"modes": {"disabled": copy.deepcopy(arm), "default": copy.deepcopy(arm)},
                                 "text_identity_vs_disabled": {"default": {
                                     "matching_text_pairs": 105, "differing_text_ids": []}}}}
@@ -125,7 +127,7 @@ def verdict(results, repeats=None):
     if repeats is None:
         repeats = raw_repeats(results)
     controls = raw_delivery_controls(results["delivery"])
-    return mod.evaluate(results, TH, qualify.contract(), repeats, controls)
+    return mod.evaluate(results, TH, qualify.contract(), repeats, controls, SIGNED_QA_ROWS)
 
 
 def failed(results):
@@ -155,6 +157,25 @@ class ReleaseGateTests(unittest.TestCase):
         r = good()
         r["qa"]["summary"]["text_identity_vs_disabled"]["default"]["differing_text_ids"] = ["x"]
         self.assertEqual(failed(r), {"quality"})
+
+    def test_native_quality_rechecks_raw_rows_against_unchanged_summary(self):
+        for label, mutate, reason in (
+            ("changed answer", lambda rows: rows[0].update(text=""),
+             "raw QA text differs between default and explicit direct"),
+            ("missing answer", lambda rows: rows.pop(), "raw QA rows must match"),
+            ("wrong budget", lambda rows: rows[0].update(budget=1), "raw QA rows must match"),
+            ("abnormal stop", lambda rows: rows[0].update(finish_reason="length"),
+             "raw QA rows must match"),
+        ):
+            with self.subTest(case=label):
+                r = good()
+                rows = copy.deepcopy(SIGNED_QA_ROWS)
+                mutate(rows["default"])
+                controls = raw_delivery_controls(r["delivery"])
+                verdict = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), controls, rows)
+                failed_gates = [gate for gate in verdict["gates"] if not gate["passed"]]
+                self.assertEqual([gate["gate"] for gate in failed_gates], ["quality"])
+                self.assertIn(reason, failed_gates[0]["detail"])
 
     def test_an_incomplete_reference_fails_quality_and_the_matrix_gate(self):
         r = good()
@@ -320,7 +341,7 @@ class ReleaseGateTests(unittest.TestCase):
         support["readiness_seconds"]["default"] = 157.292
         raw = raw_delivery_controls(r["delivery"])
         support["readiness_seconds"]["default"] = 100.0
-        result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), raw)
+        result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), raw, SIGNED_QA_ROWS)
         errors = {g["gate"]: g["detail"] for g in result["gates"] if not g["passed"]}
         self.assertEqual(set(errors), {"integrity"})
         self.assertIn("raw native controls differ from the delivery summary", errors["integrity"])
@@ -330,7 +351,7 @@ class ReleaseGateTests(unittest.TestCase):
         delivery = r["delivery"]
         raw = raw_delivery_controls(delivery)
         with self.subTest(mutation="missing"):
-            result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), None)
+            result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), None, SIGNED_QA_ROWS)
             errors = {g["gate"]: g["detail"] for g in result["gates"] if not g["passed"]}
             self.assertEqual(errors, {"integrity": "delivery: missing raw native controls"})
         with self.subTest(mutation="duplicate field"):
@@ -352,7 +373,7 @@ class ReleaseGateTests(unittest.TestCase):
                                  ["delivery: raw native controls differ in server, inventory or revision"])
         with self.subTest(mutation="non-object delivery summary"):
             delivery["native_support"] = ["invalid"]
-            result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), raw)
+            result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), raw, SIGNED_QA_ROWS)
             self.assertFalse(result["release_ready"])
             integrity = next(g for g in result["gates"] if g["gate"] == "integrity")
             self.assertIn("raw native controls differ from the delivery summary", integrity["detail"])
@@ -599,7 +620,7 @@ class ReleaseGateTests(unittest.TestCase):
         integrity = next(g for g in result["gates"] if g["gate"] == "integrity")
         self.assertIn("selected run differs", integrity["detail"])
 
-    def test_signed_evidence_replays_with_raw_delivery_and_matrix_digests(self):
+    def test_signed_evidence_replays_with_raw_delivery_qa_and_matrix_digests(self):
         root = SIGNED_REFERENCE.parent.parent
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "verdict.json"
@@ -611,6 +632,8 @@ class ReleaseGateTests(unittest.TestCase):
                              mod.sha256_file(root / mod.MATRIX_REPEATS_FILE))
             self.assertEqual(result["evidence_sha256"]["delivery_controls"],
                              mod.sha256_file(root / mod.DELIVERY_CONTROLS_FILE))
+            for name, digest in SIGNED_QA_DIGESTS.items():
+                self.assertEqual(result["evidence_sha256"][name], digest)
 
     def test_cli_records_failed_integrity_for_missing_or_malformed_raw_repeats(self):
         archive = SIGNED_REFERENCE.parent.parent
@@ -626,6 +649,8 @@ class ReleaseGateTests(unittest.TestCase):
             controls = root / mod.DELIVERY_CONTROLS_FILE
             controls.parent.mkdir()
             controls.symlink_to(archive / mod.DELIVERY_CONTROLS_FILE)
+            for mode in mod.AX_ARMS:
+                (root / "qa" / mode).symlink_to(archive / "qa" / mode)
             raw = root / mod.MATRIX_REPEATS_FILE
             for label, data in (("missing", None), ("duplicate", duplicate),
                                 ("deeply nested", b"[" * 4_000 + b"0" + b"]" * 4_000)):
@@ -675,7 +700,8 @@ class ReleaseGateTests(unittest.TestCase):
         bad = copy.deepcopy(qualify.contract())
         bad["mtp_certification"]["MTP-P"] = "passed"
         r = good()
-        result = mod.evaluate(r, TH, bad, raw_repeats(r), raw_delivery_controls(r["delivery"]))
+        result = mod.evaluate(r, TH, bad, raw_repeats(r), raw_delivery_controls(r["delivery"]),
+                              SIGNED_QA_ROWS)
         self.assertEqual({g["gate"] for g in result["gates"] if not g["passed"]}, {"mtp_policy"})
 
     def test_frozen_thresholds_match_the_documented_scope(self):

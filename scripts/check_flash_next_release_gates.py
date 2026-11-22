@@ -2,7 +2,7 @@
 """Evaluate the Flash Next direct-default release gates from recorded evidence.
 
 Reads the delivery, QA, lifecycle, generate-matrix and reference results,
-the raw delivery controls and matrix repeats, and the frozen thresholds in
+the raw delivery controls, QA rows and matrix repeats, and the frozen thresholds in
 `flash_next_release_thresholds.json`. Reports one pass/fail line per gate.
 Nothing here runs a model. The verdict covers only the stated release scope:
 direct decoding is the default, model MTP stays an explicit experimental
@@ -37,6 +37,7 @@ TARGET_SOC = "Apple M5 Max"
 TARGET_MEMORY_GIB = 128
 TARGET_DESCRIPTION = "MacBook Pro, Apple M5 Max, 128 GB"
 AX_ARMS = ("disabled", "default")
+QA_ITEMS = qa_cohort.FROZEN / "full-qa-items.json"
 # The release gate checks the frozen workload independently of the runners.
 OUTPUT_TOKENS = 128
 LENGTHS = (512, 2048, 8192)
@@ -233,15 +234,42 @@ def cohort_failures(grades: Any, expected_ids: set[str], reported: Any) -> set[s
     return failures
 
 
-def gate_quality(qa: dict[str, Any], reference: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
-    cohort_path = qa_cohort.FROZEN / "full-qa-items.json"
-    items = qa_cohort.load_items(cohort_path)
+def native_qa_problems(qa: dict[str, Any], items: list[dict[str, Any]],
+                       raw_rows: dict[str, list[Any]]) -> list[str]:
+    problems = []
+    texts = {}
+    recorded_grades = qa.get("grades") or {}
+    for mode in AX_ARMS:
+        rows = raw_rows.get(mode, [])
+        if len(rows) != len(items) or any(
+            not isinstance(row, dict)
+            or type(row.get("index")) is not int or row["index"] != index
+            or row.get("id") != item["id"]
+            or type(row.get("budget")) is not int or row["budget"] != qa_cohort.budget_for(item)
+            or not isinstance(row.get("text"), str)
+            or row.get("finish_reason") != "stop"
+            for index, (row, item) in enumerate(zip(rows, items))
+        ):
+            problems.append(f"{mode}: raw QA rows must match the frozen items and stop normally")
+            continue
+        texts[mode] = {row["id"]: row["text"] for row in rows}
+        grades = qa_cohort.grade(items, texts[mode])
+        if not isinstance(recorded_grades, dict) or grades != recorded_grades.get(mode):
+            problems.append(f"{mode}: recorded QA grades disagree with the raw row replay")
+    if texts.keys() == set(AX_ARMS) and texts["default"] != texts["disabled"]:
+        problems.append("raw QA text differs between default and explicit direct")
+    return problems
+
+
+def gate_quality(qa: dict[str, Any], reference: dict[str, Any], th: dict[str, Any],
+                 raw_rows: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    items = qa_cohort.load_items(QA_ITEMS)
     expected_ids = {item["id"] for item in items}
     modes = qa["summary"]["modes"]
     ref_qa = reference.get("qa")
     if not isinstance(ref_qa, dict):
         ref_qa = {}
-    problems = []
+    problems = native_qa_problems(qa, items, raw_rows)
     rows = ref_qa.get("rows")
     ref_failures = None
     if reference.get("completed") is not True or not isinstance(rows, list) or len(rows) != len(items):
@@ -263,7 +291,7 @@ def gate_quality(qa: dict[str, Any], reference: dict[str, Any], th: dict[str, An
             if grades != recorded_grades or ref_failures is None:
                 problems.append("reference QA grades or failures disagree with the frozen checker replay")
                 ref_failures = None
-    if qa.get("items") != len(items) or qa.get("items_sha256") != sha256_file(cohort_path):
+    if qa.get("items") != len(items) or qa.get("items_sha256") != sha256_file(QA_ITEMS):
         problems.append("AX QA does not bind the frozen cohort")
     ax_grades = qa.get("grades")
     if not isinstance(ax_grades, dict):
@@ -582,7 +610,8 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any],
 
 
 def evaluate(results: dict[str, dict[str, Any]], th: dict[str, Any],
-             contract: dict[str, Any], matrix_repeats: Any, delivery_controls: bytes | None) -> dict[str, Any]:
+             contract: dict[str, Any], matrix_repeats: Any, delivery_controls: bytes | None,
+             raw_qa_rows: dict[str, list[Any]]) -> dict[str, Any]:
     qa, lifecycle, matrix = results["qa"], results["lifecycle"], results["matrix"]
     reference, delivery = results["reference"], results["delivery"]
     runs = [(f"qa/{mode}", qa["summary"]["modes"][mode].get("ready_seconds")) for mode in AX_ARMS]
@@ -590,7 +619,7 @@ def evaluate(results: dict[str, dict[str, Any]], th: dict[str, Any],
              if run["mode"] in AX_ARMS]
     runs += [(f"matrix/{mode}", matrix["runs"][mode].get("ready_seconds")) for mode in AX_ARMS]
     gates = [*gate_delivery(delivery, th), *gate_integrity(results, th, matrix_repeats, delivery_controls),
-             *gate_quality(qa, reference, th),
+             *gate_quality(qa, reference, th, raw_qa_rows),
              *gate_lifecycle(lifecycle, th), *gate_memory(qa, th), *gate_readiness(delivery, runs, th),
              *gate_long_lookup(qa, th), *gate_reference_relative(matrix, reference, th),
              *gate_mtp_policy(delivery, qa, lifecycle, matrix, th, contract)]
@@ -610,6 +639,27 @@ def unique_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     if len(decoded) != len(pairs):
         raise ValueError("duplicate member in raw evidence")
     return decoded
+
+
+def read_qa_rows(qa_dir: Path) -> tuple[dict[str, list[Any]], dict[str, str]]:
+    items = qa_cohort.load_items(QA_ITEMS)
+    rows = {}
+    digests = {}
+    for mode in AX_ARMS:
+        parsed = []
+        digest = hashlib.sha256()
+        for index, item in enumerate(items):
+            try:
+                raw = (qa_dir / mode / f"{index:03d}-{item['id']}.json").read_bytes()
+                # Hash fixed-width row digests in the frozen index order.
+                digest.update(hashlib.sha256(raw).digest())
+                parsed.append(json.loads(raw, object_pairs_hook=unique_json_members))
+            except (OSError, ValueError, RecursionError):
+                break
+        rows[mode] = parsed
+        if len(parsed) == len(items):
+            digests[f"qa_{mode}_rows"] = digest.hexdigest()
+    return rows, digests
 
 
 def main() -> int:
@@ -638,11 +688,12 @@ def main() -> int:
         inputs["delivery_controls"] = (args.evidence_dir / DELIVERY_CONTROLS_FILE).read_bytes()
     except OSError:
         pass
-    verdict = evaluate(results, th, qualify.contract(), matrix_repeats, inputs.get("delivery_controls"))
+    raw_qa_rows, qa_digests = read_qa_rows(paths["qa"].parent)
+    verdict = evaluate(results, th, qualify.contract(), matrix_repeats, inputs.get("delivery_controls"), raw_qa_rows)
     verdict.update(
         schema=qualify.RELEASE_VERDICT_SCHEMA, release_scope=th["release_scope"],
         pack_revision=th["target"]["pack_revision"], thresholds_sha256=sha256_file(args.thresholds),
-        evidence_sha256={name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()},
+        evidence_sha256={**{name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}, **qa_digests},
         mtp_certification=qualify.contract()["mtp_certification"], source=source_state(),
         disclosure=th["disclosure"])
     for item in verdict["gates"]:
