@@ -335,12 +335,18 @@ const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
 /// A long-lived owner (e.g. the server's `StatelessGenerateContext`) holds one
 /// cell per model; every per-request `MlxRunner` build receives it via
 /// `from_artifacts_with_runtime_shares`. The first build loads the weights and
-/// publishes the `Arc`; later builds reuse it and skip both the safetensors
-/// read/GPU eval and the JIT warmup. All clones share the same cell. Sharing
-/// is sound because weight arrays are fully evaluated before publication and
-/// immutable afterwards (`MlxArray` is atomically refcounted `Send + Sync`).
+/// publishes the `Arc`. Concurrent cold builds wait for that load to finish.
+/// Reusing builds skip both the safetensors read/GPU eval and the JIT warmup.
+/// Weight arrays are fully evaluated before publication and immutable
+/// afterwards (`MlxArray` is atomically refcounted `Send + Sync`).
 #[derive(Clone, Default)]
-pub struct MlxSharedWeightsCell(Arc<OnceLock<Arc<ModelWeights>>>);
+pub struct MlxSharedWeightsCell(Arc<SharedModelWeights>);
+
+#[derive(Default)]
+struct SharedModelWeights {
+    weights: OnceLock<Arc<ModelWeights>>,
+    loading: parking_lot::Mutex<()>,
+}
 
 impl MlxSharedWeightsCell {
     pub fn new() -> Self {
@@ -349,17 +355,28 @@ impl MlxSharedWeightsCell {
 
     /// True once a build has published loaded weights into this cell.
     pub(crate) fn is_loaded(&self) -> bool {
-        self.0.get().is_some()
+        self.0.weights.get().is_some()
     }
 
-    fn get(&self) -> Option<Arc<ModelWeights>> {
-        self.0.get().cloned()
+    fn get_or_load(
+        &self,
+        load: impl FnOnce() -> Result<Arc<ModelWeights>, MlxRunnerError>,
+    ) -> Result<(Arc<ModelWeights>, bool), MlxRunnerError> {
+        if let Some(weights) = self.0.weights.get() {
+            return Ok((Arc::clone(weights), true));
+        }
+        let _loading = self.0.loading.lock();
+        if let Some(weights) = self.0.weights.get() {
+            return Ok((Arc::clone(weights), true));
+        }
+
+        let weights = load()?;
+        Ok((Arc::clone(self.0.weights.get_or_init(|| weights)), false))
     }
 
+    #[cfg(test)]
     fn publish(&self, weights: Arc<ModelWeights>) {
-        // Two concurrent first builds may race here; the loser keeps its own
-        // copy for its session lifetime and the winner's stays shared.
-        let _ = self.0.set(weights);
+        let _ = self.0.weights.set(weights);
     }
 }
 
@@ -2822,11 +2839,6 @@ impl MlxRunner {
             .ok()
             .and_then(|raw| raw.parse::<u32>().ok())
             .unwrap_or(256);
-        // Weight arrays are immutable once loaded (Arc-shared, evaluated
-        // leaves), so a populated share cell lets this build skip the full
-        // safetensors read + GPU eval entirely.
-        let preloaded_weights = shared_weights.and_then(MlxSharedWeightsCell::get);
-        let reused_shared_weights = preloaded_weights.is_some();
         // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
         // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
         // `batched_cap` and `live_sequences` were resolved above, before the
@@ -2880,18 +2892,14 @@ impl MlxRunner {
                 live_sequences_operator_capped: budget.max_live_sequences.is_some(),
             }
         }));
-        let weights = match preloaded_weights {
-            Some(weights) => weights,
-            None => {
-                let loaded = Arc::new(
-                    crate::weights::load_weights_with_session_budget(artifacts, session_budget)
-                        .map_err(MlxRunnerError::Weights)?,
-                );
-                if let Some(cell) = shared_weights {
-                    cell.publish(Arc::clone(&loaded));
-                }
-                loaded
-            }
+        let load_weights = || {
+            crate::weights::load_weights_with_session_budget(artifacts, session_budget)
+                .map(Arc::new)
+                .map_err(MlxRunnerError::Weights)
+        };
+        let (weights, reused_shared_weights) = match shared_weights {
+            Some(cell) => cell.get_or_load(load_weights)?,
+            None => (load_weights()?, false),
         };
         // Apply the guarded wired-residency policy: after weights are
         // loaded and `weights.expert_stream` is known, clear wired residency

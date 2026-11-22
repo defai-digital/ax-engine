@@ -5326,6 +5326,67 @@ fn runner_test_weights(layers: Vec<LayerWeights>) -> ModelWeights {
 }
 
 #[test]
+fn shared_weights_concurrent_cold_sessions_load_once() {
+    use std::sync::{Barrier, mpsc};
+    use std::time::Duration;
+
+    let cell = MlxSharedWeightsCell::new();
+    let expected = Arc::new(runner_test_weights(Vec::new()));
+    let first_loading = Barrier::new(2);
+    let finish_first = Barrier::new(2);
+    let second_starting = Barrier::new(2);
+    let (duplicate_tx, duplicate_rx) = mpsc::channel();
+    let (first, second, duplicate) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            cell.get_or_load(|| {
+                first_loading.wait();
+                finish_first.wait();
+                Ok(Arc::clone(&expected))
+            })
+        });
+        first_loading.wait();
+        let second = scope.spawn(|| {
+            second_starting.wait();
+            cell.get_or_load(|| {
+                let _ = duplicate_tx.send(());
+                Err(MlxRunnerError::UnsupportedFeature("duplicate load".into()))
+            })
+        });
+        second_starting.wait();
+        let duplicate = duplicate_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        finish_first.wait();
+        (first.join().unwrap(), second.join().unwrap(), duplicate)
+    });
+    assert!(!duplicate);
+    let (first_weights, first_reused) = first.unwrap();
+    let (second_weights, second_reused) = second.unwrap();
+    assert!(!first_reused);
+    assert!(second_reused);
+    assert!(Arc::ptr_eq(&first_weights, &expected));
+    assert!(Arc::ptr_eq(&second_weights, &expected));
+}
+
+#[test]
+fn shared_weights_initialization_can_retry_after_load_failure() {
+    let cell = MlxSharedWeightsCell::new();
+    let first = cell.get_or_load(|| {
+        Err(MlxRunnerError::Weights(
+            crate::weights::WeightLoadError::FileMissing("first load".into()),
+        ))
+    });
+    assert!(matches!(first, Err(MlxRunnerError::Weights(_))));
+    assert!(!cell.is_loaded());
+
+    let expected = Arc::new(runner_test_weights(Vec::new()));
+    let (loaded, reused) = cell.get_or_load(|| Ok(Arc::clone(&expected))).unwrap();
+    assert!(cell.is_loaded());
+    assert!(!reused);
+    assert!(Arc::ptr_eq(&loaded, &expected));
+}
+
+#[test]
 fn weight_layout_telemetry_counts_dense_ffn_packed_and_split_layers() {
     let mut packed = runner_test_layer();
     packed.gate_up_packed = Some(unit_weight());

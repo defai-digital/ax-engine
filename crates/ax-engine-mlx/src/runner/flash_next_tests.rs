@@ -910,6 +910,47 @@ fn flash_next_runner_mtp_request_release_drops_draft_history() {
 }
 
 #[test]
+#[ignore = "requires the pinned resident Flash Next MXFP4 pack"]
+fn flash_next_real_concurrent_cold_runners_share_weights() {
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
+    assert_eq!(artifacts.manifest().model_family, "qwen4_exp");
+
+    let shared = MlxSharedWeightsCell::new();
+    let starting = std::sync::Barrier::new(2);
+    let prompt = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let run = |id| {
+        starting.wait();
+        let mut runner = MlxRunner::from_artifacts_with_session_budget(
+            &artifacts,
+            2048,
+            true,
+            true,
+            None,
+            Some(&shared),
+            32768,
+            Some(1),
+        )
+        .unwrap();
+        runner.set_mtp_requested(false);
+        assert!(!runner.native_expert_streaming_active());
+        let output = generate(&runner, &prompt, 2048, context(id, prompt.len(), 8));
+        assert_eq!(output.tokens.len(), 8);
+        (Arc::clone(&runner.weights), output.tokens)
+    };
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| run(1));
+        let second = scope.spawn(|| run(2));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert!(Arc::ptr_eq(&first.0, &second.0));
+    assert_eq!(first.1, second.1);
+    println!(
+        "Two independent Flash Next runners share one weight allocation and match all output IDs."
+    );
+}
+
+#[test]
 #[ignore = "requires a real isolated Flash Next candidate and explicit MTP attachment"]
 fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
