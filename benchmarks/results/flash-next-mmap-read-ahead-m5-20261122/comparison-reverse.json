@@ -1,0 +1,171 @@
+{
+  "all_measurements_eligible": true,
+  "all_warmed_bands_met": false,
+  "arms": {
+    "advised-long": {
+      "first_prompt": 8192,
+      "first_request": {
+        "decode_tokens_per_second": 45.509731008128625,
+        "ttft_seconds": 10.236504
+      },
+      "hints": {
+        "accepted": 984,
+        "accepted_bytes": 16534716416,
+        "attempts": 984
+      },
+      "measurement_eligible": true,
+      "post_run_cpu_idle_percent": 90.86,
+      "pressure_samples": 28,
+      "readiness_seconds": 40.18202820798615,
+      "ready_plus_first_ttft_seconds": 50.418532207986146,
+      "resident_load_seconds": 24.972967,
+      "warm": {
+        "512": {
+          "decode_tokens_per_second": 51.05511152247989,
+          "ttft_seconds": 0.500922
+        },
+        "2048": {
+          "decode_tokens_per_second": 47.3286778199495,
+          "ttft_seconds": 1.606161
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.68114267694443,
+          "ttft_seconds": 8.848774
+        }
+      }
+    },
+    "advised-short": {
+      "first_prompt": 512,
+      "first_request": {
+        "decode_tokens_per_second": 49.990888757371636,
+        "ttft_seconds": 0.54668
+      },
+      "hints": {
+        "accepted": 984,
+        "accepted_bytes": 16534716416,
+        "attempts": 984
+      },
+      "measurement_eligible": true,
+      "post_run_cpu_idle_percent": 96.97,
+      "pressure_samples": 32,
+      "readiness_seconds": 54.12077275000047,
+      "ready_plus_first_ttft_seconds": 54.66745275000047,
+      "resident_load_seconds": 38.189563,
+      "warm": {
+        "512": {
+          "decode_tokens_per_second": 50.533371586552256,
+          "ttft_seconds": 0.526776
+        },
+        "2048": {
+          "decode_tokens_per_second": 44.97146488018731,
+          "ttft_seconds": 1.654552
+        },
+        "8192": {
+          "decode_tokens_per_second": 43.90437344210287,
+          "ttft_seconds": 9.365028
+        }
+      }
+    },
+    "mmap-long": {
+      "first_prompt": 8192,
+      "first_request": {
+        "decode_tokens_per_second": 45.24365165890957,
+        "ttft_seconds": 10.209097
+      },
+      "hints": {
+        "accepted": 0,
+        "accepted_bytes": 0,
+        "attempts": 0
+      },
+      "measurement_eligible": true,
+      "post_run_cpu_idle_percent": 90.17,
+      "pressure_samples": 30,
+      "readiness_seconds": 48.17639879195485,
+      "ready_plus_first_ttft_seconds": 58.38549579195485,
+      "resident_load_seconds": 34.112558,
+      "warm": {
+        "512": {
+          "decode_tokens_per_second": 50.047949164199245,
+          "ttft_seconds": 0.494278
+        },
+        "2048": {
+          "decode_tokens_per_second": 46.98129992710321,
+          "ttft_seconds": 1.6302
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.35903873954547,
+          "ttft_seconds": 8.769922
+        }
+      }
+    },
+    "mmap-short": {
+      "first_prompt": 512,
+      "first_request": {
+        "decode_tokens_per_second": 49.590557957764844,
+        "ttft_seconds": 0.560368
+      },
+      "hints": {
+        "accepted": 0,
+        "accepted_bytes": 0,
+        "attempts": 0
+      },
+      "measurement_eligible": true,
+      "post_run_cpu_idle_percent": 96.15,
+      "pressure_samples": 31,
+      "readiness_seconds": 46.102409832994454,
+      "ready_plus_first_ttft_seconds": 46.66277783299445,
+      "resident_load_seconds": 31.835283,
+      "warm": {
+        "512": {
+          "decode_tokens_per_second": 50.44751830756712,
+          "ttft_seconds": 0.512726
+        },
+        "2048": {
+          "decode_tokens_per_second": 46.4558669264199,
+          "ttft_seconds": 1.763842
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.01051213251095,
+          "ttft_seconds": 9.750253
+        }
+      }
+    }
+  },
+  "eligible_for_runtime_review": false,
+  "matched_ids_across_arms": 1792,
+  "original_receipt_sha256": "15ee8bfe632debf1131c718fd5e5c8482174dfd14d7eb236a169a54891f5c53e",
+  "output_ids_matched_to_original_order": 1792,
+  "receipt_sha256": "6177e063b1de3946f207fb76d94a993e320b525717329cbaf49202350c6fce8f",
+  "scope": "Advisory read-ahead with guarded copied MLX storage",
+  "terminal_status": "complete",
+  "warm_candidate_to_control": {
+    "long": {
+      "512": {
+        "decode_tokens_per_second": 1.020123948635264,
+        "ttft_seconds": 1.0134418282828692
+      },
+      "2048": {
+        "decode_tokens_per_second": 1.0073939608607103,
+        "ttft_seconds": 0.9852539565697459
+      },
+      "8192": {
+        "decode_tokens_per_second": 1.0071012073083936,
+        "ttft_seconds": 1.0089911860105485
+      }
+    },
+    "short": {
+      "512": {
+        "decode_tokens_per_second": 1.0017018335463344,
+        "ttft_seconds": 1.0274025502900184
+      },
+      "2048": {
+        "decode_tokens_per_second": 0.9680470488564191,
+        "ttft_seconds": 0.9380386678625411
+      },
+      "8192": {
+        "decode_tokens_per_second": 0.9754248810333106,
+        "ttft_seconds": 0.9604907688036403
+      }
+    }
+  }
+}

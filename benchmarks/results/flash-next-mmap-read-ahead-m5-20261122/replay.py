@@ -1,4 +1,5 @@
 """Audit the same-binary M5 guarded mmap read-ahead diagnostic."""
+import argparse
 from hashlib import sha256
 import json
 from math import isfinite
@@ -16,7 +17,8 @@ VOCAB = 248320
 PROMPTS = (512, 2048, 8192)
 ARMS = {'mmap-short': ('mmap', 512), 'advised-short': ('advised', 512),
         'advised-long': ('advised', 8192), 'mmap-long': ('mmap', 8192)}
-
+REVERSE_ORDER = ('advised-short', 'mmap-short', 'mmap-long', 'advised-long')
+REVERSE_RUNNER_SHA = 'ce68778df534141e4da41baa3f5b21b3c2f795a10fd364fcc22c61cfbe14d1b1'
 
 
 def workload(first):
@@ -52,7 +54,7 @@ def body(archive, name):
     return stream.read()
 
 
-def audit(archive, expected_selection):
+def audit(archive, expected_selection, *, reverse=False):
     raw = body(archive, 'receipt.json')
     receipt = json.loads(raw)
     build = json.loads(body(archive, 'server-build-receipt.json'))
@@ -70,7 +72,12 @@ def audit(archive, expected_selection):
     assert receipt['pack_revision'] == 'ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3'
     assert receipt['scope'] == 'guarded mmap advisory startup diagnostic'
     assert receipt['launch'] == 'ordinary-32k-resident-single-request'
-    assert tuple(receipt['arms']) == tuple(ARMS)
+    assert tuple(receipt['arms']) == (REVERSE_ORDER if reverse else tuple(ARMS))
+    if reverse:
+        assert receipt['between_arm_cooldown_seconds'] == 20
+        assert receipt['runner_sha256'] == REVERSE_RUNNER_SHA
+        assert json.loads(body(archive, 'arm-order.json')) == [
+            f'{label}-{event}' for label in REVERSE_ORDER for event in ('starting', 'complete')]
     assert receipt['status'] in ('complete', 'failed')
     assert len(receipt['workloads']) == 4
     observed = {}
@@ -128,7 +135,8 @@ def audit(archive, expected_selection):
                                   for metric, value in control['warm'][length].items()} for length in PROMPTS}
     eligible = all(arm['measurement_eligible'] for arm in results.values())
     assert (receipt['status'] == 'complete') == eligible
-    assert body(archive, 'phase-status.txt') == f'read-ahead {0 if eligible else 1}\n'.encode()
+    phase = 'read-ahead-reverse' if reverse else 'read-ahead'
+    assert body(archive, 'phase-status.txt') == f'{phase} {0 if eligible else 1}\n'.encode()
     warm_band = all(row['ttft_seconds'] <= 1.03 and row['decode_tokens_per_second'] >= 0.97
                     for pair in pairs.values() for row in pair.values())
     return {
@@ -158,7 +166,7 @@ def trace_hints(log, expected_selection, mode, resident_seconds):
     return {'attempts': attempts, 'accepted': accepted, 'accepted_bytes': count}
 
 
-def replay(root=ROOT, previous=PREVIOUS):
+def replay(root=ROOT, previous=PREVIOUS, *, reverse_path=None):
     with tarfile.open(previous) as baseline:
         raw = body(baseline, 'raw/startup-phase.json')
     assert sha256(raw).hexdigest() == 'd4646afd9c4414672544843ce3d0a0ff3a885cd12810000e0de316deace09c28'
@@ -167,8 +175,25 @@ def replay(root=ROOT, previous=PREVIOUS):
                       for arm in prior['starts'].values()]
     assert len(configurations) == 4 and all(row == configurations[0] for row in configurations)
     with tarfile.open(root / 'evidence.tar.xz') as archive:
-        return audit(archive, configurations[0])
+        forward = audit(archive, configurations[0])
+        if reverse_path is None:
+            return forward
+        first = json.loads(body(archive, 'receipt.json'))
+    with tarfile.open(reverse_path) as archive:
+        reversed_comparison = audit(archive, configurations[0], reverse=True)
+        repeat = json.loads(body(archive, 'receipt.json'))
+    assert first['build'] == repeat['build']
+    for label in ARMS:
+        for previous_case, current_case in zip(first['arms'][label]['cases'],
+                                               repeat['arms'][label]['cases'], strict=True):
+            assert current_case['prompt_hash'] == previous_case['prompt_hash']
+            assert current_case['output_tokens'] == previous_case['output_tokens']
+    return {**reversed_comparison, 'original_receipt_sha256': forward['receipt_sha256'],
+            'output_ids_matched_to_original_order': reversed_comparison['matched_ids_across_arms']}
 
 
 if __name__ == '__main__':
-    print(json.dumps(replay(), indent=2, sort_keys=True, allow_nan=False))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--reverse-archive', type=Path)
+    args = parser.parse_args()
+    print(json.dumps(replay(reverse_path=args.reverse_archive), indent=2, sort_keys=True, allow_nan=False))
