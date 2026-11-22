@@ -1,0 +1,51 @@
+{
+  "cpu_idle_percent": [
+    92.0,
+    92.57
+  ],
+  "matching_generated_ids": 576,
+  "normal_pressure_samples": 187,
+  "peak_process_footprint_bytes": 80828060424,
+  "qualification": false,
+  "runs": {
+    "held-cancel": {
+      "cancelled_output_tokens": 0,
+      "cancelled_prompt_cursor": 0,
+      "held_step_id": 556,
+      "matching_generated_ids": 192,
+      "short_tokens_at_cancellation": 85,
+      "slot_reused_while_short_active": true,
+      "third_request_http_status": 429
+    },
+    "trigger-48": {
+      "first_prefill_step": 176,
+      "last_prefill_step": 195,
+      "prefill_active_at_tail": false,
+      "short_token_84_step": 210,
+      "split_groups_crossing_tail": [],
+      "split_logical_ends": [
+        2048,
+        4096,
+        6144,
+        8192
+      ]
+    },
+    "trigger-65": {
+      "first_prefill_step": 357,
+      "last_prefill_step": 376,
+      "prefill_active_at_tail": true,
+      "short_token_84_step": 374,
+      "split_groups_crossing_tail": [
+        8192
+      ],
+      "split_logical_ends": [
+        2048,
+        4096,
+        6144,
+        8192
+      ]
+    }
+  },
+  "runtime_commit": "14235e84b01456cfcb40ba6fcb717ae4798fa8f7",
+  "scope": "M5 early-arrival and cancellation holdouts"
+}
