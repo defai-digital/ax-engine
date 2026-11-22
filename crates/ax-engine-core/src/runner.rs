@@ -340,6 +340,11 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         None
     }
 
+    /// Layer groups for a runner offering partial progress on the physical prefill route.
+    fn prefill_layer_geometry(&self) -> Option<crate::scheduler::PrefillLayerGeometry> {
+        None
+    }
+
     fn begin_ncm(
         &self,
         _request_id: RequestId,

@@ -89,6 +89,7 @@ pub struct PrefillSplitGeometry {
 pub(crate) struct PrefillSplit {
     pub geometry: PrefillSplitGeometry,
     pub end: Option<u32>,
+    pub completed_layers: u32,
 }
 
 impl PrefillSplit {
@@ -139,6 +140,23 @@ pub fn published_prefill_split_end(
             == Some(request_id.0))
         .then_some(*end)
     })
+}
+
+/// Layer group limits offered by a runner for the fixed physical prefill route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrefillLayerGeometry {
+    pub layers_per_step: std::num::NonZeroU32,
+    pub total_layers: std::num::NonZeroU32,
+}
+
+pub(crate) const PREFILL_LAYER_PROGRESS_ROUTE_PREFIX: &str = "ax_runner_prefill_layers_completed.";
+
+pub fn prefill_layer_progress_route_key(request_id: RequestId) -> String {
+    format!("{PREFILL_LAYER_PROGRESS_ROUTE_PREFIX}{}", request_id.0)
+}
+
+pub fn prefill_layer_resume_route_key(request_id: RequestId) -> String {
+    format!("ax_scheduler_prefill_layers_completed.{}", request_id.0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -654,6 +672,10 @@ impl Scheduler {
 
         for (snapshot, mode) in candidates {
             let requested_tokens = schedulable_token_count(snapshot, mode);
+            let reserved_prefill = mode == ExecutionMode::Prefill
+                && prefill_splits
+                    .get(&snapshot.request_id)
+                    .is_some_and(|split| split.completed_layers > 0);
             if mode == ExecutionMode::Prefill && decode_cap == Some(0) {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
@@ -688,7 +710,12 @@ impl Scheduler {
                 };
             }
 
-            if mode == ExecutionMode::Prefill && admitted_prefill_requests >= prefill_request_cap {
+            let admission_cap = if reserved_prefill {
+                input.max_inflight_prefill_requests.max(1)
+            } else {
+                prefill_request_cap
+            };
+            if mode == ExecutionMode::Prefill && admitted_prefill_requests >= admission_cap {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
                 fair_telemetry.deferred_by_admission =
@@ -697,6 +724,7 @@ impl Scheduler {
             }
 
             let candidate_budget = match (mode, pressure_prefill_budget) {
+                (ExecutionMode::Prefill, _) if reserved_prefill => remaining_budget,
                 (ExecutionMode::Prefill, Some(0))
                     if prefill_tail_fits_partial_block(snapshot, input.block_size_tokens) =>
                 {
@@ -958,6 +986,15 @@ impl Scheduler {
                     &prefill_split_end_route_key(request_id),
                     end,
                 );
+                if let Some(split) = prefill_splits.get(&request_id)
+                    && split.completed_layers > 0
+                {
+                    upsert_route_decision(
+                        &mut route_metadata.crossover_decisions,
+                        &prefill_layer_resume_route_key(request_id),
+                        split.completed_layers,
+                    );
+                }
             }
             for request_id in &non_reusable_chunk_requests {
                 upsert_route_decision(
@@ -1326,6 +1363,7 @@ mod tests {
                     physical_tokens: 512,
                 },
                 end: Some(2048),
+                completed_layers: 0,
             },
         )]);
         let scheduler = Scheduler::new();

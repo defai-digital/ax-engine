@@ -33,8 +33,9 @@ use crate::sampling::{
     sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
-    ExecutionBatch, ExecutionItem, ExecutionMode, PrefillSplit, PrefillSplitGeometry, SchedulePlan,
-    Scheduler, SchedulerInput, chunk_history_marked_non_reusable, published_prefill_split_end,
+    ExecutionBatch, ExecutionItem, ExecutionMode, PREFILL_LAYER_PROGRESS_ROUTE_PREFIX,
+    PrefillSplit, PrefillSplitGeometry, SchedulePlan, Scheduler, SchedulerInput,
+    chunk_history_marked_non_reusable, published_prefill_split_end,
 };
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
@@ -1026,7 +1027,23 @@ impl EngineCore {
                 }
                 continue;
             }
-            let mut allocation_plan = self.kv_manager.allocate(rid, item.scheduled_token_count)?;
+            let reservation = if item.mode == ExecutionMode::Prefill
+                && self
+                    .prefill_splits
+                    .get(&rid)
+                    .is_some_and(|split| split.completed_layers > 0)
+            {
+                if self.kv_manager.logical_token_count(rid)? != item.position_range.end_exclusive {
+                    return Err(EngineCoreError::RunnerContractViolation {
+                        step_id: schedule_plan.step_id,
+                        message: "suspended prefill no longer matches its KV reservation",
+                    });
+                }
+                0
+            } else {
+                item.scheduled_token_count
+            };
+            let mut allocation_plan = self.kv_manager.allocate(rid, reservation)?;
             trace!(
                 request_id = rid.0,
                 scheduled_token_count = item.scheduled_token_count,
@@ -1057,7 +1074,7 @@ impl EngineCore {
                 if !memory_blocked_requests.contains(&candidate) {
                     memory_blocked_requests.push(candidate);
                 }
-                allocation_plan = self.kv_manager.allocate(rid, item.scheduled_token_count)?;
+                allocation_plan = self.kv_manager.allocate(rid, reservation)?;
                 debug!(
                     step_id = schedule_plan.step_id.0,
                     preempted_request_id = candidate.0,
@@ -1478,6 +1495,7 @@ impl EngineCore {
                     PrefillSplit {
                         geometry,
                         end: None,
+                        completed_layers: 0,
                     },
                 );
             }
@@ -1643,7 +1661,7 @@ impl EngineCore {
                 // Requests resolved before the failing update keep their
                 // multi-token progress, which still needs KV accounting; do
                 // that best-effort without masking the original error.
-                self.commit_prefill_splits(&execution_batch);
+                self.commit_prefill_splits(&execution_batch, &runner_output);
                 if let Err(reconcile_error) = self.reconcile_runner_appended_kv(&execution_batch) {
                     error!(
                         error = %reconcile_error,
@@ -1654,7 +1672,7 @@ impl EngineCore {
                 return Err(error.into());
             }
         };
-        self.commit_prefill_splits(&execution_batch);
+        self.commit_prefill_splits(&execution_batch, &runner_output);
         self.reconcile_runner_appended_kv(&execution_batch)?;
         self.latch_frozen_prefill_quantums(&execution_batch);
         self.publish_committed_prefixes(&execution_batch);
@@ -1976,7 +1994,49 @@ impl EngineCore {
                 });
             }
 
-            if update.error.is_none()
+            let mut layers = prefill_layer_reports(runner_output, update.request_id);
+            let partial_prefill = if let Some(completed) = layers.next() {
+                let previous = self
+                    .prefill_splits
+                    .get(&item.request_id)
+                    .map_or(0, |split| split.completed_layers);
+                let geometry = self.runner.prefill_layer_geometry();
+                let physical = self.runner.prefill_split_geometry();
+                let logical_end = published_prefill_split_end(
+                    &execution_batch.route_metadata.crossover_decisions,
+                    item.request_id,
+                );
+                let valid = item.mode == ExecutionMode::Prefill
+                    && update.tokens_executed == 0
+                    && update.error.is_none()
+                    && update.stop_reason.is_none()
+                    && update.diffusion_schedule.is_none()
+                    && !update.has_output_tokens()
+                    && !prefill_completion_request_ids.contains(&item.request_id)
+                    && execution_batch.items.len() == 2
+                    && decode_request_ids.len() == 1
+                    && logical_end.is_some_and(|end| item.position_range.end_exclusive < end)
+                    && physical.is_some_and(|physical| {
+                        item.scheduled_token_count > 1
+                            && item.scheduled_token_count <= physical.physical_tokens
+                    })
+                    && geometry.is_some_and(|geometry| {
+                        previous.checked_add(geometry.layers_per_step.get()) == Some(completed)
+                            && completed < geometry.total_layers.get()
+                    })
+                    && layers.next().is_none();
+                if !valid {
+                    return Err(EngineCoreError::RunnerContractViolation {
+                        step_id: execution_batch.step_id,
+                        message: "invalid partial layer progress for a physical prefill item",
+                    });
+                }
+                true
+            } else {
+                false
+            };
+            if !partial_prefill
+                && update.error.is_none()
                 && !matches!(update.stop_reason, Some(crate::sampling::StopReason::Error))
                 && update.tokens_executed != item.scheduled_token_count
                 && !(update.is_diffusion_schedule_progress_only() && update.tokens_executed == 0)
@@ -2475,7 +2535,7 @@ impl EngineCore {
         }
     }
 
-    fn commit_prefill_splits(&mut self, batch: &ExecutionBatch) {
+    fn commit_prefill_splits(&mut self, batch: &ExecutionBatch, runner_output: &RunnerOutput) {
         for item in batch
             .items
             .iter()
@@ -2487,24 +2547,35 @@ impl EngineCore {
             ) else {
                 continue;
             };
+            let completed_layers = prefill_layer_reports(runner_output, item.request_id)
+                .next()
+                .unwrap_or(0);
+            let committed = if completed_layers == 0 {
+                item.position_range.end_exclusive
+            } else {
+                item.position_range.start
+            };
             let continues = self
                 .request_manager
                 .record(item.request_id)
                 .is_some_and(|record| {
-                    !record.state.is_terminal()
-                        && record.processed_prompt_tokens == item.position_range.end_exclusive
-                        && record.processed_prompt_tokens < end
+                    record.state == RequestState::Runnable
+                        && record.processed_prompt_tokens == committed
+                        && committed < end
                 });
             if !continues {
                 self.prefill_splits.remove(&item.request_id);
-            } else if let std::collections::btree_map::Entry::Vacant(entry) =
-                self.prefill_splits.entry(item.request_id)
-                && let Some(geometry) = self.runner.prefill_split_geometry()
-            {
-                entry.insert(PrefillSplit {
-                    geometry,
-                    end: Some(end),
-                });
+            } else if let Some(split) = self.prefill_splits.get_mut(&item.request_id) {
+                split.completed_layers = completed_layers;
+            } else if let Some(geometry) = self.runner.prefill_split_geometry() {
+                self.prefill_splits.insert(
+                    item.request_id,
+                    PrefillSplit {
+                        geometry,
+                        end: Some(end),
+                        completed_layers,
+                    },
+                );
             }
         }
     }
@@ -2952,6 +3023,23 @@ pub enum EngineCoreError {
     StepIdOverflow,
     #[error("execution runner panicked at {step_id:?}: {message}")]
     RunnerPanicked { step_id: StepId, message: String },
+}
+
+fn prefill_layer_reports(
+    runner_output: &RunnerOutput,
+    request_id: RequestId,
+) -> impl Iterator<Item = u32> + '_ {
+    runner_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .filter_map(move |(name, value)| {
+            let reported_id = name
+                .strip_prefix(PREFILL_LAYER_PROGRESS_ROUTE_PREFIX)?
+                .parse::<u64>()
+                .ok()?;
+            (reported_id == request_id.0).then_some(*value)
+        })
 }
 
 #[cfg(test)]
@@ -4166,6 +4254,160 @@ mod tests {
             engine.step(2049, true).unwrap().sampled_tokens[0].request_id,
             RequestId(1)
         );
+    }
+
+    #[derive(Debug)]
+    struct LayeredPrefillRunner {
+        skip_first_layer: bool,
+    }
+
+    impl ExecutionRunner for LayeredPrefillRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            use crate::scheduler::{
+                prefill_layer_progress_route_key, prefill_layer_resume_route_key,
+            };
+
+            let batch = &input.execution_batch;
+            let decisions = &batch.route_metadata.crossover_decisions;
+            let cut = batch.items.iter().find_map(|item| {
+                let step = self.prefill_layer_geometry()?.layers_per_step.get();
+                let _ = published_prefill_split_end(decisions, item.request_id)?;
+                if batch.items.len() != 2 || item.scheduled_token_count <= 1 {
+                    return None;
+                }
+                let key = prefill_layer_resume_route_key(item.request_id);
+                let previous = decisions
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map_or(0, |(_, layers)| *layers);
+                let completed = previous
+                    + step
+                        * if self.skip_first_layer && previous == 0 {
+                            2
+                        } else {
+                            1
+                        };
+                (completed < self.prefill_layer_geometry()?.total_layers.get())
+                    .then_some((item.request_id, completed))
+            });
+            let mut output = DeterministicRunner.run(input);
+            if let Some((id, completed)) = cut {
+                let update = output
+                    .request_updates
+                    .iter_mut()
+                    .find(|update| update.request_id == id)
+                    .unwrap();
+                output.kv_write_summary.tokens_written -= update.tokens_executed;
+                update.tokens_executed = 0;
+                output
+                    .route_metadata
+                    .crossover_decisions
+                    .push((prefill_layer_progress_route_key(id), completed));
+            }
+            output
+        }
+
+        fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
+            PhysicalPrefillRunner.prefill_split_geometry()
+        }
+
+        fn prefill_layer_geometry(&self) -> Option<crate::scheduler::PrefillLayerGeometry> {
+            Some(crate::scheduler::PrefillLayerGeometry {
+                layers_per_step: std::num::NonZeroU32::new(8).unwrap(),
+                total_layers: std::num::NonZeroU32::new(48).unwrap(),
+            })
+        }
+    }
+
+    fn engine_with_suspended_prefill(skip_first_layer: bool, kv_blocks: u32) -> EngineCore {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 16, kv_blocks),
+            LayeredPrefillRunner { skip_first_layer },
+            DeterministicSampler,
+        );
+        engine.set_prefix_reuse_enabled(false);
+        engine.set_live_sequence_cap(Some(2));
+        engine.set_multi_prefill_fair(true, 2048, 1);
+        engine.submit(make_submission(1, 1, 64)).unwrap();
+        engine.step(2049, true).unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![7; 2048], 8))
+            .unwrap();
+        engine
+    }
+
+    #[test]
+    fn layered_prefill_reuses_reservation_and_keeps_publishing_peer_tokens() {
+        let mut engine = engine_with_suspended_prefill(false, 512);
+        let short = RequestId(1);
+        let long = RequestId(2);
+        for layers in [8, 16, 24, 32, 40, 0] {
+            let step = engine.step(2049, true).unwrap();
+            assert_eq!(step.sampled_tokens.len(), 1);
+            assert_eq!(step.sampled_tokens[0].request_id, short);
+            assert_eq!(engine.prefill_splits[&long].completed_layers, layers);
+            assert_eq!(engine.kv_manager.logical_token_count(long).unwrap(), 512);
+            assert_eq!(
+                engine
+                    .request_manager
+                    .record(long)
+                    .unwrap()
+                    .processed_prompt_tokens,
+                if layers == 0 { 512 } else { 0 }
+            );
+        }
+        engine.step(2049, true).unwrap();
+        assert_eq!(engine.prefill_splits[&long].completed_layers, 8);
+        engine.cancel(short).unwrap();
+        engine.step(2049, true).unwrap();
+        assert_eq!(engine.prefill_splits[&long].completed_layers, 0);
+        assert_eq!(
+            engine
+                .request_manager
+                .record(long)
+                .unwrap()
+                .processed_prompt_tokens,
+            1024
+        );
+        assert_eq!(engine.kv_manager.logical_token_count(long).unwrap(), 1024);
+        engine.cancel(long).unwrap();
+        assert!(!engine.prefill_splits.contains_key(&long));
+        assert_eq!(engine.kv_manager.block_count_for(long), 0);
+    }
+
+    #[test]
+    fn layered_prefill_can_resume_with_no_free_blocks_and_cancel_releases_its_reservation() {
+        let mut engine = engine_with_suspended_prefill(false, 33);
+        let long = RequestId(2);
+        engine.step(2049, true).unwrap();
+        assert_eq!(engine.kv_manager.allocatable_block_count(), 0);
+        assert_eq!(engine.prefill_splits[&long].completed_layers, 8);
+        let next = engine.step(2049, true).unwrap();
+        assert_eq!(next.sampled_tokens[0].request_id, RequestId(1));
+        assert_eq!(engine.prefill_splits[&long].completed_layers, 16);
+        assert_eq!(engine.kv_manager.logical_token_count(long).unwrap(), 512);
+        engine.cancel(long).unwrap();
+        assert!(!engine.prefill_splits.contains_key(&long));
+        assert_eq!(engine.kv_manager.allocatable_block_count(), 32);
+        assert_eq!(
+            engine.step(2049, true).unwrap().sampled_tokens[0].request_id,
+            RequestId(1)
+        );
+    }
+
+    #[test]
+    fn layered_prefill_rejects_forged_progress_and_releases_its_reservation() {
+        let mut engine = engine_with_suspended_prefill(true, 512);
+        let long = RequestId(2);
+        assert!(matches!(
+            engine.step(2049, true),
+            Err(EngineCoreError::RunnerContractViolation {
+                message: "invalid partial layer progress for a physical prefill item",
+                ..
+            })
+        ));
+        assert!(!engine.prefill_splits.contains_key(&long));
+        assert_eq!(engine.kv_manager.block_count_for(long), 0);
     }
 
     #[test]
