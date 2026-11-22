@@ -1,0 +1,137 @@
+{
+  "arms": {
+    "mmap-long": {
+      "first_prompt_tokens": 8192,
+      "first_request": {
+        "decode_tokens_per_second": 45.091761735130994,
+        "ttft_seconds": 8.909842
+      },
+      "load_phase_seconds": 83.335263,
+      "ready_seconds": 104.5173278330476,
+      "ready_seconds_plus_first_ttft": 113.4271698330476,
+      "sidecar_load_seconds": 12.191185,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 46.063296913610515,
+          "ttft_seconds": 1.664103
+        },
+        "512": {
+          "decode_tokens_per_second": 49.37736732619963,
+          "ttft_seconds": 0.525011
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.10757428926469,
+          "ttft_seconds": 9.489386
+        }
+      }
+    },
+    "mmap-short": {
+      "first_prompt_tokens": 512,
+      "first_request": {
+        "decode_tokens_per_second": 51.48543792517007,
+        "ttft_seconds": 0.544669
+      },
+      "load_phase_seconds": 142.364462,
+      "ready_seconds": 164.45325645903358,
+      "ready_seconds_plus_first_ttft": 164.99792545903358,
+      "sidecar_load_seconds": 12.731187,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.98828466650464,
+          "ttft_seconds": 1.644467
+        },
+        "512": {
+          "decode_tokens_per_second": 51.914645623930305,
+          "ttft_seconds": 0.510268
+        },
+        "8192": {
+          "decode_tokens_per_second": 46.00607873866173,
+          "ttft_seconds": 8.906776
+        }
+      }
+    },
+    "pread-long": {
+      "first_prompt_tokens": 8192,
+      "first_request": {
+        "decode_tokens_per_second": 45.927626949146266,
+        "ttft_seconds": 9.918719
+      },
+      "load_phase_seconds": 83.428229,
+      "ready_seconds": 94.47038975002943,
+      "ready_seconds_plus_first_ttft": 104.38910875002942,
+      "sidecar_load_seconds": 0.532031,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 46.692935208280616,
+          "ttft_seconds": 1.623911
+        },
+        "512": {
+          "decode_tokens_per_second": 50.289244266215036,
+          "ttft_seconds": 0.513383
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.735800509290264,
+          "ttft_seconds": 9.002211
+        }
+      }
+    },
+    "pread-short": {
+      "first_prompt_tokens": 512,
+      "first_request": {
+        "decode_tokens_per_second": 50.860110087528604,
+        "ttft_seconds": 0.55087
+      },
+      "load_phase_seconds": 83.098848,
+      "ready_seconds": 92.45991704100743,
+      "ready_seconds_plus_first_ttft": 93.01078704100743,
+      "sidecar_load_seconds": 0.534856,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.20471925373907,
+          "ttft_seconds": 1.616814
+        },
+        "512": {
+          "decode_tokens_per_second": 50.9340650312998,
+          "ttft_seconds": 0.513425
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.7719288143151,
+          "ttft_seconds": 8.878694
+        }
+      }
+    }
+  },
+  "matched_output_ids_per_arm": 448,
+  "slowest_pread_to_fastest_mmap_ready_ratio": 0.9038729912893793,
+  "warm_candidate_to_control_ratios": {
+    "long": {
+      "2048": {
+        "decode_tokens_per_second": 1.013668980226295,
+        "ttft_seconds": 0.9758476488534664
+      },
+      "512": {
+        "decode_tokens_per_second": 1.018467508281503,
+        "ttft_seconds": 0.9778518926270117
+      },
+      "8192": {
+        "decode_tokens_per_second": 1.0139272889292805,
+        "ttft_seconds": 0.9486610619485815
+      }
+    },
+    "short": {
+      "2048": {
+        "decode_tokens_per_second": 0.9836717353368438,
+        "ttft_seconds": 0.9831842171354002
+      },
+      "512": {
+        "decode_tokens_per_second": 0.981111677045167,
+        "ttft_seconds": 1.0061869448995429
+      },
+      "8192": {
+        "decode_tokens_per_second": 0.9949104568186149,
+        "ttft_seconds": 0.9968471195413469
+      }
+    }
+  },
+  "warmed_timing_band_met": true
+}
