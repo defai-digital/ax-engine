@@ -1,0 +1,35 @@
+{
+  "commit": "31e2b6e1f10beb42ddb2a7f5ef3ec8a6e96d4356",
+  "native_arms": {
+    "default-aligned": {
+      "matches": 7,
+      "ready_seconds": 34.21,
+      "verified_steps": 0.0
+    },
+    "default-mapped": {
+      "matches": 7,
+      "ready_seconds": 29.187,
+      "verified_steps": 0.0
+    },
+    "required-aligned": {
+      "matches": 7,
+      "ready_seconds": 34.226,
+      "verified_steps": 107.0
+    },
+    "required-mapped": {
+      "matches": 7,
+      "ready_seconds": 245.647,
+      "verified_steps": 107.0
+    }
+  },
+  "qualification": false,
+  "scope": "M2 Ultra functional native HTTP",
+  "software": {
+    "python_passed": 345,
+    "python_skipped": 7,
+    "rust_failed": 0,
+    "rust_ignored": 107,
+    "rust_workspace": 4790,
+    "software_passed": true
+  }
+}
