@@ -695,12 +695,13 @@ mod tests {
         let original_metadata = original.metadata().unwrap();
         let keep = HashSet::from(["t".to_string()]);
         let read_path = || load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&keep));
-        let read_descriptor = || {
-            load_safetensors_filtered_from_file(
-                &path,
-                &original,
-                SafetensorsNameFilter::Keep(&keep),
-            )
+        let read_descriptor = |positional| {
+            let filter = SafetensorsNameFilter::Keep(&keep);
+            if positional {
+                load_safetensors_filtered_positional_from_file(&path, &original, filter)
+            } else {
+                load_safetensors_filtered_from_file(&path, &original, filter)
+            }
         };
 
         std::fs::rename(&current, &previous).unwrap();
@@ -708,8 +709,12 @@ mod tests {
         let changed = read_path().unwrap();
         eval(&[&changed["t"]]);
         assert_eq!(changed["t"].data_f32(), &[2.0]);
-        let error = read_descriptor().unwrap_err();
-        assert!(error.contains("changed while mapped"), "{error}");
+        // The old descriptor stays live after path replacement, as it does
+        // if the rename occurs after the sidecar's initial identity check.
+        for positional in [false, true] {
+            let error = read_descriptor(positional).unwrap_err();
+            assert!(error.contains("changed while mapped"), "{error}");
+        }
 
         std::fs::rename(&current, &next).unwrap();
         std::fs::rename(&previous, &current).unwrap();
@@ -717,9 +722,11 @@ mod tests {
             &original_metadata,
             &std::fs::metadata(&path).unwrap()
         ));
-        let restored = read_descriptor().unwrap();
-        eval(&[&restored["t"]]);
-        assert_eq!(restored["t"].data_f32(), &[1.0]);
+        for positional in [false, true] {
+            let restored = read_descriptor(positional).unwrap();
+            eval(&[&restored["t"]]);
+            assert_eq!(restored["t"].data_f32(), &[1.0]);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
