@@ -1,0 +1,41 @@
+{
+  "release_server_sha256": "41d3fcfd63cf2543ff45cd70f3b8ad6bd129e41329ec8dcb1988be6c679808d9",
+  "runtime_base": "192d515bc7a3fa15648d17137fca00399b0722e5",
+  "runtime_commit": "7265da7caf6f66b6eb57e0e881061400f2c79c68",
+  "runtime_diff_sha256": "5a7e98759fcbef25e73f9f67f8cfd27bfc0b3767aa06d17e1f42d702d0af5e5a",
+  "runtime_tree": "dccd71c5010c98d40b381011c65b6d4d6e959266",
+  "software": {
+    "format": true,
+    "maturin_develop": true,
+    "primary_claims": true,
+    "primary_model_dry_runs": true,
+    "pytest_passed": 345,
+    "pytest_skipped": 7,
+    "rust_passed": 4787,
+    "scripts": true,
+    "strict_clippy": true
+  },
+  "supported_tier": {
+    "hardware": "Mac mini M4 Pro 64 GB",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "logs": {
+      "m4-head-tests.txt": {
+        "original_sha256": "ee876dde522bdae6f273a2a1863f98ea2d795cbba442fb2427f1e4fd79b74430",
+        "passed": 14,
+        "sha256": "ee3e81e30d53dfbce1e73e13491ac7e605347d6f452099b8e546e64b36fcbb5b"
+      },
+      "m4-switch-test.txt": {
+        "original_sha256": "d4e8f94df6848d038bc11b552f9fc9ec62a8906e28733b3948f6bfd7c450330c",
+        "passed": 1,
+        "sha256": "6d781ffd008effea990f67b6cc2c96c3386c3510ad657abe6aeaadfaec2652ed"
+      }
+    },
+    "macos": "27.0",
+    "signature_verified": true,
+    "test_binary_sha256": "d04d891a366ccd7a279175477cf390a6e69b37c17ba8c2cf3dc590d1294a5e0e"
+  },
+  "toolchain": [
+    "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo 1.99.1 (5f94df478 2026-08-27)"
+  ]
+}

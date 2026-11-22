@@ -1,0 +1,176 @@
+{
+  "arms": {
+    "mmap-long": {
+      "first_prompt_tokens": 8192,
+      "first_request": {
+        "decode_tokens_per_second": 45.92259228589332,
+        "ttft_seconds": 8.944643
+      },
+      "load_phase_seconds": 84.822532,
+      "ready_seconds": 106.2789745000191,
+      "ready_seconds_plus_first_ttft": 115.2236175000191,
+      "sidecar_load_seconds": 12.167435,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.44152449513036,
+          "ttft_seconds": 1.635362
+        },
+        "512": {
+          "decode_tokens_per_second": 50.975523526848484,
+          "ttft_seconds": 0.513692
+        },
+        "8192": {
+          "decode_tokens_per_second": 43.45455284564242,
+          "ttft_seconds": 9.315434
+        }
+      }
+    },
+    "mmap-short": {
+      "first_prompt_tokens": 512,
+      "first_request": {
+        "decode_tokens_per_second": 48.53646889360336,
+        "ttft_seconds": 0.561988
+      },
+      "load_phase_seconds": 142.878506,
+      "ready_seconds": 164.38966908404836,
+      "ready_seconds_plus_first_ttft": 164.95165708404838,
+      "sidecar_load_seconds": 11.74745,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 46.019259802473464,
+          "ttft_seconds": 1.707441
+        },
+        "512": {
+          "decode_tokens_per_second": 48.74482086278333,
+          "ttft_seconds": 0.53759
+        },
+        "8192": {
+          "decode_tokens_per_second": 44.583852879038254,
+          "ttft_seconds": 9.790218
+        }
+      }
+    },
+    "prefetch-long": {
+      "first_prompt_tokens": 8192,
+      "first_request": {
+        "decode_tokens_per_second": 46.26327084309588,
+        "ttft_seconds": 8.909563
+      },
+      "load_phase_seconds": 85.318427,
+      "ready_seconds": 94.44172312499722,
+      "ready_seconds_plus_first_ttft": 103.35128612499723,
+      "sidecar_load_seconds": 0.942998,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.575929649012416,
+          "ttft_seconds": 1.623684
+        },
+        "512": {
+          "decode_tokens_per_second": 51.270686067935316,
+          "ttft_seconds": 0.516516
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.80689585876109,
+          "ttft_seconds": 9.019214
+        }
+      }
+    },
+    "prefetch-short": {
+      "first_prompt_tokens": 512,
+      "first_request": {
+        "decode_tokens_per_second": 47.88118053367437,
+        "ttft_seconds": 1.244406
+      },
+      "load_phase_seconds": 77.187977,
+      "ready_seconds": 88.34293350001099,
+      "ready_seconds_plus_first_ttft": 89.58733950001098,
+      "sidecar_load_seconds": 1.001003,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 46.89147346623284,
+          "ttft_seconds": 1.677575
+        },
+        "512": {
+          "decode_tokens_per_second": 50.51813682592917,
+          "ttft_seconds": 0.52807
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.27497243338372,
+          "ttft_seconds": 9.283994
+        }
+      }
+    }
+  },
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "driver_sha256": "0378bc85bd660d7e191860ff337fe3da0527365224d54449f1ad05101d24ff91",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "runtime_base": "192d515bc7a3fa15648d17137fca00399b0722e5",
+    "runtime_diff_sha256": "5a7e98759fcbef25e73f9f67f8cfd27bfc0b3767aa06d17e1f42d702d0af5e5a",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "41d3fcfd63cf2543ff45cd70f3b8ad6bd129e41329ec8dcb1988be6c679808d9"
+  },
+  "controller_status": 0,
+  "cpu_idle_percent": {
+    "mmap-long": [
+      98.84,
+      98.35
+    ],
+    "mmap-short": [
+      90.91,
+      91.93
+    ],
+    "prefetch-long": [
+      98.84,
+      95.79
+    ],
+    "prefetch-short": [
+      93.2,
+      97.64
+    ]
+  },
+  "matched_output_ids_per_arm": 448,
+  "qualification": false,
+  "slowest_pread_to_fastest_mmap_ready_ratio": 0.8886209484923121,
+  "timing_eligible_arms": [
+    "mmap-short",
+    "prefetch-short",
+    "prefetch-long",
+    "mmap-long"
+  ],
+  "warm_candidate_to_control_ratios": {
+    "long": {
+      "2048": {
+        "decode_tokens_per_second": 1.0028330698752281,
+        "ttft_seconds": 0.9928590734039313
+      },
+      "512": {
+        "decode_tokens_per_second": 1.0057902797394787,
+        "ttft_seconds": 1.0054974576205196
+      },
+      "8192": {
+        "decode_tokens_per_second": 1.0541334074124424,
+        "ttft_seconds": 0.9682011594950917
+      }
+    },
+    "short": {
+      "2048": {
+        "decode_tokens_per_second": 1.0189532310494158,
+        "ttft_seconds": 0.9825083267884512
+      },
+      "512": {
+        "decode_tokens_per_second": 1.036379576983937,
+        "ttft_seconds": 0.982291337264458
+      },
+      "8192": {
+        "decode_tokens_per_second": 1.0155015663679978,
+        "ttft_seconds": 0.9482928776458298
+      }
+    }
+  },
+  "warmed_timing_band_met": true
+}

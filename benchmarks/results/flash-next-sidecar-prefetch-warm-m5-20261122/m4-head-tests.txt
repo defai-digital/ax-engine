@@ -1,0 +1,18 @@
+
+running 14 tests
+test weights::qwen4_exp_mtp::tests::contract_is_exactly_thirty_one_unique_tensors ... ok
+test weights::qwen4_exp_mtp::tests::exact_dense_contract_binds_roles_without_reading_payloads ... ok
+test weights::qwen4_exp_mtp::tests::header_only_sidecar_with_quantized_extras_is_rejected_before_payloads ... ok
+test weights::qwen4_exp_mtp::tests::missing_runtime_declaration_file_is_rejected ... ok
+test weights::qwen4_exp_mtp::tests::mtp_head_config_fails_closed_on_unsupported_geometry ... ok
+test weights::qwen4_exp_mtp::tests::mtp_head_config_inherits_the_trunk_when_absent ... ok
+test weights::qwen4_exp_mtp::tests::mtp_head_config_uses_a_declared_top_k ... ok
+test weights::qwen4_exp_mtp::tests::norm_layout_requires_explicit_supported_declaration ... ok
+test weights::qwen4_exp_mtp::tests::payload_is_bound_to_the_file_used_for_header_validation ... ok
+test weights::qwen4_exp_mtp::tests::prefetch_reads_selected_ranges_and_rejects_bad_extents ... ok
+test weights::qwen4_exp_mtp::tests::quantized_trunk_analog_unpacks_to_logical_width ... ok
+test weights::qwen4_exp_mtp::tests::rejects_missing_extra_and_duplicate_tensors ... ok
+test weights::qwen4_exp_mtp::tests::rejects_quantized_wrong_dtype_and_wrong_shape ... ok
+test weights::qwen4_exp_mtp::tests::rejects_wrong_file_binding_escape_and_index_conflicts ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2336 filtered out; finished in 0.05s
