@@ -25,9 +25,10 @@ The 32,769-token overflow case returned the expected
 
 The experimental reader exceeded the timing regression band. In the
 paired summary, first-token latency increased by 21.51% for 2,048
-tokens and by 16.19% for 8,192 tokens. The 2,048-token case's decode
-time increased by 13.95%. The data supports retaining the reader as a
-lab option pending a repeat over more prompts.
+tokens and by 16.19% for 8,192 tokens. The median decode rate increased
+by 13.95% at 2,048 tokens and fell by 4.08% at 8,192 tokens. These rates
+use the 31 tokens emitted after the first token. The data supports
+retaining the reader as a lab option pending a repeat over more prompts.
 
 The [raw result](result.json) binds both the executable and its source
 to the earlier lab. The startup records for
