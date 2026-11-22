@@ -358,6 +358,22 @@ impl MlxSharedWeightsCell {
         self.0.weights.get().is_some()
     }
 
+    /// Report whether the shared snapshot contains the native Flash Next drafter.
+    /// An empty snapshot returns `None`. If a load is in progress, wait for it
+    /// before deciding whether its attached drafter can be reused.
+    pub fn cached_flash_next_drafter(&self) -> Option<bool> {
+        let attached = || {
+            self.0
+                .weights
+                .get()
+                .map(|weights| flash_next_drafter_attached(weights))
+        };
+        attached().or_else(|| {
+            let _loading = self.0.loading.lock();
+            attached()
+        })
+    }
+
     fn get_or_load(
         &self,
         load: impl FnOnce() -> Result<Arc<ModelWeights>, MlxRunnerError>,
@@ -386,6 +402,10 @@ impl fmt::Debug for MlxSharedWeightsCell {
             .field("loaded", &self.is_loaded())
             .finish()
     }
+}
+
+fn flash_next_drafter_attached(weights: &ModelWeights) -> bool {
+    weights.qwen4_exp.is_some() && weights.qwen4_exp_mtp.is_some()
 }
 
 #[derive(Clone)]
@@ -2952,8 +2972,7 @@ impl MlxRunner {
         // The sidecar is only usable next to its dedicated trunk. Shared
         // weights may have been loaded by an earlier build, so derive the
         // failure from the live opt-in plus the attached handles.
-        let flash_next_mtp_candidate_attached =
-            weights.qwen4_exp.is_some() && weights.qwen4_exp_mtp.is_some();
+        let flash_next_mtp_candidate_attached = flash_next_drafter_attached(&weights);
         let flash_next_mtp_candidate_attach_failed = cfg.model_family == "qwen4_exp"
             && crate::weights::flash_next_mtp_sidecar_expected(artifacts.root_dir())
             && !flash_next_mtp_candidate_attached;

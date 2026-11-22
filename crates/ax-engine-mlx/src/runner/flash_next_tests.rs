@@ -944,6 +944,7 @@ fn flash_next_real_concurrent_cold_runners_share_weights() {
         (first.join().unwrap(), second.join().unwrap())
     });
     assert!(Arc::ptr_eq(&first.0, &second.0));
+    assert_eq!(shared.cached_flash_next_drafter(), Some(true));
     assert_eq!(first.1, second.1);
     println!(
         "Two independent Flash Next runners share one weight allocation and match all output IDs."

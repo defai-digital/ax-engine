@@ -122,9 +122,9 @@ fn build_mlx_core(
     if config.mlx_mtp_policy == MlxMtpPolicy::Required
         && artifacts.manifest().model_family == "qwen4_exp"
         && (ax_engine_mlx::fastpath::ngram_acceleration_disabled()
-            // A shared runtime can reuse a sidecar that was already loaded.
-            || (shared_weights.is_none()
-                && ax_engine_mlx::fastpath::mtp_sidecar_loading_disabled()))
+            || (ax_engine_mlx::fastpath::mtp_sidecar_loading_disabled()
+                && shared_weights.and_then(MlxSharedWeightsCell::cached_flash_next_drafter)
+                    != Some(true)))
     {
         return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
     }
@@ -291,6 +291,39 @@ mod tests {
         assert!(validate_mtp_activation(MlxMtpPolicy::Required, true, true).is_ok());
         assert!(validate_mtp_activation(MlxMtpPolicy::Auto, true, false).is_ok());
         assert!(validate_mtp_activation(MlxMtpPolicy::Disabled, true, false).is_ok());
+    }
+
+    #[cfg(feature = "mlx-native")]
+    #[test]
+    #[ignore = "requires the pinned resident Flash Next pack and explicit sidecar bypass"]
+    fn real_flash_next_required_shared_preflight_observation() {
+        assert!(
+            ax_engine_mlx::fastpath::mtp_sidecar_loading_disabled(),
+            "set the sidecar bypass flag in the isolated process"
+        );
+        assert!(!ax_engine_mlx::fastpath::ngram_acceleration_disabled());
+        let path = std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap();
+        let config = EngineSessionConfig {
+            mlx_mtp_policy: MlxMtpPolicy::Required,
+            max_concurrent_requests: Some(1),
+            ..EngineSessionConfig::default()
+        }
+        .with_mlx_model_artifacts_dir(path);
+        let context = super::super::StatelessGenerateContext::new(config).unwrap();
+        let shared = context.native_mlx_shared_weights.as_ref().unwrap();
+        assert_eq!(shared.cached_flash_next_drafter(), None);
+        println!("shared_before={shared:?}");
+        let started = std::time::Instant::now();
+        let result = context.build_stateful_session();
+        assert!(matches!(
+            result,
+            Err(EngineSessionError::MlxMtpRequiredButUnavailable)
+        ));
+        println!(
+            "shared_after={shared:?} elapsed_seconds={:.6}",
+            started.elapsed().as_secs_f64()
+        );
+        assert_eq!(shared.cached_flash_next_drafter(), None);
     }
 
     #[test]

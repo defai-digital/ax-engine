@@ -5335,8 +5335,9 @@ fn shared_weights_concurrent_cold_sessions_load_once() {
     let first_loading = Barrier::new(2);
     let finish_first = Barrier::new(2);
     let second_starting = Barrier::new(2);
+    let probe_starting = Barrier::new(2);
     let (duplicate_tx, duplicate_rx) = mpsc::channel();
-    let (first, second, duplicate) = std::thread::scope(|scope| {
+    let (first, second, duplicate, cached_drafter) = std::thread::scope(|scope| {
         let first = scope.spawn(|| {
             cell.get_or_load(|| {
                 first_loading.wait();
@@ -5353,13 +5354,24 @@ fn shared_weights_concurrent_cold_sessions_load_once() {
             })
         });
         second_starting.wait();
+        let probe = scope.spawn(|| {
+            probe_starting.wait();
+            cell.cached_flash_next_drafter()
+        });
+        probe_starting.wait();
         let duplicate = duplicate_rx
             .recv_timeout(Duration::from_millis(100))
             .is_ok();
         finish_first.wait();
-        (first.join().unwrap(), second.join().unwrap(), duplicate)
+        (
+            first.join().unwrap(),
+            second.join().unwrap(),
+            duplicate,
+            probe.join().unwrap(),
+        )
     });
     assert!(!duplicate);
+    assert_eq!(cached_drafter, Some(false));
     let (first_weights, first_reused) = first.unwrap();
     let (second_weights, second_reused) = second.unwrap();
     assert!(!first_reused);
@@ -5378,10 +5390,12 @@ fn shared_weights_initialization_can_retry_after_load_failure() {
     });
     assert!(matches!(first, Err(MlxRunnerError::Weights(_))));
     assert!(!cell.is_loaded());
+    assert_eq!(cell.cached_flash_next_drafter(), None);
 
     let expected = Arc::new(runner_test_weights(Vec::new()));
     let (loaded, reused) = cell.get_or_load(|| Ok(Arc::clone(&expected))).unwrap();
     assert!(cell.is_loaded());
+    assert_eq!(cell.cached_flash_next_drafter(), Some(false));
     assert!(!reused);
     assert!(Arc::ptr_eq(&loaded, &expected));
 }
