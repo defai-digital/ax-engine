@@ -1,0 +1,10 @@
+{
+  "scope": "M2 Ultra 192 GB HTTP disconnect during prefill",
+  "qualification": false,
+  "runtime_commit": "2b905c012787e84fed75961674c5dd388e34e2d8",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "normal_pressure_samples": 57,
+  "cancelled_prompt_cursor": 512,
+  "matching_generated_ids": 192,
+  "short_tokens_after_cancelled_step": 46
+}
