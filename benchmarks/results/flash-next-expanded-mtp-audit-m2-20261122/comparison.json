@@ -1,0 +1,32 @@
+[
+  {
+    "name": "math_apples_store",
+    "input_tokens": 69,
+    "budget": 64,
+    "verified_steps": 34,
+    "accepted_drafts": 29,
+    "rejected_drafts": 4,
+    "verified_output_positions": 63,
+    "changed_from_direct": []
+  },
+  {
+    "name": "matrix-8192-1",
+    "input_tokens": 8192,
+    "budget": 64,
+    "verified_steps": 39,
+    "accepted_drafts": 24,
+    "rejected_drafts": 14,
+    "verified_output_positions": 63,
+    "changed_from_direct": []
+  },
+  {
+    "name": "long_context_record_mass",
+    "input_tokens": 29774,
+    "budget": 8,
+    "verified_steps": 4,
+    "accepted_drafts": 3,
+    "rejected_drafts": 0,
+    "verified_output_positions": 7,
+    "changed_from_direct": []
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "qa_source_sha256": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4",
+  "cases_sha256": "335b05c8d03e4ffcf943d0cc8cebe7afc6f27e571f1669bb5604d4032d543d95",
+  "matrix_vocab_size": 248320,
+  "cases": [
+    {
+      "name": "math_apples_store",
+      "input_tokens": 69,
+      "budget": 64
+    },
+    {
+      "name": "matrix-8192-1",
+      "input_tokens": 8192,
+      "budget": 64
+    },
+    {
+      "name": "long_context_record_mass",
+      "input_tokens": 29774,
+      "budget": 8
+    }
+  ]
+}

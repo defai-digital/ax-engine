@@ -1,0 +1,5 @@
+running 2 tests
+test model::qwen4_exp_mtp::runner_audit::flash_next_mtp_host_argmax_uses_first_exact_tie ... ok
+test model::qwen4_exp_mtp::runner_audit::flash_next_mtp_host_audit_checks_terminal_and_budget ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2342 filtered out; finished in 0.03s
