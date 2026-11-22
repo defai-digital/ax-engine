@@ -1,0 +1,23 @@
+{
+  "default": [
+    "2026-11-22T08:59:12.673626Z DEBUG Flash Next startup phase phase=\"resident_tensors\" elapsed_us=98443552",
+    "2026-11-22T08:59:13.415820Z DEBUG Flash Next MTP sidecar positional read lab",
+    "2026-11-22T08:59:13.995259Z DEBUG Flash Next startup phase phase=\"mtp_sidecar\" elapsed_us=602534"
+  ],
+  "disabled": [
+    "2026-11-22T08:55:21.553630Z DEBUG Flash Next startup phase phase=\"resident_tensors\" elapsed_us=98785595",
+    "2026-11-22T08:55:22.238826Z DEBUG Flash Next MTP sidecar positional read lab",
+    "2026-11-22T08:55:22.800528Z DEBUG Flash Next startup phase phase=\"mtp_sidecar\" elapsed_us=584030"
+  ],
+  "required-kill-switch": [
+    "2026-11-22T08:53:38.462822Z DEBUG Flash Next startup phase phase=\"resident_tensors\" elapsed_us=75010367",
+    "2026-11-22T08:53:39.030758Z DEBUG Flash Next MTP sidecar positional read lab",
+    "2026-11-22T08:53:39.544410Z DEBUG Flash Next startup phase phase=\"mtp_sidecar\" elapsed_us=536367",
+    "Error: Engine(MlxMtpRequiredButUnavailable)"
+  ],
+  "required": [
+    "2026-11-22T08:57:16.773250Z DEBUG Flash Next startup phase phase=\"resident_tensors\" elapsed_us=99524814",
+    "2026-11-22T08:57:17.517552Z DEBUG Flash Next MTP sidecar positional read lab",
+    "2026-11-22T08:57:18.098781Z DEBUG Flash Next startup phase phase=\"mtp_sidecar\" elapsed_us=603882"
+  ]
+}

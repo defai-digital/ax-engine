@@ -1,0 +1,57 @@
+{
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "soc": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.2.1"
+  },
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "build": {
+    "commit": "838b331a31a9c18bdc9b10c2ac6083c0877c0fad",
+    "tree": "ffa3ef2e0998dc96a3a26a20323233f53ac7a9aa",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "hardware": "Mac Studio M2 Ultra 192 GB",
+    "macos_version": "27.2.1",
+    "server_sha256": "eedad76f57bf9684a198676b084a42b0335be1e553b9441d6fe661a23d7647b8"
+  },
+  "native_result_sha256": "b583e1b09325eaab74fa4670278aa17693712d914292aaa273f6fd675b38f7b9",
+  "stock_result_sha256": "73f4e899a9ec1eea4dd1e0eec8a00c35dd309f663385fc6414333a4b3296b78a",
+  "matched_functional_controls": 21,
+  "verified_required_steps": 107.0,
+  "readiness_seconds": {
+    "disabled": 107.474,
+    "required": 109.679,
+    "default": 108.904
+  },
+  "limits_seconds": {
+    "disabled": 300,
+    "required": 120,
+    "default": 120
+  },
+  "readiness_band_met": true,
+  "phase_seconds": {
+    "disabled": {
+      "resident_tensors": 98.785595,
+      "mtp_sidecar": 0.58403
+    },
+    "required": {
+      "resident_tensors": 99.524814,
+      "mtp_sidecar": 0.603882
+    },
+    "default": {
+      "resident_tensors": 98.443552,
+      "mtp_sidecar": 0.602534
+    }
+  }
+}
