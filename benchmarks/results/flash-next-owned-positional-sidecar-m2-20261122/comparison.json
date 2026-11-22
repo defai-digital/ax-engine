@@ -1,0 +1,25 @@
+{
+  "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579",
+  "read_seconds": {
+    "clone_mmap": [
+      27.9398678,
+      27.3292342
+    ],
+    "clone_pread": [
+      2.12180888,
+      2.12991679
+    ],
+    "reused_mmap": [
+      1.23761479,
+      1.22200979
+    ],
+    "reused_pread": [
+      0.598864375,
+      0.597722125
+    ]
+  },
+  "receipt_sha256": "29760cd765b9e7d6539f050d3481cf3b89d4ed549ef9db349cacf456fbbbd83e",
+  "scope": "Complete pinned MTP sidecar owned-storage read diagnostic",
+  "selected_bytes": 5214301696,
+  "tensors": 31
+}
