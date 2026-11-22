@@ -1,0 +1,29 @@
+{
+  "hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "macos": "27.2.1",
+  "mlx": "0.32.4",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "prompt_cases": [
+    [
+      512,
+      100
+    ],
+    [
+      2048,
+      2
+    ],
+    [
+      8192,
+      2
+    ],
+    [
+      8192,
+      101
+    ]
+  ],
+  "publisher_members_verified": 49,
+  "qualification": false,
+  "rust": "1.99.1",
+  "scope": "Two-reader functional and model-only timing diagnostic",
+  "source": "3130d9d12068ac3867eb74b2e28b8bce4f18a726"
+}

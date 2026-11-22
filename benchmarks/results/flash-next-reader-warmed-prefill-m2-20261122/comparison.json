@@ -1,0 +1,89 @@
+{
+  "exact_state_and_token_identity": true,
+  "orders": {
+    "short-first": {
+      "traced_pread_minus_mmap_seconds": {
+        "2048": {
+          "attention_hc_read": 0.06903657900000021,
+          "attention_hc_write": 0.009255480999999857,
+          "embedding": -0.005756374999999994,
+          "expert_resolve": -0.00022063399999999983,
+          "final_mixer": -0.017831833999999998,
+          "gdn": -0.03732482500000078,
+          "gdn_chunked": -0.04328066099999972,
+          "lm_head": 0.0006437920000000007,
+          "mlp_hc_read": 0.03352664399999955,
+          "mlp_hc_write": 0.005710443000000148,
+          "moe_compute": -0.11423431400000705,
+          "moe_routing": -0.013289754000000098,
+          "ngram_lookup": -3.7958999999999994e-05,
+          "ple_operator": -0.002547459000000009,
+          "ple_rows": 0.00022299999999997322,
+          "qsa": 0.023375207999999925,
+          "qsa_a_proj": -0.003951670000000074,
+          "qsa_b_prep": -0.002687790999999995,
+          "qsa_c_append": 0.00184725400000001,
+          "qsa_d_attend": -0.01244466800000002
+        },
+        "8192": {
+          "attention_hc_read": 0.06457184599999621,
+          "attention_hc_write": -0.042788326000000265,
+          "embedding": 0.017984293999999984,
+          "expert_resolve": -0.00028245599999999907,
+          "final_mixer": -0.053316417000000026,
+          "gdn": -0.05024034499999619,
+          "gdn_chunked": -0.11925293500000267,
+          "lm_head": 0.0008473330000000013,
+          "mlp_hc_read": -0.12708543700000274,
+          "mlp_hc_write": 0.09667911899999948,
+          "moe_compute": -1.2034079700000397,
+          "moe_routing": 0.04059650100000001,
+          "ngram_lookup": -1.0620999999999992e-05,
+          "ple_operator": -0.04525612599999998,
+          "ple_rows": 0.0010458319999998578,
+          "qsa": -0.024686581999999735,
+          "qsa_a_proj": 0.025641286000000485,
+          "qsa_b_prep": -0.0216529649999999,
+          "qsa_c_append": -0.065852505,
+          "qsa_d_attend": -0.025806341999999954,
+          "qsa_da_flatten": -0.00014323099999999974,
+          "qsa_da_gather": -0.014171258000000853,
+          "qsa_da_layout": -0.0011713970000000046,
+          "qsa_da_sdpa": 0.04299756099999996,
+          "qsa_i_proj": -0.05986873600000017,
+          "qsa_indexer": -0.006554697999999887,
+          "qsa_j_stage": -0.03564117599999998,
+          "qsa_k_pool": -0.014238999000000065,
+          "qsa_l_scores": -0.0022037490000000187
+        }
+      },
+      "untraced_medians": {
+        "after_additional_8k": {
+          "2048": {
+            "mmap_seconds": 4.133110209,
+            "pread_seconds": 4.144912792,
+            "pread_to_mmap": 1.0028556177801162
+          },
+          "8192": {
+            "mmap_seconds": 22.35677375,
+            "pread_seconds": 22.644236667,
+            "pread_to_mmap": 1.0128579785354763
+          }
+        },
+        "before_additional_8k": {
+          "2048": {
+            "mmap_seconds": 4.14409925,
+            "pread_seconds": 4.137572,
+            "pread_to_mmap": 0.9984249291326697
+          },
+          "8192": {
+            "mmap_seconds": 22.412866958,
+            "pread_seconds": 22.466272833,
+            "pread_to_mmap": 1.0023828221128552
+          }
+        }
+      }
+    }
+  },
+  "scope": "Model-only prefill diagnosis"
+}
