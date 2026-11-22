@@ -1,0 +1,83 @@
+--- a/direct_weights.cpp
++++ b/direct_weights.cpp
+@@ -128,0 +129,18 @@
++mx::allocator::Data reserve(const Tensor& tensor) {
++    auto storage = mx::allocator::malloc(tensor.len);
++    if (!storage.is_owned() || storage.buffer().raw_ptr() == nullptr) {
++        throw std::runtime_error("Allocator did not provide owned CPU-accessible storage");
++    }
++    return storage;
++}
++
++mx::array publish(mx::allocator::Data storage, const Tensor& tensor) {
++    const auto* destination = static_cast<unsigned char*>(storage.buffer().raw_ptr());
++    mx::array result(std::move(storage), tensor.shape, tensor.dtype);
++    if (result.status() != mx::array::Status::available || !result.flags().row_contiguous ||
++        result.buffer_size() < tensor.len || result.data<unsigned char>() != destination) {
++        throw std::runtime_error("Array did not retain available owned storage");
++    }
++    return result;
++}
++
+@@ -130 +148 @@
+-    auto storage = mx::allocator::malloc(tensor.len);
++    auto storage = reserve(tensor);
+@@ -132,3 +149,0 @@
+-    if (!storage.is_owned() || destination == nullptr) {
+-        throw std::runtime_error("Allocator did not provide owned CPU-accessible storage");
+-    }
+@@ -140,6 +155 @@
+-    mx::array result(std::move(storage), tensor.shape, tensor.dtype);
+-    if (result.status() != mx::array::Status::available || !result.flags().row_contiguous ||
+-        result.buffer_size() < tensor.len || result.data<unsigned char>() != destination) {
+-        throw std::runtime_error("Array did not retain available owned storage");
+-    }
+-    return result;
++    return publish(std::move(storage), tensor);
+@@ -185,2 +195,3 @@
+-    const bool by_offset = mode == "mmap-offset";
+-    const bool mapped = mode == "mmap" || by_offset;
++    const bool fixed = mode == "mmap-fixed" || mode == "mmap-offset-fixed";
++    const bool by_offset = mode == "mmap-offset" || mode == "mmap-offset-fixed";
++    const bool mapped = mode == "mmap" || by_offset || fixed;
+@@ -206 +217,22 @@
+-    if (mapped) {
++    double reserve_seconds = 0.0;
++    double mapped_copy_seconds = 0.0;
++    if (fixed) {
++        std::vector<mx::allocator::Data> buffers;
++        buffers.reserve(tensors.size());
++        for (const auto& tensor : tensors) {
++            auto& buffer = buffers.emplace_back(reserve(tensor));
++            std::memset(buffer.buffer().raw_ptr(), 0, tensor.len);
++        }
++        const auto reserved = std::chrono::steady_clock::now();
++        reserve_seconds = std::chrono::duration<double>(reserved - started).count();
++        const Mapping map(input.fd, file_size);
++        const auto* payload = static_cast<unsigned char*>(map.memory);
++        for (const auto index : order) {
++            const auto& tensor = tensors[index];
++            std::memcpy(buffers[index].buffer().raw_ptr(), payload + tensor.offset, tensor.len);
++        }
++        mapped_copy_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - reserved).count();
++        for (size_t index = 0; index < tensors.size(); ++index) {
++            arrays[index].emplace(publish(std::move(buffers[index]), tensors[index]));
++        }
++    } else if (mapped) {
+@@ -237,0 +270,2 @@
++              << ",\"reserve_and_touch_seconds\":" << reserve_seconds
++              << ",\"copy_only_seconds\":" << mapped_copy_seconds
+--- a/run_order.py
++++ b/run_order.py
+@@ -14 +14 @@
+-ARMS = ("mmap", "mmap-offset", "mmap-offset", "mmap")
++ARMS = ("mmap-fixed", "mmap-offset-fixed", "mmap-offset-fixed", "mmap-fixed")
+@@ -38 +38 @@
+-        "scope": "Owned MLX tensor copy order, single-shard diagnostic",
++        "scope": "Owned MLX tensor copy order with fixed pre-touched destinations",
+@@ -93 +93 @@
+-            sequence = ARMS if index == 0 else tuple("mmap-offset" if arm == "mmap" else "mmap" for arm in ARMS)
++            sequence = ARMS if index == 0 else tuple("mmap-offset-fixed" if arm == "mmap-fixed" else "mmap-fixed" for arm in ARMS)
+@@ -108,0 +109,2 @@
++                        and data["reserve_and_touch_seconds"] > 0 and data["copy_only_seconds"] > 0
++                        and data["elapsed_seconds"] >= data["copy_only_seconds"] + data["reserve_and_touch_seconds"]
