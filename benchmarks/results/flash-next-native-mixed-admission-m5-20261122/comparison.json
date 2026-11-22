@@ -1,0 +1,39 @@
+{
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "driver_sha256": "d0a7f0c45e532d230b77e38a75ef7bdd43fedf68d24258e9c271275c825be776",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "runtime_commit": "8cb06414cc4dc3bf5d3b2de24a3f6182435fa3ca",
+    "runtime_tree": "4826a57dc7eb5f9121225edae6981ad824c37e01",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "9957af9b5b02f3715e22faf060e64fd886489527aacc63dd2d2340b633efcca8"
+  },
+  "cpu_idle_percent": [
+    91.46,
+    86.1
+  ],
+  "held": {
+    "burst_output_tokens_per_second": 13.270427092839872,
+    "client_dispatch_delay_ms": 0.052332994528114796,
+    "held_decode_steps": 1,
+    "long_trigger_ttft_ms": 9966.754416003823,
+    "prefill_overlapped": false,
+    "short_tail_max_gap_ms": 22.96791598200798
+  },
+  "matching_generated_ids": 288,
+  "normal_pressure_samples": 145,
+  "qualification": false,
+  "queue": {
+    "matching_generated_ids": 96,
+    "promotion_step": 129,
+    "waiting_steps": [
+      127,
+      128
+    ]
+  },
+  "scope": "primary-tier experimental resident mixed admission"
+}
