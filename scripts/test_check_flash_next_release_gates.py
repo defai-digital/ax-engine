@@ -261,7 +261,7 @@ class ReleaseGateTests(unittest.TestCase):
         r["delivery"]["native_support"]["readiness_seconds"] = {}
         self.assertEqual(failed(r), {"readiness"})
 
-    def test_readiness_requires_complete_finite_records_and_uses_recorded_mode_order(self):
+    def test_readiness_requires_complete_finite_records_and_uses_delivery_order(self):
         r = good()
         r["delivery"]["native_support"]["readiness_seconds"].pop("required")
         self.assertEqual(failed(r), {"readiness"})
@@ -288,6 +288,18 @@ class ReleaseGateTests(unittest.TestCase):
         r = good()
         r["delivery"]["native_support"]["modes"] = ["disabled", "default", "default"]
         self.assertEqual(failed(r), {"delivery", "readiness"})
+
+    def test_reordering_delivery_modes_cannot_reclassify_warm_readiness(self):
+        r = good()
+        support = r["delivery"]["native_support"]
+        support["readiness_seconds"]["default"] = 157.292
+        self.assertEqual(failed(r), {"readiness"})
+        support["modes"] = ["default", "disabled", "required"]
+        result = verdict(r)
+        self.assertEqual({g["gate"] for g in result["gates"] if not g["passed"]},
+                         {"delivery", "readiness"})
+        readiness = next(g for g in result["gates"] if g["gate"] == "readiness")
+        self.assertIn("delivered default readiness 157.292s exceeds 120s", readiness["detail"])
 
     def test_reference_relative_bounds_apply_to_both_ax_arms_and_every_length(self):
         r = good()

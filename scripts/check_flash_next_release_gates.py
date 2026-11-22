@@ -106,9 +106,9 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
         problems.append("members, bytes or hashes do not match the published pack")
     if not verification.get("native_manifest_runtime_ready"):
         problems.append("generated native manifest is not runtime ready")
-    if sorted(delivered_modes(delivery)) != sorted(spec["functional_controls_on_delivered_copy"]) \
+    if delivered_modes(delivery) != spec["functional_controls_on_delivered_copy"] \
             or not support.get("passed"):
-        problems.append("functional controls did not pass in every required mode")
+        problems.append("functional controls did not pass in the required delivery order")
     attempts = delivery.get("previous_attempts") or []
     resumed = f" after {len(attempts)} failed attempt(s) that were resumed" if attempts else ""
     if delivery.get("transport_override"):
@@ -128,10 +128,12 @@ def gate_readiness(delivery: dict[str, Any], runs: list[tuple[str, Any]],
     delivered = {mode: seconds if positive_measurement(seconds) else None
                  for mode, seconds in recorded.items()} if isinstance(recorded, dict) else {}
     modes = delivered_modes(delivery)
-    first_mode = modes[0] if modes else None
     required = th["delivery"]["functional_controls_on_delivered_copy"]
+    first_mode = required[0]
     problems = []
-    if sorted(modes) != sorted(required) or delivered.keys() != set(required):
+    if modes != required:
+        problems.append("recorded modes do not match the required delivery order")
+    if delivered.keys() != set(required):
         problems.append("readiness must be recorded for all delivered modes, including the first load")
     for mode, seconds in delivered.items():
         limit = spec["first_load_after_delivery_seconds_max"] if mode == first_mode \
