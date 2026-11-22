@@ -1,0 +1,75 @@
+{
+  "long_lookup": {
+    "detail": "29774-token lookup took {'disabled': 41.682, 'default': 41.663} s (limit 400 s)",
+    "gate": "long_lookup",
+    "passed": true,
+    "seconds": {
+      "default": 41.663,
+      "disabled": 41.682
+    }
+  },
+  "matching_signed_responses": 210,
+  "memory": {
+    "detail": "peak server RSS {disabled: 78.7, default: 78.8} GiB within 96 GiB",
+    "gate": "memory",
+    "passed": true,
+    "peaks_gib": {
+      "default": 78.793,
+      "disabled": 78.704
+    }
+  },
+  "modes": {
+    "default": {
+      "advertised_model": {
+        "context_length": 32768,
+        "id": "qwen3.8-flash-next"
+      },
+      "completed": 105,
+      "long_context_elapsed_seconds": 41.663,
+      "normal_stops": true,
+      "passed": 101,
+      "peak_rss_kib": 82620240,
+      "quality_failures": [
+        "format_status_colon",
+        "instruction_alphabet_first",
+        "knowledge_water_formula",
+        "science_gravity_earth"
+      ],
+      "ready_seconds": 116.165,
+      "route_errors": 0.0,
+      "total_elapsed_seconds": 92.468,
+      "verified_steps": 0.0
+    },
+    "disabled": {
+      "advertised_model": {
+        "context_length": 32768,
+        "id": "qwen3.8-flash-next:mxfp4"
+      },
+      "completed": 105,
+      "long_context_elapsed_seconds": 41.682,
+      "normal_stops": true,
+      "passed": 101,
+      "peak_rss_kib": 82526784,
+      "quality_failures": [
+        "format_status_colon",
+        "instruction_alphabet_first",
+        "knowledge_water_formula",
+        "science_gravity_earth"
+      ],
+      "ready_seconds": 106.098,
+      "route_errors": 0.0,
+      "total_elapsed_seconds": 92.56,
+      "verified_steps": 0.0
+    }
+  },
+  "qa_receipt_sha256": "32bef6d35be09508ba3bd45c9419b2c9eeef22750fc7ec7675db2d657389b0a1",
+  "release_ready": false,
+  "scope": "Current-build native frozen-cohort QA",
+  "server_sha256": "6db0b00d90349d78bce160436f14e81d3d9c57db40f7c57a3efd63cf2803f7c9",
+  "signed_oracle_sha256": "0f97478d5d9ca0f523d4b7f90b205d7177d06036dc023642c36d8a7e005815dd",
+  "timing_cpu_idle_percent": [
+    99.56,
+    98.35
+  ],
+  "timing_eligible": true
+}
