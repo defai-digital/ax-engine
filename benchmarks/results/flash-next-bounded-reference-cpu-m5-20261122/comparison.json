@@ -1,0 +1,98 @@
+{
+  "all_pressure_samples_normal": true,
+  "cells": {
+    "2048/default": {
+      "ax_decode_tok_s": 46.542,
+      "ax_ttft_s": 1.633,
+      "decode_ratio": 1.2864,
+      "reference_decode_tok_s": 36.181,
+      "reference_ttft_s": 5.674,
+      "ttft_ratio": 0.2878
+    },
+    "2048/disabled": {
+      "ax_decode_tok_s": 45.847,
+      "ax_ttft_s": 1.658,
+      "decode_ratio": 1.2672,
+      "reference_decode_tok_s": 36.181,
+      "reference_ttft_s": 5.674,
+      "ttft_ratio": 0.2923
+    },
+    "512/default": {
+      "ax_decode_tok_s": 50.254,
+      "ax_ttft_s": 0.54,
+      "decode_ratio": 1.3299,
+      "reference_decode_tok_s": 37.789,
+      "reference_ttft_s": 2.24,
+      "ttft_ratio": 0.2413
+    },
+    "512/disabled": {
+      "ax_decode_tok_s": 49.266,
+      "ax_ttft_s": 0.538,
+      "decode_ratio": 1.3037,
+      "reference_decode_tok_s": 37.789,
+      "reference_ttft_s": 2.24,
+      "ttft_ratio": 0.2403
+    },
+    "8192/default": {
+      "ax_decode_tok_s": 44.823,
+      "ax_ttft_s": 9.731,
+      "decode_ratio": 1.2438,
+      "reference_decode_tok_s": 36.038,
+      "reference_ttft_s": 15.189,
+      "ttft_ratio": 0.6407
+    },
+    "8192/disabled": {
+      "ax_decode_tok_s": 44.764,
+      "ax_ttft_s": 9.801,
+      "decode_ratio": 1.2421,
+      "reference_decode_tok_s": 36.038,
+      "reference_ttft_s": 15.189,
+      "ttft_ratio": 0.6453
+    }
+  },
+  "matched_matrix_rows": 15,
+  "matched_qa_rows": 105,
+  "native_matrix_sha256": "d5ab8e444708c2e9d11deff69268ad18eb243115528cf64691ebee8791cde731",
+  "native_server_sha256": "a074d282b366bbb5f1ce172f5632cd793290f9396b0f3e32c9e169ea262bc9be",
+  "normal_pressure_samples": 25,
+  "numeric_bounds_met": true,
+  "peak_mlx_memory_bytes": 72918723810,
+  "qualification": false,
+  "reference_timing_idle_percent": [
+    92.5,
+    82.19
+  ],
+  "release_ready": false,
+  "scope": "Independent bounded PLE diagnostic with passive CPU observation",
+  "single_phase_cpu_intervals": {
+    "matrix": {
+      "intervals": 33,
+      "max_idle_percent": 93.78128824118367,
+      "min_idle_percent": 81.33229189912966,
+      "seconds": 165.1263131669839,
+      "weighted_idle_percent": 86.46156655103158
+    },
+    "posthash": {
+      "intervals": 9,
+      "max_idle_percent": 87.13743864346274,
+      "min_idle_percent": 78.71025727446354,
+      "seconds": 45.03620904200943,
+      "weighted_idle_percent": 84.95500632142591
+    },
+    "prehash": {
+      "intervals": 9,
+      "max_idle_percent": 89.0748800357103,
+      "min_idle_percent": 83.03950011158224,
+      "seconds": 45.03111216699472,
+      "weighted_idle_percent": 86.05999776959965
+    },
+    "qa": {
+      "intervals": 18,
+      "max_idle_percent": 95.89772095608672,
+      "min_idle_percent": 70.88948787061994,
+      "seconds": 90.06327845796477,
+      "weighted_idle_percent": 88.58340609190492
+    }
+  },
+  "timing_floor_met": false
+}

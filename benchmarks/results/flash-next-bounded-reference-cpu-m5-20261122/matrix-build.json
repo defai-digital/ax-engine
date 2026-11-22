@@ -1,0 +1,17 @@
+{
+  "commit": "4bd15681fc7e6eec0c88f62a1a12ec9261cfcce4",
+  "tree": "4a0af77d26b12cfa57451b9a61fd120b0fc398f1",
+  "profiles": {
+    "ax-engine": "release",
+    "ax-engine-server": "release-server"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "build_hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "binaries_sha256": {
+    "ax-engine": "5d8f1fae3318d8700ed425e2dc466260c6d6f29524811df88a685c7ce7907cf0",
+    "ax-engine-server": "a074d282b366bbb5f1ce172f5632cd793290f9396b0f3e32c9e169ea262bc9be"
+  }
+}
