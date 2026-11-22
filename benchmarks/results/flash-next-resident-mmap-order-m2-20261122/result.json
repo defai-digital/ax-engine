@@ -1,0 +1,165 @@
+{
+  "scope": "Owned MLX tensor copy order, single-shard diagnostic",
+  "qualification": false,
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "form_factor": "Mac Studio",
+    "storage": "external APFS SSD",
+    "os": "27.2.1"
+  },
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "resident_shards_sha256": "d803b65851bfa114f837b24c28f34fecec90990655441d801c230771259a4774",
+  "binary_sha256": "a32546a8eed93731145e2fa15e4c4d56adc721bc7e2ded6ca255dd238b566c5a",
+  "driver_sha256": "360319715197e53886b2a16408d6aa30de1276e35653da247b9d2ae0e59e7118",
+  "page_size": 16384,
+  "shards": {
+    "model-00021-of-00025.safetensors": {
+      "publisher_sha256": "6f3d7058e902bb52e2a6d5ded155b29989da5754096f7d38f1be1132f4b6aaa5",
+      "header_sha256": "9ad48ab8b012f8cb3c7a4a7f65f8eade10919fb97e45d0a95c453fcc61c9490b",
+      "source_bytes": 5144030974,
+      "selected_bytes": 5144009280,
+      "header_bytes": 21694,
+      "name_order_backward_jumps": 76,
+      "tensors": 158,
+      "weights_sha256": "89538a728a6e99bdc06a9e4790b0d69f593050a3920504e0e3cee03ebb2d7808",
+      "arms": [
+        {
+          "mode": "mmap",
+          "elapsed_seconds": 24.3789137,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "89538a728a6e99bdc06a9e4790b0d69f593050a3920504e0e3cee03ebb2d7808",
+          "metal_sha256": "68ba15fdbacb5567ebe9a3d13de7c1818fed8423da1528f81487e6e8a0d61c7b",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        },
+        {
+          "mode": "mmap-offset",
+          "elapsed_seconds": 27.0113223,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "89538a728a6e99bdc06a9e4790b0d69f593050a3920504e0e3cee03ebb2d7808",
+          "metal_sha256": "68ba15fdbacb5567ebe9a3d13de7c1818fed8423da1528f81487e6e8a0d61c7b",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        },
+        {
+          "mode": "mmap-offset",
+          "elapsed_seconds": 27.1605455,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "89538a728a6e99bdc06a9e4790b0d69f593050a3920504e0e3cee03ebb2d7808",
+          "metal_sha256": "68ba15fdbacb5567ebe9a3d13de7c1818fed8423da1528f81487e6e8a0d61c7b",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        },
+        {
+          "mode": "mmap",
+          "elapsed_seconds": 90.3967645,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "89538a728a6e99bdc06a9e4790b0d69f593050a3920504e0e3cee03ebb2d7808",
+          "metal_sha256": "68ba15fdbacb5567ebe9a3d13de7c1818fed8423da1528f81487e6e8a0d61c7b",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        }
+      ]
+    },
+    "model-00024-of-00025.safetensors": {
+      "publisher_sha256": "775c3617399c34fee6e3b9f95941e2dc50653b50ada61b4acad3693351432e27",
+      "header_sha256": "9ecf90c166ec1c3a15994795ad79ce84e7c89d81f951fbb5bbe747d680d73717",
+      "source_bytes": 5144030984,
+      "selected_bytes": 5144009280,
+      "header_bytes": 21704,
+      "name_order_backward_jumps": 75,
+      "tensors": 158,
+      "weights_sha256": "f26bfacc3138724e690a6dc317c32f30c103674d2fdf79f640ee41187e692777",
+      "arms": [
+        {
+          "mode": "mmap-offset",
+          "elapsed_seconds": 26.6708767,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "f26bfacc3138724e690a6dc317c32f30c103674d2fdf79f640ee41187e692777",
+          "metal_sha256": "5c52488b9f6e64b3e9a8126d4a1c9c6cb9927798fe569a3600f214fbf286f9c8",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        },
+        {
+          "mode": "mmap",
+          "elapsed_seconds": 79.2693668,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "f26bfacc3138724e690a6dc317c32f30c103674d2fdf79f640ee41187e692777",
+          "metal_sha256": "5c52488b9f6e64b3e9a8126d4a1c9c6cb9927798fe569a3600f214fbf286f9c8",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        },
+        {
+          "mode": "mmap",
+          "elapsed_seconds": 32.4052535,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "f26bfacc3138724e690a6dc317c32f30c103674d2fdf79f640ee41187e692777",
+          "metal_sha256": "5c52488b9f6e64b3e9a8126d4a1c9c6cb9927798fe569a3600f214fbf286f9c8",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        },
+        {
+          "mode": "mmap-offset",
+          "elapsed_seconds": 33.2028092,
+          "tensors": 158,
+          "selected_bytes": 5144009280,
+          "allocated_bytes": 5144334912,
+          "weights_sha256": "f26bfacc3138724e690a6dc317c32f30c103674d2fdf79f640ee41187e692777",
+          "metal_sha256": "5c52488b9f6e64b3e9a8126d4a1c9c6cb9927798fe569a3600f214fbf286f9c8",
+          "file_pages_before": {
+            "selected_pages": 313966,
+            "resident_pages": 0
+          },
+          "pressure_before": 1,
+          "pressure_after": 1
+        }
+      ]
+    }
+  },
+  "completed": true
+}

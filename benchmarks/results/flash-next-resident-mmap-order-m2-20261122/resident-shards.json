@@ -1,0 +1,66 @@
+{
+  "startup_trace_sha256": "407ee0d324a9f050f1cbe6566ca548384ef2baa9f313793bcd06b6da9b83bf7f",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "shards": {
+    "model-00001-of-00025.safetensors": {
+      "tensors": 78,
+      "read_us": 1966990
+    },
+    "model-00012-of-00025.safetensors": {
+      "tensors": 35,
+      "read_us": 86515
+    },
+    "model-00013-of-00025.safetensors": {
+      "tensors": 124,
+      "read_us": 3896332
+    },
+    "model-00014-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 4082300
+    },
+    "model-00015-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 4276017
+    },
+    "model-00016-of-00025.safetensors": {
+      "tensors": 124,
+      "read_us": 4581085
+    },
+    "model-00017-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 4328690
+    },
+    "model-00018-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 4370879
+    },
+    "model-00019-of-00025.safetensors": {
+      "tensors": 124,
+      "read_us": 6302941
+    },
+    "model-00020-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 9714746
+    },
+    "model-00021-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 9324598
+    },
+    "model-00022-of-00025.safetensors": {
+      "tensors": 124,
+      "read_us": 8948817
+    },
+    "model-00023-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 9261745
+    },
+    "model-00024-of-00025.safetensors": {
+      "tensors": 158,
+      "read_us": 10540606
+    },
+    "model-00025-of-00025.safetensors": {
+      "tensors": 69,
+      "read_us": 6600137
+    }
+  }
+}

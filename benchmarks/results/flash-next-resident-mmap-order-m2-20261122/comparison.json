@@ -1,0 +1,50 @@
+{
+  "model-00021-of-00025.safetensors": {
+    "tensors": 158,
+    "selected_bytes": 5144009280,
+    "name_order_backward_jumps": 76,
+    "measured_m5_default_copy_seconds": 9.324598,
+    "metric": "elapsed_seconds",
+    "same_layout": false,
+    "name_order_total_median_seconds": 57.3878391,
+    "physical_order_total_median_seconds": 27.0859339,
+    "pairs": [
+      {
+        "cold_source_pages": true,
+        "control_seconds": 24.3789137,
+        "physical_order_seconds": 27.0113223,
+        "physical_over_name_time": 1.1079789129406534
+      },
+      {
+        "cold_source_pages": true,
+        "control_seconds": 90.3967645,
+        "physical_order_seconds": 27.1605455,
+        "physical_over_name_time": 0.30045926588445543
+      }
+    ]
+  },
+  "model-00024-of-00025.safetensors": {
+    "tensors": 158,
+    "selected_bytes": 5144009280,
+    "name_order_backward_jumps": 75,
+    "measured_m5_default_copy_seconds": 10.540606,
+    "metric": "elapsed_seconds",
+    "same_layout": false,
+    "name_order_total_median_seconds": 55.83731015,
+    "physical_order_total_median_seconds": 29.93684295,
+    "pairs": [
+      {
+        "cold_source_pages": true,
+        "control_seconds": 79.2693668,
+        "physical_order_seconds": 26.6708767,
+        "physical_over_name_time": 0.336458808448562
+      },
+      {
+        "cold_source_pages": true,
+        "control_seconds": 32.4052535,
+        "physical_order_seconds": 33.2028092,
+        "physical_over_name_time": 1.0246119259644118
+      }
+    ]
+  }
+}
