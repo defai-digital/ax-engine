@@ -11,6 +11,16 @@ use crate::generate::{
 };
 use crate::model::ModelConfig;
 use crate::weights::ModelWeights;
+use sha2::{Digest, Sha256};
+
+fn synthetic_prefill_artifacts() -> NativeModelArtifacts {
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_ORACLE_DIR").unwrap());
+    let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+    manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
+    // The synthetic expert fixture does not carry production pack metadata.
+    manifest.runtime_status = ax_engine_core::NativeRuntimeStatus::default();
+    NativeModelArtifacts::from_manifest_and_root(root, manifest).unwrap()
+}
 
 #[test]
 #[ignore = "requires generated or pinned Flash Next weights and MLX"]
@@ -19,12 +29,7 @@ fn flash_next_fixed_prefill_chunks_preserve_state_with_sibling_decode() {
     let artifacts = if let Some(root) = &real_pack {
         NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap()
     } else {
-        let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_ORACLE_DIR").unwrap());
-        let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
-        manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
-        // The synthetic expert fixture does not carry production pack metadata.
-        manifest.runtime_status = ax_engine_core::NativeRuntimeStatus::default();
-        NativeModelArtifacts::from_manifest_and_root(root, manifest).unwrap()
+        synthetic_prefill_artifacts()
     };
     let (prompt, sibling_prompt, chunk_size) = if real_pack.is_some() {
         (
@@ -215,6 +220,162 @@ fn assert_prefill_interleave(
         );
     }
     assert_eq!(arm_results, [true, true]);
+}
+
+struct WidthObservation {
+    boundary_hashes: Vec<String>,
+    tokens: Vec<u32>,
+    same_input_logits: Vec<Vec<f32>>,
+}
+
+#[test]
+#[ignore = "requires generated or pinned resident Flash Next weights and MLX"]
+fn flash_next_compare_prefill_widths_at_equal_logical_cuts() {
+    let (artifacts, prompt, logical, baseline, candidate, output_tokens) = if let Some(root) =
+        std::env::var_os("AX_FLASH_NEXT_REAL_PACK")
+    {
+        (
+            NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap(),
+            serde_json::from_str::<Vec<u32>>(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap())
+                .unwrap(),
+            2048,
+            512,
+            256,
+            96,
+        )
+    } else {
+        (
+            synthetic_prefill_artifacts(),
+            (1..=22).collect(),
+            11,
+            4,
+            2,
+            24,
+        )
+    };
+    assert!(
+        (logical..=4 * logical).contains(&prompt.len()) && prompt.len().is_multiple_of(logical)
+    );
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    assert_eq!(cfg.model_family, "qwen4_exp");
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    assert!(weights.expert_stream.is_none());
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let sampling = MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]);
+
+    let observe = |width: usize, forcing: Option<&[u32]>| {
+        let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
+        let mut rng = Xorshift64::new(42);
+        let mut boundary_hashes = Vec::new();
+        let mut tokens = Vec::with_capacity(output_tokens);
+        for (index, item) in prompt.chunks_exact(logical).enumerate() {
+            let (&last, prefix) = item.split_last().unwrap();
+            for chunk in prefix.chunks(width) {
+                chunked_prefill_cache_only(
+                    &cfg,
+                    &weights,
+                    chunk,
+                    &mut cache,
+                    width,
+                    CacheOnlyPrefillLayout::Batched,
+                    CacheOnlyBarrier::Blocking,
+                );
+            }
+            let boundary = (index + 1) * logical;
+            if boundary == prompt.len() {
+                tokens.push(decode_step(
+                    &cfg, &weights, last, &mut cache, sampling, &mut rng,
+                ));
+            } else {
+                chunked_prefill_cache_only(
+                    &cfg,
+                    &weights,
+                    std::slice::from_ref(&last),
+                    &mut cache,
+                    1,
+                    CacheOnlyPrefillLayout::Batched,
+                    CacheOnlyBarrier::Blocking,
+                );
+            }
+            assert_eq!(cache.seq_len(), boundary);
+            assert_eq!(cache.qwen4_exp.as_ref().unwrap().position(), boundary);
+            boundary_hashes.push(format!("{:x}", Sha256::digest(cache.serialize_to_bytes())));
+        }
+        let mut state = cache.qwen4_exp.clone().unwrap();
+        for index in 1..output_tokens {
+            tokens.push(decode_step(
+                &cfg,
+                &weights,
+                tokens[index - 1],
+                &mut cache,
+                sampling,
+                &mut rng,
+            ));
+        }
+        let same_input_logits = forcing.unwrap_or(&tokens)[..2]
+            .iter()
+            .map(|&token| {
+                let forward = crate::model::qwen4_exp::forward(
+                    trunk,
+                    &[token],
+                    &state,
+                    cfg.compile_cache_identity,
+                    super::ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+                state = forward.state;
+                let logits = mlx_sys::astype(&forward.logits, mlx_sys::MlxDtype::Float32, None);
+                mlx_sys::eval(&[&logits]);
+                let values = logits.data_f32();
+                assert!(values.iter().all(|value| value.is_finite()));
+                values.to_vec()
+            })
+            .collect();
+        WidthObservation {
+            boundary_hashes,
+            tokens,
+            same_input_logits,
+        }
+    };
+
+    let reference = observe(baseline, None);
+    let repeated = observe(baseline, Some(&reference.tokens));
+    assert_eq!(reference.boundary_hashes, repeated.boundary_hashes);
+    assert_eq!(reference.tokens, repeated.tokens);
+    let compare_logits = |other: &WidthObservation| {
+        reference
+            .same_input_logits
+            .iter()
+            .zip(&other.same_input_logits)
+            .map(|(a, b)| {
+                assert_eq!(a.len(), b.len());
+                let exact = a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits());
+                let max_abs_diff = a
+                    .iter()
+                    .zip(b)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max);
+                (exact, max_abs_diff)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(compare_logits(&repeated).iter().all(|(exact, _)| *exact));
+    let smaller = observe(candidate, Some(&reference.tokens));
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "prompt_tokens": prompt.len(),
+            "logical_cut": logical,
+            "baseline_width": baseline,
+            "candidate_width": candidate,
+            "baseline_reproduced": true,
+            "baseline_state_sha256": reference.boundary_hashes,
+            "candidate_state_sha256": smaller.boundary_hashes,
+            "candidate_same_input_logits_exact_and_max_abs_diff": compare_logits(&smaller),
+            "baseline_output_ids": reference.tokens,
+            "candidate_output_ids": smaller.tokens,
+        })
+    );
 }
 
 #[test]

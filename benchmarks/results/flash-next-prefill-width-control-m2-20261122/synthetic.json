@@ -1,0 +1,186 @@
+{
+  "arms": {
+    "bf16": {
+      "fixture_generator_sha256": "a124c49b399d163b22595f7e53f0b150ec093dce940d459c22087cca9ba276cf",
+      "fixture_inputs_sha256": {
+        "ax_expert_stream.json": "7b964c6da6081834896e4944e787cc5f4a2f733f48393538c2ce2af1e0b0ea05",
+        "config.json": "7d4cf5d0f93633edd8941798a560ac1b21c875f15b002e94852fc231a7b694b3",
+        "experts.safetensors": "a402f0c695db28b93e9b7f9413fa86d089bdace427f51e2fb42381cb16699a51",
+        "model.safetensors": "b1acc5fd3a4fb529c02cf10291aca36982cd233eee0e5d2aa7524d1f4f2d00bf",
+        "mtp.safetensors": "7b640f797f62122932cfde178a22d6143db86a4f667c0f95f662f9fa05ac4d9b",
+        "mtplx_runtime.json": "72b3f2e46e078e7cb4bd01b37d5bfb04519dde4681eee797100610a893b9055b"
+      },
+      "observation": {
+        "baseline_output_ids": [
+          15,
+          3,
+          29,
+          1,
+          12,
+          24,
+          25,
+          24,
+          25,
+          10,
+          4,
+          29,
+          15,
+          3,
+          18,
+          13,
+          12,
+          24,
+          25,
+          10,
+          4,
+          5,
+          20,
+          15
+        ],
+        "baseline_reproduced": true,
+        "baseline_state_sha256": [
+          "7647063ab255365161be8c622918049925706d2367c86581e56f7f8f469155b7",
+          "544e3f540cf7b9d065f1f4c2cb37a485d4ef5cd2b75fdfd8ab60df7b6e428731"
+        ],
+        "baseline_width": 4,
+        "candidate_output_ids": [
+          15,
+          3,
+          29,
+          1,
+          12,
+          24,
+          25,
+          24,
+          25,
+          10,
+          4,
+          29,
+          15,
+          3,
+          18,
+          13,
+          12,
+          24,
+          25,
+          10,
+          4,
+          5,
+          20,
+          15
+        ],
+        "candidate_same_input_logits_exact_and_max_abs_diff": [
+          [
+            true,
+            0.0
+          ],
+          [
+            true,
+            0.0
+          ]
+        ],
+        "candidate_state_sha256": [
+          "7647063ab255365161be8c622918049925706d2367c86581e56f7f8f469155b7",
+          "544e3f540cf7b9d065f1f4c2cb37a485d4ef5cd2b75fdfd8ab60df7b6e428731"
+        ],
+        "candidate_width": 2,
+        "logical_cut": 11,
+        "prompt_tokens": 22
+      }
+    },
+    "f32": {
+      "fixture_generator_sha256": "a124c49b399d163b22595f7e53f0b150ec093dce940d459c22087cca9ba276cf",
+      "fixture_inputs_sha256": {
+        "ax_expert_stream.json": "238466ff0efc11cf7c3160db93ca3852991b381e516993eac9ea23df6926783a",
+        "config.json": "7d4cf5d0f93633edd8941798a560ac1b21c875f15b002e94852fc231a7b694b3",
+        "experts.safetensors": "3fc47e3c3c131e5ac4f75629ea3f51f5f75de43d7b1ec6b148a58ded2a494e14",
+        "model.safetensors": "a7611b05b9f35ab5041ca7e165ba6f8f1b69186556738a15c9e1246be96c3049",
+        "mtp.safetensors": "bcd347d10b8cacdfa8abc6660456d8b7f00384a4916a7c8fc5d45d6b9d5f44a8",
+        "mtplx_runtime.json": "72b3f2e46e078e7cb4bd01b37d5bfb04519dde4681eee797100610a893b9055b"
+      },
+      "observation": {
+        "baseline_output_ids": [
+          15,
+          3,
+          29,
+          1,
+          12,
+          24,
+          25,
+          10,
+          4,
+          5,
+          20,
+          15,
+          3,
+          15,
+          3,
+          20,
+          26,
+          30,
+          15,
+          3,
+          29,
+          1,
+          12,
+          24
+        ],
+        "baseline_reproduced": true,
+        "baseline_state_sha256": [
+          "2b31e7dd2aa0992f3067f8b23a3fb3c607aa518bc9b97925fa47efd9587be36d",
+          "2cbfc1b9973e6911d66eac687429e3ddbdd39b029cb3372df5af651f2b016378"
+        ],
+        "baseline_width": 4,
+        "candidate_output_ids": [
+          15,
+          3,
+          29,
+          1,
+          12,
+          24,
+          25,
+          10,
+          4,
+          5,
+          20,
+          15,
+          3,
+          15,
+          3,
+          20,
+          26,
+          30,
+          15,
+          3,
+          29,
+          1,
+          12,
+          24
+        ],
+        "candidate_same_input_logits_exact_and_max_abs_diff": [
+          [
+            true,
+            0.0
+          ],
+          [
+            true,
+            0.0
+          ]
+        ],
+        "candidate_state_sha256": [
+          "2b31e7dd2aa0992f3067f8b23a3fb3c607aa518bc9b97925fa47efd9587be36d",
+          "2cbfc1b9973e6911d66eac687429e3ddbdd39b029cb3372df5af651f2b016378"
+        ],
+        "candidate_width": 2,
+        "logical_cut": 11,
+        "prompt_tokens": 22
+      }
+    }
+  },
+  "hardware": "M2 Ultra 192 GB",
+  "macos": "27.2.1",
+  "mlx": "0.32.4",
+  "rust": "1.99.1",
+  "scope": "Synthetic exact-width control",
+  "test_binary_sha256": "4a5ba29dff66c4018914f95c81c5af229e862ca741aa875a59d6e79d3cbe59dc"
+}
