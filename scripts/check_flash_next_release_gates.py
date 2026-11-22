@@ -2,7 +2,7 @@
 """Evaluate the Flash Next direct-default release gates from recorded evidence.
 
 Reads the result files produced by the delivery, QA, lifecycle, generate-matrix
-and reference harnesses plus the frozen thresholds in
+and reference harnesses, the raw matrix repeats and the frozen thresholds in
 `flash_next_release_thresholds.json`, and reports one pass/fail line per gate.
 Nothing here runs a model. The verdict covers only the stated release scope:
 direct decoding is the default, model MTP stays an explicit experimental
@@ -22,8 +22,10 @@ from typing import Any
 
 try:
     import run_flash_next_qa_cohort as qa_cohort
+    import run_flash_next_generate_matrix as matrix_runner
 except ImportError:
     from scripts import run_flash_next_qa_cohort as qa_cohort
+    from scripts import run_flash_next_generate_matrix as matrix_runner
 
 SCRIPTS = Path(__file__).resolve().parent
 THRESHOLDS = SCRIPTS / "flash_next_release_thresholds.json"
@@ -60,6 +62,7 @@ LIFECYCLE_COUNTERS = frozenset({
 RESULT_FILES = {"delivery": "delivery/result.json", "qa": "qa/result.json",
                 "lifecycle": "lifecycle/result.json", "matrix": "generate-matrix/result.json",
                 "reference": "reference/result.json"}
+MATRIX_REPEATS_FILE = "generate-matrix/raw-runs.json"
 
 
 def gate(name: str, passed: bool, detail: str, **data: Any) -> dict[str, Any]:
@@ -402,7 +405,73 @@ def gate_mtp_policy(delivery: dict[str, Any], qa: dict[str, Any], lifecycle: dic
                  "explicit opt-in and MTP-S/P/D remain not_assessed", default_verified_steps=verified)]
 
 
-def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> list[dict[str, Any]]:
+def matrix_repeat_problems(matrix: dict[str, Any], repeats: Any) -> list[str]:
+    if not isinstance(repeats, dict) or repeats.keys() != set(AX_ARMS):
+        return ["matrix: raw repeats must record both direct arms"]
+    problems = []
+    for mode in AX_ARMS:
+        runs = repeats[mode]
+        if not isinstance(runs, list) or len(runs) != AX_REPEATS:
+            problems.append(f"matrix/{mode}: missing raw process repeats")
+            continue
+        selected = matrix["runs"][mode]
+        scores = [matrix_repeat_score(run, selected, mode) for run in runs]
+        if any(score is None for score in scores):
+            problems.append(f"matrix/{mode}: raw repeats lack matching complete workloads")
+            continue
+        identity = matrix_runner.repeat_token_identity({mode: runs})[mode]
+        if (identity["compared"] != len(LENGTHS) * (WARMUPS + MEASURED) + TRAJECTORIES
+                or identity["identical"] != identity["compared"]):
+            problems.append(f"matrix/{mode}: raw repeats do not have identical output tokens")
+        if any(type(row.get("verified_steps")) not in (int, float) or row["verified_steps"] != 0
+               for run in runs for row in (*run["cells"], *run["trajectories"])):
+            problems.append(f"matrix/{mode}: raw repeats require zero verified MTP steps")
+        fastest = runs[scores.index(min(scores))]
+        try:
+            matches = (json.dumps(fastest, sort_keys=True, allow_nan=False)
+                       == json.dumps(selected, sort_keys=True, allow_nan=False))
+        except (ValueError, RecursionError):
+            matches = False
+        if not matches:
+            problems.append(f"matrix/{mode}: selected run differs from the fastest raw repeat")
+    return problems
+
+
+def matrix_repeat_score(run: Any, selected: dict[str, Any], mode: str) -> float | None:
+    """The summed median TTFT, after the repeat's output and workload checks."""
+    if (not isinstance(run, dict) or run.get("mode") != mode
+            or run.get("prompt_id_hashes") != selected.get("prompt_id_hashes")):
+        return None
+    for label, keys in (("cells", ("length", "run", "warmup")), ("trajectories", ("index",))):
+        rows = run.get(label)
+        expected = selected[label]
+        if not isinstance(rows, list) or len(rows) != len(expected):
+            return None
+        for row, original in zip(rows, expected, strict=True):
+            if (not isinstance(row, dict) or row.get("status") != "finished"
+                    or any(type(row.get(key)) is not type(original.get(key))
+                           or row.get(key) != original.get(key) for key in keys)):
+                return None
+            tokens = row.get("output_tokens")
+            if (not isinstance(tokens, list) or not 0 < len(tokens) <= OUTPUT_TOKENS
+                    or (label == "cells" and len(tokens) != OUTPUT_TOKENS)
+                    or not all(type(token) is int and token >= 0 for token in tokens)):
+                return None
+    medians = []
+    for length in LENGTHS:
+        timings = [row.get("timing", row) for row in run["cells"]
+                   if row.get("length") == length and row.get("warmup") is False]
+        if not timings or any(not isinstance(timing, dict)
+                              or not positive_measurement(timing.get("ttft_seconds"))
+                              for timing in timings):
+            return None
+        medians.append(statistics.median(timing["ttft_seconds"] for timing in timings))
+    score = sum(medians)
+    return score if positive_measurement(score) else None
+
+
+def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any],
+                   matrix_repeats: Any) -> list[dict[str, Any]]:
     problems = []
     for digest_key, names in (("server_sha256", ("delivery", "qa", "lifecycle", "matrix")),
                               ("inventory_sha256", RESULT_FILES)):
@@ -451,6 +520,7 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
             problems.append(f"matrix/{mode}: expected {expected_pairs} repeat token comparisons")
         elif identity.get("identical") != expected_pairs:
             problems.append(f"matrix/{mode}: repeats of the same arm emitted different tokens")
+    problems.extend(matrix_repeat_problems(matrix, matrix_repeats))
     reference = results["reference"]
     pinned = reference.get("reference")
     if not isinstance(pinned, dict):
@@ -475,14 +545,15 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
 
 
 def evaluate(results: dict[str, dict[str, Any]], th: dict[str, Any],
-             contract: dict[str, Any]) -> dict[str, Any]:
+             contract: dict[str, Any], matrix_repeats: Any) -> dict[str, Any]:
     qa, lifecycle, matrix = results["qa"], results["lifecycle"], results["matrix"]
     reference, delivery = results["reference"], results["delivery"]
     runs = [(f"qa/{mode}", qa["summary"]["modes"][mode].get("ready_seconds")) for mode in AX_ARMS]
     runs += [(f"lifecycle/{run['mode']}", run.get("ready_seconds")) for run in lifecycle.get("runs", [])
              if run["mode"] in AX_ARMS]
     runs += [(f"matrix/{mode}", matrix["runs"][mode].get("ready_seconds")) for mode in AX_ARMS]
-    gates = [*gate_delivery(delivery, th), *gate_integrity(results, th), *gate_quality(qa, reference, th),
+    gates = [*gate_delivery(delivery, th), *gate_integrity(results, th, matrix_repeats),
+             *gate_quality(qa, reference, th),
              *gate_lifecycle(lifecycle, th), *gate_memory(qa, th), *gate_readiness(delivery, runs, th),
              *gate_long_lookup(qa, th), *gate_reference_relative(matrix, reference, th),
              *gate_mtp_policy(delivery, qa, lifecycle, matrix, th, contract)]
@@ -495,6 +566,13 @@ def source_state() -> dict[str, Any]:
     dirty = bool(subprocess.check_output(["git", "-C", str(root), "status", "--porcelain",
                                           "--untracked-files=no"], text=True).strip())
     return {"commit": commit, "tracked_tree_dirty": dirty}
+
+
+def unique_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    decoded = dict(pairs)
+    if len(decoded) != len(pairs):
+        raise ValueError("duplicate member in raw matrix evidence")
+    return decoded
 
 
 def main() -> int:
@@ -511,12 +589,19 @@ def main() -> int:
     missing = [str(path) for path in paths.values() if not path.is_file()]
     if missing:
         raise SystemExit(f"missing evidence: {missing}")
-    results = {name: json.loads(path.read_text()) for name, path in paths.items()}
-    verdict = evaluate(results, th, qualify.contract())
+    inputs = {name: path.read_bytes() for name, path in paths.items()}
+    results = {name: json.loads(data) for name, data in inputs.items()}
+    raw_path = args.evidence_dir / MATRIX_REPEATS_FILE
+    try:
+        inputs["matrix_raw"] = raw_path.read_bytes()
+        matrix_repeats = json.loads(inputs["matrix_raw"], object_pairs_hook=unique_json_members)
+    except (OSError, ValueError, RecursionError):
+        matrix_repeats = None
+    verdict = evaluate(results, th, qualify.contract(), matrix_repeats)
     verdict.update(
         schema=qualify.RELEASE_VERDICT_SCHEMA, release_scope=th["release_scope"],
         pack_revision=th["target"]["pack_revision"], thresholds_sha256=sha256_file(args.thresholds),
-        evidence_sha256={name: sha256_file(path) for name, path in paths.items()},
+        evidence_sha256={name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()},
         mtp_certification=qualify.contract()["mtp_certification"], source=source_state(),
         disclosure=th["disclosure"])
     for item in verdict["gates"]:

@@ -42,6 +42,7 @@ def ax_cells(decode_seconds=7.0, ttft=(4.0, 16.0, 70.0), tokens=128):
     for length, first in zip((512, 2048, 8192), ttft):
         for run in range(5):
             cells.append({"length": length, "run": run, "warmup": run < 2, "verified_steps": 0.0,
+                          "status": "finished",
                           "output_tokens": [0] * tokens,
                           "timing": {"ttft_seconds": first, "decode_seconds": decode_seconds,
                                      "first_event_tokens": 1, "decode_tokens": 127}})
@@ -77,8 +78,11 @@ def good():
     matrix = {**COMMON, "repeats_per_arm": 2,
               "repeat_token_identity": {mode: {"compared": 31, "identical": 31}
                                         for mode in ("disabled", "default")},
-              "runs": {mode: {"ready_seconds": 33.0,
-                              "trajectories": [{"index": index, "verified_steps": 0.0} for index in range(16)],
+              "runs": {mode: {"mode": mode, "ready_seconds": 33.0,
+                              "trajectories": [
+                                  {"index": index, "verified_steps": 0.0,
+                                   "status": "finished", "output_tokens": [0]}
+                                  for index in range(16)],
                               "prompt_id_hashes": {**TRAJECTORY_HASHES, **CELL_HASHES},
                               "cells": ax_cells()} for mode in ("disabled", "default")}}
     reference = {**{key: value for key, value in COMMON.items() if key != "server_sha256"},
@@ -100,8 +104,15 @@ def good():
     return {"delivery": delivery, "qa": qa, "lifecycle": lifecycle, "matrix": matrix, "reference": reference}
 
 
-def verdict(results):
-    return mod.evaluate(results, TH, qualify.contract())
+def raw_repeats(results):
+    return {mode: [copy.deepcopy(run), copy.deepcopy(run)]
+            for mode, run in results["matrix"]["runs"].items()}
+
+
+def verdict(results, repeats=None):
+    if repeats is None:
+        repeats = raw_repeats(results)
+    return mod.evaluate(results, TH, qualify.contract(), repeats)
 
 
 def failed(results):
@@ -214,7 +225,7 @@ class ReleaseGateTests(unittest.TestCase):
                        lambda r: r["matrix"]["runs"]["default"]["cells"][0].update(verified_steps=2.0)):
             r = good()
             mutate(r)
-            self.assertEqual(failed(r), {"mtp_policy"})
+            self.assertIn("mtp_policy", failed(r))
 
     def test_memory_and_long_lookup_bounds(self):
         r = good()
@@ -302,7 +313,7 @@ class ReleaseGateTests(unittest.TestCase):
         cells.pop(4)
         for row in cells[2:4]:
             row["timing"].update(decode_seconds=1e-308)
-        self.assertEqual(failed(r), {"reference_relative"})
+        self.assertEqual(failed(r), {"integrity", "reference_relative"})
         json.dumps(verdict(r), allow_nan=False)
 
     def test_the_reference_must_use_the_same_token_ids_as_both_ax_arms(self):
@@ -322,7 +333,7 @@ class ReleaseGateTests(unittest.TestCase):
             arm["cells"] = [row for row in arm["cells"] if row["length"] != 8192]
             arm["prompt_id_hashes"] = {key: digest for key, digest in arm["prompt_id_hashes"].items()
                                        if not key.startswith("cell-8192-")}
-        self.assertEqual(failed(r), {"reference_relative"})
+        self.assertEqual(failed(r), {"integrity", "reference_relative"})
         r = good()
         cells = r["matrix"]["runs"]["default"]["cells"]
         cells[3] = copy.deepcopy(cells[2])
@@ -474,6 +485,89 @@ class ReleaseGateTests(unittest.TestCase):
             mutate(r["matrix"])
             self.assertEqual(failed(r), {"integrity"})
 
+    def test_raw_unselected_repeat_must_match_tokens_and_workload(self):
+        for label, mutate, reason in (
+            ("changed measured token", lambda run: run["cells"][2]["output_tokens"].__setitem__(7, 41),
+             "do not have identical output tokens"),
+            ("changed warmup token", lambda run: run["cells"][0]["output_tokens"].__setitem__(7, 41),
+             "do not have identical output tokens"),
+            ("changed trajectory", lambda run: run["trajectories"][0]["output_tokens"].__setitem__(0, 41),
+             "do not have identical output tokens"),
+            ("incomplete", lambda run: run["cells"][2].update(status="running"),
+             "lack matching complete workloads"),
+            ("changed prompt", lambda run: run["prompt_id_hashes"].update({"cell-512-2": "f" * 64}),
+             "lack matching complete workloads"),
+            ("bad timing", lambda run: run["cells"][2]["timing"].update(ttft_seconds=True),
+             "lack matching complete workloads"),
+            ("unexpected MTP", lambda run: run["cells"][2].update(verified_steps=1),
+             "require zero verified MTP steps"),
+            ("missing verifier count", lambda run: run["cells"][2].pop("verified_steps"),
+             "require zero verified MTP steps"),
+        ):
+            with self.subTest(label=label):
+                r = good()
+                repeats = raw_repeats(r)
+                mutate(repeats["default"][1])
+                result = verdict(r, repeats)
+                self.assertFalse(result["release_ready"])
+                integrity = next(g for g in result["gates"] if g["gate"] == "integrity")
+                self.assertIn(reason, integrity["detail"])
+
+    def test_selected_run_must_match_fastest_raw_process(self):
+        r = good()
+        repeats = raw_repeats(r)
+        for row in repeats["default"][1]["cells"]:
+            row["timing"]["ttft_seconds"] /= 2
+        self.assertFalse(verdict(r, repeats)["release_ready"])
+        r["matrix"]["runs"]["default"] = repeats["default"][1]
+        self.assertTrue(verdict(r, repeats)["release_ready"])
+        self.assertFalse(verdict(r, {})["release_ready"])
+
+    def test_selected_repeat_matches_types_in_timing_evidence(self):
+        r = good()
+        repeats = raw_repeats(r)
+        repeats["default"][0]["cells"][2]["timing"]["first_event_tokens"] = True
+        result = verdict(r, repeats)
+        integrity = next(g for g in result["gates"] if g["gate"] == "integrity")
+        self.assertIn("selected run differs", integrity["detail"])
+
+    def test_signed_evidence_replays_with_a_raw_repeat_digest(self):
+        root = SIGNED_REFERENCE.parent.parent
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "verdict.json"
+            subprocess.run([sys.executable, str(SCRIPT), "--evidence-dir", str(root),
+                            "--output", str(output)], check=True, capture_output=True, text=True)
+            result = json.loads(output.read_bytes())
+            self.assertTrue(result["release_ready"])
+            self.assertEqual(result["evidence_sha256"]["matrix_raw"],
+                             mod.sha256_file(root / mod.MATRIX_REPEATS_FILE))
+
+    def test_cli_records_failed_integrity_for_missing_or_malformed_raw_repeats(self):
+        archive = SIGNED_REFERENCE.parent.parent
+        original = (archive / mod.MATRIX_REPEATS_FILE).read_bytes()
+        duplicate = original.replace(b'"output_tokens": [', b'"output_tokens": [], "output_tokens": [', 1)
+        self.assertNotEqual(duplicate, original)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in mod.RESULT_FILES.values():
+                path = root / name
+                path.parent.mkdir()
+                path.symlink_to(archive / name)
+            raw = root / mod.MATRIX_REPEATS_FILE
+            for label, data in (("missing", None), ("duplicate", duplicate),
+                                ("deeply nested", b"[" * 4_000 + b"0" + b"]" * 4_000)):
+                with self.subTest(case=label):
+                    if data is not None:
+                        raw.write_bytes(data)
+                    output = root / "verdict.json"
+                    done = subprocess.run([sys.executable, str(SCRIPT), "--evidence-dir", str(root),
+                                           "--output", str(output)], capture_output=True, text=True)
+                    self.assertEqual(done.returncode, 1, done.stderr)
+                    result = json.loads(output.read_bytes())
+                    self.assertEqual(
+                        {g["gate"] for g in result["gates"] if not g["passed"]}, {"integrity"}
+                    )
+
     def test_lifecycle_needs_seven_drained_actions_in_each_required_mode(self):
         r = good()
         r["lifecycle"]["runs"][1]["actions"] = r["lifecycle"]["runs"][1]["actions"][:6]
@@ -507,7 +601,8 @@ class ReleaseGateTests(unittest.TestCase):
     def test_the_contract_must_keep_mtp_s_p_d_not_assessed(self):
         bad = copy.deepcopy(qualify.contract())
         bad["mtp_certification"]["MTP-P"] = "passed"
-        result = mod.evaluate(good(), TH, bad)
+        r = good()
+        result = mod.evaluate(r, TH, bad, raw_repeats(r))
         self.assertEqual({g["gate"] for g in result["gates"] if not g["passed"]}, {"mtp_policy"})
 
     def test_frozen_thresholds_match_the_documented_scope(self):
