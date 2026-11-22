@@ -549,7 +549,9 @@ pub(crate) fn load(
 
     // Payload IO starts only after the full metadata contract is admitted.
     let names: HashSet<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-    let mut name_map = load_sidecar_payload(&sidecar, &source, &names)?;
+    let positional =
+        cfg!(unix) && std::env::var("AX_FLASH_NEXT_MTP_SIDECAR_POSITIONAL").as_deref() == Ok("1");
+    let mut name_map = load_sidecar_payload(&sidecar, &source, &names, positional)?;
     validate_loaded(&specs, &name_map)?;
     apply_norm_layout(norm_layout, &expected, &mut name_map)?;
 
@@ -780,11 +782,26 @@ fn load_sidecar_payload(
     path: &Path,
     source: &SidecarSource,
     names: &HashSet<String>,
+    positional: bool,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
     ensure_sidecar_unchanged(path, &source.metadata)?;
-    let tensors =
-        load_safetensors_filtered_from_file(path, &source.file, SafetensorsNameFilter::Keep(names))
-            .map_err(WeightLoadError::FileMissing)?;
+    let filter = SafetensorsNameFilter::Keep(names);
+    #[cfg(unix)]
+    let loaded = if positional {
+        tracing::debug!(
+            target: "ax_engine_mlx::flash_next_startup",
+            "Flash Next MTP sidecar positional read lab"
+        );
+        mlx_sys::io::load_safetensors_filtered_positional_from_file(path, &source.file, filter)
+    } else {
+        load_safetensors_filtered_from_file(path, &source.file, filter)
+    };
+    #[cfg(not(unix))]
+    let loaded = {
+        debug_assert!(!positional);
+        load_safetensors_filtered_from_file(path, &source.file, filter)
+    };
+    let tensors = loaded.map_err(WeightLoadError::FileMissing)?;
     mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>())
         .map_err(|e| WeightLoadError::InvalidLayer(format!("Flash Next MTP evaluation: {e}")))?;
     ensure_sidecar_unchanged(path, &source.metadata)?;
@@ -1347,10 +1364,13 @@ mod tests {
         let (specs, source) = read_sidecar_header_specs(&path).unwrap();
         let names = HashSet::from([name.to_string()]);
         assert_eq!(specs[0].name, name);
-        assert_eq!(
-            load_sidecar_payload(&path, &source, &names).unwrap().len(),
-            1
-        );
+        for positional in [false, true] {
+            let weights = load_sidecar_payload(&path, &source, &names, positional).unwrap();
+            assert_eq!(weights.len(), 1);
+            let float = astype(&weights[name], MlxDtype::Float32, None);
+            mlx_sys::eval(&[&float]);
+            assert_eq!(float.data_f32(), &[1.0]);
+        }
 
         let replacement = root.0.join("other.safetensors");
         let payload_offset = 8 + header.len();
@@ -1369,10 +1389,12 @@ mod tests {
             current.modified().unwrap(),
             source.metadata.modified().unwrap()
         );
-        assert!(
-            rejection(load_sidecar_payload(&path, &source, &names))
-                .contains("sidecar file changed")
-        );
+        for positional in [false, true] {
+            assert!(
+                rejection(load_sidecar_payload(&path, &source, &names, positional))
+                    .contains("sidecar file changed")
+            );
+        }
     }
 
     #[test]

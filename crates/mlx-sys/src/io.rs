@@ -163,7 +163,17 @@ pub fn load_safetensors_filtered_positional(
     filter: SafetensorsNameFilter<'_>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    load_safetensors_open_file(path, &file, Some(filter), PayloadRead::Positional)
+    load_safetensors_filtered_positional_from_file(path, &file, filter)
+}
+
+/// Read selected payloads through the descriptor retained at admission.
+#[cfg(unix)]
+pub fn load_safetensors_filtered_positional_from_file(
+    path: &Path,
+    file: &std::fs::File,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_open_file(path, file, Some(filter), PayloadRead::Positional)
 }
 
 #[derive(Clone, Copy)]
