@@ -16,10 +16,16 @@ two teacher-forced logit vectors and every one of the 24 greedy IDs
 in both fixtures. The tiny fixtures establish behavior only for these
 shapes and weights.
 
-The real-pack diagnostic uses widths 512 and 256 at unchanged logical
-2,048-token cuts and compares 96 greedy IDs. Its state and same-input
-logit checks run outside HTTP serving. M5 latency, the peer's TTFT and
-mixed-load throughput require the separate serving controls.
+The [real-pack M2 diagnostic](real-pack.json) uses the second prompt
+from the [earlier M5 partition replay](../flash-next-mxfp4-prefill-partition-m5-20261121/README.md).
+The prompt has 2,048 tokens. The probe verifies all 49 publisher members
+and uses widths 512 and 256 at the same logical cut with the same last
+singleton. The two width-512 controls reproduce all 96 greedy IDs,
+serialized state and the two same-input logit vectors. Width 256 changes
+the serialized state and both logit vectors, with maximum absolute
+differences of 1.0625 and 0.5. It changes 92 of 96 greedy output tokens
+and first differs at token four. This disqualifies width 256 from the
+exact path for the tested input. The probe runs outside HTTP serving.
 
 ```bash
 cargo +1.99.1 test -p ax-engine-mlx --lib \
