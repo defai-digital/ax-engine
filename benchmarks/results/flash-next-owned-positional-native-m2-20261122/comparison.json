@@ -1,0 +1,63 @@
+{
+  "arms": {
+    "mmap": {
+      "peak_sampled_rss_bytes": 74160144384,
+      "pressure_samples": 3,
+      "ready_seconds": 34.31329550000373,
+      "resident_seconds": 10.173243,
+      "shard_read_allocation_seconds": 10.153867,
+      "sidecar_seconds": 1.447784,
+      "slowest_shards": [
+        {
+          "eval_us": 11,
+          "name": "model-00018-of-00025.safetensors",
+          "read_us": 809917,
+          "tensors": 158
+        },
+        {
+          "eval_us": 12,
+          "name": "model-00023-of-00025.safetensors",
+          "read_us": 779409,
+          "tensors": 158
+        },
+        {
+          "eval_us": 12,
+          "name": "model-00015-of-00025.safetensors",
+          "read_us": 775538,
+          "tensors": 158
+        }
+      ]
+    },
+    "pread": {
+      "peak_sampled_rss_bytes": 74071228416,
+      "pressure_samples": 6,
+      "ready_seconds": 94.96450758399442,
+      "resident_seconds": 43.258175,
+      "shard_read_allocation_seconds": 43.239009,
+      "sidecar_seconds": 36.317891,
+      "slowest_shards": [
+        {
+          "eval_us": 19,
+          "name": "model-00014-of-00025.safetensors",
+          "read_us": 11702937,
+          "tensors": 158
+        },
+        {
+          "eval_us": 24,
+          "name": "model-00013-of-00025.safetensors",
+          "read_us": 11505648,
+          "tensors": 124
+        },
+        {
+          "eval_us": 11,
+          "name": "model-00015-of-00025.safetensors",
+          "read_us": 9371827,
+          "tensors": 158
+        }
+      ]
+    }
+  },
+  "matched_output_ids": 96,
+  "native_receipt_sha256": "b69424aa4aad021afb09f2f329376b7eb521fb5967a57e6507a47c534402d4e3",
+  "scope": "Full-pack native output smoke on M2 with uncontrolled file residency"
+}
