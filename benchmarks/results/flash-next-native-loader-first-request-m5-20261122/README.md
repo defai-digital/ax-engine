@@ -45,3 +45,38 @@ against [comparison.json](comparison.json).
 ```bash
 python3 benchmarks/results/flash-next-native-loader-first-request-m5-20261122/replay.py
 ```
+
+## Reversed process order
+
+The repeat used the same executable and selected tensors. It started
+with `lazy-short`, then `name-short`, `name-long`, and `lazy-long`, with
+20 seconds between arms before the existing quiet check. Every arm
+passed the 90% post-run idle floor, with observations from 90.49% to
+92.41%. All 112 memory pressure samples were normal. All 56 responses
+matched the first order token for token, including each 32K boundary.
+
+| First prompt | Guarded mmap readiness | Lazy CPU readiness | Guarded mmap first TTFT | Lazy CPU first TTFT |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 44.118 s | 24.065 s | 0.547 s | 1.049 s |
+| 8,192 | 46.165 s | 20.080 s | 8.837 s | 10.517 s |
+
+| First prompt | Warm prompt | Lazy CPU change in median TTFT | Lazy CPU change in median decode rate |
+| ---: | ---: | ---: | ---: |
+| 512 | 512 | +4.07% | −2.22% |
+| 512 | 2,048 | −7.26% | −0.90% |
+| 512 | 8,192 | −3.12% | −4.32% |
+| 8,192 | 512 | +2.03% | −2.67% |
+| 8,192 | 2,048 | +24.00% | −5.41% |
+| 8,192 | 8,192 | +14.06% | −2.92% |
+
+The repeat confirms a startup improvement and warmed regressions beyond
+the existing timing bands. Continue with guarded mmap and study read
+timing while keeping the current array construction. The
+[reversed evidence](reversed/evidence.tar.xz) and
+[replay result](reversed/comparison.json) retain the full comparison.
+
+```bash
+python3 benchmarks/results/flash-next-native-loader-first-request-m5-20261122/replay.py \
+  --archive benchmarks/results/flash-next-native-loader-first-request-m5-20261122/reversed/evidence.tar.xz \
+  --reversed-order
+```

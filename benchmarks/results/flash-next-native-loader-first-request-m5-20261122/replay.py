@@ -14,6 +14,7 @@ VOCAB = 248320
 PROMPTS = (512, 2048, 8192)
 ARMS = {'name-short': ('name-order', 512), 'lazy-short': ('lazy-cpu', 512),
         'lazy-long': ('lazy-cpu', 8192), 'name-long': ('name-order', 8192)}
+REVERSED = ('lazy-short', 'name-short', 'name-long', 'lazy-long')
 
 
 def workload(first):
@@ -49,7 +50,7 @@ def body(archive, name):
     return stream.read()
 
 
-def audit(archive, prior):
+def audit(archive, prior, *, reversed_order=False):
     raw = body(archive, 'receipt.json')
     receipt = json.loads(raw)
     build = json.loads(body(archive, 'server-build-receipt.json'))
@@ -65,7 +66,9 @@ def audit(archive, prior):
         assert receipt[key] == prior[key]
     assert receipt['pack_revision'] == prior['pack_revision'] == 'ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3'
     assert receipt['launch'] == 'ordinary-32k-resident-single-request'
-    assert list(receipt['arms']) == list(ARMS)
+    assert tuple(receipt['arms']) == (REVERSED if reversed_order else tuple(ARMS))
+    if reversed_order:
+        assert receipt['between_arm_cooldown_seconds'] == 20
     assert receipt['status'] in ('complete', 'failed')
     assert len(receipt['workloads']) == 4
     observed = {}
@@ -122,7 +125,9 @@ def audit(archive, prior):
                                   for metric, value in control['warm'][length].items()} for length in PROMPTS}
     eligible = all(arm['measurement_eligible'] for arm in results.values())
     assert (receipt['status'] == 'complete') == eligible
-    assert body(archive, 'followup-status.txt') == (b'loader-followup 0\n' if eligible else b'loader-followup 1\n')
+    status_file, status_label = (('phase-status.txt', 'loader-reverse') if reversed_order
+                                 else ('followup-status.txt', 'loader-followup'))
+    assert body(archive, status_file) == f'{status_label} {0 if eligible else 1}\n'.encode()
     warm_band = all(row['ttft_seconds'] <= 1.03 and row['decode_tokens_per_second'] >= 0.97
                     for pair in pairs.values() for row in pair.values())
     return {
@@ -135,12 +140,29 @@ def audit(archive, prior):
     }
 
 
+def check_cross_order(archive):
+    with tarfile.open(ROOT / 'evidence.tar.xz') as forward:
+        first = json.loads(body(forward, 'receipt.json'))['arms']
+    second = json.loads(body(archive, 'receipt.json'))['arms']
+    assert first.keys() == second.keys()
+    count = 0
+    for arm, previous in first.items():
+        expected = [(row['prompt_hash'], row['output_tokens']) for row in previous['cases']]
+        observed = [(row['prompt_hash'], row['output_tokens']) for row in second[arm]['cases']]
+        assert expected == observed, arm
+        count += len(observed)
+    return count
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', type=Path, default=ROOT / 'evidence.tar.xz')
     parser.add_argument('--prior', type=Path, default=PRIOR)
+    parser.add_argument('--reversed-order', action='store_true')
     args = parser.parse_args()
     with tarfile.open(args.archive) as archive:
-        result = audit(archive, json.loads(args.prior.read_bytes()))
+        result = audit(archive, json.loads(args.prior.read_bytes()), reversed_order=args.reversed_order)
+        if args.reversed_order:
+            result['matched_output_arrays_across_orders'] = check_cross_order(archive)
     print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
