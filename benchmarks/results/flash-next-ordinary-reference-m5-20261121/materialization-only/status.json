@@ -1,0 +1,8 @@
+{
+  "scope": "Materialization-only reference diagnostic",
+  "wired_override": false,
+  "ordinary_qualification": false,
+  "frozen_sha256": "f92c9e04a94b0a0a681a7820b780847cba433bc5bbcadf483a516cbecc3a3221",
+  "exit_code": -15,
+  "stop_reason": "memory pressure above normal"
+}

@@ -1,0 +1,3 @@
+{"phase": "lazy_load_start", "monotonic_seconds": 259349.763091375, "rss_high_water_bytes": 542081024, "mlx_active_bytes": 1032, "mlx_cache_bytes": 0, "mlx_peak_bytes": 1032}
+{"phase": "lazy_load_end", "monotonic_seconds": 259349.852529083, "rss_high_water_bytes": 542081024, "mlx_active_bytes": 4104, "mlx_cache_bytes": 28104, "mlx_peak_bytes": 32208}
+{"phase": "materialize_start", "monotonic_seconds": 259349.852611541, "rss_high_water_bytes": 542081024, "mlx_active_bytes": 4104, "mlx_cache_bytes": 28104, "mlx_peak_bytes": 32208}

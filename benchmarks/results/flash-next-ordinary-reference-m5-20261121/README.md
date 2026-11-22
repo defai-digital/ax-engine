@@ -38,3 +38,20 @@ sample. The last sample recorded pressure level 4, a 106.18 GB
 compressor and 21.09 GB swap in use. The host-wide counters describe
 conditions around the transition. Per-allocation attribution would
 require a separate measurement.
+
+## Materialization-only diagnostic
+
+The [guarded loader diagnostic](materialization-only/status.json)
+reused the frozen independent source and MLX 0.32.2 profile. It stopped
+on the first sampled system pressure warning. Before its stop, the
+runner began explicit weight evaluation but did not reach the end of
+materialization or the first-prefill boundary. Its [phase trace](materialization-only/phase-events.jsonl)
+records 89 ms for lazy model construction. The last sample came 14.09 s
+after explicit materialization began, with system pressure level 2,
+79.20 GB occupied by the compressor and 22.65 GB reference process RSS.
+The run started with normal pressure and 90.20% CPU idle.
+
+This observation places the warning before first forward in this
+attempt. The host-wide compressor count cannot attribute individual
+allocations. The diagnostic stops before the first prompt by design
+and has no qualification results.
