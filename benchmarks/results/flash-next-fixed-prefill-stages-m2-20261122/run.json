@@ -1,0 +1,15 @@
+{
+  "cargo_profile": "release-server",
+  "hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "inputs_sha256": {
+    "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": "feca7909a4f577eeafc3fb23a01285bb7a7034a203d6d8b18c0eac1f80cd16f2",
+    "profile-probe": "0f2940a91fe3b25d10dccf0b6df18f04e7a807288ac3ad302c014da37ef2452f",
+    "prompt-8192.json": "405e0aa8e30166cbfaf769e351d48e9bddd99d85f08539d942edf9d0f28fa287"
+  },
+  "macos": "27.2.1",
+  "mlx_version": "0.32.4",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "prompt_source": "Second archived M5 8,192-token prefill partition prompt",
+  "publisher_members_verified": 49,
+  "rust_version": "1.99.1"
+}

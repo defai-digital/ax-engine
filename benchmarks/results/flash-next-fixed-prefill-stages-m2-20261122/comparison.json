@@ -1,0 +1,39 @@
+{
+  "geometry": [
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1
+  ],
+  "largest_synchronized_stages_seconds": {
+    "moe_compute": 23.478017692999998,
+    "gdn_chunked": 3.7410407510000008,
+    "gdn": 2.7287067870000006,
+    "attention_hc_read": 2.579685509,
+    "qsa_da_sdpa": 2.1860447350000003,
+    "mlp_hc_read": 1.9520093609999998,
+    "qsa_a_proj": 0.903794582,
+    "mlp_hc_write": 0.819178971
+  },
+  "wide_forward_median_control_seconds": 1.3651430835,
+  "cache_only_terminal_stateless_seconds": 0.5293629590000001,
+  "cache_only_terminal_stateless_share_of_traced_wall": 0.012398660036622143,
+  "control_seconds": 22.647202083,
+  "traced_seconds": 42.695174917
+}

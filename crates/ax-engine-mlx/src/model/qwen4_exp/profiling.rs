@@ -158,6 +158,7 @@ pub(crate) fn begin_chunk(offset: usize, len: usize) {
     DUMP_CHUNK_LEN.set(len);
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
+            capture.layer = None;
             capture.previous = Instant::now();
             capture.previous_ops = mlx_sys::op_count_snapshot();
         }
@@ -1117,9 +1118,22 @@ fn run_chunked_prefill(
     chunk_size: usize,
     capture: bool,
 ) -> ChunkedPrefillTiming {
+    let plan = chunk_ranges(tokens.len(), chunk_size)
+        .into_iter()
+        .map(|(start, end)| (start, end, LogitRows::All))
+        .collect::<Vec<_>>();
+    run_prefill_plan(trunk, tokens, owner, &plan, capture)
+}
+
+fn run_prefill_plan(
+    trunk: &Qwen4ExpWeights,
+    tokens: &[u32],
+    owner: u64,
+    plan: &[(usize, usize, LogitRows)],
+    capture: bool,
+) -> ChunkedPrefillTiming {
     reset_evals();
     mlx_sys::reset_peak_memory();
-    let ranges = chunk_ranges(tokens.len(), chunk_size);
     let guard = if capture {
         CAPTURE.with_borrow_mut(|slot| {
             assert!(slot.is_none());
@@ -1139,18 +1153,21 @@ fn run_chunked_prefill(
     let wall = Instant::now();
     let mut chunk_times = Vec::new();
     let mut final_logits = None;
-    for (offset, end) in ranges {
+    for &(offset, end, rows) in plan {
+        assert_eq!(state.position(), offset);
         let chunk_start = Instant::now();
-        let output = forward(
+        let output = forward_with_rows(
             trunk,
             &tokens[offset..end],
             &state,
             owner,
             ProjectionBatchPolicy::Shared,
+            rows,
         )
         .unwrap();
         state = output.state;
         if end == tokens.len() {
+            assert_ne!(rows, LogitRows::Skip);
             final_logits = Some(output.logits);
         } else {
             drop(output.logits);
@@ -1181,6 +1198,118 @@ fn run_chunked_prefill(
         final_logits,
         final_state,
     }
+}
+
+fn physical_split_prefill_plan(prompt_len: usize) -> Vec<(usize, usize, LogitRows)> {
+    const LOGICAL_WIDTH: usize = 2048;
+    const FORWARD_WIDTH: usize = 512;
+    assert!(prompt_len > 0 && prompt_len.is_multiple_of(LOGICAL_WIDTH));
+    (0..prompt_len)
+        .step_by(LOGICAL_WIDTH)
+        .flat_map(|start| {
+            let end = start + LOGICAL_WIDTH;
+            chunk_ranges(LOGICAL_WIDTH - 1, FORWARD_WIDTH)
+                .into_iter()
+                .map(move |(from, to)| (start + from, start + to, LogitRows::Skip))
+                .chain(std::iter::once((
+                    end - 1,
+                    end,
+                    if end == prompt_len {
+                        LogitRows::Last
+                    } else {
+                        LogitRows::Skip
+                    },
+                )))
+        })
+        .collect()
+}
+
+#[test]
+fn physical_split_profile_uses_all_production_cut_boundaries() {
+    let plan = physical_split_prefill_plan(8192);
+    assert_eq!(
+        plan.iter()
+            .map(|(start, end, _)| end - start)
+            .collect::<Vec<_>>(),
+        [512, 512, 512, 511, 1].repeat(4)
+    );
+    let (sample, cache) = plan.split_last().unwrap();
+    assert_eq!(*sample, (8191, 8192, LogitRows::Last));
+    assert!(cache.iter().all(|&(_, _, rows)| rows == LogitRows::Skip));
+}
+
+#[test]
+#[ignore = "requires the pinned resident Flash Next pack; synchronized attribution only"]
+fn flash_next_physical_split_prefill_stage_profile() {
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = crate::model::ModelConfig::from_manifest(artifacts.manifest());
+    let tokens = profile_prompt_ids(artifacts.manifest().vocab_size);
+    assert_eq!(tokens.len(), 8192);
+    let plan = physical_split_prefill_plan(tokens.len());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    assert!(trunk.expert_stream.is_none());
+    let control = run_prefill_plan(trunk, &tokens, cfg.compile_cache_identity, &plan, false);
+    let traced = run_prefill_plan(trunk, &tokens, cfg.compile_cache_identity, &plan, true);
+    assert_eq!(control.final_logits.len(), cfg.vocab_size as usize);
+    assert_eq!(traced.final_logits.len(), control.final_logits.len());
+    assert!(
+        control
+            .final_logits
+            .iter()
+            .zip(&traced.final_logits)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
+    );
+    assert!(control.final_state == traced.final_state);
+    assert_eq!(control.chunks.len(), plan.len());
+    assert_eq!(traced.chunks.len(), plan.len());
+    let last_layer = trunk.layers.len().checked_sub(1).unwrap();
+    let chunks = plan
+        .iter()
+        .zip(control.chunks.iter().zip(&traced.chunks))
+        .map(
+            |(
+                &(start, end, rows),
+                (&(offset, len, untraced), &(traced_offset, traced_len, traced_wall)),
+            )| {
+                assert_eq!((start, end - start), (offset, len));
+                assert_eq!((offset, len), (traced_offset, traced_len));
+                let samples = samples_for_chunk(&traced.samples, offset, len);
+                assert!(!samples.is_empty());
+                let terminal = samples
+                    .iter()
+                    .filter(|sample| {
+                        sample.layer == Some(last_layer)
+                            && matches!(
+                                sample.stage,
+                                "attention_hc_write"
+                                    | "mlp_hc_read"
+                                    | "moe_routing"
+                                    | "moe_compute"
+                                    | "mlp_hc_write"
+                                    | "final_mixer"
+                            )
+                    })
+                    .map(|sample| sample.seconds)
+                    .sum::<f64>();
+                serde_json::json!({
+                    "offset": offset, "tokens": len, "cache_only": rows == LogitRows::Skip,
+                    "wall_seconds": untraced, "traced_wall_seconds": traced_wall,
+                    "stages": stage_totals(&samples), "terminal_stateless_stages_seconds": terminal,
+                })
+            },
+        )
+        .collect::<Vec<_>>();
+    let evidence = serde_json::json!({
+        "scope": "Resident fixed-width trunk; synchronized stage attribution only",
+        "state_and_final_logits_exact": true,
+        "control_seconds": control.seconds, "traced_seconds": traced.seconds,
+        "control_peak_bytes": control.peak_bytes, "traced_peak_bytes": traced.peak_bytes,
+        "traced_stages": stage_totals(&traced.samples), "chunks": chunks,
+    });
+    let output = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT").unwrap();
+    std::fs::write(output, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
 }
 
 #[test]
