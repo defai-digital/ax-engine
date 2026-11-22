@@ -1,0 +1,10 @@
+
+running 2 tests
+test io::tests::aligned_filtered_loader_preserves_unaligned_weights_and_owned_arrays ... ok
+test io::tests::aligned_loader_native_read_rejects_short_and_unrepresentable_ranges ... mlx error: aligned tensor payload made no page progress
+mlx error: aligned tensor payload made no page progress
+mlx error: aligned tensor range exceeds off_t
+mlx error: shape element count overflows
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out; finished in 0.07s
