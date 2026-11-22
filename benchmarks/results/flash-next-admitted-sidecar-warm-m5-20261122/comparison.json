@@ -1,0 +1,128 @@
+{
+  "ineligible_arms": [
+    "mmap-short"
+  ],
+  "per_arm": {
+    "mmap-long": {
+      "cpu_idle_after_percent": 98.5,
+      "cpu_idle_before_percent": 93.58,
+      "matched_output_ids": 448,
+      "ready_seconds": 82.35372008301783,
+      "sidecar_load_seconds": 6.450161,
+      "trunk_load_seconds": 67.235136,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.60157177318926,
+          "ttft_seconds": 1.607922
+        },
+        "512": {
+          "decode_tokens_per_second": 51.54596320283337,
+          "ttft_seconds": 0.499999
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.9192591297856,
+          "ttft_seconds": 8.72216
+        }
+      }
+    },
+    "mmap-short": {
+      "cpu_idle_after_percent": 85.49,
+      "cpu_idle_before_percent": 90.22,
+      "matched_output_ids": 448,
+      "ready_seconds": 158.33913620898966,
+      "sidecar_load_seconds": 11.990008,
+      "trunk_load_seconds": 136.857338,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 44.82275492218914,
+          "ttft_seconds": 1.740131
+        },
+        "512": {
+          "decode_tokens_per_second": 48.6820512417849,
+          "ttft_seconds": 0.552506
+        },
+        "8192": {
+          "decode_tokens_per_second": 43.20720082846323,
+          "ttft_seconds": 10.109459
+        }
+      }
+    },
+    "pread-long": {
+      "cpu_idle_after_percent": 98.98,
+      "cpu_idle_before_percent": 96.1,
+      "matched_output_ids": 448,
+      "ready_seconds": 92.44192491704598,
+      "sidecar_load_seconds": 0.523175,
+      "trunk_load_seconds": 82.996937,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.24047075891054,
+          "ttft_seconds": 1.6271
+        },
+        "512": {
+          "decode_tokens_per_second": 50.6317536226203,
+          "ttft_seconds": 0.512865
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.45161309241046,
+          "ttft_seconds": 9.076807
+        }
+      }
+    },
+    "pread-short": {
+      "cpu_idle_after_percent": 97.8,
+      "cpu_idle_before_percent": 96.12,
+      "matched_output_ids": 448,
+      "ready_seconds": 96.44978891598294,
+      "sidecar_load_seconds": 0.557777,
+      "trunk_load_seconds": 86.335451,
+      "warmed_medians": {
+        "2048": {
+          "decode_tokens_per_second": 47.47909005558117,
+          "ttft_seconds": 1.661095
+        },
+        "512": {
+          "decode_tokens_per_second": 51.538421893521615,
+          "ttft_seconds": 0.521723
+        },
+        "8192": {
+          "decode_tokens_per_second": 45.667616356667025,
+          "ttft_seconds": 9.037762
+        }
+      }
+    }
+  },
+  "timing_eligible": false,
+  "warm_candidate_to_control_ratios": {
+    "long": {
+      "2048": {
+        "decode_tokens_per_second": 0.9924140947278111,
+        "ttft_seconds": 1.0119271954734121
+      },
+      "512": {
+        "decode_tokens_per_second": 0.9822641866907084,
+        "ttft_seconds": 1.0257320514641028
+      },
+      "8192": {
+        "decode_tokens_per_second": 0.9898159063051651,
+        "ttft_seconds": 1.040660455666945
+      }
+    },
+    "short": {
+      "2048": {
+        "decode_tokens_per_second": 1.0592630938906664,
+        "ttft_seconds": 0.9545804310135271
+      },
+      "512": {
+        "decode_tokens_per_second": 1.0586739995311667,
+        "ttft_seconds": 0.9442847679482214
+      },
+      "8192": {
+        "decode_tokens_per_second": 1.0569445712989343,
+        "ttft_seconds": 0.8939906675520423
+      }
+    }
+  },
+  "warm_ratio_limits_met_numerically": false,
+  "warmed_gate_passed": false
+}
