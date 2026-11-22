@@ -1,0 +1,20 @@
+{
+  "final_logits_and_state_exact": true,
+  "normal_pressure_samples": 105,
+  "pairs": [
+    {
+      "separate_seconds": 9.496280083,
+      "shared_duration_change_percent": 6.36,
+      "shared_peak_change_bytes": 4210692,
+      "shared_seconds": 10.100227417
+    },
+    {
+      "separate_seconds": 9.936501459,
+      "shared_duration_change_percent": 2.62,
+      "shared_peak_change_bytes": -4194304,
+      "shared_seconds": 10.196540333
+    }
+  ],
+  "runtime_promotion_supported": false,
+  "shared_index_tile_reduction_percent": 50
+}

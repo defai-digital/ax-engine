@@ -1,0 +1,66 @@
+{
+  "status": "passed",
+  "test_exit": 0,
+  "result": {
+    "chunk_size": 512,
+    "final_logits_exact": true,
+    "final_state_exact": true,
+    "prompt_ids_sha256": "62d1da4209c3f8554ca966520058753099f15c00eba1169be9579d0a50aa2e6f",
+    "prompt_tokens": 8192,
+    "samples": [
+      {
+        "active_bytes_before": 73737389606,
+        "fused_takes": 864,
+        "index_mode": "separate",
+        "index_tiles": 864,
+        "peak_bytes": 79426524754,
+        "seconds": 9.496280083
+      },
+      {
+        "active_bytes_before": 73737389606,
+        "fused_takes": 864,
+        "index_mode": "shared",
+        "index_tiles": 432,
+        "peak_bytes": 79430735446,
+        "seconds": 10.100227417
+      },
+      {
+        "active_bytes_before": 73737389606,
+        "fused_takes": 864,
+        "index_mode": "shared",
+        "index_tiles": 432,
+        "peak_bytes": 79426524754,
+        "seconds": 10.196540333
+      },
+      {
+        "active_bytes_before": 73737389606,
+        "fused_takes": 864,
+        "index_mode": "separate",
+        "index_tiles": 864,
+        "peak_bytes": 79430719058,
+        "seconds": 9.936501459
+      }
+    ],
+    "scope": "Resident fused gather with separate or shared K/V index tiles"
+  },
+  "build": {
+    "commit": "ae1aec6e9e2f0fbc0c174ec86c8b9cdaaadfe513",
+    "tree": "3ed0890b80f9901143c2ae600237d7b2dc6834df",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "profile": "release-server",
+    "test_binary_sha256": "a71bc23338e77bff235d40292653ffa161718517fd8d04646caf98302da8bd50"
+  },
+  "manifest_sha256": "06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "hardware": "MacBook Pro M5 Max 128 GB, internal SSD",
+  "macos": "27.2.1",
+  "quiet": {
+    "cpu_idle_percent": 92.16,
+    "min_idle_percent": 90.0,
+    "waited_seconds": 135.6
+  },
+  "memory_samples": 105,
+  "peak_bytes": 85394530512
+}

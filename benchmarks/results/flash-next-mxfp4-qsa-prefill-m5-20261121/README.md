@@ -23,3 +23,34 @@ different greedy token sequences. The exact preset continues to use
 gathered prefill. Indexed prefill remains available through the fast preset
 or `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL=1`. The fixed workloads are a
 bounded performance and output-identity check.
+
+## Matched fused-gather follow-up
+
+The [real-pack state receipt](fused-index-pair/receipt.json) compares
+separate and shared K/V indices inside the same fused gathered route.
+The isolated `ae1aec6e9` probe used the same pinned model and software
+on the hardware described above. It ran an 8,192-token prompt in
+512-token chunks, starting each arm from fresh request state. All
+final logits and serialized request state matched bitwise. Each arm
+retained 864 fused takes. Sharing reduced explicit index tile creations
+from 864 to 432. All 105 host pressure samples were normal.
+
+| Order | Separate indices | Shared indices | Shared time change |
+| --- | ---: | ---: | ---: |
+| Separate, then shared | 9.496 s | 10.100 s | +6.36% |
+| Shared, then separate | 9.937 s | 10.197 s | +2.62% |
+
+Peak MLX allocation moved by about 4 MiB in opposite directions across
+the two pairs. The change stays in the experimental branch. These
+times cover prefill on one prompt inside an isolated Rust test. The
+earlier numbers above measure client-observed TTFT on a different
+attention route.
+
+The [probe patch](fused-index-pair/source.patch.gz) applies to
+`48065875512b8069fce51d9f1ab64b748a85f152`. Replay the receipt against
+its test output, run metadata, and pressure samples from the repository
+root.
+
+```bash
+python3 benchmarks/results/flash-next-mxfp4-qsa-prefill-m5-20261121/fused-index-pair/replay.py
+```
