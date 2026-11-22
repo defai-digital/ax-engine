@@ -1,0 +1,39 @@
+{
+  "matched_trials": 8,
+  "member_bytes": 5283244832,
+  "observations": {
+    "buffered-reader": {
+      "buffered": {
+        "checksum_seconds_median": 2.6018700000131503,
+        "resident_fractions": [
+          1.0,
+          1.0
+        ]
+      },
+      "no-cache": {
+        "checksum_seconds_median": 3.447424832964316,
+        "resident_fractions": [
+          0.7499255730872283,
+          0.7499255730872283
+        ]
+      }
+    },
+    "page-aligned": {
+      "buffered": {
+        "checksum_seconds_median": 2.6260565830161795,
+        "resident_fractions": [
+          1.0,
+          1.0
+        ]
+      },
+      "no-cache": {
+        "checksum_seconds_median": 3.2112206040183082,
+        "resident_fractions": [
+          0.0,
+          0.0
+        ]
+      }
+    }
+  },
+  "publisher_sha256": "56ce0dc32dd9b0befd235961a2c565686ba501d0689c5e9e56e48070e7761e60"
+}

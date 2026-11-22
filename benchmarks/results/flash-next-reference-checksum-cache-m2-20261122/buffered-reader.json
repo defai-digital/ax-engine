@@ -1,0 +1,84 @@
+{
+  "scope": "Publisher SHA-256 and file-page residency only",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "member": "model-00001-of-00025.safetensors",
+  "page_size": 16384,
+  "read_chunk_bytes": 4194304,
+  "hardware": "Mac Studio M2 Ultra 192 GB, internal SSD",
+  "macos": "27.2.1",
+  "trials": [
+    {
+      "number": 0,
+      "mode": "buffered",
+      "file_pages": 322464,
+      "resident_pages_before": 0,
+      "resident_pages_after": 322464,
+      "bytes": 5283244832,
+      "sha256": "56ce0dc32dd9b0befd235961a2c565686ba501d0689c5e9e56e48070e7761e60",
+      "checksum_seconds": 2.6098840420600027,
+      "sampled_pressure": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "number": 1,
+      "mode": "no-cache",
+      "file_pages": 322464,
+      "resident_pages_before": 0,
+      "resident_pages_after": 241824,
+      "bytes": 5283244832,
+      "sha256": "56ce0dc32dd9b0befd235961a2c565686ba501d0689c5e9e56e48070e7761e60",
+      "checksum_seconds": 3.444585332996212,
+      "sampled_pressure": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "number": 2,
+      "mode": "no-cache",
+      "file_pages": 322464,
+      "resident_pages_before": 0,
+      "resident_pages_after": 241824,
+      "bytes": 5283244832,
+      "sha256": "56ce0dc32dd9b0befd235961a2c565686ba501d0689c5e9e56e48070e7761e60",
+      "checksum_seconds": 3.45026433293242,
+      "sampled_pressure": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "number": 3,
+      "mode": "buffered",
+      "file_pages": 322464,
+      "resident_pages_before": 0,
+      "resident_pages_after": 322464,
+      "bytes": 5283244832,
+      "sha256": "56ce0dc32dd9b0befd235961a2c565686ba501d0689c5e9e56e48070e7761e60",
+      "checksum_seconds": 2.593855957966298,
+      "sampled_pressure": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}
