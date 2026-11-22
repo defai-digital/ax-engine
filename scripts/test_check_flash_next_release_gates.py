@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from hashlib import sha256
 import importlib.util
 import json
 from pathlib import Path
@@ -99,6 +100,7 @@ def good():
                 "verification": {"members_verified": 49, "bytes_verified": 132261877478,
                                  "all_sizes_and_sha256_match": True, "native_manifest_runtime_ready": True},
                 "native_support": {"passed": True, "modes": ["disabled", "required", "default"],
+                                   "page_cache": "not controlled",
                                    "readiness_seconds": {"disabled": 120.0, "required": 70.0,
                                                          "default": 40.0}}}
     return {"delivery": delivery, "qa": qa, "lifecycle": lifecycle, "matrix": matrix, "reference": reference}
@@ -109,10 +111,21 @@ def raw_repeats(results):
             for mode, run in results["matrix"]["runs"].items()}
 
 
+def raw_delivery_controls(delivery):
+    support = delivery["native_support"]
+    controls = {key: delivery.get(key) for key in ("server_sha256", "inventory_sha256", "revision")}
+    controls.update(functional_controls_passed=support["passed"], modes=support["modes"],
+                    readiness_seconds=support["readiness_seconds"], page_cache=support.get("page_cache"))
+    raw = json.dumps(controls).encode()
+    support["result_sha256"] = sha256(raw).hexdigest()
+    return raw
+
+
 def verdict(results, repeats=None):
     if repeats is None:
         repeats = raw_repeats(results)
-    return mod.evaluate(results, TH, qualify.contract(), repeats)
+    controls = raw_delivery_controls(results["delivery"])
+    return mod.evaluate(results, TH, qualify.contract(), repeats, controls)
 
 
 def failed(results):
@@ -284,7 +297,7 @@ class ReleaseGateTests(unittest.TestCase):
         for invalid_modes in (1, {"disabled": True, "default": True, "required": True}):
             r = good()
             r["delivery"]["native_support"]["modes"] = invalid_modes
-            self.assertEqual(failed(r), {"delivery", "readiness", "mtp_policy"})
+            self.assertEqual(failed(r), {"delivery", "readiness", "integrity", "mtp_policy"})
         r = good()
         r["delivery"]["native_support"]["modes"] = ["disabled", "default", "default"]
         self.assertEqual(failed(r), {"delivery", "readiness"})
@@ -300,6 +313,49 @@ class ReleaseGateTests(unittest.TestCase):
                          {"delivery", "readiness"})
         readiness = next(g for g in result["gates"] if g["gate"] == "readiness")
         self.assertIn("delivered default readiness 157.292s exceeds 120s", readiness["detail"])
+
+    def test_delivery_summary_cannot_replace_raw_readiness(self):
+        r = good()
+        support = r["delivery"]["native_support"]
+        support["readiness_seconds"]["default"] = 157.292
+        raw = raw_delivery_controls(r["delivery"])
+        support["readiness_seconds"]["default"] = 100.0
+        result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), raw)
+        errors = {g["gate"]: g["detail"] for g in result["gates"] if not g["passed"]}
+        self.assertEqual(set(errors), {"integrity"})
+        self.assertIn("raw native controls differ from the delivery summary", errors["integrity"])
+
+    def test_raw_delivery_controls_require_original_bytes_and_runtime_identity(self):
+        r = good()
+        delivery = r["delivery"]
+        raw = raw_delivery_controls(delivery)
+        with self.subTest(mutation="missing"):
+            result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), None)
+            errors = {g["gate"]: g["detail"] for g in result["gates"] if not g["passed"]}
+            self.assertEqual(errors, {"integrity": "delivery: missing raw native controls"})
+        with self.subTest(mutation="duplicate field"):
+            duplicate = b'{"revision":"one","revision":"two"}'
+            self.assertEqual(mod.delivery_control_problems(delivery, duplicate),
+                             ["delivery: invalid raw native controls"])
+        with self.subTest(mutation="different bytes"):
+            self.assertIn("SHA-256 differs", mod.delivery_control_problems(delivery, raw + b"\n")[0])
+        with self.subTest(mutation="missing projected fields"):
+            self.assertEqual(mod.delivery_control_problems(delivery, b"{}"),
+                             ["delivery: invalid raw native control summary"])
+        for key in ("server_sha256", "inventory_sha256", "revision"):
+            with self.subTest(mutation=key):
+                controls = json.loads(raw)
+                controls[key] = "changed"
+                other = json.dumps(controls).encode()
+                delivery["native_support"]["result_sha256"] = sha256(other).hexdigest()
+                self.assertEqual(mod.delivery_control_problems(delivery, other),
+                                 ["delivery: raw native controls differ in server, inventory or revision"])
+        with self.subTest(mutation="non-object delivery summary"):
+            delivery["native_support"] = ["invalid"]
+            result = mod.evaluate(r, TH, qualify.contract(), raw_repeats(r), raw)
+            self.assertFalse(result["release_ready"])
+            integrity = next(g for g in result["gates"] if g["gate"] == "integrity")
+            self.assertIn("raw native controls differ from the delivery summary", integrity["detail"])
 
     def test_reference_relative_bounds_apply_to_both_ax_arms_and_every_length(self):
         r = good()
@@ -543,7 +599,7 @@ class ReleaseGateTests(unittest.TestCase):
         integrity = next(g for g in result["gates"] if g["gate"] == "integrity")
         self.assertIn("selected run differs", integrity["detail"])
 
-    def test_signed_evidence_replays_with_a_raw_repeat_digest(self):
+    def test_signed_evidence_replays_with_raw_delivery_and_matrix_digests(self):
         root = SIGNED_REFERENCE.parent.parent
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "verdict.json"
@@ -553,6 +609,8 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertTrue(result["release_ready"])
             self.assertEqual(result["evidence_sha256"]["matrix_raw"],
                              mod.sha256_file(root / mod.MATRIX_REPEATS_FILE))
+            self.assertEqual(result["evidence_sha256"]["delivery_controls"],
+                             mod.sha256_file(root / mod.DELIVERY_CONTROLS_FILE))
 
     def test_cli_records_failed_integrity_for_missing_or_malformed_raw_repeats(self):
         archive = SIGNED_REFERENCE.parent.parent
@@ -565,6 +623,9 @@ class ReleaseGateTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir()
                 path.symlink_to(archive / name)
+            controls = root / mod.DELIVERY_CONTROLS_FILE
+            controls.parent.mkdir()
+            controls.symlink_to(archive / mod.DELIVERY_CONTROLS_FILE)
             raw = root / mod.MATRIX_REPEATS_FILE
             for label, data in (("missing", None), ("duplicate", duplicate),
                                 ("deeply nested", b"[" * 4_000 + b"0" + b"]" * 4_000)):
@@ -614,7 +675,7 @@ class ReleaseGateTests(unittest.TestCase):
         bad = copy.deepcopy(qualify.contract())
         bad["mtp_certification"]["MTP-P"] = "passed"
         r = good()
-        result = mod.evaluate(r, TH, bad, raw_repeats(r))
+        result = mod.evaluate(r, TH, bad, raw_repeats(r), raw_delivery_controls(r["delivery"]))
         self.assertEqual({g["gate"] for g in result["gates"] if not g["passed"]}, {"mtp_policy"})
 
     def test_frozen_thresholds_match_the_documented_scope(self):

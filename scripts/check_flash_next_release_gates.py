@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Evaluate the Flash Next direct-default release gates from recorded evidence.
 
-Reads the result files produced by the delivery, QA, lifecycle, generate-matrix
-and reference harnesses, the raw matrix repeats and the frozen thresholds in
-`flash_next_release_thresholds.json`, and reports one pass/fail line per gate.
+Reads the delivery, QA, lifecycle, generate-matrix and reference results,
+the raw delivery controls and matrix repeats, and the frozen thresholds in
+`flash_next_release_thresholds.json`. Reports one pass/fail line per gate.
 Nothing here runs a model. The verdict covers only the stated release scope:
 direct decoding is the default, model MTP stays an explicit experimental
 opt-in, and MTP-S, MTP-P and MTP-D remain `not_assessed`.
@@ -63,6 +63,7 @@ RESULT_FILES = {"delivery": "delivery/result.json", "qa": "qa/result.json",
                 "lifecycle": "lifecycle/result.json", "matrix": "generate-matrix/result.json",
                 "reference": "reference/result.json"}
 MATRIX_REPEATS_FILE = "generate-matrix/raw-runs.json"
+DELIVERY_CONTROLS_FILE = "delivery/native-support/result.json"
 
 
 def gate(name: str, passed: bool, detail: str, **data: Any) -> dict[str, Any]:
@@ -82,15 +83,49 @@ def positive_measurement(value: Any) -> bool:
     return type(value) in (int, float) and 0 < value <= sys.float_info.max
 
 
+def delivered_support(delivery: dict[str, Any]) -> dict[str, Any]:
+    support = delivery.get("native_support")
+    return support if isinstance(support, dict) else {}
+
+
 def delivered_modes(delivery: dict[str, Any]) -> list[str]:
-    modes = (delivery.get("native_support") or {}).get("modes")
+    modes = delivered_support(delivery).get("modes")
     return modes if isinstance(modes, list) and all(isinstance(mode, str) for mode in modes) else []
+
+
+def delivery_control_problems(delivery: dict[str, Any], raw: bytes | None) -> list[str]:
+    if raw is None:
+        return ["delivery: missing raw native controls"]
+    try:
+        controls = json.loads(raw, object_pairs_hook=unique_json_members)
+    except (ValueError, RecursionError):
+        return ["delivery: invalid raw native controls"]
+    if not isinstance(controls, dict):
+        return ["delivery: invalid raw native controls"]
+
+    support = delivered_support(delivery)
+    fields = {"passed": "functional_controls_passed", "modes": "modes",
+              "readiness_seconds": "readiness_seconds", "page_cache": "page_cache"}
+    projected = {key: controls.get(source) for key, source in fields.items()}
+    if (type(projected["passed"]) is not bool or not isinstance(projected["modes"], list)
+            or not isinstance(projected["readiness_seconds"], dict)
+            or not isinstance(projected["page_cache"], str)):
+        return ["delivery: invalid raw native control summary"]
+    problems = []
+    if support.get("result_sha256") != hashlib.sha256(raw).hexdigest():
+        problems.append("delivery: raw native control SHA-256 differs from the delivery receipt")
+    recorded = {key: support.get(key) for key in fields}
+    if json.dumps(projected, sort_keys=True) != json.dumps(recorded, sort_keys=True):
+        problems.append("delivery: raw native controls differ from the delivery summary")
+    if any(controls.get(key) != delivery.get(key) for key in ("server_sha256", "inventory_sha256", "revision")):
+        problems.append("delivery: raw native controls differ in server, inventory or revision")
+    return problems
 
 
 def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str, Any]]:
     spec, target = th["delivery"], th["target"]
     verification = delivery.get("verification") or {}
-    support = delivery.get("native_support") or {}
+    support = delivered_support(delivery)
     problems = []
     if not delivery.get("completed"):
         problems.append("delivery did not complete")
@@ -107,7 +142,7 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
     if not verification.get("native_manifest_runtime_ready"):
         problems.append("generated native manifest is not runtime ready")
     if delivered_modes(delivery) != spec["functional_controls_on_delivered_copy"] \
-            or not support.get("passed"):
+            or support.get("passed") is not True:
         problems.append("functional controls did not pass in the required delivery order")
     attempts = delivery.get("previous_attempts") or []
     resumed = f" after {len(attempts)} failed attempt(s) that were resumed" if attempts else ""
@@ -123,7 +158,7 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
 def gate_readiness(delivery: dict[str, Any], runs: list[tuple[str, Any]],
                    th: dict[str, Any]) -> list[dict[str, Any]]:
     spec = th["readiness"]
-    support = delivery.get("native_support") or {}
+    support = delivered_support(delivery)
     recorded = support.get("readiness_seconds")
     delivered = {mode: seconds if positive_measurement(seconds) else None
                  for mode, seconds in recorded.items()} if isinstance(recorded, dict) else {}
@@ -473,8 +508,8 @@ def matrix_repeat_score(run: Any, selected: dict[str, Any], mode: str) -> float 
 
 
 def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any],
-                   matrix_repeats: Any) -> list[dict[str, Any]]:
-    problems = []
+                   matrix_repeats: Any, delivery_controls: bytes | None) -> list[dict[str, Any]]:
+    problems = delivery_control_problems(results["delivery"], delivery_controls)
     for digest_key, names in (("server_sha256", ("delivery", "qa", "lifecycle", "matrix")),
                               ("inventory_sha256", RESULT_FILES)):
         digests = {name: results[name].get(digest_key) for name in names}
@@ -547,14 +582,14 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any],
 
 
 def evaluate(results: dict[str, dict[str, Any]], th: dict[str, Any],
-             contract: dict[str, Any], matrix_repeats: Any) -> dict[str, Any]:
+             contract: dict[str, Any], matrix_repeats: Any, delivery_controls: bytes | None) -> dict[str, Any]:
     qa, lifecycle, matrix = results["qa"], results["lifecycle"], results["matrix"]
     reference, delivery = results["reference"], results["delivery"]
     runs = [(f"qa/{mode}", qa["summary"]["modes"][mode].get("ready_seconds")) for mode in AX_ARMS]
     runs += [(f"lifecycle/{run['mode']}", run.get("ready_seconds")) for run in lifecycle.get("runs", [])
              if run["mode"] in AX_ARMS]
     runs += [(f"matrix/{mode}", matrix["runs"][mode].get("ready_seconds")) for mode in AX_ARMS]
-    gates = [*gate_delivery(delivery, th), *gate_integrity(results, th, matrix_repeats),
+    gates = [*gate_delivery(delivery, th), *gate_integrity(results, th, matrix_repeats, delivery_controls),
              *gate_quality(qa, reference, th),
              *gate_lifecycle(lifecycle, th), *gate_memory(qa, th), *gate_readiness(delivery, runs, th),
              *gate_long_lookup(qa, th), *gate_reference_relative(matrix, reference, th),
@@ -573,7 +608,7 @@ def source_state() -> dict[str, Any]:
 def unique_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     decoded = dict(pairs)
     if len(decoded) != len(pairs):
-        raise ValueError("duplicate member in raw matrix evidence")
+        raise ValueError("duplicate member in raw evidence")
     return decoded
 
 
@@ -599,7 +634,11 @@ def main() -> int:
         matrix_repeats = json.loads(inputs["matrix_raw"], object_pairs_hook=unique_json_members)
     except (OSError, ValueError, RecursionError):
         matrix_repeats = None
-    verdict = evaluate(results, th, qualify.contract(), matrix_repeats)
+    try:
+        inputs["delivery_controls"] = (args.evidence_dir / DELIVERY_CONTROLS_FILE).read_bytes()
+    except OSError:
+        pass
+    verdict = evaluate(results, th, qualify.contract(), matrix_repeats, inputs.get("delivery_controls"))
     verdict.update(
         schema=qualify.RELEASE_VERDICT_SCHEMA, release_scope=th["release_scope"],
         pack_revision=th["target"]["pack_revision"], thresholds_sha256=sha256_file(args.thresholds),
