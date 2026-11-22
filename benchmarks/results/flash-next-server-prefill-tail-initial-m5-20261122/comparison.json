@@ -1,0 +1,97 @@
+{
+  "arms": {
+    "held-1": {
+      "burst_output_tokens_per_second": 14.200084422108628,
+      "client_dispatch_delay_ms": 0.041624996811151505,
+      "cpu_idle_percent": [
+        98.37,
+        98.61
+      ],
+      "held_decode_steps": 1,
+      "long_trigger_ttft_ms": 9206.174582999665,
+      "matching_output_ids": 192,
+      "peak_process_footprint_bytes": 81190654752,
+      "prefill_overlapped": false,
+      "pressure_samples": {
+        "1": 132
+      },
+      "short_tail_max_gap_ms": 22.725374961737543,
+      "timing_eligible": true
+    },
+    "held-2": {
+      "burst_output_tokens_per_second": 14.083828395327656,
+      "client_dispatch_delay_ms": 0.08470902685075998,
+      "cpu_idle_percent": [
+        97.12,
+        91.15
+      ],
+      "held_decode_steps": 1,
+      "long_trigger_ttft_ms": 9245.676584017929,
+      "matching_output_ids": 192,
+      "peak_process_footprint_bytes": 81106097024,
+      "prefill_overlapped": false,
+      "pressure_samples": {
+        "1": 133
+      },
+      "short_tail_max_gap_ms": 22.88883301662281,
+      "timing_eligible": true
+    },
+    "physical-1": {
+      "burst_output_tokens_per_second": 12.612733697688995,
+      "client_dispatch_delay_ms": 0.049458001740276814,
+      "cpu_idle_percent": [
+        91.36,
+        98.62
+      ],
+      "held_decode_steps": 0,
+      "long_trigger_ttft_ms": 10867.999415961094,
+      "matching_output_ids": 192,
+      "peak_process_footprint_bytes": 80325677904,
+      "prefill_overlapped": true,
+      "pressure_samples": {
+        "1": 164
+      },
+      "short_tail_max_gap_ms": 860.0476249703206,
+      "timing_eligible": true
+    },
+    "physical-2": {
+      "burst_output_tokens_per_second": 12.926978151465052,
+      "client_dispatch_delay_ms": 0.047124980483204126,
+      "cpu_idle_percent": [
+        92.89,
+        88.48
+      ],
+      "held_decode_steps": 0,
+      "long_trigger_ttft_ms": 10400.734707945958,
+      "matching_output_ids": 192,
+      "peak_process_footprint_bytes": 80413954848,
+      "prefill_overlapped": true,
+      "pressure_samples": {
+        "1": 134
+      },
+      "short_tail_max_gap_ms": 740.6695000245236,
+      "timing_eligible": false
+    }
+  },
+  "matched_output_ids": 768,
+  "qualification": false,
+  "runtime_commit": "fce5959de69dec8d499673ce401b9c18ecbbe93a",
+  "scope": "M5 ordered serving comparison",
+  "terminal_status": 0,
+  "timing_eligible_pairs": {
+    "1": {
+      "burst_output_tokens_per_second": [
+        12.612733697688995,
+        14.200084422108628
+      ],
+      "long_trigger_ttft_ms": [
+        10867.999415961094,
+        9206.174582999665
+      ],
+      "short_tail_max_gap_ms": [
+        860.0476249703206,
+        22.725374961737543
+      ]
+    }
+  }
+}
