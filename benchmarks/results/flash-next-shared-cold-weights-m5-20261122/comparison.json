@@ -1,0 +1,11 @@
+{
+  "scope": "native functional concurrent cold initializations",
+  "qualification": false,
+  "same_binary_as_m2": true,
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "native_runners": 2,
+  "shared_weight_allocations": 1,
+  "matching_output_ids_per_runner": 8,
+  "normal_pressure_samples": 44,
+  "observed_test_duration_s": 128.71
+}
