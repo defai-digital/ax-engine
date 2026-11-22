@@ -1,0 +1,55 @@
+{
+  "all_publisher_members_verified": 49,
+  "arms": {
+    "default-mapped": {
+      "prefetch_seconds": 0,
+      "ready_seconds": 28.324,
+      "sidecar_seconds": 1.426729,
+      "trunk_seconds": 9.961406,
+      "verified_steps": 0.0
+    },
+    "default-prefetch": {
+      "prefetch_seconds": 0.332151375,
+      "ready_seconds": 255.842,
+      "sidecar_seconds": 1.143536,
+      "trunk_seconds": 240.848131,
+      "verified_steps": 0.0
+    },
+    "required-mapped": {
+      "prefetch_seconds": 0,
+      "ready_seconds": 282.979,
+      "sidecar_seconds": 18.869255,
+      "trunk_seconds": 248.626881,
+      "verified_steps": 107.0
+    },
+    "required-prefetch": {
+      "prefetch_seconds": 0.330851042,
+      "ready_seconds": 268.125,
+      "sidecar_seconds": 1.136438,
+      "trunk_seconds": 252.587554,
+      "verified_steps": 107.0
+    }
+  },
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "driver_sha256": "0378bc85bd660d7e191860ff337fe3da0527365224d54449f1ad05101d24ff91",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "runtime_base": "192d515bc7a3fa15648d17137fca00399b0722e5",
+    "runtime_diff_sha256": "5a7e98759fcbef25e73f9f67f8cfd27bfc0b3767aa06d17e1f42d702d0af5e5a",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "41d3fcfd63cf2543ff45cd70f3b8ad6bd129e41329ec8dcb1988be6c679808d9"
+  },
+  "completed_controls": 28,
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "matching_paired_controls": 14,
+  "qualification": false,
+  "required_skip": {
+    "activation_error": true,
+    "exit_code": 1,
+    "seconds": 0.4165143750142306
+  }
+}
