@@ -1,0 +1,138 @@
+{
+  "scope": "M5 Flash Next startup attribution; diagnostic only",
+  "source": {
+    "commit": "426f64829e4c8cc7dadbd0a5699b9528f55e209b",
+    "tree": "1849bd934a14af3aca255205c19ffb4c35e9f41a",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "profile": "release-server",
+    "mlx": "0.32.4",
+    "server_sha256": "680dd53dc314e565bbcf0156bc6673dc6e0922e1fdf48492146cf8ee7d649859",
+    "trace_filter": "info,ax_engine_mlx::flash_next_startup=debug"
+  },
+  "terminal_sha256": "d4646afd9c4414672544843ce3d0a0ff3a885cd12810000e0de316deace09c28",
+  "matched_http_controls": 28,
+  "selection_control_sha256": "7c897171b372eea008611ec23ccea62c971c43a1b62ad684fb60209b16d433e1",
+  "starts": {
+    "disabled-first/disabled": {
+      "http_ready_seconds": 79.349,
+      "plan_to_kernel_warm_seconds": 70.741073,
+      "weight_log_to_kernel_warm_seconds": 0.011146,
+      "resident": {
+        "scope_us": 58997970,
+        "selection_us": 12477,
+        "shard_copy_and_allocation_us": 58984072,
+        "shard_sync_eval_us": 461,
+        "unattributed_us": 960
+      },
+      "serial_weight_phases_us": {
+        "trunk_admission": 21375,
+        "resident_tensors": 58997970,
+        "trunk_weight_contract": 801264,
+        "trunk_assembly": 13871,
+        "mtp_sidecar": 10896138,
+        "vision_tower": 53
+      },
+      "post_admission_to_weight_log_seconds": 70.709788,
+      "post_admission_to_weight_log_unattributed_us": 492,
+      "system_vm_delta_bytes_before_launch_to_readiness": {
+        "Pageins": 38120194048,
+        "Pageouts": 49152,
+        "Swapins": 1267499008,
+        "Swapouts": 345702400,
+        "Pages free": 989364224,
+        "Pages occupied by compressor": 484671488
+      }
+    },
+    "disabled-first/default": {
+      "http_ready_seconds": 99.447,
+      "plan_to_kernel_warm_seconds": 91.099855,
+      "weight_log_to_kernel_warm_seconds": 0.007235,
+      "resident": {
+        "scope_us": 79680195,
+        "selection_us": 11993,
+        "shard_copy_and_allocation_us": 79667014,
+        "shard_sync_eval_us": 179,
+        "unattributed_us": 1009
+      },
+      "serial_weight_phases_us": {
+        "trunk_admission": 20593,
+        "resident_tensors": 79680195,
+        "trunk_weight_contract": 758191,
+        "trunk_assembly": 8925,
+        "mtp_sidecar": 10625146,
+        "vision_tower": 41
+      },
+      "post_admission_to_weight_log_seconds": 91.073097,
+      "post_admission_to_weight_log_unattributed_us": 599,
+      "system_vm_delta_bytes_before_launch_to_readiness": {
+        "Pageins": 70894682112,
+        "Pageouts": 32768,
+        "Swapins": 630226944,
+        "Swapouts": 0,
+        "Pages free": -75551129600,
+        "Pages occupied by compressor": 320913408
+      }
+    },
+    "default-first/default": {
+      "http_ready_seconds": 84.358,
+      "plan_to_kernel_warm_seconds": 76.033956,
+      "weight_log_to_kernel_warm_seconds": 0.009117,
+      "resident": {
+        "scope_us": 64635790,
+        "selection_us": 12160,
+        "shard_copy_and_allocation_us": 64622282,
+        "shard_sync_eval_us": 352,
+        "unattributed_us": 996
+      },
+      "serial_weight_phases_us": {
+        "trunk_admission": 22180,
+        "resident_tensors": 64635790,
+        "trunk_weight_contract": 710358,
+        "trunk_assembly": 12030,
+        "mtp_sidecar": 10645212,
+        "vision_tower": 31
+      },
+      "post_admission_to_weight_log_seconds": 76.003965,
+      "post_admission_to_weight_log_unattributed_us": 544,
+      "system_vm_delta_bytes_before_launch_to_readiness": {
+        "Pageins": 41213050880,
+        "Pageouts": 0,
+        "Swapins": 703938560,
+        "Swapouts": 268435456,
+        "Pages free": 389677056,
+        "Pages occupied by compressor": 114720768
+      }
+    },
+    "default-first/disabled": {
+      "http_ready_seconds": 108.491,
+      "plan_to_kernel_warm_seconds": 100.745585,
+      "weight_log_to_kernel_warm_seconds": 0.007025,
+      "resident": {
+        "scope_us": 88616497,
+        "selection_us": 12465,
+        "shard_copy_and_allocation_us": 88602799,
+        "shard_sync_eval_us": 163,
+        "unattributed_us": 1070
+      },
+      "serial_weight_phases_us": {
+        "trunk_admission": 21318,
+        "resident_tensors": 88616497,
+        "trunk_weight_contract": 689636,
+        "trunk_assembly": 8712,
+        "mtp_sidecar": 11402963,
+        "vision_tower": 27
+      },
+      "post_admission_to_weight_log_seconds": 100.718471,
+      "post_admission_to_weight_log_unattributed_us": 636,
+      "system_vm_delta_bytes_before_launch_to_readiness": {
+        "Pageins": 75579801600,
+        "Pageouts": 0,
+        "Swapins": 39452672,
+        "Swapouts": 0,
+        "Pages free": -75855265792,
+        "Pages occupied by compressor": 7471104
+      }
+    }
+  }
+}
