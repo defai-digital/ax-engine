@@ -918,9 +918,11 @@ fn flash_next_real_concurrent_cold_runners_share_weights() {
 
     let shared = MlxSharedWeightsCell::new();
     let starting = std::sync::Barrier::new(2);
-    let prompt = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-    let run = |id| {
-        starting.wait();
+    let prompts = [
+        [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        [9216, 317, 1645, 220, 48, 872, 1436, 512, 562],
+    ];
+    let run = |prompt: &[u32]| {
         let mut runner = MlxRunner::from_artifacts_with_session_budget(
             &artifacts,
             2048,
@@ -934,20 +936,36 @@ fn flash_next_real_concurrent_cold_runners_share_weights() {
         .unwrap();
         runner.set_mtp_requested(false);
         assert!(!runner.native_expert_streaming_active());
-        let output = generate(&runner, &prompt, 2048, context(id, prompt.len(), 8));
+        // Independent sessions can assign the same request ID.
+        let output = generate(&runner, prompt, 2048, context(1, prompt.len(), 8));
         assert_eq!(output.tokens.len(), 8);
         (Arc::clone(&runner.weights), output.tokens)
     };
     let (first, second) = std::thread::scope(|scope| {
-        let first = scope.spawn(|| run(1));
-        let second = scope.spawn(|| run(2));
+        let first = scope.spawn(|| {
+            starting.wait();
+            run(&prompts[0])
+        });
+        let second = scope.spawn(|| {
+            starting.wait();
+            run(&prompts[1])
+        });
         (first.join().unwrap(), second.join().unwrap())
     });
     assert!(Arc::ptr_eq(&first.0, &second.0));
     assert_eq!(shared.cached_flash_next_drafter(), Some(true));
-    assert_eq!(first.1, second.1);
+    let first_solo = run(&prompts[0]);
+    let second_solo = run(&prompts[1]);
+    assert!(Arc::ptr_eq(&first.0, &first_solo.0));
+    assert!(Arc::ptr_eq(&first.0, &second_solo.0));
+    assert_ne!(
+        first_solo.1, second_solo.1,
+        "the two prompts must distinguish the session trajectories"
+    );
+    assert_eq!(first.1, first_solo.1);
+    assert_eq!(second.1, second_solo.1);
     println!(
-        "Two independent Flash Next runners share one weight allocation and match all output IDs."
+        "Two cold Flash Next runners share weights and match distinct solo trajectories at the same request ID."
     );
 }
 
