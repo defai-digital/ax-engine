@@ -14,6 +14,7 @@ INV = '97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6'
 GRAPH_SHA = 'bbc459b8456395d817dd0f4a3a9f1b8adaa2763b10897e7f261f6483623c5d33'
 FROZEN_SHA = 'f92c9e04a94b0a0a681a7820b780847cba433bc5bbcadf483a516cbecc3a3221'
 NATIVE_MANIFEST_SHA = '06cc592252dfe740b078519091995e706f2a3ae4b2e8b863720bea179d7d0e76'
+INPUT_MANIFEST_SHA = 'b50899fa9b4ac95a73846c13374d30479d9173d3f3cd6e95553cbf0300716253'
 REFERENCE_COMMIT = '6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb'
 REVISION = 'ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3'
 DIAGNOSTIC_INPUTS = ('checksum_ledger.py', 'clean_state.py', 'frozen_progress.py',
@@ -65,8 +66,8 @@ def audit(archive, label, mode, packaged, publisher, batches):
         assert row['mode'] == mode and expected['sha256'] == row['sha256']
         assert expected['size'] == row['file_bytes']
         assert row['file_pages'] == (row['file_bytes'] + PAGE_SIZE - 1) // PAGE_SIZE
-        assert 0 <= row['cached_before'] <= row['file_pages']
-        assert 0 <= row['cached_after'] <= row['file_pages']
+        assert row['cached_before'] == 0
+        assert row['cached_after'] == (0 if mode == 'no-cache' else row['file_pages'])
         assert row['checksum_seconds'] > 0 and isfinite(row['checksum_seconds'])
         check_vm(row['vm_before'])
         check_vm(row['vm_after'])
@@ -84,26 +85,27 @@ def audit(archive, label, mode, packaged, publisher, batches):
                 planned = batches[row['batch']]
                 assert (row['logical_bytes'], row['ple_bytes']) == (planned['logical_bytes'], planned['ple_ngram_logical_bytes'])
     pressure = [row['pressure'] for row in samples]
-    assert pressure and pressure[0] == 1
+    assert len(pressure) >= 2 and pressure[-1] == 2 and all(value == 1 for value in pressure[:-1])
+    sample_times = [row['monotonic_seconds'] for row in samples[1:]]
+    assert all(isfinite(x) for x in sample_times) and all(p < q for p, q in zip(sample_times, sample_times[1:]))
+    assert events[-1]['monotonic_seconds'] <= sample_times[-1]
     for row in samples[1:]:
         check_vm(row['vm_memory_bytes'])
-    if done['stop_reason'] is None:
-        assert done['exit_code'] == 0 and all(value == 1 for value in pressure)
-        assert events[-1]['phase'] == 'materialization_boundary'
-    else:
-        assert done['stop_reason'] == 'memory pressure above normal' and done['exit_code'] == -15
-        assert pressure[-1] == 2 and all(value == 1 for value in pressure[:-1])
-        assert not events or events[-1]['phase'] != 'materialization_boundary'
+    completed = sum(row['phase'] == 'batch_end' for row in events)
+    assert done['stop_reason'] == 'memory pressure above normal' and done['exit_code'] == -15
+    assert events[-1]['phase'] == 'batch_start' and 0 <= completed < len(batches)
+    footprint = samples[-1]['physical_footprint_bytes']
+    assert type(footprint) is int and footprint > 0
     return {'completed_payload_checksums': len(hashes), 'verified_payload_bytes': packaged['checksummed_bytes'],
             'per_file_initial_resident_pages_sum': sum(row['cached_before'] for row in hashes),
             'per_file_post_checksum_resident_pages_sum': sum(row['cached_after'] for row in hashes),
             'system_file_backed_bytes_after_last_checksum': hashes[-1]['vm_after']['File-backed pages'] if hashes else None,
-            'completed_materialization_batches': sum(row['phase'] == 'batch_end' for row in events),
+            'completed_materialization_batches': completed,
             'last_materialization_event': ({k: events[-1][k] for k in ('phase', 'batch') if k in events[-1]}
                                            if events else None),
             'terminal_pressure': pressure[-1], 'pressure_samples': len(pressure),
             'terminal_vm_bytes': samples[-1].get('vm_memory_bytes'),
-            'terminal_process_footprint_bytes': samples[-1].get('physical_footprint_bytes')}
+            'terminal_process_footprint_bytes': footprint}
 
 
 def replay(root=ROOT):
@@ -115,7 +117,9 @@ def replay(root=ROOT):
     assert sha256(raw).hexdigest() == GRAPH_SHA
     batches = json.loads(raw)['summary']['batches']
     with tarfile.open(root / 'evidence.tar.xz') as archive:
-        entries = (line.split() for line in body(archive, 'inputs.sha256').decode().splitlines())
+        inputs = body(archive, 'inputs.sha256')
+        assert sha256(inputs).hexdigest() == INPUT_MANIFEST_SHA
+        entries = (line.split() for line in inputs.decode().splitlines())
         manifest = {name: digest for digest, name in entries}
         for source in DIAGNOSTIC_INPUTS:
             assert sha256(body(archive, f'inputs/{source}')).hexdigest() == manifest[source]
@@ -130,4 +134,7 @@ def replay(root=ROOT):
 
 
 if __name__ == '__main__':
-    print(json.dumps(replay(), indent=2, sort_keys=True))
+    result = json.dumps(replay(), indent=2, sort_keys=True) + '\n'
+    if result != (ROOT / 'comparison.json').read_text():
+        raise ValueError('Replayed result differs from the published comparison')
+    print(result, end='')
