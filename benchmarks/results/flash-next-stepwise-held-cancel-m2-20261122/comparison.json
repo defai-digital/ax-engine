@@ -1,0 +1,29 @@
+{
+  "commit": "14235e84b01456cfcb40ba6fcb717ae4798fa8f7",
+  "fixed": {
+    "cancelled_output_tokens": 0,
+    "cancelled_prompt_cursor": 0,
+    "held_step_id": 211,
+    "matching_generated_ids": 192,
+    "short_tokens_at_cancellation": 85,
+    "slot_reused_while_short_active": true,
+    "third_request_http_status": 429
+  },
+  "normal_pressure_samples": 58,
+  "prior": {
+    "first_long_prefill_tokens": 512,
+    "newly_admitted_long_requests": 1,
+    "runtime_commit": "2b905c012787e84fed75961674c5dd388e34e2d8",
+    "singleton_decode_steps_without_reported_marker": 7
+  },
+  "qualification": false,
+  "scope": "M2 Ultra 192 GB stepwise HTTP held prefill cancellation",
+  "software": {
+    "python_passed": 345,
+    "python_skipped": 7,
+    "rust_failed": 0,
+    "rust_ignored": 107,
+    "rust_passed": 4791,
+    "workspace_status": 0
+  }
+}
