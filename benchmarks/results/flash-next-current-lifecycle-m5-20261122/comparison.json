@@ -1,0 +1,29 @@
+{
+  "lifecycle_gate": {
+    "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+    "gate": "lifecycle",
+    "passed": true
+  },
+  "matched_server_sha256": "a074d282b366bbb5f1ce172f5632cd793290f9396b0f3e32c9e169ea262bc9be",
+  "modes": {
+    "default": {
+      "actions_passed": 7,
+      "ready_seconds": 52.263
+    },
+    "disabled": {
+      "actions_passed": 7,
+      "ready_seconds": 59.322
+    },
+    "required": {
+      "actions_passed": 7,
+      "ready_seconds": 51.245
+    }
+  },
+  "receipt_sha256": "f6aa0a275b29b202063d070cb44976c8fdab79b0ca9013893428458e2d1b4bf8",
+  "release_ready": false,
+  "scope": "Fresh production binary lifecycle phase",
+  "timing_cpu_idle_percent": [
+    92.4,
+    97.33
+  ]
+}
