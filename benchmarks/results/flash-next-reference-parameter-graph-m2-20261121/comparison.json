@@ -1,0 +1,27 @@
+{
+  "array_count": 2326,
+  "batches_with_ple_ngram": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ],
+  "graph_sha256": "bbc459b8456395d817dd0f4a3a9f1b8adaa2763b10897e7f261f6483623c5d33",
+  "largest_logical_batch_bytes": 4925023640,
+  "logical_bytes": 126116852760,
+  "materialization_batches": 73,
+  "metadata_probe_mlx_peak_bytes": 32208,
+  "other_logical_bytes": 68516576280,
+  "ple_ngram_arrays": 384,
+  "ple_ngram_logical_bytes": 57600276480,
+  "signed_ordinary_run_peak_mlx_bytes": 130521001170
+}
