@@ -1,0 +1,127 @@
+{
+  "qualification": false,
+  "arms": {
+    "physical-1": {
+      "timing_eligible": true,
+      "idle_before_percent": 94.57,
+      "idle_after_percent": 91.3,
+      "exact_output_ids": 192,
+      "short_tail_gap_max_ms": 725.8950000395998,
+      "short_tail_gap_p95_ms": 724.5371875091223,
+      "long_offered_ttft_ms": 10239.191083004698,
+      "observed_normal_pressure_samples": 115,
+      "layer_progress_steps": 0,
+      "split_logical_chunks": 3,
+      "ordinary_logical_chunks": 1,
+      "long_scheduled_widths": [
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        2048
+      ]
+    },
+    "layers-1": {
+      "timing_eligible": false,
+      "idle_before_percent": 91.45,
+      "idle_after_percent": 85.79,
+      "exact_output_ids": 192,
+      "short_tail_gap_max_ms": 269.557541992981,
+      "short_tail_gap_p95_ms": 267.33370829897467,
+      "long_offered_ttft_ms": 9875.208790996112,
+      "observed_normal_pressure_samples": 150,
+      "layer_progress_steps": 8,
+      "split_logical_chunks": 1,
+      "ordinary_logical_chunks": 3,
+      "long_scheduled_widths": [
+        512,
+        512,
+        512,
+        511,
+        1,
+        2048,
+        2048,
+        2048
+      ]
+    },
+    "layers-2": {
+      "timing_eligible": false,
+      "idle_before_percent": 90.78,
+      "idle_after_percent": 86.85,
+      "exact_output_ids": 192,
+      "short_tail_gap_max_ms": 261.44208398181945,
+      "short_tail_gap_p95_ms": 261.19341466692276,
+      "long_offered_ttft_ms": 9682.484916993417,
+      "observed_normal_pressure_samples": 158,
+      "layer_progress_steps": 8,
+      "split_logical_chunks": 1,
+      "ordinary_logical_chunks": 3,
+      "long_scheduled_widths": [
+        512,
+        512,
+        512,
+        511,
+        1,
+        2048,
+        2048,
+        2048
+      ]
+    },
+    "physical-2": {
+      "timing_eligible": true,
+      "idle_before_percent": 90.1,
+      "idle_after_percent": 94.35,
+      "exact_output_ids": 192,
+      "short_tail_gap_max_ms": 762.7118329983205,
+      "short_tail_gap_p95_ms": 755.3976123570465,
+      "long_offered_ttft_ms": 10596.77395800827,
+      "observed_normal_pressure_samples": 144,
+      "layer_progress_steps": 0,
+      "split_logical_chunks": 3,
+      "ordinary_logical_chunks": 1,
+      "long_scheduled_widths": [
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        2048
+      ]
+    }
+  },
+  "pairs": [
+    {
+      "order": 1,
+      "timing_eligible": false,
+      "short_tail_max_gap_change_percent": -62.86549129305536,
+      "long_offered_ttft_change_percent": -3.5547953843027114
+    },
+    {
+      "order": 2,
+      "timing_eligible": false,
+      "short_tail_max_gap_change_percent": -65.72203646637338,
+      "long_offered_ttft_change_percent": -8.627994186135302
+    }
+  ]
+}
