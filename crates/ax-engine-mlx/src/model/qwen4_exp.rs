@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 use mlx_sys::eval;
+use std::borrow::Cow;
 use std::io::Read;
+use std::num::NonZeroUsize;
 
 #[cfg(test)]
 pub(crate) mod profiling;
@@ -890,6 +892,25 @@ fn forward_with_verifier_policy_rows(
     verifier_policy: ProjectionBatchPolicy,
     rows: LogitRows,
 ) -> Result<Qwen4ExpOutput, String> {
+    let hidden = prepare_text_hidden(weights, tokens, state, owner)?;
+    forward_prepared_rows(
+        weights,
+        tokens,
+        hidden,
+        state,
+        owner,
+        policy,
+        verifier_policy,
+        rows,
+    )
+}
+
+fn prepare_text_hidden(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+) -> Result<MlxArray, String> {
     if state.owner != owner || state.layers.len() != weights.layers.len() {
         return Err("qwen4_exp request state belongs to a different model".into());
     }
@@ -907,20 +928,7 @@ fn forward_with_verifier_policy_rows(
         &weights.token_embedding,
         weights.layout.hidden_size(),
     );
-    let hidden = weights
-        .layout
-        .expand(&embedded)
-        .map_err(|e| e.to_string())?;
-    forward_prepared_rows(
-        weights,
-        tokens,
-        hidden,
-        state,
-        owner,
-        policy,
-        verifier_policy,
-        rows,
-    )
+    weights.layout.expand(&embedded).map_err(|e| e.to_string())
 }
 
 fn validate_prepared_input(
@@ -1054,198 +1062,312 @@ fn forward_prepared_with_verifier_policy(
 fn forward_prepared_rows(
     weights: &Qwen4ExpWeights,
     tokens: &[u32],
-    mut hidden: MlxArray,
+    hidden: MlxArray,
     state: &Qwen4ExpState,
     owner: u64,
     policy: ProjectionBatchPolicy,
     verifier_policy: ProjectionBatchPolicy,
     rows: LogitRows,
 ) -> Result<Qwen4ExpOutput, String> {
-    let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
-    // Image requests rotate attention and QSA keys at their MRoPE positions.
-    let _media_scope = crate::qwen4_exp_qsa::scoped_media(state.media.clone());
-    #[cfg(test)]
-    profiling::begin_chunk(state.position, tokens.len());
-    #[cfg(test)]
-    profiling::mark("embedding", &[&hidden]);
-    let mut next = state.clone();
-    for (index, layer) in weights.layers.iter().enumerate() {
-        #[cfg(test)]
-        profiling::layer(index);
-        let staged = &mut next.layers[index];
-        match (&layer.ple, &mut staged.ple) {
-            (Some(ple), Some(cache)) => {
-                let lookup = ple.layout.plan(&cache.history, tokens)?;
-                #[cfg(test)]
-                profiling::mark("ngram_lookup", &[]);
-                let rows = ple.table.gather(&lookup.rows)?;
-                // Read the next prefill chunk's rows while this chunk computes.
-                if let Some(next) =
-                    lookahead::next_chunk(state.position + tokens.len(), tokens.len())
-                    && let Ok(next) = ple.layout.plan(&lookup.next_history, &next)
-                {
-                    ple.table.prefetch(next.rows);
-                }
-                #[cfg(test)]
-                {
-                    profiling::dump_ngram_lookup(tokens.len(), &lookup.rows, &rows);
-                    profiling::mark("ple_rows", &[&rows]);
-                }
-                let embeddings = reshape(
-                    &astype(&rows, hidden.dtype(), None),
-                    &[1, tokens.len() as i32, ple.embedding_width as i32],
-                    None,
-                );
-                let result = ple
-                    .operator
-                    .forward(&embeddings, &hidden, cache.conv.as_ref(), policy)
-                    .map_err(|e| e.to_string())?;
-                hidden = add(&hidden, result.delta(), None);
-                cache.conv = Some(result.next_state().clone());
-                cache.history = lookup.next_history;
-                #[cfg(test)]
-                profiling::mark("ple_operator", &[&hidden, result.next_state().array()]);
-            }
-            (None, None) => {}
-            _ => return Err(format!("qwen4_exp layer {index} PLE state mismatch")),
+    let forward = PreparedForward::new(
+        weights,
+        Cow::Borrowed(tokens),
+        hidden,
+        state,
+        owner,
+        policy,
+        verifier_policy,
+        rows,
+    )?;
+    match forward.advance(weights, owner, None)? {
+        ForwardAdvance::Complete(output) => Ok(output),
+        ForwardAdvance::Pending(forward) => Err(format!(
+            "unbounded Flash Next forward suspended at layer {}",
+            forward.layers_completed
+        )),
+    }
+}
+
+/// Owns the residual and staged cache until the last layer is evaluated. The
+/// original request cache stays at the token boundary throughout suspension.
+struct PreparedForward<'a> {
+    tokens: Cow<'a, [u32]>,
+    hidden: MlxArray,
+    next: Qwen4ExpState,
+    end: usize,
+    vocabulary: u32,
+    layers_completed: usize,
+    policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
+    rows: LogitRows,
+}
+
+enum ForwardAdvance<'a> {
+    Pending(PreparedForward<'a>),
+    Complete(Qwen4ExpOutput),
+}
+
+impl<'a> PreparedForward<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        weights: &Qwen4ExpWeights,
+        tokens: Cow<'a, [u32]>,
+        hidden: MlxArray,
+        state: &Qwen4ExpState,
+        owner: u64,
+        policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
+        rows: LogitRows,
+    ) -> Result<Self, String> {
+        let (end, vocabulary) = validate_prepared_input(weights, &tokens, &hidden, state, owner)?;
+        Ok(Self {
+            tokens,
+            hidden,
+            next: state.clone(),
+            end,
+            vocabulary,
+            layers_completed: 0,
+            policy,
+            verifier_policy,
+            rows,
+        })
+    }
+
+    /// Advancing consumes the staged graph. An evaluation error cannot leave
+    /// the caller with a partially mutated graph to retry or publish.
+    fn advance(
+        self,
+        weights: &Qwen4ExpWeights,
+        owner: u64,
+        layer_budget: Option<NonZeroUsize>,
+    ) -> Result<ForwardAdvance<'a>, String> {
+        let Self {
+            tokens,
+            mut hidden,
+            mut next,
+            end,
+            vocabulary,
+            layers_completed,
+            policy,
+            verifier_policy,
+            rows,
+        } = self;
+        if next.owner != owner || next.layers.len() != weights.layers.len() {
+            return Err("qwen4_exp staged forward belongs to a different model".into());
         }
-        let read = layer
-            .attention_hc
-            .read(&hidden, verifier_policy)
-            .map_err(|e| e.to_string())?;
-        #[cfg(test)]
-        profiling::mark("attention_hc_read", &[read.branch_input()]);
-        let delta = match (&layer.attention, &mut staged.attention) {
-            (Qwen4ExpAttentionBranch::Gdn(branch), AttentionState::Gdn(cache)) => {
-                let (delta, new_state) =
-                    branch.forward(read.branch_input(), cache.as_ref(), policy, verifier_policy)?;
-                #[cfg(test)]
-                profiling::mark("gdn", &[&delta, &new_state.conv, &new_state.recurrent]);
-                *cache = Some(new_state);
-                delta
-            }
-            (Qwen4ExpAttentionBranch::Qsa(branch), AttentionState::Qsa(cache)) => {
-                let result = branch
-                    .forward_with_verifier_policy(
-                        read.branch_input(),
-                        cache,
-                        state.position,
-                        policy,
-                        verifier_policy,
-                    )
-                    .map_err(|e| {
-                        format!(
-                            "qwen4_exp layer {index} at position {} with {} tokens: {e}; \
-                             MLX memory bytes at failure: active={:?}, cache={:?}, peak={:?}",
-                            state.position,
-                            tokens.len(),
-                            mlx_sys::device_active_bytes(),
-                            mlx_sys::device_cache_bytes(),
-                            mlx_sys::device_peak_bytes(),
-                        )
-                    })?;
-                let delta = result.delta().clone();
-                *cache = result.into_next_state();
-                #[cfg(test)]
-                {
-                    let mut arrays = vec![&delta];
-                    arrays.extend(cache.keys().arrays());
-                    arrays.extend(cache.values().arrays());
-                    arrays.extend(cache.index().keys());
-                    profiling::mark("qsa", &arrays);
-                }
-                delta
-            }
-            _ => return Err(format!("qwen4_exp layer {index} attention state mismatch")),
-        };
-        hidden = read.write(&delta).map_err(|e| e.to_string())?;
-        #[cfg(test)]
-        profiling::mark("attention_hc_write", &[&hidden]);
-        let read = layer
-            .mlp_hc
-            .read(&hidden, verifier_policy)
-            .map_err(|e| e.to_string())?;
-        #[cfg(test)]
-        profiling::mark("mlp_hc_read", &[read.branch_input()]);
-        let delta = if policy == verifier_policy {
-            layer.moe.forward(read.branch_input(), policy)?
-        } else {
-            layer
-                .moe
-                .forward_with_verifier_policy(read.branch_input(), policy, verifier_policy)?
-        };
-        hidden = read.write(&delta).map_err(|e| e.to_string())?;
+        let layer_end = layer_budget
+            .map(|budget| {
+                layers_completed
+                    .saturating_add(budget.get())
+                    .min(weights.layers.len())
+            })
+            .unwrap_or(weights.layers.len());
+        let offset = next.position;
+        // Image requests rotate attention and QSA keys at their MRoPE positions.
+        let _media_scope = crate::qwen4_exp_qsa::scoped_media(next.media.clone());
         #[cfg(test)]
         {
-            profiling::mark("mlp_hc_write", &[&hidden]);
-            profiling::run_prefill_peer_at_layer(
-                weights,
-                &next,
-                &hidden,
-                index,
-                state.position,
-                tokens.len(),
-            )?;
+            profiling::begin_chunk(offset, tokens.len());
+            if layers_completed == 0 {
+                profiling::mark("embedding", &[&hidden]);
+            }
         }
-    }
-    let mixed = weights
-        .mixer
-        .collapse(&hidden, verifier_policy)
-        .map_err(|e| e.to_string())?;
-    #[cfg(test)]
-    profiling::mark("final_mixer", &[&mixed]);
-    let (logits, logit_rows) = match rows {
-        LogitRows::All => (
-            astype(
-                &qw_with_policy(&mixed, &weights.lm_head, policy),
-                MlxDtype::Float32,
-                None,
-            ),
-            tokens.len() as i32,
-        ),
-        LogitRows::Last => {
-            let shape = mixed.shape();
-            let (count, width) = (shape[shape.len() - 2], shape[shape.len() - 1]);
-            let last = mlx_sys::slice(
-                &mixed,
-                &[0, count - 1, 0],
-                &[shape[0], count, width],
-                &[1, 1, 1],
-                None,
-            );
-            (
+        for (index, layer) in weights
+            .layers
+            .iter()
+            .enumerate()
+            .take(layer_end)
+            .skip(layers_completed)
+        {
+            #[cfg(test)]
+            profiling::layer(index);
+            let staged = &mut next.layers[index];
+            match (&layer.ple, &mut staged.ple) {
+                (Some(ple), Some(cache)) => {
+                    let lookup = ple.layout.plan(&cache.history, &tokens)?;
+                    #[cfg(test)]
+                    profiling::mark("ngram_lookup", &[]);
+                    let rows = ple.table.gather(&lookup.rows)?;
+                    // Read the next prefill chunk's rows while this chunk computes.
+                    if let Some(next) = lookahead::next_chunk(end, tokens.len())
+                        && let Ok(next) = ple.layout.plan(&lookup.next_history, &next)
+                    {
+                        ple.table.prefetch(next.rows);
+                    }
+                    #[cfg(test)]
+                    {
+                        profiling::dump_ngram_lookup(tokens.len(), &lookup.rows, &rows);
+                        profiling::mark("ple_rows", &[&rows]);
+                    }
+                    let embeddings = reshape(
+                        &astype(&rows, hidden.dtype(), None),
+                        &[1, tokens.len() as i32, ple.embedding_width as i32],
+                        None,
+                    );
+                    let result = ple
+                        .operator
+                        .forward(&embeddings, &hidden, cache.conv.as_ref(), policy)
+                        .map_err(|e| e.to_string())?;
+                    hidden = add(&hidden, result.delta(), None);
+                    cache.conv = Some(result.next_state().clone());
+                    cache.history = lookup.next_history;
+                    #[cfg(test)]
+                    profiling::mark("ple_operator", &[&hidden, result.next_state().array()]);
+                }
+                (None, None) => {}
+                _ => return Err(format!("qwen4_exp layer {index} PLE state mismatch")),
+            }
+            let read = layer
+                .attention_hc
+                .read(&hidden, verifier_policy)
+                .map_err(|e| e.to_string())?;
+            #[cfg(test)]
+            profiling::mark("attention_hc_read", &[read.branch_input()]);
+            let delta = match (&layer.attention, &mut staged.attention) {
+                (Qwen4ExpAttentionBranch::Gdn(branch), AttentionState::Gdn(cache)) => {
+                    let (delta, new_state) = branch.forward(
+                        read.branch_input(),
+                        cache.as_ref(),
+                        policy,
+                        verifier_policy,
+                    )?;
+                    #[cfg(test)]
+                    profiling::mark("gdn", &[&delta, &new_state.conv, &new_state.recurrent]);
+                    *cache = Some(new_state);
+                    delta
+                }
+                (Qwen4ExpAttentionBranch::Qsa(branch), AttentionState::Qsa(cache)) => {
+                    let result = branch
+                        .forward_with_verifier_policy(
+                            read.branch_input(),
+                            cache,
+                            offset,
+                            policy,
+                            verifier_policy,
+                        )
+                        .map_err(|e| {
+                            format!(
+                                "qwen4_exp layer {index} at position {} with {} tokens: {e}; \
+                             MLX memory bytes at failure: active={:?}, cache={:?}, peak={:?}",
+                                offset,
+                                tokens.len(),
+                                mlx_sys::device_active_bytes(),
+                                mlx_sys::device_cache_bytes(),
+                                mlx_sys::device_peak_bytes(),
+                            )
+                        })?;
+                    let delta = result.delta().clone();
+                    *cache = result.into_next_state();
+                    #[cfg(test)]
+                    {
+                        let mut arrays = vec![&delta];
+                        arrays.extend(cache.keys().arrays());
+                        arrays.extend(cache.values().arrays());
+                        arrays.extend(cache.index().keys());
+                        profiling::mark("qsa", &arrays);
+                    }
+                    delta
+                }
+                _ => return Err(format!("qwen4_exp layer {index} attention state mismatch")),
+            };
+            hidden = read.write(&delta).map_err(|e| e.to_string())?;
+            #[cfg(test)]
+            profiling::mark("attention_hc_write", &[&hidden]);
+            let read = layer
+                .mlp_hc
+                .read(&hidden, verifier_policy)
+                .map_err(|e| e.to_string())?;
+            #[cfg(test)]
+            profiling::mark("mlp_hc_read", &[read.branch_input()]);
+            let delta = if policy == verifier_policy {
+                layer.moe.forward(read.branch_input(), policy)?
+            } else {
+                layer.moe.forward_with_verifier_policy(
+                    read.branch_input(),
+                    policy,
+                    verifier_policy,
+                )?
+            };
+            hidden = read.write(&delta).map_err(|e| e.to_string())?;
+            #[cfg(test)]
+            profiling::mark("mlp_hc_write", &[&hidden]);
+        }
+        if layer_end < weights.layers.len() {
+            let mut arrays = next.arrays();
+            arrays.push(&hidden);
+            mlx_sys::try_eval(&arrays)
+                .map_err(|e| format!("qwen4_exp layer evaluation failed: {e}"))?;
+            return Ok(ForwardAdvance::Pending(Self {
+                tokens,
+                hidden,
+                next,
+                end,
+                vocabulary,
+                layers_completed: layer_end,
+                policy,
+                verifier_policy,
+                rows,
+            }));
+        }
+        let mixed = weights
+            .mixer
+            .collapse(&hidden, verifier_policy)
+            .map_err(|e| e.to_string())?;
+        #[cfg(test)]
+        profiling::mark("final_mixer", &[&mixed]);
+        let (logits, logit_rows) = match rows {
+            LogitRows::All => (
                 astype(
-                    &qw_with_policy(&last, &weights.lm_head, policy),
+                    &qw_with_policy(&mixed, &weights.lm_head, policy),
                     MlxDtype::Float32,
                     None,
                 ),
-                1,
-            )
+                tokens.len() as i32,
+            ),
+            LogitRows::Last => {
+                let shape = mixed.shape();
+                let (count, width) = (shape[shape.len() - 2], shape[shape.len() - 1]);
+                let last = mlx_sys::slice(
+                    &mixed,
+                    &[0, count - 1, 0],
+                    &[shape[0], count, width],
+                    &[1, 1, 1],
+                    None,
+                );
+                (
+                    astype(
+                        &qw_with_policy(&last, &weights.lm_head, policy),
+                        MlxDtype::Float32,
+                        None,
+                    ),
+                    1,
+                )
+            }
+            LogitRows::Skip => (MlxArray::from_f32(0.0), 0),
+        };
+        let logits = if rows == LogitRows::Skip {
+            logits
+        } else {
+            reshape(&logits, &[logit_rows, vocabulary as i32], None)
+        };
+        let mut arrays = next.arrays();
+        arrays.extend([&mixed, &hidden]);
+        if rows != LogitRows::Skip {
+            arrays.push(&logits);
         }
-        LogitRows::Skip => (MlxArray::from_f32(0.0), 0),
-    };
-    let logits = if rows == LogitRows::Skip {
-        logits
-    } else {
-        reshape(&logits, &[logit_rows, vocabulary as i32], None)
-    };
-    let mut arrays = next.arrays();
-    arrays.extend([&mixed, &hidden]);
-    if rows != LogitRows::Skip {
-        arrays.push(&logits);
+        mlx_sys::try_eval(&arrays).map_err(|e| format!("qwen4_exp evaluation failed: {e}"))?;
+        #[cfg(test)]
+        profiling::note_eval();
+        #[cfg(test)]
+        profiling::mark("lm_head", &[&logits]);
+        next.position = end;
+        Ok(ForwardAdvance::Complete(Qwen4ExpOutput {
+            stream_hidden: hidden,
+            hidden: mixed,
+            logits,
+            state: next,
+        }))
     }
-    mlx_sys::try_eval(&arrays).map_err(|e| format!("qwen4_exp evaluation failed: {e}"))?;
-    #[cfg(test)]
-    profiling::note_eval();
-    #[cfg(test)]
-    profiling::mark("lm_head", &[&logits]);
-    next.position = end;
-    Ok(Qwen4ExpOutput {
-        stream_hidden: hidden,
-        hidden: mixed,
-        logits,
-        state: next,
-    })
 }
 
 #[cfg(test)]

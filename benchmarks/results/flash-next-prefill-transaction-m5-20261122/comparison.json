@@ -1,0 +1,13 @@
+{
+  "qualification": false,
+  "layer_advances": 10,
+  "exact_prompt_and_peer_states": true,
+  "aborted_forward_preserves_original_state": true,
+  "cpu_idle_percent": [
+    93.28,
+    98.16
+  ],
+  "median_advance_ms": 81.23272850000001,
+  "max_advance_ms": 104.891375,
+  "median_peer_decode_ms": 26.652438
+}

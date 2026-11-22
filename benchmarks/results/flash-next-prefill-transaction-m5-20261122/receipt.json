@@ -1,0 +1,73 @@
+{
+  "status": "complete",
+  "qualification": false,
+  "build": {
+    "base_commit": "c6e762d3ee4c7818c2a80f075d1eb9a718c32296",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "executable_sha256": "f9b495cfe31f99168b87247920c5262c5946d6fc2bccb753e46133b1801f448b",
+    "changed_source_sha256": {
+      "crates/ax-engine-mlx/src/model/qwen4_exp.rs": "99953e0309bd6e02a409e57840047533bc3b69e943be87f5c02b6258430bb294",
+      "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": "8b9fae237ce6415312718a792119ee95f34392c76804ebf4a1f46166052b37a1"
+    }
+  },
+  "test": "model::qwen4_exp::profiling::flash_next_fixed_prefill_layer_peer_keeps_both_states",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "native_manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "prompt_sha256": "405e0aa8e30166cbfaf769e351d48e9bddd99d85f08539d942edf9d0f28fa287",
+  "result_sha256": "fa2c3827214223c212be3c22726b31bbf64481550e931f8eaa8afa0d5c7818b2",
+  "pressure_samples": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "before_idle_percent": 93.28,
+  "after_idle_percent": 98.16,
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "memory_bytes": 137438953472,
+    "soc": "Apple M5 Max",
+    "os": "27.2.1"
+  },
+  "test_exit": 0
+}

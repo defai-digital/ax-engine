@@ -1122,7 +1122,7 @@ fn run_chunked_prefill(
         .into_iter()
         .map(|(start, end)| (start, end, LogitRows::All))
         .collect::<Vec<_>>();
-    run_prefill_plan(trunk, tokens, owner, &plan, capture)
+    run_prefill_plan(trunk, tokens, owner, &plan, capture, None)
 }
 
 fn run_prefill_plan(
@@ -1131,6 +1131,7 @@ fn run_prefill_plan(
     owner: u64,
     plan: &[(usize, usize, LogitRows)],
     capture: bool,
+    mut peer: Option<&mut PrefillPeer>,
 ) -> ChunkedPrefillTiming {
     reset_evals();
     mlx_sys::reset_peak_memory();
@@ -1156,14 +1157,21 @@ fn run_prefill_plan(
     for &(offset, end, rows) in plan {
         assert_eq!(state.position(), offset);
         let chunk_start = Instant::now();
-        let output = forward_with_rows(
-            trunk,
-            &tokens[offset..end],
-            &state,
-            owner,
-            ProjectionBatchPolicy::Shared,
-            rows,
-        )
+        let forward_tokens = &tokens[offset..end];
+        let output = if let Some(peer) = peer.as_deref_mut()
+            && matches!((offset, forward_tokens.len()), (0, 512) | (7680, 511))
+        {
+            peer.interleave(trunk, forward_tokens, &state, owner)
+        } else {
+            forward_with_rows(
+                trunk,
+                forward_tokens,
+                &state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+                rows,
+            )
+        }
         .unwrap();
         state = output.state;
         if end == tokens.len() {
@@ -1237,20 +1245,8 @@ struct PrefillPeerCut {
     offset: usize,
     width: usize,
     layers: usize,
-    eval_seconds: f64,
+    advance_seconds: f64,
     peer_seconds: f64,
-}
-
-thread_local! {
-    static PREFILL_PEER: RefCell<Option<PrefillPeer>> = const { RefCell::new(None) };
-}
-
-struct PrefillPeerGuard;
-
-impl Drop for PrefillPeerGuard {
-    fn drop(&mut self) {
-        PREFILL_PEER.with_borrow_mut(|slot| *slot = None);
-    }
 }
 
 impl PrefillPeer {
@@ -1274,44 +1270,65 @@ impl PrefillPeer {
     fn decode(&mut self, weights: &Qwen4ExpWeights) -> Result<(), String> {
         self.forward(weights, &[*self.tokens.last().unwrap()])
     }
-}
 
-pub(super) fn run_prefill_peer_at_layer(
-    weights: &Qwen4ExpWeights,
-    next: &Qwen4ExpState,
-    hidden: &MlxArray,
-    index: usize,
-    offset: usize,
-    width: usize,
-) -> Result<(), String> {
-    let layers = index + 1;
-    if !matches!((offset, width), (0, 512) | (7680, 511))
-        || !layers.is_multiple_of(8)
-        || layers == weights.layers.len()
-    {
-        return Ok(());
+    fn interleave(
+        &mut self,
+        weights: &Qwen4ExpWeights,
+        tokens: &[u32],
+        state: &Qwen4ExpState,
+        owner: u64,
+    ) -> Result<Qwen4ExpOutput, String> {
+        let prepare = || {
+            PreparedForward::new(
+                weights,
+                Cow::Owned(tokens.to_vec()),
+                prepare_text_hidden(weights, tokens, state, owner)?,
+                state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::Shared,
+                LogitRows::Skip,
+            )
+        };
+        let budget = NonZeroUsize::new(8);
+        let offset = state.position();
+        if offset == 0 {
+            let before = snapshot(state.clone());
+            let ForwardAdvance::Pending(aborted) = prepare()?.advance(weights, owner, budget)?
+            else {
+                return Err("expected a suspended cache-only forward".into());
+            };
+            assert!(
+                aborted
+                    .advance(weights, owner.wrapping_add(1), budget)
+                    .is_err()
+            );
+            assert!(
+                before == snapshot(state.clone()),
+                "aborted forward changed the original cache"
+            );
+        }
+        let mut staged = prepare()?;
+        loop {
+            let started = Instant::now();
+            let pending = match staged.advance(weights, owner, budget)? {
+                ForwardAdvance::Complete(output) => return Ok(output),
+                ForwardAdvance::Pending(pending) => pending,
+            };
+            assert_eq!(pending.next.position(), offset);
+            let advance_seconds = started.elapsed().as_secs_f64();
+            let started = Instant::now();
+            self.decode(weights)?;
+            self.cuts.push(PrefillPeerCut {
+                offset,
+                width: tokens.len(),
+                layers: pending.layers_completed,
+                advance_seconds,
+                peer_seconds: started.elapsed().as_secs_f64(),
+            });
+            staged = pending;
+        }
     }
-    let Some(mut peer) = PREFILL_PEER.with_borrow_mut(Option::take) else {
-        return Ok(());
-    };
-    let started = Instant::now();
-    let mut arrays = next.arrays();
-    arrays.push(hidden);
-    mlx_sys::try_eval(&arrays).map_err(|error| error.to_string())?;
-    let eval_seconds = started.elapsed().as_secs_f64();
-    let started = Instant::now();
-    peer.decode(weights)?;
-    peer.cuts.push(PrefillPeerCut {
-        offset,
-        width,
-        layers,
-        eval_seconds,
-        peer_seconds: started.elapsed().as_secs_f64(),
-    });
-    PREFILL_PEER.with_borrow_mut(|slot| *slot = Some(peer));
-    begin_chunk(offset, width);
-    layer(index);
-    Ok(())
 }
 
 #[test]
@@ -1344,16 +1361,10 @@ fn flash_next_fixed_prefill_layer_peer_keeps_both_states() {
     for _ in 0..10 {
         solo_peer.decode(trunk).unwrap();
     }
-    let solo_prefill = run_prefill_plan(trunk, &tokens, owner, &plan, false);
-    let peer = make_peer();
-    PREFILL_PEER.with_borrow_mut(|slot| {
-        assert!(slot.is_none());
-        *slot = Some(peer);
-    });
-    let guard = PrefillPeerGuard;
-    let shared_prefill = run_prefill_plan(trunk, &tokens, owner, &plan, false);
-    let shared_peer = PREFILL_PEER.with_borrow_mut(Option::take).unwrap();
-    drop(guard);
+    let solo_prefill = run_prefill_plan(trunk, &tokens, owner, &plan, false, None);
+    let mut shared_peer = make_peer();
+    let shared_prefill =
+        run_prefill_plan(trunk, &tokens, owner, &plan, false, Some(&mut shared_peer));
 
     let expected_cuts = [(0, 512), (7680, 511)]
         .into_iter()
@@ -1400,8 +1411,9 @@ fn flash_next_fixed_prefill_layer_peer_keeps_both_states() {
     );
     assert_eq!(solo_prefill.final_logits.len(), model.vocab_size as usize);
     let evidence = serde_json::json!({
-        "schema": "ax-engine.flash-next.prefill-layer-peer.v1",
+        "schema": "ax-engine.flash-next.prefill-transaction.v1",
         "qualification": false,
+        "aborted_forward_preserves_original_state": true,
         "peer_prompt_tokens": 69,
         "peer_outputs": shared_peer.tokens,
         "cuts": shared_peer.cuts,
@@ -1444,8 +1456,22 @@ fn flash_next_physical_split_prefill_stage_profile() {
     let weights = crate::weights::load_weights(&artifacts).unwrap();
     let trunk = weights.qwen4_exp.as_ref().unwrap();
     assert!(trunk.expert_stream.is_none());
-    let control = run_prefill_plan(trunk, &tokens, cfg.compile_cache_identity, &plan, false);
-    let traced = run_prefill_plan(trunk, &tokens, cfg.compile_cache_identity, &plan, true);
+    let control = run_prefill_plan(
+        trunk,
+        &tokens,
+        cfg.compile_cache_identity,
+        &plan,
+        false,
+        None,
+    );
+    let traced = run_prefill_plan(
+        trunk,
+        &tokens,
+        cfg.compile_cache_identity,
+        &plan,
+        true,
+        None,
+    );
     assert_eq!(control.final_logits.len(), cfg.vocab_size as usize);
     assert_eq!(traced.final_logits.len(), control.final_logits.len());
     assert!(
