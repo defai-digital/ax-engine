@@ -1,0 +1,37 @@
+{
+  "binary_sha256": "5ce09bfef3a53f4c5e1ceb1b7462f0e63f81cdaa84160641619854eb870c0e32",
+  "source_offset": 39,
+  "out_of_range_rejected": true,
+  "cases": {
+    "mmap": {
+      "mode": "mmap",
+      "tensors": 1,
+      "staging_bytes": 0,
+      "nocache": false,
+      "selected_bytes": 4194561,
+      "allocated_bytes": 4210688,
+      "weights_sha256": "ac4b9a6bc30e0e83336dbb4d3ecbd5feac695a1922db8732da544d971e98ba2c",
+      "metal_sha256": "946d357ace2cc8031b4e55d29eff236f1a0ccc42782a0ba4aefd8ddd27d45ad7"
+    },
+    "aligned-buffered": {
+      "mode": "aligned-buffered",
+      "tensors": 1,
+      "staging_bytes": 4194304,
+      "nocache": false,
+      "selected_bytes": 4194561,
+      "allocated_bytes": 4210688,
+      "weights_sha256": "ac4b9a6bc30e0e83336dbb4d3ecbd5feac695a1922db8732da544d971e98ba2c",
+      "metal_sha256": "946d357ace2cc8031b4e55d29eff236f1a0ccc42782a0ba4aefd8ddd27d45ad7"
+    },
+    "aligned-nocache": {
+      "mode": "aligned-nocache",
+      "tensors": 1,
+      "staging_bytes": 4194304,
+      "nocache": true,
+      "selected_bytes": 4194561,
+      "allocated_bytes": 4210688,
+      "weights_sha256": "ac4b9a6bc30e0e83336dbb4d3ecbd5feac695a1922db8732da544d971e98ba2c",
+      "metal_sha256": "946d357ace2cc8031b4e55d29eff236f1a0ccc42782a0ba4aefd8ddd27d45ad7"
+    }
+  }
+}

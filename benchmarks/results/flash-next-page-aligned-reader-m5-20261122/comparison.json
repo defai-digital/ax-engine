@@ -1,0 +1,96 @@
+{
+  "build": {
+    "binary_sha256": "5ce09bfef3a53f4c5e1ceb1b7462f0e63f81cdaa84160641619854eb870c0e32",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+    "driver_sha256": "056ea011dd05843792b33c3b12d2637dff05cdada4de372c8328756cf8e2154b",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "reader_source_sha256": "b5330893343dc386e0428c3d0ca6f184ad83c4d4d70789bba5c52f206097ea3a"
+  },
+  "cpu_idle_percent": [
+    94.86,
+    91.23
+  ],
+  "hardware": {
+    "memory_bytes": 137438953472,
+    "os": "27.2.1",
+    "soc": "Apple M5 Max",
+    "storage": "internal SSD"
+  },
+  "matching_m2_payload_observations": 96,
+  "native_control_runs": 24,
+  "qualification": false,
+  "result_sha256": "ea86ba9f083d50362142e0d39da96248d2709f36da71ff5677424e2a2b786152",
+  "scope": "M5 Max page-aligned resident weight reader component",
+  "shards": {
+    "model-00017-of-00025.safetensors": {
+      "clone": {
+        "median_seconds": {
+          "aligned-buffered": 0.1899785415,
+          "aligned-nocache": 0.2925381665,
+          "mmap": 1.67278496
+        },
+        "nocache_after_resident_pages": [
+          0,
+          0
+        ],
+        "nocache_difference_percent": -82.512,
+        "nocache_per_order_difference_percent": [
+          -82.797,
+          -82.227
+        ]
+      },
+      "reused": {
+        "median_seconds": {
+          "aligned-buffered": 0.1512235415,
+          "aligned-nocache": 0.155740354,
+          "mmap": 0.209007729
+        },
+        "nocache_after_resident_pages": [
+          102404,
+          102404
+        ],
+        "nocache_difference_percent": -25.486,
+        "nocache_per_order_difference_percent": [
+          -25.531,
+          -25.442
+        ]
+      }
+    },
+    "model-00018-of-00025.safetensors": {
+      "clone": {
+        "median_seconds": {
+          "aligned-buffered": 0.1860430625,
+          "aligned-nocache": 0.282046229,
+          "mmap": 1.673616665
+        },
+        "nocache_after_resident_pages": [
+          0,
+          0
+        ],
+        "nocache_difference_percent": -83.148,
+        "nocache_per_order_difference_percent": [
+          -83.25,
+          -83.045
+        ]
+      },
+      "reused": {
+        "median_seconds": {
+          "aligned-buffered": 0.14618635400000002,
+          "aligned-nocache": 0.14899622950000002,
+          "mmap": 0.195459854
+        },
+        "nocache_after_resident_pages": [
+          102404,
+          102404
+        ],
+        "nocache_difference_percent": -23.771,
+        "nocache_per_order_difference_percent": [
+          -23.763,
+          -23.78
+        ]
+      }
+    }
+  }
+}
