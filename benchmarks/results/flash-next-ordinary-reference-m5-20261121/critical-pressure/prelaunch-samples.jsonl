@@ -1,0 +1,4 @@
+{"pressure": 1, "compressor_bytes": 2683322368, "free_bytes": 1116717056, "inactive_bytes": 124283338752, "swap": "total = 2048.00M  used = 966.62M  free = 1081.38M  (encrypted)"}
+{"pressure": 1, "compressor_bytes": 2681307136, "free_bytes": 1161560064, "inactive_bytes": 124451094528, "swap": "total = 2048.00M  used = 966.62M  free = 1081.38M  (encrypted)"}
+{"pressure": 1, "compressor_bytes": 2680995840, "free_bytes": 899678208, "inactive_bytes": 123329036288, "swap": "total = 2048.00M  used = 966.62M  free = 1081.38M  (encrypted)"}
+{"pressure": 1, "compressor_bytes": 2661236736, "free_bytes": 1573191680, "inactive_bytes": 123593867264, "swap": "total = 2048.00M  used = 966.62M  free = 1081.38M  (encrypted)"}

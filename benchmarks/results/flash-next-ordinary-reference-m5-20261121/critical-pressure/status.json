@@ -1,0 +1,10 @@
+{
+  "diagnostic_only": true,
+  "frozen_source_manifest_sha256": "f92c9e04a94b0a0a681a7820b780847cba433bc5bbcadf483a516cbecc3a3221",
+  "qa_limit": 4,
+  "wired_residency_override": false,
+  "exit_code": -15,
+  "stop_reason": "critical system memory pressure",
+  "complete": false,
+  "completed_cases": 0
+}

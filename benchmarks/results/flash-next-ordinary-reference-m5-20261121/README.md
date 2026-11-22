@@ -20,3 +20,21 @@ stall.
 
 This run supplies no fresh integrity, quality or reference-relative
 performance result for the native release board.
+
+## Four-case recovery diagnostic
+
+The subsequent [heartbeat attempt](critical-pressure/status.json)
+used the same pinned ordinary MLX-VLM runtime without a wired-residency
+override. It began after sampled normal pressure and 92.93% CPU idle.
+The [partial receipt](critical-pressure/partial-result.json) records
+materialization of 2,326 arrays in 22.383 seconds. The first QA case
+started and emitted zero tokens before the monitor observed critical
+system pressure and stopped the process. The full ordinary repeat
+therefore did not launch.
+
+The [resource samples](critical-pressure/samples.jsonl) record normal
+pressure, a 26.75 GB compressor and 55.43 GB process RSS before the last
+sample. The last sample recorded pressure level 4, a 106.18 GB
+compressor and 21.09 GB swap in use. The host-wide counters describe
+conditions around the transition. Per-allocation attribution would
+require a separate measurement.

@@ -1,0 +1,15 @@
+{
+  "policy": "normal pressure and CPU quiet",
+  "quiet": {
+    "cpu_idle_percent": 92.93,
+    "min_idle_percent": 90.0,
+    "waited_seconds": 16.5
+  },
+  "sample": {
+    "pressure": 1,
+    "compressor_bytes": 2661236736,
+    "free_bytes": 1573191680,
+    "inactive_bytes": 123593867264,
+    "swap": "total = 2048.00M  used = 966.62M  free = 1081.38M  (encrypted)"
+  }
+}
