@@ -1,0 +1,16 @@
+{
+  "scope": "supported-tier software startup controls",
+  "qualification": false,
+  "runtime_commit": "decb30fd5b45c6ff6a22ce384488460da62f1e41",
+  "hardware": {
+    "soc": "Apple M4 Pro",
+    "memory_bytes": 68719476736,
+    "os": "27.0"
+  },
+  "filter": "tests::startup",
+  "passed": 4,
+  "failed": 0,
+  "test_binary_sha256": "379ce274750fa02d2621eb1b902b49d86e60943daf4923c9d9ced0872235ae9f",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "test_output_sha256": "38c8b0e007650dd55326875874f8240f4d7f75f0f7f91163f4aa53e6b1d26ec6"
+}

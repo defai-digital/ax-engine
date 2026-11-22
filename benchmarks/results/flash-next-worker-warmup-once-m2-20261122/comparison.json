@@ -1,0 +1,35 @@
+{
+  "scope": "M2 functional warmup",
+  "qualification": false,
+  "arms": {
+    "default-1": {
+      "matched_responses": 17,
+      "generated_ids": 2176,
+      "normal_pressure_samples": 228,
+      "worker_passes": 3,
+      "worker_completed_by_shape": [
+        3,
+        3,
+        3
+      ],
+      "http_streams": 3,
+      "worker_elapsed_us": 5166015,
+      "http_elapsed_us": 2773653
+    },
+    "default-2": {
+      "matched_responses": 17,
+      "generated_ids": 2176,
+      "normal_pressure_samples": 613,
+      "worker_passes": 1,
+      "worker_completed_by_shape": [
+        1,
+        1,
+        1
+      ],
+      "http_streams": 3,
+      "worker_elapsed_us": 2415465,
+      "http_elapsed_us": 2745769
+    }
+  },
+  "m4_startup_software_tests": 4
+}
