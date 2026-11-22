@@ -1,0 +1,90 @@
+{
+  "result_sha256": "08c84f5830912b5973ce3b01f5c7ef9bb6cbb8238b5f1ae9159bf61c4d6ae9f4",
+  "scope": "Diagnostic only. No prefill or QA.",
+  "trials": {
+    "buffered-first": {
+      "completed_materialization_batches": 41,
+      "completed_payload_checksums": 26,
+      "last_materialization_event": {
+        "batch": 41,
+        "phase": "batch_start"
+      },
+      "per_file_initial_resident_pages_sum": 0,
+      "per_file_post_checksum_resident_pages_sum": 8070650,
+      "pressure_samples": 55,
+      "system_file_backed_bytes_after_last_checksum": 113333108736,
+      "terminal_pressure": 2,
+      "terminal_process_footprint_bytes": 91836957568,
+      "terminal_vm_bytes": {
+        "File-backed pages": 23280238592,
+        "Pages free": 61079552,
+        "Pages inactive": 31362154496,
+        "Pages occupied by compressor": 67203710976
+      },
+      "verified_payload_bytes": 132229386263
+    },
+    "buffered-second": {
+      "completed_materialization_batches": 48,
+      "completed_payload_checksums": 26,
+      "last_materialization_event": {
+        "batch": 48,
+        "phase": "batch_start"
+      },
+      "per_file_initial_resident_pages_sum": 0,
+      "per_file_post_checksum_resident_pages_sum": 8070650,
+      "pressure_samples": 36,
+      "system_file_backed_bytes_after_last_checksum": 113654808576,
+      "terminal_pressure": 2,
+      "terminal_process_footprint_bytes": 98446956024,
+      "terminal_vm_bytes": {
+        "File-backed pages": 18856804352,
+        "Pages free": 329793536,
+        "Pages inactive": 25427738624,
+        "Pages occupied by compressor": 79073509376
+      },
+      "verified_payload_bytes": 132229386263
+    },
+    "no-cache-first": {
+      "completed_materialization_batches": 48,
+      "completed_payload_checksums": 26,
+      "last_materialization_event": {
+        "batch": 48,
+        "phase": "batch_start"
+      },
+      "per_file_initial_resident_pages_sum": 0,
+      "per_file_post_checksum_resident_pages_sum": 0,
+      "pressure_samples": 44,
+      "system_file_backed_bytes_after_last_checksum": 113432854528,
+      "terminal_pressure": 2,
+      "terminal_process_footprint_bytes": 99080886184,
+      "terminal_vm_bytes": {
+        "File-backed pages": 18244288512,
+        "Pages free": 934232064,
+        "Pages inactive": 24619974656,
+        "Pages occupied by compressor": 81125212160
+      },
+      "verified_payload_bytes": 132229386263
+    },
+    "no-cache-second": {
+      "completed_materialization_batches": 44,
+      "completed_payload_checksums": 26,
+      "last_materialization_event": {
+        "batch": 44,
+        "phase": "batch_start"
+      },
+      "per_file_initial_resident_pages_sum": 0,
+      "per_file_post_checksum_resident_pages_sum": 0,
+      "pressure_samples": 37,
+      "system_file_backed_bytes_after_last_checksum": 4288200704,
+      "terminal_pressure": 2,
+      "terminal_process_footprint_bytes": 94543973168,
+      "terminal_vm_bytes": {
+        "File-backed pages": 24081137664,
+        "Pages free": 45219840,
+        "Pages inactive": 32424804352,
+        "Pages occupied by compressor": 65955119104
+      },
+      "verified_payload_bytes": 132229386263
+    }
+  }
+}
