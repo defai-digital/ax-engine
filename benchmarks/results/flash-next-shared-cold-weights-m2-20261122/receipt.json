@@ -1,0 +1,42 @@
+{
+  "scope": "native functional concurrent cold initializations",
+  "qualification": false,
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "build": {
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "ad29f9c485cb166423c4faa5dc781b8c77ce52719b6204ff3c7eb2e8724d06c8",
+    "source_sha256": {
+      "crates/ax-engine-mlx/src/runner/mod.rs": "4d1398838adc3f22882cd984722561811c4467317a25d8b815398a7c54b11383",
+      "crates/ax-engine-mlx/src/runner/tests.rs": "3fcd6be34fad10fd51dad8c4b45b3a3417db8b5825675f557349258ad87dbab0",
+      "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "8c50a44382e015b29536d3e3452bf1fa57ba59ba87251f7722ffe8f86228c023"
+    },
+    "commit": "89eac33d272784c4a4b16ecd580dafd5472aa079"
+  },
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "os_version": "27.2.1"
+  },
+  "test": "runner::flash_next_tests::flash_next_real_concurrent_cold_runners_share_weights",
+  "weight_allocations": 1,
+  "native_runners": 2,
+  "identical_ids_per_runner": 8,
+  "pressure_samples": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "result": 0,
+  "test_output_sha256": "1517b95f58fa51a64bf020c00ecf2d15fd6755d469c79654807882f5cf2d0ec1"
+}
