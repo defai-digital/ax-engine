@@ -1,0 +1,2 @@
+2026-11-22T13:21:36.024356Z  INFO resolved MLX numerics preset mlx_numerics="exact"
+Error: Engine(MlxMtpRequiredButUnavailable)
