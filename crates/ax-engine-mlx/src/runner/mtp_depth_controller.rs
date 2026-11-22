@@ -1204,7 +1204,7 @@ pub(super) fn flash_next_mtp_cost_config_from_env() -> FlashNextMtpCostConfig {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct FlashNextMtpCostSnapshot {
     pub(super) state: u32,
-    /// Complete MTP rounds in the band (the effective sample count).
+    /// Complete MTP rounds in the band's current cost window.
     pub(super) samples: u32,
     /// Mean direct step wall, ms.
     pub(super) direct_ms: u32,
@@ -1539,8 +1539,13 @@ impl FlashNextMtpCostController {
                 .is_some_and(|ratio| ratio > self.config.resume_margin)
         {
             self.state = FlashNextCostState::Active;
-            self.buckets[index].hard_loss_streak = 0;
-            self.buckets[index].soft_loss_streak = 0;
+            // The successful probe replaces the MTP samples from before recovery.
+            let bucket = &mut self.buckets[index];
+            bucket.mtp_rounds = window.mtp_rounds;
+            bucket.mtp_wall_us = window.mtp_wall_us;
+            bucket.mtp_tokens = window.mtp_tokens;
+            bucket.hard_loss_streak = 0;
+            bucket.soft_loss_streak = 0;
             self.resumes = self.resumes.saturating_add(1);
             return Some(FlashNextCostEvent::ProbeResumed);
         }
@@ -2590,6 +2595,76 @@ mod tests {
         assert_eq!(controller.state(), FlashNextCostState::Active);
         assert_eq!(controller.snapshot(key).resumes, 1);
         assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+    }
+
+    #[test]
+    fn cost_resume_ignores_pre_park_losses_and_can_park_again() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        drive_flash_next_calibration(&mut controller, key, 20_000, 100_000, 1);
+        assert_eq!(
+            drive_flash_next_decisions(&mut controller, key, 100_000, 1, 4),
+            Some(FlashNextCostEvent::Parked)
+        );
+
+        let parked_steps = controller.config.parked_probe_steps;
+        for _ in 1..parked_steps {
+            assert_eq!(controller.route(key).0, FlashNextCostRoute::Direct);
+            assert_eq!(controller.record_direct_step(key, 20_000), None);
+        }
+        assert_eq!(
+            controller.record_direct_step(key, 20_000),
+            Some(FlashNextCostEvent::ProbeOpened)
+        );
+        let probe_rounds = controller.config.probe_rounds as usize;
+        assert_eq!(
+            drive_flash_next_decisions(&mut controller, key, 25_000, 2, probe_rounds),
+            Some(FlashNextCostEvent::ProbeResumed)
+        );
+
+        let recovered = controller.snapshot(key);
+        assert_eq!(recovered.samples, controller.config.probe_rounds);
+        assert_eq!(recovered.direct_ms, 20);
+        assert_eq!(recovered.estimated_speedup_x1000, 1_600);
+
+        let mut next_band = controller;
+        let larger_key = flash_next_bucket(8_192);
+        assert_eq!(
+            next_band.route(larger_key),
+            (
+                FlashNextCostRoute::Direct,
+                Some(FlashNextCostEvent::Recalibrating)
+            )
+        );
+        let fresh = next_band.snapshot(larger_key);
+        assert_eq!(fresh.samples, 0);
+        assert_eq!(fresh.estimated_speedup_x1000, 0);
+        assert_eq!((fresh.parks, fresh.resumes), (1, 1));
+        assert_eq!(next_band.snapshot(key).samples, recovered.samples);
+
+        // The probe and the following rounds sustain 1.6x direct speed.
+        for round in 1..=8 {
+            assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+            assert_eq!(
+                controller.record_mtp_round(key, 25_000, 2),
+                None,
+                "round {round} still matches the profitable probe"
+            );
+        }
+        assert_eq!(controller.snapshot(key).estimated_speedup_x1000, 1_600);
+        assert_eq!(controller.snapshot(key).parks, 1);
+
+        // A new sustained loss still parks the head.
+        let mut parked = false;
+        for _ in 0..64 {
+            if controller.record_mtp_round(key, 100_000, 1) == Some(FlashNextCostEvent::Parked) {
+                parked = true;
+                break;
+            }
+        }
+        assert!(parked);
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Direct);
+        assert_eq!(controller.snapshot(key).parks, 2);
     }
 
     #[test]
