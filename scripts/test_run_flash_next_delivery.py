@@ -141,24 +141,22 @@ class DeliveryTests(unittest.TestCase):
             cli.touch()
             inventory = root / "inventory.json"
             inventory.write_text('{"storage":"internal SSD"}')
-            args = Namespace(cache_root=cache, previous_attempt=None, ax_engine=cli, python=Path(sys.executable),
-                             helper=None, bench_bin=None, inventory=inventory, server_bin=cli, output=root / "first")
+            args = Namespace(cache_root=cache, previous_attempt=None, ax_engine=cli,
+                             inventory=inventory, server_bin=cli, output=root / "first")
             contract = {"schema": mod.SCHEMA, "repo_id": mod.native.PRIMARY_REPO,
                         "revision": mod.native.PACK_REVISION}
 
             def failed_download(command, **kwargs):
-                if command[1] == "-c":
-                    return subprocess.CompletedProcess(command, 0, stdout="test-hub")
                 (cache / "download.incomplete").write_bytes(b"partial")
                 return subprocess.CompletedProcess(command, 1)
 
-            with (patch.object(mod.native, "storage_info", return_value={}),
+            with (patch.object(mod.native, "storage_info", return_value={}) as storage_info,
                   patch.object(mod.native, "form_factor", return_value="MacBook Pro"),
                   patch.object(mod.shutil, "disk_usage", return_value=Namespace(free=1 << 40)),
                   patch.object(mod.subprocess, "run", side_effect=failed_download) as subprocess_run,
                   mod.lock_cache(cache) as descriptor):
                 with self.assertRaisesRegex(RuntimeError, "downloader exited"):
-                    mod.run_delivery(args, contract, {}, 128 << 30, "Apple M5 Max", descriptor)
+                    mod.run_delivery(args, contract, 128 << 30, "Apple M5 Max", descriptor)
                 receipt = json.loads((args.output / "result.json").read_text())
                 cache_state = mod.cache_resume_state(cache, descriptor)
                 self.assertFalse(receipt["completed"])
@@ -167,18 +165,23 @@ class DeliveryTests(unittest.TestCase):
                 self.assertTrue(fresh)
                 self.assertEqual(len(attempts), 1)
                 self.assertNotIn(str(cache), json.dumps(receipt))
+                subprocess_run.assert_called_once()
+                self.assertEqual(subprocess_run.call_args.args[0],
+                                 [str(cli), "download", mod.ALIAS, "--progress-json"])
+                self.assertEqual(receipt["download"]["ax_engine_sha256"], mod.sha256_file(cli))
+                self.assertNotIn("hub_client_version", receipt["download"])
 
-                def populate_during_preflight(command, **kwargs):
+                def populate_during_preflight(path):
                     (cache / "unrelated").write_bytes(b"pre-existing weights")
-                    return subprocess.CompletedProcess(command, 0, stdout="test-hub")
+                    return {}
 
                 args.previous_attempt = args.output
                 args.output = root / "second"
                 subprocess_run.reset_mock(side_effect=True)
-                subprocess_run.side_effect = populate_during_preflight
+                storage_info.side_effect = populate_during_preflight
                 with self.assertRaisesRegex(ValueError, "cache contents changed"):
-                    mod.run_delivery(args, contract, {}, 128 << 30, "Apple M5 Max", descriptor)
-                self.assertEqual(subprocess_run.call_count, 1)
+                    mod.run_delivery(args, contract, 128 << 30, "Apple M5 Max", descriptor)
+                subprocess_run.assert_not_called()
 
     def test_snapshot_dir_requires_exactly_the_pinned_revision(self):
         with tempfile.TemporaryDirectory() as td:
@@ -192,43 +195,34 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly the pinned revision"):
                 mod.snapshot_dir(root)
 
-    def test_environment_drops_inherited_overrides_and_sets_only_cache_and_python(self):
-        with patch.dict(mod.os.environ, {"HF_HOME": "/x", "AX_STREAM_EXPERTS": "on",
-                                         "MLX_X": "1", "XDG_CACHE_HOME": "/y", "KEEP": "1"}):
-            env = mod.clean_env(Path("/cache"), Path("/py"))
-        self.assertEqual(env["HF_HUB_CACHE"], "/cache")
-        self.assertEqual(env["AX_ENGINE_PYTHON"], "/py")
-        self.assertEqual(env["KEEP"], "1")
-        for name in ("HF_HOME", "AX_STREAM_EXPERTS", "MLX_X", "XDG_CACHE_HOME"):
-            self.assertNotIn(name, env)
+    def test_environment_preserves_path_and_isolates_the_native_cache(self):
+        inherited = {"HF_HOME": "/x", "AX_STREAM_EXPERTS": "on", "MLX_X": "1",
+                     "XDG_CACHE_HOME": "/y", "PATH": "/usr/bin",
+                     "AX_ENGINE_DOWNLOAD_HELPER": "/old", "HF_HUB_DOWNLOAD_TIMEOUT": "60"}
+        with patch.dict(mod.os.environ, inherited, clear=True):
+            self.assertEqual(mod.clean_env(Path("/cache")),
+                             {"HF_HUB_CACHE": "/cache", "PATH": "/usr/bin"})
 
-    def test_source_builds_get_an_explicit_helper_and_bench_directory(self):
-        with patch.dict(mod.os.environ, {"PATH": "/usr/bin"}):
-            env = mod.clean_env(Path("/cache"), Path("/py"), Path("/repo/scripts/download_model.py"),
-                                Path("/build/ax-engine-bench"))
-            plain = mod.clean_env(Path("/cache"), Path("/py"))
-        self.assertEqual(env["AX_ENGINE_DOWNLOAD_HELPER"], "/repo/scripts/download_model.py")
-        self.assertTrue(env["PATH"].startswith("/build:"))
-        self.assertNotIn("AX_ENGINE_DOWNLOAD_HELPER", plain)
-        self.assertEqual(plain["PATH"], "/usr/bin")
-
-    def test_transport_overrides_are_an_allowlist_of_integers_and_reach_the_environment(self):
-        parsed = mod.parse_transport(["AX_ENGINE_HF_MAX_WORKERS=2", "HF_HUB_DOWNLOAD_TIMEOUT=60"])
-        self.assertEqual(parsed, {"AX_ENGINE_HF_MAX_WORKERS": "2", "HF_HUB_DOWNLOAD_TIMEOUT": "60"})
-        for bad in ("PATH=/x", "AX_ENGINE_HF_MAX_WORKERS", "AX_ENGINE_HF_MAX_WORKERS=two",
-                    "HF_HUB_DOWNLOAD_TIMEOUT="):
-            with self.assertRaises(ValueError, msg=bad):
-                mod.parse_transport([bad])
-        env = mod.clean_env(Path("/cache"), Path("/py"), transport=parsed)
-        self.assertEqual(env["AX_ENGINE_HF_MAX_WORKERS"], "2")
-        with patch.dict(mod.os.environ, {"HF_HUB_DOWNLOAD_TIMEOUT": "5"}):
-            self.assertNotIn("HF_HUB_DOWNLOAD_TIMEOUT", mod.clean_env(Path("/cache"), Path("/py")))
-
-    def test_terminal_record_is_the_last_json_object(self):
-        stdout = '{"event":"progress","n":1}\nnot json\n{"event":"done","status":"ready"}\n'
-        self.assertEqual(mod.terminal_record(stdout)["status"], "ready")
-        with self.assertRaises(ValueError):
-            mod.terminal_record("no json here\n")
+    def test_terminal_record_requires_an_actual_ready_pin_at_the_cache_destination(self):
+        snapshot = Path("/cache") / mod.native.PACK_REVISION
+        ready = {"schema_version": "ax.download_model.v1", "status": "ready", "errors": [],
+                 "repo_id": mod.native.PRIMARY_REPO, "revision": mod.native.PACK_REVISION,
+                 "resolved_revision": mod.native.PACK_REVISION, "dest": str(snapshot),
+                 "manifest_present": True, "config_present": True}
+        progress = '{"event":"progress","phase":"validate"}'
+        self.assertEqual(mod.terminal_record(f"{progress}\n{json.dumps(ready)}\n", snapshot), ready)
+        for key, bad in (("schema_version", "other"), ("repo_id", "other/model"),
+                         ("errors", ["warning"]), ("resolved_revision", None),
+                         ("status", "download_failed"), ("manifest_present", False),
+                         ("config_present", False), ("revision", "main")):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "pinned native download"):
+                mod.terminal_record(json.dumps({**ready, key: bad}), snapshot)
+        with self.assertRaisesRegex(ValueError, "outside the pinned snapshot"):
+            mod.terminal_record(json.dumps({**ready, "dest": "/elsewhere"}), snapshot)
+        with self.assertRaisesRegex(ValueError, "pinned native download"):
+            mod.terminal_record(progress, snapshot)
+        with self.assertRaisesRegex(ValueError, "no JSON terminal record"):
+            mod.terminal_record(f"{json.dumps(ready)}\nunexpected final line\n", snapshot)
 
     def test_scrub_removes_home_and_loopback_recursively(self):
         home = str(Path.home())
@@ -260,6 +254,7 @@ class DeliveryTests(unittest.TestCase):
         out = subprocess.run([sys.executable, str(SCRIPT), "--dry-run"], capture_output=True,
                              text=True, check=True)
         contract = json.loads(out.stdout)
+        self.assertIn("native product CLI", contract["downloader"])
         self.assertEqual(contract["control_modes"], ["disabled", "required", "default"])
         self.assertEqual(contract["published_members"], 49)
         self.assertFalse(contract["qualification"])

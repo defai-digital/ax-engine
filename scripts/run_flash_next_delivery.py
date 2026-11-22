@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify immutable fresh-cache delivery of the pinned Flash Next MXFP4 MTP pack.
 
-Downloads the pinned revision with the product downloader (`ax-engine download
+Downloads the pinned revision with the native product downloader (`ax-engine download
 qwen3.8-flash-next:mxfp4`) into an empty cache root, binds every published
 member by size and SHA-256 against the staging inventory, requires the generated
 native manifest to be runtime ready, and then runs the functional controls
@@ -150,48 +150,30 @@ def snapshot_dir(cache_root: Path) -> Path:
     return snapshots / native.PACK_REVISION
 
 
-TRANSPORT_OVERRIDES = ("AX_ENGINE_HF_MAX_WORKERS", "HF_HUB_DOWNLOAD_TIMEOUT", "HF_HUB_ETAG_TIMEOUT")
-
-
-def parse_transport(items: list[str]) -> dict[str, str]:
-    """Documented downloader transport knobs only; anything else is refused."""
-    parsed: dict[str, str] = {}
-    for item in items:
-        name, separator, value = item.partition("=")
-        if not separator or name not in TRANSPORT_OVERRIDES or not value.isdigit():
-            raise ValueError(f"transport override must be NAME=<integer> with NAME in {TRANSPORT_OVERRIDES}")
-        parsed[name] = value
-    return parsed
-
-
-def clean_env(cache_root: Path, python: Path, helper: Path | None = None,
-              bench: Path | None = None, transport: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment for the downloader: inherited overrides dropped, the stated inputs set.
-
-    A source build finds neither the bundled helper nor `ax-engine-bench`, so the
-    helper path and the build's `ax-engine-bench` directory are passed explicitly.
-    """
+def clean_env(cache_root: Path) -> dict[str, str]:
+    """Run the native downloader without inherited AX, Hub, or MLX overrides."""
     kept = {name: value for name, value in os.environ.items()
             if not name.startswith(("AX_", "HF_", "MLX_", "XDG_CACHE"))}
-    env = {**kept, "HF_HUB_CACHE": str(cache_root), "AX_ENGINE_PYTHON": str(python)}
-    if helper is not None:
-        env["AX_ENGINE_DOWNLOAD_HELPER"] = str(helper)
-    if bench is not None:
-        env["PATH"] = f"{bench.parent}{os.pathsep}{env.get('PATH', '')}"
-    env.update(transport or {})
-    return env
+    return {**kept, "HF_HUB_CACHE": str(cache_root)}
 
 
-def terminal_record(stdout: str) -> dict[str, Any]:
-    """The last JSON line the downloader prints is its terminal summary."""
-    for line in reversed([item for item in stdout.splitlines() if item.strip()]):
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            return record
-    raise ValueError("downloader printed no JSON terminal record")
+def terminal_record(stdout: str, snapshot: Path) -> dict[str, Any]:
+    """Require native success for the expected pack and cache destination."""
+    try:
+        record = json.loads(stdout.rstrip().rsplit("\n", 1)[-1])
+    except json.JSONDecodeError as error:
+        raise ValueError("downloader printed no JSON terminal record") from error
+    expected = {"schema_version": "ax.download_model.v1", "status": "ready",
+                "repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
+                "resolved_revision": native.PACK_REVISION, "errors": []}
+    if (not isinstance(record, dict)
+            or any(record.get(key) != value for key, value in expected.items())
+            or record.get("manifest_present") is not True or record.get("config_present") is not True):
+        raise ValueError("downloader terminal record does not match the pinned native download")
+    dest = record.get("dest")
+    if not isinstance(dest, str) or Path(dest).resolve() != snapshot.resolve():
+        raise ValueError("downloader terminal record points outside the pinned snapshot")
+    return record
 
 
 def verify_delivery(snapshot: Path, cache_root: Path, inventory: dict[str, Any]) -> dict[str, Any]:
@@ -230,16 +212,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ax-engine", type=Path, help="product CLI used to download")
-    parser.add_argument("--python", type=Path, help="interpreter with huggingface_hub for the downloader")
-    parser.add_argument("--helper", type=Path, help="download_model.py of the same source checkout")
-    parser.add_argument("--bench-bin", type=Path, help="ax-engine-bench of the same build (manifest generation)")
     parser.add_argument("--cache-root", type=Path, help="empty Hugging Face cache root on the internal SSD")
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--transport-env", action="append", default=[], metavar="NAME=VALUE",
-                        help="downloader transport override (AX_ENGINE_HF_MAX_WORKERS, "
-                             "HF_HUB_DOWNLOAD_TIMEOUT, HF_HUB_ETAG_TIMEOUT); recorded in the result")
     parser.add_argument("--previous-attempt", type=Path,
                         help="output directory of a failed attempt on this same cache root; "
                              "this run resumes it and records the failed attempt(s)")
@@ -247,23 +223,22 @@ def main() -> int:
     contract = {"schema": SCHEMA, "repo_id": native.PRIMARY_REPO,
                 "revision": native.PACK_REVISION, "alias": ALIAS, "published_members": PUBLISHED_MEMBERS,
                 "published_bytes": PUBLISHED_BYTES, "control_modes": list(CONTROL_MODES),
-                "downloader": "ax-engine download <alias> --progress-json (product CLI and helper)",
+                "downloader": "ax-engine download <alias> --progress-json (native product CLI)",
                 "page_cache": "not controlled", "qualification": False, "release_ready": False,
                 "scope": "delivery integrity and functional controls on the delivered copy; "
                          "quality, performance and MTP-S/P/D not assessed"}
     if args.dry_run:
         print(json.dumps(contract, indent=2))
         return 0
-    required = (args.ax_engine, args.python, args.cache_root, args.inventory, args.server_bin, args.output)
+    required = (args.ax_engine, args.cache_root, args.inventory, args.server_bin, args.output)
     if not all(required):
-        parser.error("live run requires ax-engine, python, cache-root, inventory, server-bin and output")
+        parser.error("live run requires ax-engine, cache-root, inventory, server-bin and output")
     if platform.system() != "Darwin":
         parser.error("live run requires macOS on the Flash Next standard host")
     memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
     if not native.is_target_host(chip, memory):
         parser.error(f"live run requires the Flash Next standard host ({native.TARGET_DESCRIPTION})")
-    transport = parse_transport(args.transport_env)
     args.cache_root = args.cache_root.resolve()
     if args.output.resolve().is_relative_to(args.cache_root):
         raise ValueError("delivery output must be outside the download cache")
@@ -271,11 +246,11 @@ def main() -> int:
         raise ValueError("cache root exists and is not a directory")
     args.cache_root.mkdir(parents=True, exist_ok=True)
     with lock_cache(args.cache_root) as descriptor:
-        return run_delivery(args, contract, transport, memory, chip, descriptor)
+        return run_delivery(args, contract, memory, chip, descriptor)
 
 
 def run_delivery(args: argparse.Namespace, contract: dict[str, Any],
-                 transport: dict[str, str], memory: int, chip: str, descriptor: int) -> int:
+                 memory: int, chip: str, descriptor: int) -> int:
     inventory_bytes = args.inventory.read_bytes()
     inventory = json.loads(inventory_bytes)
     inventory_sha256 = hashlib.sha256(inventory_bytes).hexdigest()
@@ -290,11 +265,8 @@ def run_delivery(args: argparse.Namespace, contract: dict[str, Any],
     free = shutil.disk_usage(args.cache_root).free
     if free < PUBLISHED_BYTES * SPACE_MARGIN:
         raise ValueError(f"cache volume has {free} bytes free; need {int(PUBLISHED_BYTES * SPACE_MARGIN)}")
-    hub = subprocess.run([str(args.python), "-c",
-                          "import huggingface_hub, sys; print(huggingface_hub.__version__)"],
-                         capture_output=True, text=True)
-    if hub.returncode != 0:
-        raise ValueError("the downloader interpreter cannot import huggingface_hub")
+    ax_engine_sha256 = sha256_file(args.ax_engine)
+    server_sha256 = sha256_file(args.server_bin)
     args.output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     with (args.output / "download.ndjson").open("wb") as out, \
@@ -305,33 +277,32 @@ def run_delivery(args: argparse.Namespace, contract: dict[str, Any],
         elif cache_resume_state(args.cache_root, descriptor) != cache_state:
             raise ValueError("cache contents changed before resuming delivery")
         done = subprocess.run([str(args.ax_engine), "download", ALIAS, "--progress-json"],
-                              stdout=out, stderr=err, env=clean_env(args.cache_root, args.python, args.helper, args.bench_bin,
-                                            transport))
+                              stdout=out, stderr=err, env=clean_env(args.cache_root))
     elapsed = round(time.monotonic() - started, 3)
-    for name in ("download.ndjson", "download.stderr.log"):
-        path = args.output / name
-        path.write_text(scrub(path.read_text(errors="replace")))
+    stdout_path = args.output / "download.ndjson"
+    stdout = stdout_path.read_text(errors="replace")
+    stdout_path.write_text(scrub(stdout))
+    stderr_path = args.output / "download.stderr.log"
+    stderr_path.write_text(scrub(stderr_path.read_text(errors="replace")))
     record: dict[str, Any] = {
         **contract, "completed": False, "fresh_cache": fresh, "previous_attempts": attempts,
-        "resumed": resuming, "transport_override": transport,
+        "resumed": resuming,
         "download": {"exit_code": done.returncode, "elapsed_seconds": elapsed,
-                     "hub_client_version": hub.stdout.strip(),
-                     "ax_engine_sha256": sha256_file(args.ax_engine),
-                     "helper_sha256": sha256_file(args.helper) if args.helper else None,
-                     "bench_sha256": sha256_file(args.bench_bin) if args.bench_bin else None},
+                     "ax_engine_sha256": ax_engine_sha256},
         "hardware": {"form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
                      "storage": {"declared": inventory["storage"], **storage},
                      "os": platform.mac_ver()[0]},
-        "server_sha256": sha256_file(args.server_bin), "inventory_sha256": inventory_sha256}
+        "server_sha256": server_sha256, "inventory_sha256": inventory_sha256}
     check_cache_directory(args.cache_root, descriptor)
     if done.returncode != 0:
         record["resume_cache_sha256"] = cache_resume_state(args.cache_root, descriptor)
     (args.output / "result.json").write_text(json.dumps(record, indent=2) + "\n")
     if done.returncode != 0:
         raise RuntimeError(f"downloader exited with {done.returncode}; see download.stderr.log")
-    record["download"]["terminal"] = scrub(terminal_record(
-        (args.output / "download.ndjson").read_text()))
+    if ax_engine_sha256 != sha256_file(args.ax_engine):
+        raise ValueError("product CLI changed during delivery")
     snapshot = snapshot_dir(args.cache_root)
+    record["download"]["terminal"] = scrub(terminal_record(stdout, snapshot))
     record["verification"] = verify_delivery(snapshot, args.cache_root, inventory)
     preflight = subprocess.run([sys.executable, str(SCRIPTS / "qualify_qwen38_flash_next.py"),
                                 "--model-dir", str(snapshot)], capture_output=True, text=True)
