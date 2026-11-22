@@ -1312,6 +1312,139 @@ fn flash_next_physical_split_prefill_stage_profile() {
     std::fs::write(output, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
 }
 
+/// Compare the normal cache-only prefill forwards across separately loaded
+/// readers. The full-length priming prompts and measured prompts use fresh
+/// request caches; each process owns only one set of weights.
+#[test]
+#[ignore = "requires the pinned resident Flash Next pack; loader timing diagnostic"]
+fn flash_next_resident_reader_warmed_prefill_profile() {
+    use crate::generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill};
+    use crate::kv_cache::MlxKVCache;
+    use crate::sampling::{MlxSamplingParams, MlxSamplingRequest};
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = crate::model::ModelConfig::from_manifest(artifacts.manifest());
+    assert_eq!(cfg.model_family, "qwen4_exp");
+    let corpus = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_READER_PROBE_PROMPTS").unwrap());
+    let inputs: [Vec<u32>; 4] = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+    assert_eq!(inputs.each_ref().map(Vec::len), [512, 2048, 8192, 8192]);
+    assert!(inputs[2] != inputs[3]);
+    let vocab = u32::try_from(cfg.vocab_size).unwrap();
+    assert!(inputs.iter().flatten().all(|&id| id < vocab));
+    let order = std::env::var("AX_FLASH_NEXT_READER_PROBE_ORDER").unwrap();
+    let lengths = match order.as_str() {
+        "short-first" => [1, 2],
+        "long-first" => [2, 1],
+        other => panic!("invalid reader probe order {other}"),
+    };
+    let loader = std::env::var("AX_FLASH_NEXT_RESIDENT_POSITIONAL").unwrap_or_default();
+    assert!(loader.is_empty() || loader == "1");
+    let load_started = Instant::now();
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    assert!(weights.expert_stream.is_none() && weights.qwen4_exp.is_some());
+    let load_seconds = load_started.elapsed().as_secs_f64();
+    let base = if cfg.linear_attention.is_some() {
+        DEFAULT_PREFILL_CHUNK.min(
+            crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+                crate::fastpath::qwen_gated_delta_prefill_streaming_enabled(),
+                cfg.moe_expert_count > 0,
+            ),
+        )
+    } else {
+        DEFAULT_PREFILL_CHUNK
+    };
+    let run = |index: usize, capture: bool| {
+        let tokens = &inputs[index];
+        let chunk = crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+            base,
+            tokens.len(),
+            &cfg.model_family,
+        );
+        let guard = capture.then(|| {
+            CAPTURE.with_borrow_mut(|slot| {
+                assert!(slot.is_none());
+                *slot = Some(Capture {
+                    layer: None,
+                    previous: Instant::now(),
+                    previous_ops: mlx_sys::op_count_snapshot(),
+                    samples: Vec::new(),
+                    paging: Vec::new(),
+                });
+            });
+            CaptureGuard
+        });
+        let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
+        let start = Instant::now();
+        let token = chunked_prefill(
+            &cfg,
+            &weights,
+            tokens,
+            &mut cache,
+            chunk,
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]),
+            &mut crate::sampling::Xorshift64::new(42),
+        );
+        let seconds = start.elapsed().as_secs_f64();
+        assert_eq!(cache.seq_len(), tokens.len());
+        let samples = if capture {
+            CAPTURE.with_borrow_mut(Option::take).unwrap().samples
+        } else {
+            Vec::new()
+        };
+        drop(guard);
+        (seconds, token, cache, samples)
+    };
+    drop(run(0, false));
+    let mut measurements = Vec::new();
+    let mut outputs = BTreeMap::new();
+    for phase in ["before_additional_8k", "after_additional_8k"] {
+        if phase == "after_additional_8k" {
+            // Use a different prompt with the same 8K graph geometry.
+            drop(run(3, false));
+            drop(run(3, false));
+        }
+        for repeat in 0..3 {
+            for index in lengths {
+                let (seconds, token, _, _) = run(index, false);
+                assert_eq!(*outputs.entry(index).or_insert(token), token);
+                measurements.push(serde_json::json!({
+                    "phase": phase, "repeat": repeat, "prompt_tokens": inputs[index].len(),
+                    "prefill_seconds": seconds, "first_token": token,
+                }));
+            }
+        }
+    }
+    let profiles: Vec<_> = lengths.into_iter().map(|index| {
+        let (_, token, control, _) = run(index, false);
+        let (seconds, traced_token, traced, samples) = run(index, true);
+        assert_eq!(token, outputs[&index]);
+        assert_eq!(token, traced_token);
+        let positions: Vec<_> = samples.iter().filter(|sample| sample.stage == "embedding")
+            .map(|sample| (sample.chunk_offset, sample.chunk_len)).collect();
+        assert_eq!(positions.last(), Some(&(inputs[index].len() - 1, 1)));
+        assert_eq!(positions.iter().map(|pair| pair.1).sum::<usize>(), inputs[index].len());
+        let control_state = control.serialize_to_bytes();
+        assert!(control_state == traced.serialize_to_bytes());
+        serde_json::json!({
+            "prompt_tokens": inputs[index].len(), "first_token": token,
+            "serialized_state_sha256": format!("{:x}", Sha256::digest(&control_state)),
+            "traced_prefill_seconds": seconds, "forwards": positions, "stages": stage_totals(&samples),
+        })
+    }).collect();
+    let output = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT").unwrap();
+    std::fs::write(
+        output,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "order": order, "loader": if loader == "1" { "pread" } else { "mmap" },
+            "load_seconds": load_seconds, "measurements": measurements, "profiles": profiles,
+            "qualification": false,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 #[ignore = "requires the real campaign pack on the authorized M2 host; synchronized attribution only"]
 fn flash_next_prefill_stage_profile() {
