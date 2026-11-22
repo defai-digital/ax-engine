@@ -1341,7 +1341,9 @@ pub(crate) fn load_weights_with_session_budget(
         let token_embedding = dedicated.token_embedding.clone();
         let lm_head = dedicated.lm_head.clone();
         let expert_stream = dedicated.expert_stream.clone();
+        let mut startup = qwen4_exp::StartupTrace::new();
         let qwen4_exp_mtp = load_flash_next_mtp_candidate(artifacts, &dedicated);
+        startup.phase("mtp_sidecar");
         // The tower only serves image requests: a pack whose tower does not
         // load keeps serving text, and image requests then fail with a
         // missing-tower error.
@@ -1356,6 +1358,7 @@ pub(crate) fn load_weights_with_session_budget(
                 None
             }
         };
+        startup.phase("vision_tower");
         return Ok(ModelWeights {
             token_embedding,
             final_norm: None,

@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ax_engine_core::convert::qwen4_exp_layout::{
     Qwen4ExpAxquantNormClaim, Qwen4ExpNormClaim as NormClaim, Qwen4ExpNormGainForm as GainForm,
@@ -48,6 +49,34 @@ use crate::qwen4_exp_ngram::NgramLayout;
 use crate::qwen4_exp_qsa::{QsaConfig, QsaIndexer, QsaIndexerWeights};
 
 use super::{QuantizedWeight, WeightLoadError, take_weight, take_weight_spec, try_take_plain};
+
+const STARTUP_TRACE_TARGET: &str = "ax_engine_mlx::flash_next_startup";
+
+pub(super) struct StartupTrace(Option<Instant>);
+
+impl StartupTrace {
+    pub(super) fn new() -> Self {
+        Self(
+            tracing::enabled!(target: STARTUP_TRACE_TARGET, tracing::Level::DEBUG)
+                .then(Instant::now),
+        )
+    }
+
+    fn elapsed(&mut self) -> Option<Duration> {
+        let started = self.0.as_mut()?;
+        let now = Instant::now();
+        let elapsed = now.duration_since(*started);
+        *started = now;
+        Some(elapsed)
+    }
+
+    pub(super) fn phase(&mut self, phase: &'static str) {
+        if let Some(elapsed) = self.elapsed() {
+            tracing::debug!(target: STARTUP_TRACE_TARGET, phase,
+                elapsed_us = elapsed.as_micros() as u64, "Flash Next startup phase");
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Qwen4ExpTargetSchedule {
@@ -255,6 +284,7 @@ fn load_with_schedule_admission(
     budget_layers: usize,
     audited_mx: Option<ExpertQuantizationMode>,
 ) -> Result<Qwen4ExpWeights, WeightLoadError> {
+    let mut startup = StartupTrace::new();
     if manifest.model_family != "qwen4_exp" {
         return Err(WeightLoadError::InvalidLayer(format!(
             "qwen4_exp loader requires model_family qwen4_exp, got {:?}",
@@ -338,6 +368,7 @@ fn load_with_schedule_admission(
             .map(Arc::new)
         })
         .transpose()?;
+    startup.phase("trunk_admission");
     let specs = manifest.tensors.as_slice();
     let mut name_map = load_resident_tensors(
         root,
@@ -346,6 +377,7 @@ fn load_with_schedule_admission(
         manifest,
         &stream_skip,
     )?;
+    startup.phase("resident_tensors");
     let mut schedule_index = weight_index.unwrap_or_default();
     let verifier = parse_mtp_verifier_selection(std::env::var(MTP_VERIFIER_ENV).ok().as_deref())
         .and_then(|selection| {
@@ -379,6 +411,7 @@ fn load_with_schedule_admission(
         Err(reason) => Qwen4ExpTargetSchedule::Unavailable(reason),
     };
     apply_norm_gain_contract(norm_contract, &manifest.tensors, &mut name_map)?;
+    startup.phase("trunk_weight_contract");
 
     let hidden = as_usize(manifest.hidden_size, "hidden_size")?;
     let query_heads = as_usize(manifest.attention_head_count, "attention_head_count")?;
@@ -663,6 +696,7 @@ fn load_with_schedule_admission(
         });
     }
 
+    startup.phase("trunk_assembly");
     Ok(Qwen4ExpWeights {
         target_schedule,
         token_embedding,
@@ -1359,6 +1393,7 @@ fn load_resident_tensors(
     manifest: &NativeModelManifest,
     stream_skip: &HashSet<String>,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
+    let mut startup = StartupTrace::new();
     let mut files = std::collections::BTreeMap::<PathBuf, HashSet<String>>::new();
     let mut declared = HashSet::new();
     for spec in &manifest.tensors {
@@ -1395,13 +1430,22 @@ fn load_resident_tensors(
             }
         }
     }
+    startup.phase("resident_selection");
     let mut result = HashMap::new();
     for (path, names) in files {
+        let mut shard = StartupTrace(startup.0.map(|_| Instant::now()));
         let tensors = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names))
             .map_err(WeightLoadError::FileMissing)?;
+        let read = shard.elapsed();
         mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>()).map_err(|e| {
             WeightLoadError::InvalidLayer(format!("qwen4_exp weight evaluation: {e}"))
         })?;
+        if let (Some(read), Some(eval)) = (read, shard.elapsed()) {
+            tracing::debug!(target: STARTUP_TRACE_TARGET,
+                shard = ?path.file_name(), tensor_count = tensors.len(),
+                read_us = read.as_micros() as u64, eval_us = eval.as_micros() as u64,
+                "Flash Next resident shard");
+        }
         for (name, array) in tensors {
             if result.insert(name.clone(), array).is_some() {
                 return Err(WeightLoadError::InvalidLayer(format!(
