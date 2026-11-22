@@ -1,0 +1,12 @@
+{
+  "scope": "native functional session isolation with shared cold weights",
+  "qualification": false,
+  "source_tree": "8ca1d8f0681211ba0d12a4207a74fc94379aa7b8",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "normal_pressure_samples": 7,
+  "weight_allocations": 1,
+  "concurrent_runners": 2,
+  "solo_runners": 2,
+  "shared_request_id": 1,
+  "matched_solo_ids_per_runner": 8
+}

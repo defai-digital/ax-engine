@@ -1,0 +1,17 @@
+{
+  "source_base": "47fcc660f52622fac71580202c912d7f5acfc0e7",
+  "source_tree": "8ca1d8f0681211ba0d12a4207a74fc94379aa7b8",
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/runner/mod.rs": "fcbc939d970b99c8163c326f0d3138ce0ba14d79f62bdb477e7fa2b5a0e24156",
+    "crates/ax-engine-mlx/src/runner/tests.rs": "e6ebabe47f70d84c2c05b932e718dad29d4328e3272dcb5110198a268ab0d36c",
+    "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "391cd0c005199e6e8024924dc1f7645a0d2008bf4ba7133b68d3800568fd8c70"
+  },
+  "test_patch_sha256": "9293c98137009324280e29c3646c9e1a10b5f209e3804b3f3491fd4ec42c9a26",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "binary_sha256": "776404245133981bbc462751d1602198bd812956c26492d3fad0eff94a16c24f",
+  "profile": "test"
+}

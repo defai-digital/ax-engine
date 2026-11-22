@@ -1,0 +1,48 @@
+{
+  "scope": "native functional session isolation with shared cold weights",
+  "qualification": false,
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "build": {
+    "source_base": "47fcc660f52622fac71580202c912d7f5acfc0e7",
+    "source_tree": "8ca1d8f0681211ba0d12a4207a74fc94379aa7b8",
+    "source_sha256": {
+      "crates/ax-engine-mlx/src/runner/mod.rs": "fcbc939d970b99c8163c326f0d3138ce0ba14d79f62bdb477e7fa2b5a0e24156",
+      "crates/ax-engine-mlx/src/runner/tests.rs": "e6ebabe47f70d84c2c05b932e718dad29d4328e3272dcb5110198a268ab0d36c",
+      "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "391cd0c005199e6e8024924dc1f7645a0d2008bf4ba7133b68d3800568fd8c70"
+    },
+    "test_patch_sha256": "9293c98137009324280e29c3646c9e1a10b5f209e3804b3f3491fd4ec42c9a26",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "776404245133981bbc462751d1602198bd812956c26492d3fad0eff94a16c24f",
+    "profile": "test"
+  },
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "os_version": "27.2.1"
+  },
+  "test": "runner::flash_next_tests::flash_next_real_concurrent_cold_runners_share_weights",
+  "weight_allocations": 1,
+  "concurrent_runners": 2,
+  "solo_runners": 2,
+  "shared_request_id": 1,
+  "matched_solo_ids_per_runner": 8,
+  "pressure_samples": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "result": 0,
+  "test_output_sha256": "6cdb3a9a469d786beb13cf2da23f6b1023c90cd81cebd13054bf9dd43b443e68"
+}

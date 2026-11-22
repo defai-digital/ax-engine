@@ -1,0 +1,12 @@
+{
+  "scope": "M5 ordered serving comparison",
+  "qualification": false,
+  "timing_eligible": false,
+  "terminal_reason": "memory pressure exceeded normal in physical-1",
+  "evaluated_only": "physical-1",
+  "normal_pressure_samples": 165,
+  "warning_pressure_samples": 142,
+  "matching_output_ids": 192,
+  "prefill_overlapped": true,
+  "peak_process_footprint_bytes": 81220817576
+}
