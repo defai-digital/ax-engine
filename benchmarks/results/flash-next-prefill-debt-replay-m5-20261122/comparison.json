@@ -1,0 +1,174 @@
+{
+  "decode_sensitivity": {
+    "p10": {
+      "one_decoder_us": 20013,
+      "scenarios": {
+        "0": {
+          "mixed_slices_before_short_completion": 20,
+          "remaining_prefill_slices": 0,
+          "runner_time_after_first_short_token_us": 14184390,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 735985.6,
+          "short_runner_gaps_at_least_100ms": 16
+        },
+        "25": {
+          "mixed_slices_before_short_completion": 12,
+          "remaining_prefill_slices": 8,
+          "runner_time_after_first_short_token_us": 8172480,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 728950.7999999999,
+          "short_runner_gaps_at_least_100ms": 10
+        },
+        "50": {
+          "mixed_slices_before_short_completion": 7,
+          "remaining_prefill_slices": 13,
+          "runner_time_after_first_short_token_us": 5257579,
+          "short_runner_gap_max_us": 736890,
+          "short_runner_gap_p95_us": 494456.4,
+          "short_runner_gaps_at_least_100ms": 6
+        },
+        "75": {
+          "mixed_slices_before_short_completion": 6,
+          "remaining_prefill_slices": 14,
+          "runner_time_after_first_short_token_us": 4540702,
+          "short_runner_gap_max_us": 726102,
+          "short_runner_gap_p95_us": 179295.99999999872,
+          "short_runner_gaps_at_least_100ms": 5
+        },
+        "100": {
+          "mixed_slices_before_short_completion": 4,
+          "remaining_prefill_slices": 16,
+          "runner_time_after_first_short_token_us": 3810138,
+          "short_runner_gap_max_us": 503229,
+          "short_runner_gap_p95_us": 20013.0,
+          "short_runner_gaps_at_least_100ms": 4
+        }
+      },
+      "two_decoders_us": 42239
+    },
+    "p50": {
+      "one_decoder_us": 20388,
+      "scenarios": {
+        "0": {
+          "mixed_slices_before_short_completion": 20,
+          "remaining_prefill_slices": 0,
+          "runner_time_after_first_short_token_us": 14233215,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 735985.6,
+          "short_runner_gaps_at_least_100ms": 16
+        },
+        "25": {
+          "mixed_slices_before_short_completion": 12,
+          "remaining_prefill_slices": 8,
+          "runner_time_after_first_short_token_us": 8203605,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 728950.7999999999,
+          "short_runner_gaps_at_least_100ms": 10
+        },
+        "50": {
+          "mixed_slices_before_short_completion": 7,
+          "remaining_prefill_slices": 13,
+          "runner_time_after_first_short_token_us": 5290579,
+          "short_runner_gap_max_us": 736890,
+          "short_runner_gap_p95_us": 494456.4,
+          "short_runner_gaps_at_least_100ms": 6
+        },
+        "75": {
+          "mixed_slices_before_short_completion": 6,
+          "remaining_prefill_slices": 14,
+          "runner_time_after_first_short_token_us": 4574077,
+          "short_runner_gap_max_us": 726102,
+          "short_runner_gap_p95_us": 179295.99999999872,
+          "short_runner_gaps_at_least_100ms": 5
+        },
+        "100": {
+          "mixed_slices_before_short_completion": 4,
+          "remaining_prefill_slices": 16,
+          "runner_time_after_first_short_token_us": 3844263,
+          "short_runner_gap_max_us": 503229,
+          "short_runner_gap_p95_us": 20388.0,
+          "short_runner_gaps_at_least_100ms": 4
+        }
+      },
+      "two_decoders_us": 42890
+    },
+    "p90": {
+      "one_decoder_us": 20916,
+      "scenarios": {
+        "0": {
+          "mixed_slices_before_short_completion": 20,
+          "remaining_prefill_slices": 0,
+          "runner_time_after_first_short_token_us": 14288115,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 735985.6,
+          "short_runner_gaps_at_least_100ms": 16
+        },
+        "25": {
+          "mixed_slices_before_short_completion": 13,
+          "remaining_prefill_slices": 7,
+          "runner_time_after_first_short_token_us": 8966616,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 735985.6,
+          "short_runner_gaps_at_least_100ms": 11
+        },
+        "50": {
+          "mixed_slices_before_short_completion": 8,
+          "remaining_prefill_slices": 12,
+          "runner_time_after_first_short_token_us": 6063503,
+          "short_runner_gap_max_us": 747376,
+          "short_runner_gap_p95_us": 495913.8,
+          "short_runner_gaps_at_least_100ms": 7
+        },
+        "75": {
+          "mixed_slices_before_short_completion": 6,
+          "remaining_prefill_slices": 14,
+          "runner_time_after_first_short_token_us": 4621069,
+          "short_runner_gap_max_us": 726102,
+          "short_runner_gap_p95_us": 179295.99999999872,
+          "short_runner_gaps_at_least_100ms": 5
+        },
+        "100": {
+          "mixed_slices_before_short_completion": 4,
+          "remaining_prefill_slices": 16,
+          "runner_time_after_first_short_token_us": 3892311,
+          "short_runner_gap_max_us": 503229,
+          "short_runner_gap_p95_us": 20916.0,
+          "short_runner_gaps_at_least_100ms": 4
+        }
+      },
+      "two_decoders_us": 43622
+    }
+  },
+  "input_archive_sha256": "bd8cd3e0ce8aebca20109d280538570ff089615f4e01559bf474ea9af48781a0",
+  "observed_early_short": {
+    "gaps": 95,
+    "gaps_at_least_100ms": 16,
+    "max_us": 747376,
+    "p95_us": 735985.6
+  },
+  "observed_first_short_token_runner_us": 527355,
+  "observed_shared_slice_median_us": 725718.5,
+  "physical_plan": [
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1
+  ],
+  "scope": "Fixed-cost projection from one measured M5 burst"
+}
