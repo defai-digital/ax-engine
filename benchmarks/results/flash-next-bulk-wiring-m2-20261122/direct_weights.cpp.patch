@@ -1,0 +1,74 @@
+--- direct_weights.cpp
++++ direct_weights.cpp
+@@ -193,11 +193,11 @@
+ }
+
+ void run(const char* file, const char* plan, const std::string& mode) {
+-    const bool mapped = mode == "mmap";
+-    const bool paired = mode == "pread-pair";
+-    if (!mapped && !paired && mode != "pread") {
++    const bool early = mode == "early-wired";
++    if (!early && mode != "bulk-wired") {
+         throw std::runtime_error("Unknown diagnostic mode");
+     }
++    constexpr size_t budget = 8ULL * 1024 * 1024 * 1024;
+     Source input(file);
+     struct stat header {};
+     if (fstat(input.fd, &header) != 0 || header.st_size <= 0 || !S_ISREG(header.st_mode)) {
+@@ -207,18 +207,29 @@
+     const auto tensors = geometry(plan, file_size);
+     std::vector<mx::array> arrays;
+     arrays.reserve(tensors.size());
+-    const auto started = std::chrono::steady_clock::now();
+-    if (mapped) {
++    using Clock = std::chrono::steady_clock;
++    auto elapsed_between = [](auto begin, auto end) {
++        return std::chrono::duration<double>(end - begin).count();
++    };
++    const auto started = Clock::now();
++    if (early && mx::set_wired_limit(budget) != 0) {
++        throw std::runtime_error("The early probe did not begin with zero wired budget");
++    }
++    const auto copy_started = Clock::now();
++    {
+         const Mapping map(input.fd, file_size);
+         for (const auto& tensor : tensors) {
+             arrays.push_back(materialized(input.fd, map.memory, tensor, false));
+         }
+-    } else {
+-        for (const auto& tensor : tensors) {
+-            arrays.push_back(materialized(input.fd, nullptr, tensor, paired));
+-        }
+     }
+-    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
++    const auto copy_done = Clock::now();
++    if (!early && mx::set_wired_limit(budget) != 0) {
++        throw std::runtime_error("The bulk probe did not begin with zero wired budget");
++    }
++    const auto completed = Clock::now();
++    const auto elapsed = elapsed_between(started, completed);
++    const auto copied = elapsed_between(copy_started, copy_done);
++    const auto wiring = early ? elapsed_between(started, copy_started) : elapsed_between(copy_done, completed);
+     struct stat after {};
+     if (fstat(input.fd, &after) != 0 || after.st_size != header.st_size ||
+         after.st_mtimespec.tv_sec != header.st_mtimespec.tv_sec ||
+@@ -237,13 +248,15 @@
+         selected += array.nbytes();
+         allocated += array.buffer_size();
+     }
+-    const auto large_tensors = std::count_if(tensors.begin(), tensors.end(), [](const Tensor& tensor) {
+-        return tensor.len >= parallel_threshold;
+-    });
++    if (mx::set_wired_limit(0) != budget) {
++        throw std::runtime_error("Wired budget changed before the GPU control completed");
++    }
+     std::cout << std::setprecision(9) << "{\"mode\":\"" << mode
+               << "\",\"elapsed_seconds\":" << elapsed
+               << ",\"tensors\":" << tensors.size()
+-              << ",\"paired_tensors\":" << (paired ? large_tensors : 0)
++              << ",\"copy_seconds\":" << copied
++              << ",\"set_wired_limit_seconds\":" << wiring
++              << ",\"wired_budget_bytes\":" << budget
+               << ",\"selected_bytes\":" << selected
+               << ",\"allocated_bytes\":" << allocated
+               << ",\"weights_sha256\":\"" << data.finish()

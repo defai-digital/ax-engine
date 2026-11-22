@@ -1,0 +1,127 @@
+{
+  "scope": "M2 Ultra mapped load plus Metal wiring, component-only",
+  "qualification": false,
+  "native_control_runs": 16,
+  "matching_payload_observations": 2528,
+  "wired_budget_bytes": 8589934592,
+  "shards": {
+    "model-00017-of-00025.safetensors": {
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437",
+      "selected_bytes": 5144009280,
+      "cache_conditions": {
+        "reused": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            313966,
+            313966,
+            313966,
+            313966
+          ],
+          "median_seconds": {
+            "early-wired": 0.813067167,
+            "bulk-wired": 0.8340943545
+          },
+          "median_copy_seconds": {
+            "early-wired": 0.785465,
+            "bulk-wired": 0.7889047085
+          },
+          "median_setting_seconds": {
+            "early-wired": 0.027602146,
+            "bulk-wired": 0.045189625
+          },
+          "bulk_median_difference_percent": 2.586,
+          "per_order_difference_percent": [
+            3.738,
+            1.436
+          ]
+        },
+        "clone": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_seconds": {
+            "early-wired": 52.1828038,
+            "bulk-wired": 27.3612179
+          },
+          "median_copy_seconds": {
+            "early-wired": 52.1551786,
+            "bulk-wired": 27.3148537
+          },
+          "median_setting_seconds": {
+            "early-wired": 0.0276251665,
+            "bulk-wired": 0.046364146499999995
+          },
+          "bulk_median_difference_percent": -47.567,
+          "per_order_difference_percent": [
+            2.168,
+            -64.684
+          ]
+        }
+      }
+    },
+    "model-00018-of-00025.safetensors": {
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c",
+      "selected_bytes": 5144009280,
+      "cache_conditions": {
+        "reused": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            313966,
+            313966,
+            313966,
+            313966
+          ],
+          "median_seconds": {
+            "early-wired": 0.825434625,
+            "bulk-wired": 0.8444205204999999
+          },
+          "median_copy_seconds": {
+            "early-wired": 0.7973152914999999,
+            "bulk-wired": 0.8012883125000001
+          },
+          "median_setting_seconds": {
+            "early-wired": 0.0281193335,
+            "bulk-wired": 0.043132187
+          },
+          "bulk_median_difference_percent": 2.3,
+          "per_order_difference_percent": [
+            2.254,
+            2.346
+          ]
+        },
+        "clone": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_seconds": {
+            "early-wired": 60.235647150000005,
+            "bulk-wired": 28.6264914
+          },
+          "median_copy_seconds": {
+            "early-wired": 60.20802785,
+            "bulk-wired": 28.5811123
+          },
+          "median_setting_seconds": {
+            "early-wired": 0.0276193125,
+            "bulk-wired": 0.045379062
+          },
+          "bulk_median_difference_percent": -52.476,
+          "per_order_difference_percent": [
+            12.248,
+            -71.228
+          ]
+        }
+      }
+    }
+  }
+}

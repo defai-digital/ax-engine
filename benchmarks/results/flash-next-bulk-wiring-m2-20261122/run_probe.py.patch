@@ -1,0 +1,39 @@
+--- run_probe.py
++++ run_probe.py
+@@ -1,4 +1,4 @@
+-"""Verify byte identity for one or two positional requests into MLX-owned arrays."""
++"""Compare eager and bulk MLX wiring on mapped resident checkpoint bytes."""
+ from argparse import ArgumentParser
+ import ctypes
+ from hashlib import file_digest, sha256
+@@ -134,14 +134,11 @@
+             plan = scratch / "geometry.txt"
+             plan.write_text("".join(" ".join(map(str, (start, length, dtype, len(shape), *shape))) + "\n"
+                                     for start, length, dtype, shape in regions))
+-            modes = ("pread", "pread-pair", "pread-pair", "pread")
++            modes = ("early-wired", "bulk-wired", "bulk-wired", "early-wired")
+             if index != 0:
+-                modes = ("pread-pair", "pread", "pread", "pread-pair")
+-            sequence = [("clone", mode) for mode in modes]
+-            sequence.extend(("reused", mode) for mode in ("mmap", *modes))
+-            paired_tensors = sum(length >= PAIR_THRESHOLD for _, length, _, _ in regions)
+-            if paired_tensors == 0:
+-                raise ValueError("Shard does not exercise concurrent reads")
++                modes = ("bulk-wired", "early-wired", "early-wired", "bulk-wired")
++            sequence = [("reused", mode) for mode in modes]
++            sequence.extend(("clone", mode) for mode in modes)
+             signature = None
+             for reuse, mode in sequence:
+                 before = pressure()
+@@ -164,9 +161,8 @@
+                 after = pressure()
+                 if data["weights_sha256"] != payload or data["selected_bytes"] != selected:
+                     raise ValueError("Selected model bytes differ from the publisher source")
+-                effective_pairs = paired_tensors if mode == "pread-pair" else 0
+-                if data["paired_tensors"] != effective_pairs:
+-                    raise ValueError("The measured reader did not exercise the expected divided buffers")
++                if data["wired_budget_bytes"] != 8 * 1024**3:
++                    raise ValueError("The reader did not exercise the expected residency budget")
+                 row = (data["allocated_bytes"], data["metal_sha256"], data["tensors"])
+                 if signature is None:
+                     signature = row
