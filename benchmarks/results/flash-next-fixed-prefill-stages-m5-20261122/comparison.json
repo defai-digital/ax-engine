@@ -1,0 +1,52 @@
+{
+  "cache_only_terminal_stateless_seconds": 0.101826748,
+  "cache_only_terminal_stateless_share_of_traced_wall": 0.00991776171478054,
+  "control_seconds": 9.158985916,
+  "geometry": [
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1
+  ],
+  "largest_synchronized_stages_seconds": {
+    "attention_hc_read": 0.690994592,
+    "gdn": 0.6824980460000001,
+    "gdn_chunked": 0.9612125060000001,
+    "mlp_hc_read": 0.6810514189999999,
+    "moe_compute": 3.089539449,
+    "moe_routing": 0.3132822650000001,
+    "qsa_da_gather": 0.844801116,
+    "qsa_da_sdpa": 1.5222834920000001
+  },
+  "qualification": false,
+  "raw_sha256": "f80e5e7f497e21b9ddf53630f18041ab84d4d4e1d90252fc25211611d5dc4e1a",
+  "scope": "Fixed-width model-only M5 stage attribution",
+  "stage_family_seconds": {
+    "gdn_seconds": 1.6437105519999997,
+    "moe_seconds": 3.402821713999998,
+    "qsa_seconds": 3.1741149199999996
+  },
+  "timing_cpu_idle_floor_met": true,
+  "timing_cpu_idle_percent": [
+    91.5,
+    99.2
+  ],
+  "traced_seconds": 10.26710975,
+  "wide_forward_median_control_seconds": 0.562281542
+}
