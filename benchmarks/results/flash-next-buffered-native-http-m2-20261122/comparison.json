@@ -1,0 +1,39 @@
+{
+  "arms": {
+    "default-both": {
+      "matches": 7,
+      "reader": "AlignedNoCache",
+      "ready_seconds": 33.342,
+      "verified_steps": 0.0
+    },
+    "default-buffered": {
+      "matches": 7,
+      "reader": "AlignedBuffered",
+      "ready_seconds": 29.323,
+      "verified_steps": 0.0
+    },
+    "default-mapped": {
+      "matches": 7,
+      "reader": "Mapped",
+      "ready_seconds": 26.304,
+      "verified_steps": 0.0
+    },
+    "required-buffered": {
+      "matches": 7,
+      "reader": "AlignedBuffered",
+      "ready_seconds": 30.324,
+      "verified_steps": 107.0
+    }
+  },
+  "commit": "23c5c8cb81ce98a4c39d8a27be7adb34530b4abd",
+  "qualification": false,
+  "scope": "M2 Ultra buffered and no-cache reader routing",
+  "software": {
+    "python_passed": 345,
+    "python_skipped": 7,
+    "rust_failed": 0,
+    "rust_ignored": 107,
+    "rust_passed": 4790,
+    "workspace_status": 0
+  }
+}

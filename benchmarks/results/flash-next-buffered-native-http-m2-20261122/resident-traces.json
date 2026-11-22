@@ -1,0 +1,274 @@
+{
+  "default-mapped": {
+    "aligned_nocache": false,
+    "reader": "Mapped",
+    "resident": true,
+    "shards": [
+      [
+        "model-00001-of-00025.safetensors",
+        78
+      ],
+      [
+        "model-00012-of-00025.safetensors",
+        35
+      ],
+      [
+        "model-00013-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00014-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00015-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00016-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00017-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00018-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00019-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00020-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00021-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00022-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00023-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00024-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00025-of-00025.safetensors",
+        69
+      ]
+    ],
+    "server_log_sha256": "b252e2955497789d9bc56c478b110ef51c49394fc7abd890693a76bcd4f019ca"
+  },
+  "default-buffered": {
+    "aligned_nocache": false,
+    "reader": "AlignedBuffered",
+    "resident": true,
+    "shards": [
+      [
+        "model-00001-of-00025.safetensors",
+        78
+      ],
+      [
+        "model-00012-of-00025.safetensors",
+        35
+      ],
+      [
+        "model-00013-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00014-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00015-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00016-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00017-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00018-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00019-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00020-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00021-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00022-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00023-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00024-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00025-of-00025.safetensors",
+        69
+      ]
+    ],
+    "server_log_sha256": "4200c07703cb93a4a39ccf42221ccb4aafcd09a86350c6e770139af49b11db84"
+  },
+  "default-both": {
+    "aligned_nocache": true,
+    "reader": "AlignedNoCache",
+    "resident": true,
+    "shards": [
+      [
+        "model-00001-of-00025.safetensors",
+        78
+      ],
+      [
+        "model-00012-of-00025.safetensors",
+        35
+      ],
+      [
+        "model-00013-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00014-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00015-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00016-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00017-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00018-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00019-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00020-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00021-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00022-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00023-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00024-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00025-of-00025.safetensors",
+        69
+      ]
+    ],
+    "server_log_sha256": "a382599e434e9b516736f67f01145665682145c399d4d4fe45e256789899833f"
+  },
+  "required-buffered": {
+    "aligned_nocache": false,
+    "reader": "AlignedBuffered",
+    "resident": true,
+    "shards": [
+      [
+        "model-00001-of-00025.safetensors",
+        78
+      ],
+      [
+        "model-00012-of-00025.safetensors",
+        35
+      ],
+      [
+        "model-00013-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00014-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00015-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00016-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00017-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00018-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00019-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00020-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00021-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00022-of-00025.safetensors",
+        124
+      ],
+      [
+        "model-00023-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00024-of-00025.safetensors",
+        158
+      ],
+      [
+        "model-00025-of-00025.safetensors",
+        69
+      ]
+    ],
+    "server_log_sha256": "aa786c6dd09e73dd4b0fd41fcadcc83e1badb7bff620ebe516048e107461561e"
+  }
+}
