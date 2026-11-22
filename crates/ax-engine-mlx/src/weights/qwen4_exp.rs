@@ -1431,11 +1431,26 @@ fn load_resident_tensors(
         }
     }
     startup.phase("resident_selection");
+    #[cfg(unix)]
+    let positional = stream_skip.is_empty()
+        && std::env::var("AX_FLASH_NEXT_RESIDENT_POSITIONAL").as_deref() == Ok("1");
+    #[cfg(unix)]
+    if positional {
+        tracing::debug!(target: STARTUP_TRACE_TARGET, "Flash Next resident positional read lab");
+    }
     let mut result = HashMap::new();
     for (path, names) in files {
         let mut shard = StartupTrace(startup.0.map(|_| Instant::now()));
-        let tensors = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names))
-            .map_err(WeightLoadError::FileMissing)?;
+        let filter = SafetensorsNameFilter::Keep(&names);
+        #[cfg(unix)]
+        let loaded = if positional {
+            mlx_sys::io::load_safetensors_filtered_positional(&path, filter)
+        } else {
+            load_safetensors_filtered(&path, filter)
+        };
+        #[cfg(not(unix))]
+        let loaded = load_safetensors_filtered(&path, filter);
+        let tensors = loaded.map_err(WeightLoadError::FileMissing)?;
         let read = shard.elapsed();
         mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>()).map_err(|e| {
             WeightLoadError::InvalidLayer(format!("qwen4_exp weight evaluation: {e}"))
