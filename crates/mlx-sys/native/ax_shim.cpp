@@ -4,17 +4,25 @@
 #include "ax_shim.h"
 #include "ax_shim_internal.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <variant>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
+
+#include "mlx/allocator.h"
 #include "mlx/fast.h"
 #include "mlx/io.h"
 #include "mlx/memory.h"
@@ -226,6 +234,52 @@ extern "C" mlx_array mlx_array_new_data(
         make_array(data, make_shape(shape, static_cast<size_t>(dim)), to_dtype(dtype)))};
   } AX_CATCH_NULL
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+extern "C" mlx_array ax_mlx_array_read_at(
+    int fd, uint64_t offset, uint64_t length, const int* shape, int dim, mlx_dtype dtype) {
+  AX_TRY {
+    if (dim < 0) {
+      throw std::runtime_error("ax_mlx_array_read_at: dim must be non-negative");
+    }
+    auto cpp_shape = make_shape(shape, static_cast<size_t>(dim));
+    const auto cpp_dtype = to_dtype(dtype);
+    const size_t elements = ax_shape_nelem(cpp_shape);
+    const size_t item_size = mx::size_of(cpp_dtype);
+    if (elements > std::numeric_limits<size_t>::max() / item_size ||
+        elements * item_size != length) {
+      throw std::runtime_error("positional tensor length does not match shape and dtype");
+    }
+    const auto max_offset = static_cast<uint64_t>(std::numeric_limits<off_t>::max());
+    if (offset > max_offset || length > max_offset - offset) {
+      throw std::runtime_error("positional tensor range exceeds off_t");
+    }
+    const size_t bytes = elements * item_size;
+    auto storage = mx::allocator::malloc(bytes);
+    if (bytes != 0) {
+      auto* destination = static_cast<uint8_t*>(storage.buffer().raw_ptr());
+      constexpr size_t max_read = 4 * 1024 * 1024;
+      for (size_t done = 0; done < bytes;) {
+        const auto count = pread(fd, destination + done, std::min(max_read, bytes - done),
+                                 static_cast<off_t>(offset + done));
+        if (count == 0) {
+          throw std::runtime_error("positional tensor read ended early");
+        }
+        if (count < 0) {
+          if (errno == EINTR) continue;
+          throw std::runtime_error("positional tensor read failed");
+        }
+        done += static_cast<size_t>(count);
+      }
+      if (cpp_dtype == mx::bool_) {
+        for (size_t i = 0; i < bytes; ++i) destination[i] = destination[i] != 0;
+      }
+    }
+    return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(
+        std::move(storage), std::move(cpp_shape), cpp_dtype)};
+  } AX_CATCH_NULL
+}
+#endif
 
 extern "C" mlx_array mlx_array_new_data_managed_payload(
     void* data, const int* shape, int dim, mlx_dtype dtype,

@@ -161,6 +161,36 @@ impl MlxArray {
         }
     }
 
+    /// Materialize a little-endian tensor range into owned MLX storage.
+    /// The descriptor remains caller-owned and its current offset is unchanged.
+    #[cfg(unix)]
+    pub fn read_owned_at(
+        file: &std::fs::File,
+        offset: u64,
+        length: u64,
+        shape: &[i32],
+        dtype: MlxDtype,
+    ) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+
+        let dim = i32::try_from(shape.len()).map_err(|_| "tensor rank exceeds i32")?;
+        unsafe {
+            prepare_error_capture();
+            let array = ffi::ax_mlx_array_read_at(
+                file.as_raw_fd(),
+                offset,
+                length,
+                shape.as_ptr(),
+                dim,
+                dtype.to_ffi(),
+            );
+            if array.ctx.is_null() {
+                return Err(last_error_message("ax_mlx_array_read_at"));
+            }
+            Ok(Self::from_raw(array))
+        }
+    }
+
     pub fn ndim(&self) -> usize {
         unsafe {
             ensure_error_handler();

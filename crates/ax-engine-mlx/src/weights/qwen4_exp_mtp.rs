@@ -548,8 +548,9 @@ pub(crate) fn load(
     )?;
 
     // Payload IO starts only after the full metadata contract is admitted.
-    let names: HashSet<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-    let mut name_map = load_sidecar_payload(&sidecar, &source, &names)?;
+    let positional =
+        cfg!(unix) && std::env::var("AX_FLASH_NEXT_MTP_SIDECAR_POSITIONAL").as_deref() == Ok("1");
+    let mut name_map = load_sidecar_payload(&sidecar, &source, &specs, positional)?;
     validate_loaded(&specs, &name_map)?;
     apply_norm_layout(norm_layout, &expected, &mut name_map)?;
 
@@ -779,15 +780,70 @@ struct SidecarSource {
 fn load_sidecar_payload(
     path: &Path,
     source: &SidecarSource,
-    names: &HashSet<String>,
+    specs: &[NativeTensorSpec],
+    positional: bool,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
     ensure_sidecar_unchanged(path, &source.metadata)?;
-    let tensors =
-        load_safetensors_filtered_from_file(path, &source.file, SafetensorsNameFilter::Keep(names))
-            .map_err(WeightLoadError::FileMissing)?;
+    let mapped = || {
+        let names = specs.iter().map(|spec| spec.name.clone()).collect();
+        load_safetensors_filtered_from_file(path, &source.file, SafetensorsNameFilter::Keep(&names))
+            .map_err(WeightLoadError::FileMissing)
+    };
+    #[cfg(unix)]
+    let tensors = if positional {
+        tracing::debug!(
+            target: "ax_engine_mlx::flash_next_startup",
+            "Flash Next MTP sidecar positional read lab"
+        );
+        load_admitted_sidecar_ranges(path, &source.file, specs)
+    } else {
+        mapped()
+    }?;
+    #[cfg(not(unix))]
+    let tensors = {
+        debug_assert!(!positional);
+        mapped()?
+    };
     mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>())
         .map_err(|e| WeightLoadError::InvalidLayer(format!("Flash Next MTP evaluation: {e}")))?;
     ensure_sidecar_unchanged(path, &source.metadata)?;
+    Ok(tensors)
+}
+
+#[cfg(unix)]
+fn load_admitted_sidecar_ranges(
+    path: &Path,
+    file: &File,
+    specs: &[NativeTensorSpec],
+) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
+    let mut ranges: Vec<_> = specs.iter().collect();
+    ranges.sort_unstable_by_key(|spec| spec.offset_bytes);
+    let mut tensors = HashMap::with_capacity(ranges.len());
+    for spec in ranges {
+        let shape = spec
+            .shape
+            .iter()
+            .map(|&dimension| {
+                i32::try_from(dimension)
+                    .map_err(|_| invalid(format!("{} has a dimension above i32::MAX", spec.name)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let array = MlxArray::read_owned_at(
+            file,
+            spec.offset_bytes,
+            spec.length_bytes,
+            &shape,
+            sidecar_dtype(spec)?,
+        )
+        .map_err(|error| {
+            invalid(format!(
+                "read {} tensor {}: {error}",
+                path.display(),
+                spec.name
+            ))
+        })?;
+        tensors.insert(spec.name.clone(), array);
+    }
     Ok(tensors)
 }
 
@@ -976,6 +1032,15 @@ fn bind_declared_specs(
     Ok(bound)
 }
 
+fn sidecar_dtype(spec: &NativeTensorSpec) -> Result<MlxDtype, WeightLoadError> {
+    match spec.dtype {
+        NativeTensorDataType::Bf16 => Ok(MlxDtype::Bfloat16),
+        NativeTensorDataType::F16 => Ok(MlxDtype::Float16),
+        NativeTensorDataType::F32 => Ok(MlxDtype::Float32),
+        _ => Err(invalid(format!("{} has an unsupported dtype", spec.name))),
+    }
+}
+
 fn validate_loaded(
     specs: &[NativeTensorSpec],
     name_map: &HashMap<String, MlxArray>,
@@ -991,12 +1056,7 @@ fn validate_loaded(
         let array = name_map
             .get(&spec.name)
             .ok_or_else(|| WeightLoadError::TensorMissing(spec.name.clone()))?;
-        let dtype = match spec.dtype {
-            NativeTensorDataType::Bf16 => MlxDtype::Bfloat16,
-            NativeTensorDataType::F16 => MlxDtype::Float16,
-            NativeTensorDataType::F32 => MlxDtype::Float32,
-            _ => return Err(invalid(format!("{} has an unsupported dtype", spec.name))),
-        };
+        let dtype = sidecar_dtype(spec)?;
         let shape: Vec<u64> = array.shape().iter().map(|&d| d as u64).collect();
         if array.dtype() != dtype || shape != spec.shape {
             return Err(invalid(format!(
@@ -1345,11 +1405,26 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         let (specs, source) = read_sidecar_header_specs(&path).unwrap();
-        let names = HashSet::from([name.to_string()]);
         assert_eq!(specs[0].name, name);
-        assert_eq!(
-            load_sidecar_payload(&path, &source, &names).unwrap().len(),
-            1
+        for positional in [false, true] {
+            let loaded = load_sidecar_payload(&path, &source, &specs, positional).unwrap();
+            validate_loaded(&specs, &loaded).unwrap();
+            let float = astype(&loaded[name], MlxDtype::Float32, None);
+            mlx_sys::eval(&[&float]);
+            assert_eq!(float.data_f32(), &[1.0]);
+        }
+
+        let mut short = specs.clone();
+        short[0].length_bytes = 1;
+        assert!(
+            rejection(load_sidecar_payload(&path, &source, &short, true))
+                .contains("length does not match shape and dtype")
+        );
+        short[0].length_bytes = specs[0].length_bytes;
+        short[0].offset_bytes += 1;
+        assert!(
+            rejection(load_sidecar_payload(&path, &source, &short, true))
+                .contains("read ended early")
         );
 
         let replacement = root.0.join("other.safetensors");
@@ -1369,10 +1444,12 @@ mod tests {
             current.modified().unwrap(),
             source.metadata.modified().unwrap()
         );
-        assert!(
-            rejection(load_sidecar_payload(&path, &source, &names))
-                .contains("sidecar file changed")
-        );
+        for positional in [false, true] {
+            assert!(
+                rejection(load_sidecar_payload(&path, &source, &specs, positional))
+                    .contains("sidecar file changed")
+            );
+        }
     }
 
     #[test]
