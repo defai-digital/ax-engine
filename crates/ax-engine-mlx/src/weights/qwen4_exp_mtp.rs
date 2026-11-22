@@ -15,6 +15,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, Metadata};
 use std::io::Read;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use ax_engine_core::{
@@ -548,8 +550,13 @@ pub(crate) fn load(
     )?;
 
     // Payload IO starts only after the full metadata contract is admitted.
-    let names: HashSet<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-    let mut name_map = load_sidecar_payload(&sidecar, &source, &names)?;
+    let mut name_map = load_sidecar_payload(
+        &sidecar,
+        &source,
+        &specs,
+        #[cfg(target_os = "macos")]
+        crate::fastpath::flash_next_mtp_sidecar_prefetch_enabled(),
+    )?;
     validate_loaded(&specs, &name_map)?;
     apply_norm_layout(norm_layout, &expected, &mut name_map)?;
 
@@ -779,16 +786,92 @@ struct SidecarSource {
 fn load_sidecar_payload(
     path: &Path,
     source: &SidecarSource,
-    names: &HashSet<String>,
+    specs: &[NativeTensorSpec],
+    #[cfg(target_os = "macos")] prefetch: bool,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
     ensure_sidecar_unchanged(path, &source.metadata)?;
-    let tensors =
-        load_safetensors_filtered_from_file(path, &source.file, SafetensorsNameFilter::Keep(names))
-            .map_err(WeightLoadError::FileMissing)?;
+    #[cfg(target_os = "macos")]
+    if prefetch {
+        let start = std::time::Instant::now();
+        let bytes = prefetch_sidecar_payload(source, specs)?;
+        ensure_sidecar_unchanged(path, &source.metadata)?;
+        if let Some(bytes) = bytes {
+            tracing::info!(
+                target: "ax_mlx::weights",
+                bytes,
+                elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0,
+                "Flash Next MTP sidecar prefetch completed"
+            );
+        }
+    }
+    let names = specs.iter().map(|spec| spec.name.clone()).collect();
+    let tensors = load_safetensors_filtered_from_file(
+        path,
+        &source.file,
+        SafetensorsNameFilter::Keep(&names),
+    )
+    .map_err(WeightLoadError::FileMissing)?;
     mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>())
         .map_err(|e| WeightLoadError::InvalidLayer(format!("Flash Next MTP evaluation: {e}")))?;
     ensure_sidecar_unchanged(path, &source.metadata)?;
     Ok(tensors)
+}
+
+/// Read admitted ranges into the file cache. The mapped loader still owns
+/// materialization and copies the same tensors in its original order.
+/// An I/O failure leaves the checked mapped load to make its usual decision.
+#[cfg(target_os = "macos")]
+fn prefetch_sidecar_payload(
+    source: &SidecarSource,
+    specs: &[NativeTensorSpec],
+) -> Result<Option<u64>, WeightLoadError> {
+    const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+    let mut ranges: Vec<std::ops::Range<u64>> = Vec::with_capacity(specs.len());
+    let mut ordered: Vec<_> = specs.iter().collect();
+    ordered.sort_unstable_by_key(|spec| spec.offset_bytes);
+    for spec in ordered {
+        let start = spec.offset_bytes;
+        let end = start
+            .checked_add(spec.length_bytes)
+            .filter(|&end| end > start && end <= source.metadata.len())
+            .ok_or_else(|| invalid(format!("invalid payload extent for {}", spec.name)))?;
+        if let Some(last) = ranges.last_mut() {
+            if start < last.end {
+                return Err(invalid(format!(
+                    "overlapping payload extent for {}",
+                    spec.name
+                )));
+            }
+            if start == last.end {
+                last.end = end;
+                continue;
+            }
+        }
+        ranges.push(start..end);
+    }
+
+    let mut scratch = vec![0; CHUNK_BYTES as usize];
+    let mut bytes = 0;
+    for range in ranges {
+        let mut offset = range.start;
+        while offset < range.end {
+            let len = (range.end - offset).min(CHUNK_BYTES);
+            if let Err(error) = source
+                .file
+                .read_exact_at(&mut scratch[..len as usize], offset)
+            {
+                tracing::warn!(
+                    target: "ax_mlx::weights",
+                    %error, offset,
+                    "Flash Next MTP sidecar prefetch failed; trying mapped load"
+                );
+                return Ok(None);
+            }
+            offset += len;
+            bytes += len;
+        }
+    }
+    Ok(Some(bytes))
 }
 
 /// Read the safetensors header and retain the identity of the opened file.
@@ -1345,12 +1428,27 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         let (specs, source) = read_sidecar_header_specs(&path).unwrap();
-        let names = HashSet::from([name.to_string()]);
         assert_eq!(specs[0].name, name);
-        assert_eq!(
-            load_sidecar_payload(&path, &source, &names).unwrap().len(),
-            1
-        );
+        let loaded = load_sidecar_payload(
+            &path,
+            &source,
+            &specs,
+            #[cfg(target_os = "macos")]
+            false,
+        )
+        .unwrap();
+        assert_eq!(loaded.len(), 1);
+        #[cfg(target_os = "macos")]
+        {
+            let prefetched = load_sidecar_payload(&path, &source, &specs, true).unwrap();
+            assert_eq!(prefetched[name].dtype(), loaded[name].dtype());
+            assert_eq!(prefetched[name].shape(), loaded[name].shape());
+            let original = astype(&loaded[name], MlxDtype::Float32, None);
+            let warmed = astype(&prefetched[name], MlxDtype::Float32, None);
+            mlx_sys::try_eval(&[&original, &warmed]).unwrap();
+            assert_eq!(original.data_f32(), &[1.0]);
+            assert_eq!(warmed.data_f32(), original.data_f32());
+        }
 
         let replacement = root.0.join("other.safetensors");
         let payload_offset = 8 + header.len();
@@ -1370,8 +1468,68 @@ mod tests {
             source.metadata.modified().unwrap()
         );
         assert!(
-            rejection(load_sidecar_payload(&path, &source, &names))
-                .contains("sidecar file changed")
+            rejection(load_sidecar_payload(
+                &path,
+                &source,
+                &specs,
+                #[cfg(target_os = "macos")]
+                true,
+            ))
+            .contains("sidecar file changed")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prefetch_reads_selected_ranges_and_rejects_bad_extents() {
+        let root = temp_root("prefetch-extents");
+        let path = root.0.join(MTP_SIDECAR_FILE);
+        let header = serde_json::to_vec(&serde_json::json!({
+            "mtp.fc_hidden.weight": {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]},
+            "mtp.fc_embedding.weight": {"dtype": "BF16", "shape": [2], "data_offsets": [2, 6]},
+            "mtp.pre_fc_norm_embedding.weight": {"dtype": "BF16", "shape": [1], "data_offsets": [6, 8]}
+        }))
+        .unwrap();
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&[0; 8]);
+        std::fs::write(&path, bytes).unwrap();
+        let (mut specs, source) = read_sidecar_header_specs(&path).unwrap();
+        specs.sort_unstable_by_key(|spec| spec.offset_bytes);
+
+        assert_eq!(prefetch_sidecar_payload(&source, &specs).unwrap(), Some(8));
+        assert_eq!(
+            prefetch_sidecar_payload(&source, &specs[1..]).unwrap(),
+            Some(6)
+        );
+        assert!(
+            rejection(prefetch_sidecar_payload(
+                &source,
+                &[specs[0].clone(), specs[0].clone()]
+            ))
+            .contains("overlapping payload extent")
+        );
+        let mut outside = specs[2].clone();
+        outside.length_bytes += 1;
+        assert!(
+            rejection(prefetch_sidecar_payload(&source, &[outside]))
+                .contains("invalid payload extent")
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(source.metadata.len() - 1)
+            .unwrap();
+        assert_eq!(prefetch_sidecar_payload(&source, &specs).unwrap(), None);
+        assert!(
+            rejection(load_sidecar_payload(
+                &root.0.join(MTP_SIDECAR_FILE),
+                &source,
+                &specs,
+                true
+            ))
+            .contains("sidecar file changed")
         );
     }
 

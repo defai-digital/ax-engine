@@ -74,6 +74,14 @@ pub(crate) fn mtp_depth3_miss_backoff_enabled() -> bool {
         || qwen_linear_throughput_mtp_enabled()
 }
 
+/// Warm only the admitted Flash Next MTP payload on its open descriptor
+/// before calling the existing mapped loader.
+#[cfg(target_os = "macos")]
+pub(crate) fn flash_next_mtp_sidecar_prefetch_enabled() -> bool {
+    static ENV: OnceLock<bool> = OnceLock::new();
+    *ENV.get_or_init(|| env_flag("AX_MLX_FLASH_NEXT_MTP_SIDECAR_PREFETCH"))
+}
+
 /// Process-level Flash Next numerics preset.
 ///
 /// `Exact` is the shipped default and changes no switch. `Fast` opts into
