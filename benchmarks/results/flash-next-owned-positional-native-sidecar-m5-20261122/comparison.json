@@ -1,0 +1,51 @@
+{
+  "arms": {
+    "default-mmap": {
+      "controls": 7,
+      "ready_seconds": 106.981,
+      "resident_seconds": 86.082046,
+      "sidecar_seconds": 11.832345,
+      "timing_cpu_idle_percent": [
+        91.16,
+        87.1
+      ],
+      "verified_steps": 0.0
+    },
+    "default-pread": {
+      "controls": 7,
+      "ready_seconds": 94.741,
+      "resident_seconds": 85.203477,
+      "sidecar_seconds": 0.592818,
+      "timing_cpu_idle_percent": [
+        91.83,
+        91.94
+      ],
+      "verified_steps": 0.0
+    },
+    "required-mmap": {
+      "controls": 7,
+      "ready_seconds": 177.889,
+      "resident_seconds": 154.821681,
+      "sidecar_seconds": 12.623539,
+      "timing_cpu_idle_percent": [
+        90.87,
+        90.94
+      ],
+      "verified_steps": 107.0
+    },
+    "required-pread": {
+      "controls": 7,
+      "ready_seconds": 92.768,
+      "resident_seconds": 82.892331,
+      "sidecar_seconds": 0.525193,
+      "timing_cpu_idle_percent": [
+        92.32,
+        92.25
+      ],
+      "verified_steps": 107.0
+    }
+  },
+  "qualification": false,
+  "scope": "Isolated MTP sidecar reader diagnostic",
+  "timing_eligible": false
+}
