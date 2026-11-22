@@ -1,0 +1,74 @@
+{
+  "cross_mode_identity": {
+    "compared": 31,
+    "identical": 31
+  },
+  "fixed_workloads": {
+    "2048": {
+      "default_accepted_tokens": 0,
+      "default_decode_tok_s_median": 46.541644327288175,
+      "default_draft_tokens": 0,
+      "default_over_direct_decode_ratio_median": 1.0122408485058878,
+      "default_over_direct_decode_ratio_range": [
+        1.005430713600678,
+        1.0340770352643667
+      ],
+      "default_ttft_s_median": 1.632903,
+      "default_verified_steps": 0.0,
+      "direct_decode_tok_s_median": 45.84716720461879,
+      "direct_ttft_s_median": 1.65846,
+      "measured_runs": 3
+    },
+    "512": {
+      "default_accepted_tokens": 0,
+      "default_decode_tok_s_median": 50.25400033713707,
+      "default_draft_tokens": 0,
+      "default_over_direct_decode_ratio_median": 1.0157670936805792,
+      "default_over_direct_decode_ratio_range": [
+        1.0096466422791612,
+        1.0306800082232705
+      ],
+      "default_ttft_s_median": 0.540313,
+      "default_verified_steps": 0.0,
+      "direct_decode_tok_s_median": 49.26586108578854,
+      "direct_ttft_s_median": 0.538153,
+      "measured_runs": 3
+    },
+    "8192": {
+      "default_accepted_tokens": 0,
+      "default_decode_tok_s_median": 44.82337648495081,
+      "default_draft_tokens": 0,
+      "default_over_direct_decode_ratio_median": 1.0013277601758772,
+      "default_over_direct_decode_ratio_range": [
+        0.9922978276838383,
+        1.0295206356080653
+      ],
+      "default_ttft_s_median": 9.731302,
+      "default_verified_steps": 0.0,
+      "direct_decode_tok_s_median": 44.763940707164515,
+      "direct_ttft_s_median": 9.80149,
+      "measured_runs": 3
+    }
+  },
+  "raw_runs_sha256": "e274cd87ebd58926ac74db152f89a75b949d89587fa26279183c7a13341c83fc",
+  "release_ready": false,
+  "repeat_identity": {
+    "default": {
+      "compared": 31,
+      "identical": 31
+    },
+    "disabled": {
+      "compared": 31,
+      "identical": 31
+    }
+  },
+  "result_sha256": "d5ab8e444708c2e9d11deff69268ad18eb243115528cf64691ebee8791cde731",
+  "route_errors": 0.0,
+  "scope": "Current native direct matrix only",
+  "server_sha256": "a074d282b366bbb5f1ce172f5632cd793290f9396b0f3e32c9e169ea262bc9be",
+  "timing_cpu_idle_gate": true,
+  "timing_cpu_idle_percent": [
+    93.88,
+    90.31
+  ]
+}
