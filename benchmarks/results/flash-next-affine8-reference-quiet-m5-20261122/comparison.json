@@ -1,0 +1,70 @@
+{
+  "all_sampled_pressure_normal": true,
+  "bounded_result_sha256": "e1409e8def49a7a46fa53298be67e19d7aa85a3224e70b00cbed2d70e9edfcc6",
+  "cells": {
+    "2048/default": {
+      "ax_decode_tok_s": 46.284,
+      "ax_ttft_s": 1.645,
+      "decode_ratio": 1.2549,
+      "reference_decode_tok_s": 36.884,
+      "reference_ttft_s": 5.846,
+      "ttft_ratio": 0.2814
+    },
+    "2048/disabled": {
+      "ax_decode_tok_s": 45.865,
+      "ax_ttft_s": 1.694,
+      "decode_ratio": 1.2435,
+      "reference_decode_tok_s": 36.884,
+      "reference_ttft_s": 5.846,
+      "ttft_ratio": 0.2898
+    },
+    "512/default": {
+      "ax_decode_tok_s": 49.747,
+      "ax_ttft_s": 0.546,
+      "decode_ratio": 1.3206,
+      "reference_decode_tok_s": 37.669,
+      "reference_ttft_s": 2.292,
+      "ttft_ratio": 0.2382
+    },
+    "512/disabled": {
+      "ax_decode_tok_s": 49.653,
+      "ax_ttft_s": 0.555,
+      "decode_ratio": 1.3181,
+      "reference_decode_tok_s": 37.669,
+      "reference_ttft_s": 2.292,
+      "ttft_ratio": 0.2423
+    },
+    "8192/default": {
+      "ax_decode_tok_s": 44.186,
+      "ax_ttft_s": 10.575,
+      "decode_ratio": 1.2122,
+      "reference_decode_tok_s": 36.452,
+      "reference_ttft_s": 17.047,
+      "ttft_ratio": 0.6204
+    },
+    "8192/disabled": {
+      "ax_decode_tok_s": 44.133,
+      "ax_ttft_s": 10.31,
+      "decode_ratio": 1.2107,
+      "reference_decode_tok_s": 36.452,
+      "reference_ttft_s": 17.047,
+      "ttft_ratio": 0.6048
+    }
+  },
+  "matched_fixed_matrix_cells": 15,
+  "matched_qa_rows_and_grades": 105,
+  "native_matrix_sha256": "6babe7fb3a5a69d4c976296b2300bf8fee101d64f0d905580aecc370342c07ae",
+  "numeric_bounds_met": true,
+  "peak_mlx_memory_bytes": 72918723810,
+  "peak_process_rss_bytes": 57454329856,
+  "pressure_samples": {
+    "1": 31
+  },
+  "qualification": false,
+  "reference_cpu_idle_after_percent": 88.6,
+  "reference_cpu_idle_before_percent": 90.83,
+  "release_ready": false,
+  "resource_samples_sha256": "5153040125f59b22cb11dc1a3d1d81cc4195d962d45307231a51009a5ada7d8c",
+  "scope": "Independent bounded PLE diagnostic",
+  "timing_host_floor_met": false
+}
