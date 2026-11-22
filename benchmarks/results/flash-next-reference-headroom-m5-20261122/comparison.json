@@ -1,0 +1,15 @@
+{
+  "scope": "ordinary reference launcher bootstrap only",
+  "qualification": false,
+  "ordinary_reference_measured": false,
+  "physical_bytes": 137438953472,
+  "observed_signed_peak_mlx_bytes": 130521001170,
+  "observed_signed_margin_bytes": 6917952302,
+  "observed_bootstrap_reason": "background-rss-exceeds-signed-margin",
+  "virtualization_snapshot": {
+    "process_count": 2,
+    "aggregate_rss_bytes": 13966589952,
+    "largest_rss_bytes": 13924827136
+  },
+  "virtualization_snapshot_recovery_reason": "background-rss-exceeds-signed-margin"
+}
