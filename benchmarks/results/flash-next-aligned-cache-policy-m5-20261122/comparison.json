@@ -1,0 +1,176 @@
+{
+  "commit": "23c5c8cb81ce98a4c39d8a27be7adb34530b4abd",
+  "phases": {
+    "default": {
+      "arms": {
+        "buffered-first": {
+          "first_prompt_tokens": 512,
+          "first_request": {
+            "decode_tokens_per_second": 51.274926230267425,
+            "ttft_seconds": 0.541339
+          },
+          "load_phase_seconds": 7.809091,
+          "ready_seconds": 28.069105957983993,
+          "ready_seconds_plus_first_ttft": 28.610444957983994,
+          "sidecar_load_seconds": 11.854098,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 47.65044860591696,
+              "ttft_seconds": 1.665146
+            },
+            "512": {
+              "decode_tokens_per_second": 51.411067973723966,
+              "ttft_seconds": 0.510024
+            },
+            "8192": {
+              "decode_tokens_per_second": 45.18160088614237,
+              "ttft_seconds": 9.289089
+            }
+          }
+        },
+        "buffered-second": {
+          "first_prompt_tokens": 512,
+          "first_request": {
+            "decode_tokens_per_second": 51.18662146832951,
+            "ttft_seconds": 1.298155
+          },
+          "load_phase_seconds": 7.612948,
+          "ready_seconds": 30.13768791599432,
+          "ready_seconds_plus_first_ttft": 31.43584291599432,
+          "sidecar_load_seconds": 12.019322,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 47.433612069559096,
+              "ttft_seconds": 1.655451
+            },
+            "512": {
+              "decode_tokens_per_second": 50.35279441766181,
+              "ttft_seconds": 0.507548
+            },
+            "8192": {
+              "decode_tokens_per_second": 45.910962353010866,
+              "ttft_seconds": 9.159746
+            }
+          }
+        },
+        "nocache-first": {
+          "first_prompt_tokens": 512,
+          "first_request": {
+            "decode_tokens_per_second": 50.399538275197735,
+            "ttft_seconds": 0.816958
+          },
+          "load_phase_seconds": 11.513927,
+          "ready_seconds": 36.11044795799535,
+          "ready_seconds_plus_first_ttft": 36.92740595799535,
+          "sidecar_load_seconds": 11.826414,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 47.08855991031908,
+              "ttft_seconds": 1.644021
+            },
+            "512": {
+              "decode_tokens_per_second": 49.68044257261358,
+              "ttft_seconds": 0.504545
+            },
+            "8192": {
+              "decode_tokens_per_second": 45.902940453521055,
+              "ttft_seconds": 8.845886
+            }
+          }
+        },
+        "nocache-second": {
+          "first_prompt_tokens": 512,
+          "first_request": {
+            "decode_tokens_per_second": 49.41042209251544,
+            "ttft_seconds": 0.84059
+          },
+          "load_phase_seconds": 13.769111,
+          "ready_seconds": 36.139629249984864,
+          "ready_seconds_plus_first_ttft": 36.98021924998486,
+          "sidecar_load_seconds": 12.625905,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 45.93436423876386,
+              "ttft_seconds": 1.719516
+            },
+            "512": {
+              "decode_tokens_per_second": 49.19362133289324,
+              "ttft_seconds": 0.511454
+            },
+            "8192": {
+              "decode_tokens_per_second": 44.46388743464884,
+              "ttft_seconds": 9.409253
+            }
+          }
+        }
+      },
+      "buffered_arms_under_120_seconds": true,
+      "eligible_orders": [
+        "first"
+      ],
+      "matched_output_ids_per_arm": 448,
+      "same_reader_second_to_first_warm_ratios": {
+        "buffered": {
+          "2048": {
+            "decode_tokens_per_second": 0.9954494334743591,
+            "ttft_seconds": 0.9941776877222778
+          },
+          "512": {
+            "decode_tokens_per_second": 0.9794154527853217,
+            "ttft_seconds": 0.9951453264944394
+          },
+          "8192": {
+            "decode_tokens_per_second": 1.0161428867628326,
+            "ttft_seconds": 0.9860758143236651
+          }
+        },
+        "nocache": {
+          "2048": {
+            "decode_tokens_per_second": 0.9754888305407216,
+            "ttft_seconds": 1.045920946265285
+          },
+          "512": {
+            "decode_tokens_per_second": 0.9902009480086897,
+            "ttft_seconds": 1.0136935258500233
+          },
+          "8192": {
+            "decode_tokens_per_second": 0.9686500907206734,
+            "ttft_seconds": 1.063686893545768
+          }
+        }
+      },
+      "warm_candidate_to_control_ratios": {
+        "first": {
+          "2048": {
+            "decode_tokens_per_second": 1.011932594597669,
+            "ttft_seconds": 1.0128495925538665
+          },
+          "512": {
+            "decode_tokens_per_second": 1.0348351446060666,
+            "ttft_seconds": 1.0108592890624226
+          },
+          "8192": {
+            "decode_tokens_per_second": 0.9842855477176005,
+            "ttft_seconds": 1.0501027257190518
+          }
+        },
+        "second": {
+          "2048": {
+            "decode_tokens_per_second": 1.0326389154534117,
+            "ttft_seconds": 0.9627424228678302
+          },
+          "512": {
+            "decode_tokens_per_second": 1.0235634835037748,
+            "ttft_seconds": 0.9923629495516704
+          },
+          "8192": {
+            "decode_tokens_per_second": 1.0325449483131424,
+            "ttft_seconds": 0.9734828046392207
+          }
+        }
+      },
+      "warmed_timing_band_met": false
+    }
+  },
+  "qualification": false
+}
