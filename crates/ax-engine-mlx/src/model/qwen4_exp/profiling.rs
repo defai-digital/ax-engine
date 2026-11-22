@@ -3229,6 +3229,94 @@ fn flash_next_qsa_prefill_fused_gather_matches_today_on_real_pack() {
     eprintln!("{evidence}");
 }
 
+/// Keep both arms on the fused gather so the index lifetime is the only
+/// graph difference. Warm both paths and reverse the measured pair order.
+#[test]
+#[ignore = "requires the pinned real Flash Next pack and an 8192-token prompt"]
+fn flash_next_fused_qsa_shared_indices_match_separate_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_attention::{
+        fused_gather_tiles_for_test, fused_index_tiles_for_test, with_fused_gather,
+        with_separate_fused_indices,
+    };
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let tokens = profile_prompt_ids(artifacts.manifest().vocab_size);
+    assert_eq!(tokens.len(), 8192);
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    assert!(weights.expert_stream.is_none());
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let chunk = 512;
+    let run = |separate| {
+        mlx_sys::clear_cache();
+        let active_before = mlx_sys::mempressure::device_active_bytes().unwrap();
+        let previous_takes = fused_gather_tiles_for_test();
+        let previous_indices = fused_index_tiles_for_test();
+        let measured = with_fused_gather(true, || {
+            with_separate_fused_indices(separate, || {
+                run_chunked_prefill(trunk, &tokens, cfg.compile_cache_identity, chunk, false)
+            })
+        });
+        let takes = fused_gather_tiles_for_test() - previous_takes;
+        let indices = fused_index_tiles_for_test() - previous_indices;
+        assert!(takes > 0 && takes.is_multiple_of(2));
+        assert_eq!(indices, if separate { takes } else { takes / 2 });
+        let sample = serde_json::json!({
+            "index_mode": if separate { "separate" } else { "shared" },
+            "fused_takes": takes,
+            "index_tiles": indices,
+            "seconds": measured.seconds,
+            "active_bytes_before": active_before,
+            "peak_bytes": measured.peak_bytes,
+        });
+        (measured, sample)
+    };
+    let (baseline, _) = run(true);
+    let check = |observed: &ChunkedPrefillTiming| {
+        assert_eq!(observed.final_state, baseline.final_state);
+        assert_eq!(observed.final_logits.len(), baseline.final_logits.len());
+        for (index, (left, right)) in baseline
+            .final_logits
+            .iter()
+            .zip(&observed.final_logits)
+            .enumerate()
+        {
+            assert_eq!(
+                left.to_bits(),
+                right.to_bits(),
+                "logit bits differ at {index}"
+            );
+        }
+    };
+    check(&run(false).0);
+    let samples = [true, false, false, true].map(|separate| {
+        let (measured, sample) = run(separate);
+        check(&measured);
+        sample
+    });
+    let prompt_bytes: Vec<u8> = tokens
+        .iter()
+        .flat_map(|token| token.to_le_bytes())
+        .collect();
+    let evidence = serde_json::json!({
+        "scope": "Resident fused gather with separate or shared K/V index tiles",
+        "prompt_tokens": tokens.len(),
+        "prompt_ids_sha256": ax_engine_core::sha256_hex(&prompt_bytes),
+        "chunk_size": chunk,
+        "final_logits_exact": true,
+        "final_state_exact": true,
+        "samples": samples,
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+    eprintln!("{evidence}");
+}
+
 /// How often two queries in one prefill chunk select the same complete blocks,
 /// in the same score order, with the same visible-tail start, so that one
 /// gather could serve both.

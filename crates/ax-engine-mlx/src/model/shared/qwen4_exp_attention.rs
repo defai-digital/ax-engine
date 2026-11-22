@@ -1159,6 +1159,8 @@ thread_local! {
     /// comparison can prove the fused arm ran instead of silently falling
     /// back.
     static FUSED_GATHER_TILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SEPARATE_FUSED_INDICES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FUSED_INDEX_TILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Run `action` with the fused selected-K/V gather forced on or off.
@@ -1178,6 +1180,24 @@ pub(crate) fn with_fused_gather<T>(enabled: bool, action: impl FnOnce() -> T) ->
 #[cfg(test)]
 pub(crate) fn fused_gather_tiles_for_test() -> u64 {
     FUSED_GATHER_TILES.with(std::cell::Cell::get)
+}
+
+/// Use a separate index graph for each fused take within the test arm.
+#[cfg(test)]
+pub(crate) fn with_separate_fused_indices<T>(separate: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SEPARATE_FUSED_INDICES.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(SEPARATE_FUSED_INDICES.with(|value| value.replace(separate)));
+    action()
+}
+
+#[cfg(test)]
+pub(crate) fn fused_index_tiles_for_test() -> u64 {
+    FUSED_INDEX_TILES.with(std::cell::Cell::get)
 }
 
 /// Gather one padded K/V sub-batch into the layout used by masked SDPA.
@@ -1200,20 +1220,30 @@ fn gather_selected_pair(
         FUSED_GATHER_TILES.with(|counter| counter.set(counter.get().saturating_add(2)));
         // Flatten the token and head axes so taking token * kv_heads +
         // head lands directly in [width, kv_heads, padded, head_dim].
-        let positions = reshape(safe, &[width, 1, padded], None);
-        let strided = multiply(&positions, &int32_scalar(kv_heads), None);
-        let heads = reshape(
-            &arange(0.0, kv_heads as f64, 1.0, MlxDtype::Int32, None),
-            &[1, kv_heads, 1],
-            None,
-        );
-        let indices = add(&strided, &heads, None);
-        let gather = |rows: &MlxArray| {
+        let build_indices = || {
+            #[cfg(test)]
+            FUSED_INDEX_TILES.with(|counter| counter.set(counter.get().saturating_add(1)));
+            let positions = reshape(safe, &[width, 1, padded], None);
+            let strided = multiply(&positions, &int32_scalar(kv_heads), None);
+            let heads = reshape(
+                &arange(0.0, kv_heads as f64, 1.0, MlxDtype::Int32, None),
+                &[1, kv_heads, 1],
+                None,
+            );
+            add(&strided, &heads, None)
+        };
+        let gather = |rows: &MlxArray, indices: &MlxArray| {
             let tokens = rows.shape().first().copied().unwrap_or(0);
             let flat_rows = reshape(rows, &[tokens * kv_heads, head_dim], None);
-            take(&flat_rows, &indices, 0, None)
+            take(&flat_rows, indices, 0, None)
         };
-        return (gather(keys), gather(values));
+        let indices = build_indices();
+        let gathered_keys = gather(keys, &indices);
+        #[cfg(test)]
+        if SEPARATE_FUSED_INDICES.with(std::cell::Cell::get) {
+            return (gathered_keys, gather(values, &build_indices()));
+        }
+        return (gathered_keys, gather(values, &indices));
     }
     let flat = reshape(safe, &[width * padded], None);
     let gather = |rows: &MlxArray| {
@@ -2955,6 +2985,26 @@ mod tests {
             dtype,
             None,
         )
+    }
+
+    #[test]
+    fn fused_qsa_index_modes_build_distinct_graphs_and_return_the_same_tiles() {
+        let keys = tile_rows(96, 2, 16, MlxDtype::Bfloat16);
+        let values = negative(&keys, None);
+        let indices = ragged_selection(3, 16, 96);
+        let safe = maximum(&indices, &int32_scalar(0), None);
+        let index_count = fused_index_tiles_for_test();
+        let take_count = fused_gather_tiles_for_test();
+        let shared = with_separate_fused_indices(false, || {
+            gather_selected_pair(&keys, &values, &safe, true)
+        });
+        assert_eq!(fused_index_tiles_for_test() - index_count, 1);
+        let separate =
+            with_separate_fused_indices(true, || gather_selected_pair(&keys, &values, &safe, true));
+        assert_eq!(fused_index_tiles_for_test() - index_count, 3);
+        assert_eq!(fused_gather_tiles_for_test() - take_count, 4);
+        assert_eq!(f32_value_bits(&shared.0), f32_value_bits(&separate.0));
+        assert_eq!(f32_value_bits(&shared.1), f32_value_bits(&separate.1));
     }
 
     /// Ragged `[width, padded]` token indices with `-1` padding.
