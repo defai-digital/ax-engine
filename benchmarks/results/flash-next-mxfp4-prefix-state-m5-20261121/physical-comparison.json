@@ -1,0 +1,57 @@
+{
+  "arms": {
+    "cold": {
+      "log_sha256": "6e5ff82b8b68e51f5aed3084e2783b8276b3e9544dcf80d02f7fb2be1a9a3da7",
+      "measured_cuts": 3,
+      "measured_forwards": 15,
+      "normal_pressure_samples": 79,
+      "peak_footprint_bytes": 77296538400,
+      "startup_widths": [],
+      "structured_listen_line": 60
+    },
+    "l1": {
+      "log_sha256": "ebb6f06165c543bbb48f4130b2ea7146694a0d17b4b7826cd527aadd7b72acd7",
+      "measured_cuts": 3,
+      "measured_forwards": 15,
+      "normal_pressure_samples": 78,
+      "peak_footprint_bytes": 78297946328,
+      "startup_widths": [
+        31,
+        1,
+        31,
+        1,
+        31,
+        1,
+        31,
+        1,
+        31,
+        1,
+        31,
+        1
+      ],
+      "structured_listen_line": 78
+    }
+  },
+  "baseline_sha256": "bd3914d8b4aa1a78961e3ca8e47bf6c165362a95a609c7b07d56143388fec94c",
+  "exact_prompt_reused_tokens": 2048,
+  "l1_strict_extension_output_ids": {
+    "cancelled": 1,
+    "replacement": 96,
+    "target": 96
+  },
+  "logical_widths": [
+    2048,
+    64
+  ],
+  "physical_widths_per_cut": [
+    512,
+    512,
+    512,
+    511,
+    1
+  ],
+  "receipt_sha256": "0883bca1982687a23053f3c4fb8eb56a79a9402baf68d568ee1c294618a24bdc",
+  "release_ready": false,
+  "scope": "Observed cold physical forwards in the strict-extension HTTP controls",
+  "strict_extension_serving_warm_reuse_proven": false
+}
