@@ -1,0 +1,69 @@
+{
+  "bounded_result_sha256": "64090734cc8f579ad47c8e750b676f18ac9355bf3fc222cd377af32da088f010",
+  "cells": {
+    "2048/default": {
+      "ax_decode_tok_s": 46.284,
+      "ax_ttft_s": 1.645,
+      "decode_ratio": 1.2581,
+      "reference_decode_tok_s": 36.79,
+      "reference_ttft_s": 5.493,
+      "ttft_ratio": 0.2995
+    },
+    "2048/disabled": {
+      "ax_decode_tok_s": 45.865,
+      "ax_ttft_s": 1.694,
+      "decode_ratio": 1.2467,
+      "reference_decode_tok_s": 36.79,
+      "reference_ttft_s": 5.493,
+      "ttft_ratio": 0.3084
+    },
+    "512/default": {
+      "ax_decode_tok_s": 49.747,
+      "ax_ttft_s": 0.546,
+      "decode_ratio": 1.3174,
+      "reference_decode_tok_s": 37.763,
+      "reference_ttft_s": 2.185,
+      "ttft_ratio": 0.2498
+    },
+    "512/disabled": {
+      "ax_decode_tok_s": 49.653,
+      "ax_ttft_s": 0.555,
+      "decode_ratio": 1.3149,
+      "reference_decode_tok_s": 37.763,
+      "reference_ttft_s": 2.185,
+      "ttft_ratio": 0.2541
+    },
+    "8192/default": {
+      "ax_decode_tok_s": 44.186,
+      "ax_ttft_s": 10.575,
+      "decode_ratio": 1.2009,
+      "reference_decode_tok_s": 36.795,
+      "reference_ttft_s": 14.934,
+      "ttft_ratio": 0.7081
+    },
+    "8192/disabled": {
+      "ax_decode_tok_s": 44.133,
+      "ax_ttft_s": 10.31,
+      "decode_ratio": 1.1994,
+      "reference_decode_tok_s": 36.795,
+      "reference_ttft_s": 14.934,
+      "ttft_ratio": 0.6904
+    }
+  },
+  "matched_fixed_matrix_cells": 15,
+  "matched_qa_rows_and_grades": 105,
+  "native_matrix_sha256": "6babe7fb3a5a69d4c976296b2300bf8fee101d64f0d905580aecc370342c07ae",
+  "native_server_sha256": "d88b4a7b23c930acab24756c2890a22ac1ffe2bce29439bdadf80570a6780817",
+  "normal_pressure_samples": 25,
+  "numeric_bounds_met": true,
+  "peak_mlx_memory_bytes": 72918723810,
+  "peak_process_rss_bytes": 63520669696,
+  "qualification": false,
+  "reference_cpu_idle_after_percent": 88.35,
+  "reference_cpu_idle_before_percent": 95.91,
+  "release_ready": false,
+  "resource_samples_sha256": "c0d620486e9883cfc86bbc84414f97be7e507969a29c31c77c7401939aa8c3c2",
+  "scope": "Independent bounded PLE diagnostic",
+  "signed_reference_sha256": "2eeeb8ab3b5f329726550b675ec61d57edeab6558a582582d75287983d4a19b7",
+  "timing_host_floor_met": false
+}
