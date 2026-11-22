@@ -1,0 +1,123 @@
+{
+  "scope": "native PLE staging diagnostic on M5 Max",
+  "qualification": false,
+  "same_binary_as_m2": true,
+  "cpu_idle_percent": [
+    90.69,
+    96.2
+  ],
+  "matching_raw_payloads": {
+    "decode": {
+      "sha256": "c9b293bfee1f3404453601589643016d7d34d7155c9ad2a3f68e46a76b34c88e",
+      "requested_rows": 4608,
+      "bytes_read": 829440
+    },
+    "prefill": {
+      "sha256": "bdcd29244125a34e19ba8f22acc38e98e4080d07aae40354ed1154e755eb27eb",
+      "requested_rows": 32768,
+      "bytes_read": 5898240
+    }
+  },
+  "observed": [
+    {
+      "reader_threads": 1,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 4.458875,
+          "p95_ms": 4.672098
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.027521,
+          "p95_ms": 0.031277
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 1711.053208,
+          "p95_ms": 1837.260156
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 13.533708,
+          "p95_ms": 13.766825
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.198916,
+          "p95_ms": 0.241781
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.1585,
+          "p95_ms": 0.187827
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 24.815354,
+          "p95_ms": 25.021784
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 25.069896,
+          "p95_ms": 25.542294
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.173646,
+          "p95_ms": 0.225356
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.160938,
+          "p95_ms": 0.192096
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 25.371458,
+          "p95_ms": 25.642946
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 25.225438,
+          "p95_ms": 25.542137
+        }
+      }
+    },
+    {
+      "reader_threads": 1,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.027375,
+          "p95_ms": 0.032674
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.018458,
+          "p95_ms": 0.019709
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 13.357875,
+          "p95_ms": 13.615431
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 12.386916,
+          "p95_ms": 13.972808
+        }
+      }
+    }
+  ]
+}

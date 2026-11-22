@@ -1,0 +1,14 @@
+{
+  "scope": "capacity check before ordinary reference launch",
+  "ordinary_reference_launched": false,
+  "qualification": false,
+  "os": "27.2.1",
+  "samples": 121,
+  "wall_seconds": 1805.0,
+  "sampled_normal_pressure": 121,
+  "eligible_samples": 0,
+  "observed_signed_margin_bytes": 6917952302,
+  "background_rss_bytes_min": 17340661760,
+  "background_rss_bytes_max": 26783694848,
+  "native_matrix_sha256": "b75f591d3ee3a5ffc6deb7b96861b92b73850048f8496521c7c18380b4a778c4"
+}

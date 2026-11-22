@@ -1,0 +1,153 @@
+{
+  "scope": "native PLE staging diagnostic on M5 Max",
+  "qualification": false,
+  "same_binary_as_m2": true,
+  "cpu_idle_percent": [
+    97.56,
+    97.35
+  ],
+  "matching_raw_payloads": {
+    "decode": {
+      "sha256": "c9b293bfee1f3404453601589643016d7d34d7155c9ad2a3f68e46a76b34c88e",
+      "requested_rows": 4608,
+      "bytes_read": 829440
+    },
+    "prefill": {
+      "sha256": "bdcd29244125a34e19ba8f22acc38e98e4080d07aae40354ed1154e755eb27eb",
+      "requested_rows": 32768,
+      "bytes_read": 5898240
+    }
+  },
+  "observed": [
+    {
+      "reader_threads": 32,
+      "reader_pool_active": false,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.339313,
+          "p95_ms": 0.447396
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.16,
+          "p95_ms": 0.195788
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 62.861334,
+          "p95_ms": 66.099608
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 25.154563,
+          "p95_ms": 25.424119
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "reader_pool_active": true,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.290146,
+          "p95_ms": 0.514644
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.306458,
+          "p95_ms": 0.542494
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 26.065145,
+          "p95_ms": 26.197127
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 26.337896,
+          "p95_ms": 32.854498
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "reader_pool_active": true,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.235667,
+          "p95_ms": 0.517075
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.178791,
+          "p95_ms": 0.502498
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 25.682083,
+          "p95_ms": 25.837285
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 25.793312,
+          "p95_ms": 26.417283
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "reader_pool_active": false,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.175313,
+          "p95_ms": 0.22416
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.162,
+          "p95_ms": 0.197798
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 25.05123,
+          "p95_ms": 25.111636
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 25.002854,
+          "p95_ms": 25.371106
+        }
+      }
+    },
+    {
+      "reader_threads": 1,
+      "reader_pool_active": false,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.033938,
+          "p95_ms": 0.042486
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.020792,
+          "p95_ms": 0.022125
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 15.997041,
+          "p95_ms": 16.931939
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 14.246645,
+          "p95_ms": 14.54445
+        }
+      }
+    }
+  ]
+}
