@@ -1,0 +1,39 @@
+{
+  "qualification": false,
+  "same_binary_as_m2": true,
+  "cpu_idle_percent": [
+    98.72,
+    98.36
+  ],
+  "total_arms": 18,
+  "shards": {
+    "model-00021-of-00025.safetensors": {
+      "matched_tensors_per_arm": 139,
+      "median_seconds": {
+        "clone": {
+          "pread": 0.1886756455,
+          "pread-pair": 0.184948104
+        },
+        "reused": {
+          "mmap": 0.215766125,
+          "pread": 0.138920625,
+          "pread-pair": 0.1154076665
+        }
+      }
+    },
+    "model-00024-of-00025.safetensors": {
+      "matched_tensors_per_arm": 127,
+      "median_seconds": {
+        "clone": {
+          "pread": 0.186163042,
+          "pread-pair": 0.1773122915
+        },
+        "reused": {
+          "mmap": 0.205696,
+          "pread": 0.1348084375,
+          "pread-pair": 0.1075947085
+        }
+      }
+    }
+  }
+}
