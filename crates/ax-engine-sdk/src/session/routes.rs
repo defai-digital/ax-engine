@@ -265,8 +265,8 @@ mod tests {
             ..EngineStepReport::default()
         };
         assert_eq!(
-            stream_prefill_split_route(&step, request_id.0, false).unwrap(),
-            batch
+            stream_prefill_split_route(&step, request_id.0, false),
+            Some(batch.clone())
         );
         assert!(stream_prefill_split_route(&step, peer_id.0, false).is_none());
 
@@ -278,8 +278,8 @@ mod tests {
         };
         assert!(stream_prefill_split_route(&completed, request_id.0, false).is_none());
         assert_eq!(
-            stream_prefill_split_route(&completed, request_id.0, true).unwrap(),
-            batch
+            stream_prefill_split_route(&completed, request_id.0, true),
+            Some(batch)
         );
     }
 
