@@ -199,6 +199,41 @@ const MAX_HELD_DECODE_TOKENS: u32 = 12;
 const MIN_DECODE_TOKENS_BEFORE_HOLD: u32 = 84;
 const PREFILL_TAIL_HOLD_LIMIT: Duration = Duration::from_millis(300);
 
+#[derive(Clone, Copy)]
+enum ResidentPairRole {
+    Short,
+    Long,
+    Solo,
+}
+
+impl ResidentPairRole {
+    fn for_request(record: &crate::request::RequestRecord) -> Self {
+        // M5 resident two-slot coverage pairs a 512-token short prompt
+        // with up to 8,192 prompt tokens. Both used 96 output tokens.
+        if record.max_output_tokens > 96
+            || !record.multimodal_inputs.is_empty()
+            || !sampling_params_allow_deterministic_argmax_fast_path(&record.sampling_params)
+        {
+            return Self::Solo;
+        }
+        let prompt = record.prompt_tokens.len();
+        if prompt <= 512 {
+            Self::Short
+        } else if prompt <= 8192 {
+            Self::Long
+        } else {
+            Self::Solo
+        }
+    }
+
+    fn can_share_with(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Short, Self::Short | Self::Long) | (Self::Long, Self::Short)
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PrefillTailHold {
     prefill: RequestId,
@@ -664,9 +699,7 @@ impl EngineCore {
         if pressure_sample.is_some_and(MemoryPressureSample::over_hard) {
             self.spill_one_victim()?;
         }
-        let admitted_requests = self
-            .request_manager
-            .admit_waiting_up_to(self.live_sequence_cap)?;
+        let admitted_requests = self.admit_waiting_requests()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -1510,6 +1543,39 @@ impl EngineCore {
                 .retain(|snapshot| !self.spill_excluded.contains(&snapshot.request_id));
         }
         input
+    }
+
+    fn admit_waiting_requests(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
+        if self.live_sequence_cap != Some(2)
+            || !matches!(
+                self.runner.prefill_split_geometry(),
+                Some(PrefillSplitGeometry {
+                    logical_tokens: 2048,
+                    physical_tokens: 512,
+                })
+            )
+        {
+            return self
+                .request_manager
+                .admit_waiting_up_to(self.live_sequence_cap);
+        }
+
+        let mut resident = self
+            .request_manager
+            .records_iter()
+            .find(|record| record.state != RequestState::Waiting && !record.state.is_terminal())
+            .map(ResidentPairRole::for_request);
+        self.request_manager.admit_waiting_up_to_while(
+            self.live_sequence_cap,
+            Some(&mut |request| {
+                let next = ResidentPairRole::for_request(request);
+                if let Some(resident) = resident {
+                    return resident.can_share_with(next);
+                }
+                resident = Some(next);
+                true
+            }),
+        )
     }
 
     fn prepare_prefill_tail_hold(
@@ -4247,6 +4313,119 @@ mod tests {
             .submit(make_submission_with_prompt(2, 2, vec![7; 8192], 8))
             .unwrap();
         engine
+    }
+
+    #[test]
+    fn resident_mixed_pair_waits_for_the_first_long_request_to_drain() {
+        for first_prompt in [2048, 8192] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner::default(),
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            engine.set_live_sequence_cap(Some(2));
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            for (id, prompt) in [(1, first_prompt), (2, 8192)] {
+                engine
+                    .submit(make_submission_with_prompt(id, id, vec![7; prompt], 96))
+                    .unwrap();
+            }
+            engine.step(2049, true).unwrap();
+            let first = engine.request_manager.record(RequestId(1)).unwrap();
+            let pending = engine.request_manager.record(RequestId(2)).unwrap();
+            assert_eq!(first.processed_prompt_tokens, 2048);
+            assert_eq!(pending.state, RequestState::Waiting);
+            assert_eq!(pending.processed_prompt_tokens, 0);
+            assert_eq!(engine.kv_manager.block_count_for(RequestId(2)), 0);
+
+            engine.cancel(RequestId(1)).unwrap();
+            engine.step(2049, true).unwrap();
+            let next = engine.request_manager.record(RequestId(2)).unwrap();
+            assert_eq!(next.processed_prompt_tokens, 2048);
+            assert_eq!(engine.kv_manager.block_count_for(RequestId(1)), 0);
+        }
+    }
+
+    #[test]
+    fn resident_mixed_pair_does_not_starve_a_solo_context() {
+        for (solo_prompt, solo_output) in [(8193, 96), (2048, 97)] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner::default(),
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            engine.set_live_sequence_cap(Some(2));
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            engine
+                .submit(make_submission_with_prompt(1, 1, vec![7; 512], 2))
+                .unwrap();
+            engine.step(2049, true).unwrap();
+            for (id, prompt, output) in [(2, solo_prompt, solo_output), (3, 512, 96)] {
+                engine
+                    .submit(make_submission_with_prompt(id, id, vec![7; prompt], output))
+                    .unwrap();
+            }
+            engine.step(2049, true).unwrap();
+            for id in [2, 3] {
+                let waiting = engine.request_manager.record(RequestId(id)).unwrap();
+                assert_eq!(waiting.state, RequestState::Waiting);
+                assert_eq!(engine.kv_manager.block_count_for(RequestId(id)), 0);
+            }
+
+            for _ in 0..2 {
+                engine.step(2049, true).unwrap();
+            }
+            assert_eq!(
+                engine.request_manager.snapshot(RequestId(1)).unwrap().state,
+                RequestState::Finished,
+            );
+            assert_eq!(
+                engine
+                    .request_manager
+                    .record(RequestId(2))
+                    .unwrap()
+                    .processed_prompt_tokens,
+                2048,
+            );
+            assert_eq!(
+                engine.request_manager.record(RequestId(3)).unwrap().state,
+                RequestState::Waiting,
+            );
+
+            engine.cancel(RequestId(2)).unwrap();
+            engine.step(2049, true).unwrap();
+            assert_eq!(
+                engine
+                    .request_manager
+                    .record(RequestId(3))
+                    .unwrap()
+                    .processed_prompt_tokens,
+                512,
+            );
+        }
+    }
+
+    #[test]
+    fn resident_mixed_pair_admits_the_measured_short_and_long_contexts() {
+        let mut engine = decode_tail_engine(0);
+        let batch = engine
+            .step(2049, true)
+            .unwrap()
+            .schedule_plan
+            .execution_batch
+            .unwrap();
+        assert_eq!(batch.items.len(), 2);
+        assert_eq!(batch.items[1].scheduled_token_count, 512);
+        assert!(
+            engine
+                .request_manager
+                .record(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens
+                > 0,
+        );
     }
 
     #[test]
