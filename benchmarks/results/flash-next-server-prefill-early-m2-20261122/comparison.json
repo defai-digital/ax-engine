@@ -1,0 +1,41 @@
+{
+  "scope": "M2 Ultra 192 GB native HTTP functional test",
+  "qualification": false,
+  "runtime_commit": "2b905c012787e84fed75961674c5dd388e34e2d8",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "normal_pressure_samples": 85,
+  "trials": {
+    "48": {
+      "first_prefill_step": 176,
+      "short_token_84_step": 210,
+      "last_prefill_step": 195,
+      "prefill_active_at_tail": false,
+      "split_logical_ends": [
+        2048,
+        4096,
+        6144,
+        8192
+      ],
+      "split_groups_crossing_tail": [],
+      "held_decode_steps": 0,
+      "matching_generated_ids": 192
+    },
+    "65": {
+      "first_prefill_step": 357,
+      "short_token_84_step": 374,
+      "last_prefill_step": 376,
+      "prefill_active_at_tail": true,
+      "split_logical_ends": [
+        2048,
+        4096,
+        6144,
+        8192
+      ],
+      "split_groups_crossing_tail": [
+        8192
+      ],
+      "held_decode_steps": 0,
+      "matching_generated_ids": 192
+    }
+  }
+}
