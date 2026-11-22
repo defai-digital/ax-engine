@@ -72,7 +72,7 @@ def audit_prefill(trace, prompt_tokens, split_allowed, label):
     return split_steps
 
 
-def streams(artifact, traces, prompts, lanes, split, budget, name):
+def streams(artifact, traces, prompts, lanes, split, budget, name, *, split_min_prompt_tokens=PREFILL_ITEM):
     measured = [row for row in artifact["observations"] if row["phase"] == "measured"]
     by_prompt = {row["prompt_id"]: row for row in measured}
     by_request = {trace["request_id"]: trace for trace in traces}
@@ -108,7 +108,8 @@ def streams(artifact, traces, prompts, lanes, split, budget, name):
                 and 0 < prefill_ids[0] <= prefill_ids[-1] <= steps[0]
                 and all(1 <= event["scheduled"] <= lanes for event in trace["prefill"]),
                 f"{label}: prefill step ordering")
-        shared_candidates = audit_prefill(trace, row["input_tokens"], split, f"{label}: prefill cuts")
+        split_allowed = split and row["input_tokens"] >= split_min_prompt_tokens
+        shared_candidates = audit_prefill(trace, row["input_tokens"], split_allowed, f"{label}: prefill cuts")
         for event in trace["prefill"]:
             route = "split" if event["split_end"] is not None else "whole"
             prefill_owners[event["step_id"]].add((request, row["input_tokens"], route))
@@ -195,7 +196,7 @@ def compare(current, baseline):
     }
 
 
-def audit_arm(folder, name, metadata, workload, prompts):
+def audit_arm(folder, name, metadata, workload, prompts, *, split_min_prompt_tokens=PREFILL_ITEM):
     lanes, split = ARMS[name]
     require((metadata["lanes"], metadata["split"]) == (lanes, split) and metadata["matched_outputs"] == len(prompts),
             f"{name}: arm metadata")
@@ -212,8 +213,10 @@ def audit_arm(folder, name, metadata, workload, prompts):
             and artifact["target"]["input_kind"] == "tokens"
             and artifact["sampling"]["temperature"] == 0 and artifact["sampling"]["ignore_eos"] is True,
             f"{name}: client configuration")
-    data, outputs, sharing = streams(artifact, json.loads(raw_traces), prompts, lanes, split,
-                                     workload["reply_budget"], name)
+    data, outputs, sharing = streams(
+        artifact, json.loads(raw_traces), prompts, lanes, split, workload["reply_budget"], name,
+        split_min_prompt_tokens=split_min_prompt_tokens,
+    )
     require(sharing == metadata["split_activation"]["split_requests_with_route_and_shared_decode"],
             f"{name}: shared split activation")
     groups = defaultdict(list)

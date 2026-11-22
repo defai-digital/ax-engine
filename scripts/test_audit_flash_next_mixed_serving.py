@@ -9,13 +9,20 @@ else:
     import audit_flash_next_mixed_serving as audit
 
 
-def mixed_streams():
+def mixed_streams(split_prompt_tokens=audit.PREFILL_ITEM):
     prompts = {}
     observations = []
     traces = []
+    whole_items, tail = divmod(split_prompt_tokens - audit.PREFILL_ITEM, audit.PREFILL_ITEM)
+    split_widths = audit.WIDTHS + [audit.PREFILL_ITEM] * whole_items
+    if tail:
+        split_widths.append(tail)
+    split_prefill_ids = range(3, 3 + len(split_widths))
+    last_prefill_step = split_prefill_ids[-1]
+    split_decode_ids = [last_prefill_step, last_prefill_step + 2, last_prefill_step + 3]
     for ident, widths, prefill_ids, decode_ids, gaps in (
         (1, [512], [2], [2, 4, 8], [170, 200]),
-        (2, audit.WIDTHS, [3, 4, 5, 6, 7], [7, 9, 10], [45, 20]),
+        (2, split_widths, split_prefill_ids, split_decode_ids, [45, 20]),
     ):
         name = f"p{ident}"
         count = sum(widths)
@@ -32,7 +39,8 @@ def mixed_streams():
             "request_id": ident, "initial_cursor": 0, "cursor": count, "decode_step_ids": decode_ids,
             "prefill": [
                 {"step_id": step, "width": width, "cursor": sum(widths[:index + 1]),
-                 "scheduled": 2 if step == 4 else 1, "split_end": count if ident == 2 else None}
+                 "scheduled": 2 if step == 4 else 1,
+                 "split_end": audit.PREFILL_ITEM if ident == 2 and index < len(audit.WIDTHS) else None}
                 for index, (step, width) in enumerate(zip(prefill_ids, widths, strict=True))
             ],
         })
@@ -55,6 +63,19 @@ class MixedServingAuditTests(unittest.TestCase):
         data, _, _ = audit.streams(artifact, traces, prompts, 2, True, 3, "pair")
         self.assertEqual(data["p1"]["gaps_at_least_100ms"], 2)
         self.assertEqual(data["p1"]["peer_prefill_gaps_at_least_100ms"], 1)
+
+    def test_selective_split_rejects_short_trace_and_accepts_floor(self):
+        for prompt_tokens in (2048, 8191):
+            with self.subTest(prompt_tokens=prompt_tokens):
+                with self.assertRaisesRegex(ValueError, "selective/p2: prefill cuts"):
+                    audit.streams(
+                        *mixed_streams(prompt_tokens), 2, True, 3, "selective",
+                        split_min_prompt_tokens=8192,
+                    )
+        _, _, shared = audit.streams(
+            *mixed_streams(8192), 2, True, 3, "selective", split_min_prompt_tokens=8192,
+        )
+        self.assertEqual(shared, 1)
 
     def test_missing_route_and_gap_cannot_pass(self):
         artifact, traces, prompts = mixed_streams()
