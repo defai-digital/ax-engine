@@ -1,0 +1,48 @@
+{
+  "build_sha256": "69358e667d63ecbefb2a258893141a3492c732fc2e691bf88ffce9618c7e3ca7",
+  "delivered_copy_readiness": {
+    "delivered": {
+      "default": 122.002,
+      "disabled": 122.196,
+      "required": 125.258
+    },
+    "detail": "delivered required readiness 125.258s exceeds 120s; delivered default readiness 122.002s exceeds 120s",
+    "gate": "readiness",
+    "passed": false
+  },
+  "delivery": {
+    "detail": "49 members, 132261877478 bytes verified from an empty cache",
+    "download_seconds": 1733.066,
+    "failed_attempts": 0,
+    "gate": "delivery",
+    "passed": true
+  },
+  "delivery_sha256": "46b205250b59f57eda9a9aa3e921ca7d5defc559fb172e59aabcbbe4cad85154",
+  "download_seconds": 1733.066,
+  "downloaded_bytes": 132261877478,
+  "functional_controls": 21,
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "memory_bytes": 137438953472,
+    "os": "27.2.1",
+    "soc": "Apple M5 Max",
+    "storage": {
+      "bus_protocol": "Apple Fabric",
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true
+    }
+  },
+  "matching_native_manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "native_support_sha256": "73f4e899a9ec1eea4dd1e0eec8a00c35dd309f663385fc6414333a4b3296b78a",
+  "readiness_seconds": {
+    "default": 122.002,
+    "disabled": 122.196,
+    "required": 125.258
+  },
+  "release_ready": false,
+  "scope": "Fresh native delivery and delivered-copy readiness only",
+  "thresholds_sha256": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b"
+}
