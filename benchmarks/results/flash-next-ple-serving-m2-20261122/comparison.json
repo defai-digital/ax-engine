@@ -1,0 +1,16 @@
+{
+  "scope": "M2 functional serving",
+  "qualification": false,
+  "context_tokens": 32768,
+  "pool_workers_by_arm": [
+    0,
+    31
+  ],
+  "matching_responses_per_arm": 6,
+  "matching_output_ids_per_arm": 768,
+  "pressure_samples_by_arm": [
+    67,
+    348
+  ],
+  "timing_eligible": false
+}

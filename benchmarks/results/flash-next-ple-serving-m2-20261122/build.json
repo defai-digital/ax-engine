@@ -1,0 +1,15 @@
+{
+  "runtime_commit": "566cac1d6c774ac2590c8c2143944f05de7b5272",
+  "runtime_tree": "9955841315b50056afa9f0e7b91d2a592239794d",
+  "profile": "release-server",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "server_sha256": "3c2e44a2843a90625203b1ad8c9369a5c4e32cbfc1dcd196538e33a67bc0d953",
+  "observer_sha256": "bd0cbc94c20e2485d8cf3d44711bb659213f580d4f50575a645d1b1d6c5ab683",
+  "observer_source_sha256": "8a5225c3f072e22ef640ba0f31abfbed710e8578c3fc740967f8c41e176cfa2c",
+  "driver_sha256": "8e35bdd5705cf72aed9853f792c9bbe27c1a52be274cb08be490e7603c0bc3ce",
+  "matrix_sha256": "e962a8c9b41f4002966ff8ec3d8f3d341619d5517833afe41154e40322a255cf"
+}
