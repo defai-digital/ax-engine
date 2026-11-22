@@ -2987,6 +2987,7 @@ impl MlxRunner {
             // axquant_runtime.json "mtp" block; fail-closed when absent.
             runtime_certification: mtp_runtime_certification(artifacts.root_dir()),
             qwen_linear_throughput_default,
+            flash_next_family: cfg.model_family == "qwen4_exp",
             flash_next_candidate_attached: flash_next_mtp_candidate_attached,
             flash_next_candidate_attach_failed: flash_next_mtp_candidate_attach_failed,
         });

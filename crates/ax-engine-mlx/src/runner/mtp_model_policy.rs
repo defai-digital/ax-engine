@@ -85,12 +85,13 @@ pub(super) enum MtpModelPolicyKind {
     /// never default-on, with independent token/state qualification still
     /// required. Served by its own request-local draft cursor.
     FlashNextCertificationCandidate,
+    FlashNextDirect,
 }
 
 impl MtpModelPolicyKind {
     const fn route_code(self) -> u32 {
         match self {
-            Self::None => 0,
+            Self::None | Self::FlashNextDirect => 0,
             Self::QwenCalibrated => 1,
             Self::QwenLinearCertificationCandidateDepthOne => 2,
             Self::QwenLinearCertificationCandidateMultiDepth => 3,
@@ -134,6 +135,7 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) runtime_certification: MtpRuntimeCertification,
     /// Product default-on for Qwen linear sidecar packs (throughput MTP).
     pub(super) qwen_linear_throughput_default: bool,
+    pub(super) flash_next_family: bool,
     /// The Flash Next sidecar is attached (`mtp.safetensors` loaded).
     pub(super) flash_next_candidate_attached: bool,
     /// The Flash Next sidecar was requested but failed to attach. Reported
@@ -248,7 +250,12 @@ impl MtpModelPolicy {
             return (kind, max_depth);
         }
 
-        (MtpModelPolicyKind::None, 0)
+        let kind = if inputs.flash_next_family {
+            MtpModelPolicyKind::FlashNextDirect
+        } else {
+            MtpModelPolicyKind::None
+        };
+        (kind, 0)
     }
 
     /// Hard safety gate for model-based speculation.
@@ -258,11 +265,15 @@ impl MtpModelPolicy {
             MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
                 | MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
                 | MtpModelPolicyKind::ConflictingDrafters
+                | MtpModelPolicyKind::FlashNextDirect
         )
     }
 
     pub(super) const fn has_attached_drafter(self) -> bool {
-        !matches!(self.kind, MtpModelPolicyKind::None)
+        !matches!(
+            self.kind,
+            MtpModelPolicyKind::None | MtpModelPolicyKind::FlashNextDirect
+        )
     }
 
     /// Attached *and* route-safe: the only state in which a `Required`
@@ -312,7 +323,8 @@ impl MtpModelPolicy {
             // Sidecar may attach automatically; only an explicit session
             // request (or the operator force override) may activate it.
             // MTP Tier 2 remains pending (greedy identity until documented ties).
-            MtpModelPolicyKind::FlashNextCertificationCandidate => false,
+            MtpModelPolicyKind::FlashNextDirect
+            | MtpModelPolicyKind::FlashNextCertificationCandidate => false,
             _ => true,
         }
     }
@@ -390,6 +402,7 @@ impl MtpModelPolicy {
             | MtpModelPolicyKind::DeepseekV4CertificationCandidate
             | MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
             | MtpModelPolicyKind::ConflictingDrafters
+            | MtpModelPolicyKind::FlashNextDirect
             | MtpModelPolicyKind::FlashNextCertificationCandidate => None,
         }
     }
@@ -411,11 +424,7 @@ impl MtpModelPolicy {
         );
         decisions.upsert_route_decision(
             "ax_mlx_mtp_model_policy_active",
-            u32::from(
-                mtp_requested
-                    && self.route_safe()
-                    && !matches!(self.kind, MtpModelPolicyKind::None),
-            ),
+            u32::from(mtp_requested && self.usable()),
         );
         decisions.upsert_route_decision(
             "ax_mlx_qwen_linear_mtp_certification_candidate",
@@ -917,6 +926,7 @@ mod tests {
 
     fn flash_next(attached: bool, attach_failed: bool) -> MtpModelPolicy {
         MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            flash_next_family: true,
             flash_next_candidate_attached: attached,
             flash_next_candidate_attach_failed: attach_failed,
             // A publisher certification block must not promote the candidate.
@@ -946,9 +956,27 @@ mod tests {
     }
 
     #[test]
+    fn flash_next_without_sidecar_stays_direct() {
+        let policy = flash_next(false, false);
+        assert_eq!(policy.kind, MtpModelPolicyKind::FlashNextDirect);
+        assert!(!policy.has_attached_drafter());
+        assert!(!policy.usable());
+        assert!(!policy.certified_default_on());
+        assert!(!policy.route_safe());
+
+        let mut decisions = Vec::new();
+        policy.append_route_decisions(true, &mut decisions);
+        let map = decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(map.get("ax_mlx_mtp_model_policy"), Some(&0));
+        assert_eq!(map.get("ax_mlx_mtp_model_policy_depth"), Some(&0));
+        assert_eq!(map.get("ax_mlx_mtp_model_policy_active"), Some(&0));
+        assert_eq!(map.get("ax_mlx_flash_next_mtp_attach_failed"), Some(&0));
+    }
+
+    #[test]
     fn flash_next_attach_failure_advertises_no_drafter() {
         let failed = flash_next(false, true);
-        assert_eq!(failed.kind, MtpModelPolicyKind::None);
+        assert_eq!(failed.kind, MtpModelPolicyKind::FlashNextDirect);
         // `Required` sessions check `has_mtp()`; a failed attach must not
         // pass that check and then decode direct.
         assert!(!failed.has_attached_drafter());
