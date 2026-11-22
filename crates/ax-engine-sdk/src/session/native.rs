@@ -119,6 +119,13 @@ fn build_mlx_core(
     let artifacts = NativeModelArtifacts::from_dir_or_convert(model_dir)
         .map_err(|e| EngineSessionError::MetalRuntime(e.into()))?;
 
+    if config.mlx_mtp_policy == MlxMtpPolicy::Required
+        && artifacts.manifest().model_family == "qwen4_exp"
+        && ax_engine_mlx::fastpath::ngram_acceleration_disabled()
+    {
+        return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
+    }
+
     // Whisper is an encoder/decoder speech model with its own decoding loop,
     // not an autoregressive `ExecutionRunner`. Keep the scheduler/session
     // shell alive for server lifecycle management while `EngineSession`

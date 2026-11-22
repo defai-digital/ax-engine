@@ -1,0 +1,14 @@
+{
+  "base_commit": "b74fca003afda4affc9b9a2693d96f2f6fedc21f",
+  "profile": "release-server",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "server_sha256": "f02b26b06c3a62d8e58aa489e90f0a0869c4aac4054255859590de5878a330ac",
+  "changed_source_sha256": {
+    "crates/ax-engine-mlx/src/fastpath.rs": "7b9fbbf33db148b2cd564d72d9722534f2f6a2a79a7087f0308dac679ddf898a",
+    "crates/ax-engine-sdk/src/session/native.rs": "445be476a2a6fcc3e1a7307cea7eb53c571af9faa33d751292e9b28f6c228e2e"
+  },
+  "check_sha256": "9bc4e69f143b1bcf9f3b746b1a48f3b4dd6524ac57646833904b673ceefbf1e3"
+}

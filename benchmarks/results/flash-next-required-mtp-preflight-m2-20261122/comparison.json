@@ -1,0 +1,8 @@
+{
+  "previous_m5_resident_shards": 15,
+  "previous_m5_resident_seconds": 74.775647,
+  "previous_m5_sidecar_seconds": 10.50981,
+  "new_m2_resident_shards": 0,
+  "new_m2_process_seconds": 0.683928000042215,
+  "same_activation_error": true
+}

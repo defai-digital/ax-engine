@@ -381,13 +381,10 @@ macro_rules! env_flag_default_on {
 }
 
 env_flag!(
-    /// Engaged by `AX_NO_SPEC` (the CLAUDE.md-documented convention for
-    /// forcing greedy direct decode). When set, `MlxRunner::from_artifacts`
-    /// ORs this value into the `disable_ngram_acceleration` parameter, so
-    /// the env switch is honored uniformly from CLI, server, and SDK entry
-    /// points — not just from the bench CLI's argument parsing path. Truthy
-    /// values follow the module-level parser contract.
-    ngram_acceleration_disabled,
+    /// The process-wide `AX_NO_SPEC` switch disables n-gram acceleration and
+    /// model-based speculation. Session preflight and runner activation share
+    /// its cached value. Truthy values follow the module-level parser contract.
+    pub ngram_acceleration_disabled,
     "AX_NO_SPEC"
 );
 
