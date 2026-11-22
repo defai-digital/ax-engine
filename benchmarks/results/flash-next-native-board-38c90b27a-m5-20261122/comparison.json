@@ -1,0 +1,125 @@
+{
+  "gates": [
+    {
+      "detail": "49 members, 132261877478 bytes verified from an empty cache",
+      "download_seconds": 1110.398,
+      "failed_attempts": 0,
+      "gate": "delivery",
+      "passed": true
+    },
+    {
+      "detail": "reference: before and after must record CPU idle between 90.0% and 100%",
+      "gate": "integrity",
+      "passed": false
+    },
+    {
+      "ax_failures": {
+        "default": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "disabled": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ]
+      },
+      "ax_only_failures": {
+        "default": null,
+        "disabled": null
+      },
+      "detail": "reference QA is incomplete",
+      "gate": "quality",
+      "passed": false,
+      "reference_failures": null
+    },
+    {
+      "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+      "gate": "lifecycle",
+      "passed": true
+    },
+    {
+      "detail": "peak server RSS {disabled: 78.7, default: 78.8} GiB within 96 GiB",
+      "gate": "memory",
+      "passed": true,
+      "peaks_gib": {
+        "default": 78.793,
+        "disabled": 78.704
+      }
+    },
+    {
+      "delivered": {
+        "default": 125.26,
+        "disabled": 108.096,
+        "required": 126.269
+      },
+      "detail": "delivered required readiness 126.269s exceeds 120s; delivered default readiness 125.26s exceeds 120s; lifecycle/default readiness 124.249s exceeds 120s",
+      "gate": "readiness",
+      "passed": false
+    },
+    {
+      "detail": "29774-token lookup took {'disabled': 41.682, 'default': 41.663} s (limit 400 s)",
+      "gate": "long_lookup",
+      "passed": true,
+      "seconds": {
+        "default": 41.663,
+        "disabled": 41.682
+      }
+    },
+    {
+      "cells": {},
+      "detail": "reference matrix is incomplete; reference: expected two warmups and three measurements at each of (512, 2048, 8192); reference: expected a SHA-256 for every fixed-workload prompt; 512/disabled: missing timing; 512/default: missing timing; 2048/disabled: missing timing; 2048/default: missing timing; 8192/disabled: missing timing; 8192/default: missing timing",
+      "gate": "reference_relative",
+      "passed": false
+    },
+    {
+      "default_verified_steps": {
+        "lifecycle": 0.0,
+        "matrix": 0.0,
+        "qa": 0.0
+      },
+      "detail": "default mode never activated the drafter in any harness; required MTP stays an explicit opt-in and MTP-S/P/D remain not_assessed",
+      "gate": "mtp_policy",
+      "passed": true
+    }
+  ],
+  "matching_signed_matrix_arrays": 124,
+  "matrix_readiness_seconds": {
+    "default": 118.95,
+    "disabled": 119.798
+  },
+  "native_build_commit": "38c90b27a3abd3c94b592aabbbc884d441451511",
+  "native_matrix_cpu_idle_percent": [
+    99.53,
+    96.12
+  ],
+  "native_server_sha256": "6db0b00d90349d78bce160436f14e81d3d9c57db40f7c57a3efd63cf2803f7c9",
+  "raw_sha256": {
+    "delivered_support": "f636708bf722e408b3680695cadb09790a9e11c30c90432a452a881637fa623d",
+    "delivery": "ffb656029cc0b94df7ce64fde8e263338e8ebcb3920c57ee709c1843b8ff929f",
+    "lifecycle": "a03f5c8bea72f713848c064fa675093b72071e42135cc4b692c175934a0afe66",
+    "matrix": "ac6e54cdb42ad2290f6f8c958ad1d2bca9318d7f4becad0b0ee9233c6296922a",
+    "matrix_repeats": "f2401b1bbe90387b39cd6467c628edbf11fb5a2d7e7f758875835a400ffab74a",
+    "qa": "32bef6d35be09508ba3bd45c9419b2c9eeef22750fc7ec7675db2d657389b0a1",
+    "reference": "868bdf9cd3937b3b49323e75fe38979a206ba16e8d529efa54c016820322673d"
+  },
+  "release_ready": false,
+  "repeat_token_identity": {
+    "default": {
+      "compared": 31,
+      "identical": 31
+    },
+    "disabled": {
+      "compared": 31,
+      "identical": 31
+    }
+  },
+  "timing_eligible_native_legs": [
+    "qa",
+    "lifecycle",
+    "generate-matrix"
+  ]
+}
