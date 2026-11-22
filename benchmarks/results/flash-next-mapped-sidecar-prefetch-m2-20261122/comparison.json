@@ -1,0 +1,90 @@
+{
+  "exact_arrays": 280,
+  "hardware": {
+    "macos": "27.2.1",
+    "memory_bytes": 206158430208,
+    "soc": "Apple M2 Ultra",
+    "storage": "external SSD"
+  },
+  "measured_arms": {
+    "model-00017-of-00025.safetensors": [
+      {
+        "combined_seconds": 88.9570468,
+        "join_wait_seconds": 0,
+        "mode": "serial",
+        "overlap_seconds": 0,
+        "prefetch_seconds": 0,
+        "sidecar_copy_seconds": 80.1244966,
+        "trunk_seconds": 8.83255012
+      },
+      {
+        "combined_seconds": 11.2518799,
+        "join_wait_seconds": 2.375e-06,
+        "mode": "overlap",
+        "overlap_seconds": 2.23263654,
+        "prefetch_seconds": 2.23263654,
+        "sidecar_copy_seconds": 0.765308666,
+        "trunk_seconds": 10.4865568
+      },
+      {
+        "combined_seconds": 11.2646135,
+        "join_wait_seconds": 2.25e-06,
+        "mode": "overlap",
+        "overlap_seconds": 2.23215979,
+        "prefetch_seconds": 2.23215979,
+        "sidecar_copy_seconds": 0.76177725,
+        "trunk_seconds": 10.5028218
+      },
+      {
+        "combined_seconds": 74.3864864,
+        "join_wait_seconds": 0,
+        "mode": "serial",
+        "overlap_seconds": 0,
+        "prefetch_seconds": 0,
+        "sidecar_copy_seconds": 65.1110243,
+        "trunk_seconds": 9.27546196
+      }
+    ],
+    "model-00018-of-00025.safetensors": [
+      {
+        "combined_seconds": 14.564238,
+        "join_wait_seconds": 3.291e-06,
+        "mode": "overlap",
+        "overlap_seconds": 5.99636937,
+        "prefetch_seconds": 5.99636937,
+        "sidecar_copy_seconds": 0.751089459,
+        "trunk_seconds": 13.8131323
+      },
+      {
+        "combined_seconds": 38.8403231,
+        "join_wait_seconds": 0,
+        "mode": "serial",
+        "overlap_seconds": 0,
+        "prefetch_seconds": 0,
+        "sidecar_copy_seconds": 30.460088,
+        "trunk_seconds": 8.38023504
+      },
+      {
+        "combined_seconds": 130.619265,
+        "join_wait_seconds": 4.1e-08,
+        "mode": "serial",
+        "overlap_seconds": 0,
+        "prefetch_seconds": 0,
+        "sidecar_copy_seconds": 95.6924032,
+        "trunk_seconds": 34.9268622
+      },
+      {
+        "combined_seconds": 10.895536,
+        "join_wait_seconds": 2.584e-06,
+        "mode": "overlap",
+        "overlap_seconds": 2.22981642,
+        "prefetch_seconds": 2.22981642,
+        "sidecar_copy_seconds": 0.7182385,
+        "trunk_seconds": 10.1772805
+      }
+    ]
+  },
+  "qualification": false,
+  "scope": "M2 overlapping mapped trunk and sidecar component",
+  "sidecar_bytes": 5214301696
+}
