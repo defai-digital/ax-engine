@@ -1546,15 +1546,13 @@ impl EngineCore {
     }
 
     fn admit_waiting_requests(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
-        if self.live_sequence_cap != Some(2)
-            || !matches!(
-                self.runner.prefill_split_geometry(),
-                Some(PrefillSplitGeometry {
-                    logical_tokens: 2048,
-                    physical_tokens: 512,
-                })
-            )
-        {
+        if !matches!(
+            self.runner.prefill_split_geometry(),
+            Some(PrefillSplitGeometry {
+                logical_tokens: 2048,
+                physical_tokens: 512,
+            })
+        ) {
             return self
                 .request_manager
                 .admit_waiting_up_to(self.live_sequence_cap);
@@ -1565,8 +1563,11 @@ impl EngineCore {
             .records_iter()
             .find(|record| record.state != RequestState::Waiting && !record.state.is_terminal())
             .map(ResidentPairRole::for_request);
+        // This physical profile is already configured for two live slots.
+        // The priced memory plan can impose a smaller cap or leave it unset.
+        let pair_cap = self.live_sequence_cap.unwrap_or(2).min(2);
         self.request_manager.admit_waiting_up_to_while(
-            self.live_sequence_cap,
+            Some(pair_cap),
             Some(&mut |request| {
                 let next = ResidentPairRole::for_request(request);
                 if let Some(resident) = resident {
@@ -4324,7 +4325,7 @@ mod tests {
                 DeterministicSampler,
             );
             engine.set_prefix_reuse_enabled(false);
-            engine.set_live_sequence_cap(Some(2));
+            assert_eq!(engine.live_sequence_cap(), None);
             engine.set_multi_prefill_fair(true, 2048, 1);
             for (id, prompt) in [(1, first_prompt), (2, 8192)] {
                 engine
@@ -4344,6 +4345,30 @@ mod tests {
             let next = engine.request_manager.record(RequestId(2)).unwrap();
             assert_eq!(next.processed_prompt_tokens, 2048);
             assert_eq!(engine.kv_manager.block_count_for(RequestId(1)), 0);
+        }
+    }
+
+    #[test]
+    fn resident_mixed_pair_respects_the_physical_and_priced_caps() {
+        for (live_cap, admitted) in [(None, 2u64), (Some(1), 1), (Some(3), 2)] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner::default(),
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            engine.set_live_sequence_cap(live_cap);
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            for id in 1..=3 {
+                engine
+                    .submit(make_submission_with_prompt(id, id, vec![7; 512], 96))
+                    .unwrap();
+            }
+            engine.step(2049, true).unwrap();
+            for id in 1..=3 {
+                let record = engine.request_manager.record(RequestId(id)).unwrap();
+                assert_eq!(record.state == RequestState::Waiting, id > admitted);
+            }
         }
     }
 
