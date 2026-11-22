@@ -1,0 +1,21 @@
+{
+  "arms": {
+    "mmap": {
+      "ready_seconds": 27.279,
+      "resident_seconds": 10.350248,
+      "sidecar_seconds": 2.006905,
+      "verified_steps": 107.0
+    },
+    "pread": {
+      "ready_seconds": 241.429,
+      "resident_seconds": 226.204825,
+      "sidecar_seconds": 0.868363,
+      "verified_steps": 107.0
+    }
+  },
+  "kill_switch_rejected_required": true,
+  "matching_required_cases": 7,
+  "qualification": false,
+  "receipt_sha256": "9858e90909865feb96aa97c7a6704dd39d19a5a6db6d941b2a2794729f2bdba3",
+  "scope": "M2 native required MTP sidecar reader smoke"
+}
