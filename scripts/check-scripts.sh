@@ -76,6 +76,8 @@ bash scripts/check-qa.sh
   scripts/test_bench_ax_serving.py \
   scripts/audit_flash_next_mixed_serving.py \
   scripts/test_audit_flash_next_mixed_serving.py \
+  scripts/tune_flash_next_serving.py \
+  scripts/test_tune_flash_next_serving.py \
   scripts/compare_ax_serving_runs.py \
   scripts/test_compare_ax_serving_runs.py \
   scripts/bench_single_client_mlx_serving.py \
@@ -331,6 +333,7 @@ bash scripts/check-qa.sh
   scripts/test_probe_agent_turn_reuse.py \
   scripts/test_bench_ax_serving.py \
   scripts/test_audit_flash_next_mixed_serving.py \
+  scripts/test_tune_flash_next_serving.py \
   scripts/test_compare_ax_serving_runs.py \
   scripts/test_bench_single_client_mlx_serving.py \
   scripts/test_bench_ax_multimodel_serving.py \

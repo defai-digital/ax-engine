@@ -1,0 +1,136 @@
+{
+  "schema": "ax-engine.flash-next.optuna-study.v1",
+  "study": "serving",
+  "metrics": {
+    "short_stream_gap_p95_ms": "minimize",
+    "long_arrival_ttft_p95_ms": "minimize",
+    "output_tokens_per_second": "maximize"
+  },
+  "budget": 3,
+  "seed": 42,
+  "optuna_version": "5.1.0",
+  "qualification": false,
+  "provenance": {
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "corpus_sha256": "2c0c205d803207df6316dbd0076eef97451a55c80c0413fdc6b3bee5ffef7e9a",
+    "offered_traffic_sha256": "e5fafc0966f17256d54079f000cd7afdd0a8589635e57bb9651a0721cd9d575b",
+    "archive_sha256": "b02cdf6d8537c2096e7b838f2dda4b2bb178782050cd4c4c1ad7cfc0c35aa13e",
+    "server_sha256": "8fce3e608ff9b66b8d5d6ebe21d109aae3c883926615a74755f99727c81bbcc5",
+    "requests_per_arm": 220,
+    "short_prompt_tokens": 512,
+    "long_prompt_tokens": 8192,
+    "selective_split_min_prompt_tokens": 8192,
+    "validation_scope": "Reverse process order with the same offered arrivals"
+  },
+  "fixed_grid": {
+    "evaluated": [
+      {
+        "setting": "off",
+        "values": [
+          52.8261009712878,
+          40046.59826009447,
+          23.112043194895833
+        ],
+        "rejection": null
+      },
+      {
+        "setting": "all",
+        "values": [
+          63.78100874731891,
+          48671.62726278766,
+          22.986322942586508
+        ],
+        "rejection": null
+      },
+      {
+        "setting": "long",
+        "values": [
+          404.2002150439592,
+          46431.49533335672,
+          22.85131883538959
+        ],
+        "rejection": null
+      }
+    ],
+    "training_frontier": [
+      "off"
+    ],
+    "shortlisted_candidates": [],
+    "validation": [
+      {
+        "baseline": [
+          55.297170986013924,
+          59226.62543544866,
+          22.669239450081033
+        ],
+        "frontier_trials": [
+          {
+            "setting": "off",
+            "values": [
+              55.297170986013924,
+              59226.62543544866,
+              22.669239450081033
+            ],
+            "rejection": null
+          }
+        ]
+      }
+    ]
+  },
+  "optuna_tpe": {
+    "evaluated": [
+      {
+        "setting": "off",
+        "values": [
+          52.8261009712878,
+          40046.59826009447,
+          23.112043194895833
+        ],
+        "rejection": null
+      },
+      {
+        "setting": "all",
+        "values": [
+          63.78100874731891,
+          48671.62726278766,
+          22.986322942586508
+        ],
+        "rejection": null
+      },
+      {
+        "setting": "long",
+        "values": [
+          404.2002150439592,
+          46431.49533335672,
+          22.85131883538959
+        ],
+        "rejection": null
+      }
+    ],
+    "training_frontier": [
+      "off"
+    ],
+    "shortlisted_candidates": [],
+    "validation": [
+      {
+        "baseline": [
+          55.297170986013924,
+          59226.62543544866,
+          22.669239450081033
+        ],
+        "frontier_trials": [
+          {
+            "setting": "off",
+            "values": [
+              55.297170986013924,
+              59226.62543544866,
+              22.669239450081033
+            ],
+            "rejection": null
+          }
+        ]
+      }
+    ],
+    "duplicate_suggestions_skipped": 1
+  }
+}

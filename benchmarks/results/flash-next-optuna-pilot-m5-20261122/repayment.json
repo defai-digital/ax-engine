@@ -1,0 +1,393 @@
+{
+  "schema": "ax-engine.flash-next.optuna-study.v1",
+  "study": "repayment",
+  "metrics": {
+    "short_runner_gap_p95_us": "minimize",
+    "long_first_token_added_runner_us": "minimize"
+  },
+  "budget": 24,
+  "seed": 42,
+  "optuna_version": "5.1.0",
+  "qualification": false,
+  "provenance": {
+    "input_archive_sha256": "bd8cd3e0ce8aebca20109d280538570ff089615f4e01559bf474ea9af48781a0",
+    "fixed_step_widths": [
+      512,
+      512,
+      512,
+      511,
+      1,
+      512,
+      512,
+      512,
+      511,
+      1,
+      512,
+      512,
+      512,
+      511,
+      1,
+      512,
+      512,
+      512,
+      511,
+      1
+    ],
+    "validation_scope": "p10 and p90 decoder costs on the same trace, not new traffic"
+  },
+  "fixed_grid": {
+    "evaluated": [
+      {
+        "setting": 0,
+        "values": [
+          735985.6,
+          0
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 4,
+        "values": [
+          735985.6,
+          632028
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 9,
+        "values": [
+          735985.6,
+          1284444
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 13,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 17,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 22,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 26,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 30,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 35,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 39,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 43,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 48,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 52,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 57,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 61,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 65,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 70,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 74,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 78,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 83,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 87,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 91,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 96,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 100,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      }
+    ],
+    "training_frontier": [
+      0
+    ],
+    "shortlisted_candidates": [],
+    "validation": [
+      {
+        "baseline": [
+          735985.6,
+          0
+        ],
+        "frontier_trials": [
+          {
+            "setting": 0,
+            "values": [
+              735985.6,
+              0
+            ],
+            "rejection": null
+          }
+        ]
+      },
+      {
+        "baseline": [
+          735985.6,
+          0
+        ],
+        "frontier_trials": [
+          {
+            "setting": 0,
+            "values": [
+              735985.6,
+              0
+            ],
+            "rejection": null
+          }
+        ]
+      }
+    ]
+  },
+  "optuna_tpe": {
+    "evaluated": [
+      {
+        "setting": 0,
+        "values": [
+          735985.6,
+          0
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 37,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 96,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 73,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 60,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 15,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 1,
+        "values": [
+          735985.6,
+          387372
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 95,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 86,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 2,
+        "values": [
+          735985.6,
+          387372
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 55,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 57,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 54,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 3,
+        "values": [
+          735985.6,
+          632028
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 40,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 44,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 46,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 47,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 4,
+        "values": [
+          735985.6,
+          632028
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 92,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 99,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 5,
+        "values": [
+          735985.6,
+          713580
+        ],
+        "rejection": null
+      },
+      {
+        "setting": 29,
+        "values": null,
+        "rejection": "Long first token falls outside the measured schedule"
+      },
+      {
+        "setting": 6,
+        "values": [
+          735985.6,
+          958236
+        ],
+        "rejection": null
+      }
+    ],
+    "training_frontier": [
+      0
+    ],
+    "shortlisted_candidates": [],
+    "validation": [
+      {
+        "baseline": [
+          735985.6,
+          0
+        ],
+        "frontier_trials": [
+          {
+            "setting": 0,
+            "values": [
+              735985.6,
+              0
+            ],
+            "rejection": null
+          }
+        ]
+      },
+      {
+        "baseline": [
+          735985.6,
+          0
+        ],
+        "frontier_trials": [
+          {
+            "setting": 0,
+            "values": [
+              735985.6,
+              0
+            ],
+            "rejection": null
+          }
+        ]
+      }
+    ],
+    "duplicate_suggestions_skipped": 6
+  }
+}

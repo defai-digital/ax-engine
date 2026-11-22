@@ -196,8 +196,9 @@ def compare(current, baseline):
     }
 
 
-def audit_arm(folder, name, metadata, workload, prompts, *, split_min_prompt_tokens=PREFILL_ITEM):
-    lanes, split = ARMS[name]
+def audit_arm(folder, name, metadata, workload, prompts, *, split_min_prompt_tokens=PREFILL_ITEM,
+              profile=None):
+    lanes, split = ARMS[name] if profile is None else profile
     require((metadata["lanes"], metadata["split"]) == (lanes, split) and metadata["matched_outputs"] == len(prompts),
             f"{name}: arm metadata")
     require(metadata["drained"].keys() == COUNTERS and not any(metadata["drained"].values()),
@@ -225,7 +226,8 @@ def audit_arm(folder, name, metadata, workload, prompts, *, split_min_prompt_tok
         groups[f"{length}/all"].append(row)
         groups[f"{length}/{'peer-prefill' if row['peer_prefill'] else 'other'}"].append(row)
     samples = [json.loads(line) for line in (folder / f"{name}-samples.jsonl").read_text().splitlines()]
-    require(samples and {sample["pressure"] for sample in samples} == {1}
+    require(samples and all(type(sample["pressure"]) is int and sample["pressure"] == 1
+                            for sample in samples)
             and max(sample["footprint_bytes"] for sample in samples) == metadata["peak_footprint_bytes"],
             f"{name}: measured memory pressure or footprint")
     return {

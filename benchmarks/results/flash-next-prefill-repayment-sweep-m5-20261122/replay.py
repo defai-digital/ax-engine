@@ -11,7 +11,7 @@ ARCHIVE = (ROOT.parent / "flash-next-mxfp4-prefill-step-cost-m5-20261121"
            / "evidence.tar.xz")
 
 
-def sweep(fixed, joint, own, model):
+def sweep(fixed, joint, own, model, *, include_grid=False):
     steps_available = model["GAPS"]
     percentile = model["percentile"]
     project = model["project"]
@@ -57,11 +57,13 @@ def sweep(fixed, joint, own, model):
                 row["unstarted_long_slices_at_short_completion"] == 0 for row in improvements
             ),
         }
+        if include_grid:
+            report[f"p{round(100 * quantile)}"]["fixed_grid"] = rows
     return {"observed_runner_time_from_first_short_to_first_long_us": baseline_long_us,
             "decode_sensitivity": report}
 
 
-def replay():
+def replay(*, include_grid=False):
     model = runpy.run_path(str(DEBT))
     require = model["require"]
     original = model["replay"](ARCHIVE)
@@ -78,7 +80,7 @@ def replay():
             "input_archive_sha256": digest,
             "fixed_step_widths": model["PHYSICAL_PLAN"],
             "grid_rows": 101 * len(model["VARY_DECODE"]),
-            **sweep(fixed, joint, own, model)}
+            **sweep(fixed, joint, own, model, include_grid=include_grid)}
 
 
 if __name__ == "__main__":
