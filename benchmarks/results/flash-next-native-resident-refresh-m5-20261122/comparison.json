@@ -1,0 +1,50 @@
+{
+  "scope": "Current-source native controls on the resident Flash Next standard",
+  "qualification": false,
+  "build": {
+    "commit": "fd85d821fa6bfd7fef55475eb6104f498381d022",
+    "tree": "79c075e1c7370779d12fb4a84db16a9d0a63989d",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "server_sha256": "f63d03b8165935473f411336ff1b428672e7dcd80e1186a45f38e91fba04b710"
+  },
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "reference_control_sha256": "0f97478d5d9ca0f523d4b7f90b205d7177d06036dc023642c36d8a7e005815dd",
+  "observed_sha256": {
+    "native-support": "eefc077abea6effee5113fa6c43851cab4cbe142a2daf711b32e475cfe5717ca",
+    "qa": "62ae845b14ca4d34b1912fdf3784d82bc76b356d9d32b8c2a5d14515987580e9",
+    "lifecycle": "ca2a3ef661bec3fb76a0149aa67be96e9b946abd85a1e457014742c5b9737344",
+    "generate-matrix": "b75f591d3ee3a5ffc6deb7b96861b92b73850048f8496521c7c18380b4a778c4"
+  },
+  "native_http_cases": 21,
+  "matched_qa_rows": 210,
+  "matched_independent_matrix_arrays": 124,
+  "readiness_seconds": {
+    "disabled": 120.489,
+    "required": 140.952,
+    "default": 118.823
+  },
+  "quiet_samples": {
+    "qa": [
+      95.9,
+      98.75
+    ],
+    "lifecycle": [
+      91.98,
+      86.47
+    ],
+    "generate-matrix": [
+      91.83,
+      85.7
+    ]
+  },
+  "timing_eligible_legs": [
+    "qa"
+  ]
+}
