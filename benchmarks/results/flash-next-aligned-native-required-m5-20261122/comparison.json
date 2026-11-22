@@ -1,0 +1,147 @@
+{
+  "commit": "31e2b6e1f10beb42ddb2a7f5ef3ec8a6e96d4356",
+  "phases": {
+    "required": {
+      "arms": {
+        "aligned-long": {
+          "first_prompt_tokens": 8192,
+          "first_request": {
+            "decode_tokens_per_second": 38.55539166059315,
+            "ttft_seconds": 11.12252
+          },
+          "load_phase_seconds": 11.314772,
+          "ready_seconds": 26.09461366699543,
+          "ready_seconds_plus_first_ttft": 37.21713366699543,
+          "sidecar_load_seconds": 5.545326,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 39.76612388045534,
+              "ttft_seconds": 2.172502
+            },
+            "512": {
+              "decode_tokens_per_second": 42.25402026557333,
+              "ttft_seconds": 0.586685
+            },
+            "8192": {
+              "decode_tokens_per_second": 38.52510967228802,
+              "ttft_seconds": 11.257702
+            }
+          }
+        },
+        "aligned-short": {
+          "first_prompt_tokens": 512,
+          "first_request": {
+            "decode_tokens_per_second": 43.34058006473125,
+            "ttft_seconds": 1.140407
+          },
+          "load_phase_seconds": 11.293248,
+          "ready_seconds": 28.114471999986563,
+          "ready_seconds_plus_first_ttft": 29.254878999986563,
+          "sidecar_load_seconds": 5.865151,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 39.0306302313635,
+              "ttft_seconds": 2.058861
+            },
+            "512": {
+              "decode_tokens_per_second": 42.634129032879166,
+              "ttft_seconds": 0.583738
+            },
+            "8192": {
+              "decode_tokens_per_second": 38.28275892729239,
+              "ttft_seconds": 11.860725
+            }
+          }
+        },
+        "mmap-long": {
+          "first_prompt_tokens": 8192,
+          "first_request": {
+            "decode_tokens_per_second": 36.66218047727063,
+            "ttft_seconds": 13.163068
+          },
+          "load_phase_seconds": 85.128159,
+          "ready_seconds": 112.31264070799807,
+          "ready_seconds_plus_first_ttft": 125.47570870799807,
+          "sidecar_load_seconds": 14.804779,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 38.44985085178823,
+              "ttft_seconds": 2.044664
+            },
+            "512": {
+              "decode_tokens_per_second": 40.693736315090284,
+              "ttft_seconds": 0.629116
+            },
+            "8192": {
+              "decode_tokens_per_second": 36.71667635907962,
+              "ttft_seconds": 11.07598
+            }
+          }
+        },
+        "mmap-short": {
+          "first_prompt_tokens": 512,
+          "first_request": {
+            "decode_tokens_per_second": 43.61731016269257,
+            "ttft_seconds": 0.943606
+          },
+          "load_phase_seconds": 156.414512,
+          "ready_seconds": 180.40793549997034,
+          "ready_seconds_plus_first_ttft": 181.35154149997032,
+          "sidecar_load_seconds": 13.226537,
+          "warmed_medians": {
+            "2048": {
+              "decode_tokens_per_second": 41.499608431114,
+              "ttft_seconds": 1.918382
+            },
+            "512": {
+              "decode_tokens_per_second": 42.70072439712775,
+              "ttft_seconds": 0.606487
+            },
+            "8192": {
+              "decode_tokens_per_second": 38.81934104794689,
+              "ttft_seconds": 10.689005
+            }
+          }
+        }
+      },
+      "both_aligned_arms_under_120_seconds": true,
+      "eligible_orders": [
+        "short"
+      ],
+      "matched_output_ids_per_arm": 448,
+      "slowest_aligned_to_fastest_mmap_ready_ratio": 0.25032331020585163,
+      "warm_candidate_to_control_ratios": {
+        "long": {
+          "2048": {
+            "decode_tokens_per_second": 1.0342335015483135,
+            "ttft_seconds": 1.0625227421229113
+          },
+          "512": {
+            "decode_tokens_per_second": 1.0383421158087283,
+            "ttft_seconds": 0.9325545686328117
+          },
+          "8192": {
+            "decode_tokens_per_second": 1.0492537313432835,
+            "ttft_seconds": 1.016406855194755
+          }
+        },
+        "short": {
+          "2048": {
+            "decode_tokens_per_second": 0.940505988054109,
+            "ttft_seconds": 1.0732278555574437
+          },
+          "512": {
+            "decode_tokens_per_second": 0.9984404160540877,
+            "ttft_seconds": 0.9624905397807372
+          },
+          "8192": {
+            "decode_tokens_per_second": 0.9861774541718328,
+            "ttft_seconds": 1.109619183450658
+          }
+        }
+      },
+      "warmed_timing_band_met": false
+    }
+  },
+  "qualification": false
+}
