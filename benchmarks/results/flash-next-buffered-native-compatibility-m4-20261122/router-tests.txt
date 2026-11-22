@@ -1,0 +1,6 @@
+
+running 2 tests
+test weights::qwen4_exp::tests::aligned_reader_requires_a_requested_resident_mxfp4_trunk ... ok
+test weights::qwen4_exp::tests::aligned_reader_keeps_the_mapped_resident_tensor_selection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2349 filtered out; finished in 0.04s

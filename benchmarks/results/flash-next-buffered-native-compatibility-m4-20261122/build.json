@@ -1,0 +1,9 @@
+{
+  "commit": "23c5c8cb81ce98a4c39d8a27be7adb34530b4abd",
+  "tree": "494787f7cbd8c0ecad963269794a98c1a4a02c49",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "profile": "test",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4"
+}
