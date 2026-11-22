@@ -91,7 +91,7 @@ pub struct ModelWeights {
     /// trunk (`layers`, per-layer embed/proj, MTP, vision towers, …) stays
     /// at its empty/`None` default on the qwen4_exp load path.
     pub(crate) qwen4_exp: Option<Box<qwen4_exp::Qwen4ExpWeights>>,
-    /// Flash Next MTP draft sidecar. Attached automatically when `mtp.safetensors`
+    /// Flash Next MTP draft sidecar. Attached when enabled and `mtp.safetensors`
     /// is present next to a `qwen4_exp` trunk; kept separate from the generic
     /// `mtp` head, which stays `None` for this family. Attachment never makes
     /// this route default-on (`certified_default_on` stays false).
@@ -100,19 +100,22 @@ pub struct ModelWeights {
 
 const FLASH_NEXT_MTP_SIDECAR_FILE: &str = "mtp.safetensors";
 
-pub(crate) fn flash_next_mtp_sidecar_present(root: &Path) -> bool {
-    root.join(FLASH_NEXT_MTP_SIDECAR_FILE).is_file()
+pub(crate) fn flash_next_mtp_sidecar_expected(root: &Path) -> bool {
+    flash_next_mtp_sidecar_expected_for(root, skip_mtp_sidecar())
 }
 
-/// Load the Flash Next sidecar when present. A missing file leaves the head
-/// detached. An invalid sidecar is reported loudly and left detached; the
-/// runner then refuses to advertise an MTP drafter, so an explicit `Required`
-/// session fails instead of silently decoding direct.
+fn flash_next_mtp_sidecar_expected_for(root: &Path, skip: bool) -> bool {
+    !skip && root.join(FLASH_NEXT_MTP_SIDECAR_FILE).is_file()
+}
+
+/// Load the Flash Next sidecar when enabled and present. Report an invalid
+/// sidecar and leave it detached so an explicit `Required` session fails
+/// activation.
 fn load_flash_next_mtp_candidate(
     artifacts: &NativeModelArtifacts,
     trunk: &qwen4_exp::Qwen4ExpWeights,
 ) -> Option<Box<qwen4_exp_mtp::Qwen4ExpMtpWeights>> {
-    if !flash_next_mtp_sidecar_present(artifacts.root_dir()) {
+    if !flash_next_mtp_sidecar_expected(artifacts.root_dir()) {
         return None;
     }
     match load_flash_next_mtp_for_schedule(&trunk.target_schedule, || {
@@ -3469,10 +3472,8 @@ fn skip_vision_sidecar() -> bool {
     crate::fastpath::env_flag("AX_MLX_SKIP_VISION_SIDECAR")
 }
 
-/// `AX_MLX_SKIP_MTP_SIDECAR=1` — do not merge `mtp.safetensors`.
-///
-/// `--ax-direct` does not run the MTP module. Skipping the sidecar avoids
-/// eval-ing ~0.85 GB of unused buffers. Default off so MTP lanes still load.
+/// `AX_MLX_SKIP_MTP_SIDECAR=1` skips loading `mtp.safetensors`.
+/// The default keeps available sidecars loaded for eligible MTP sessions.
 fn skip_mtp_sidecar() -> bool {
     crate::fastpath::env_flag("AX_MLX_SKIP_MTP_SIDECAR")
 }

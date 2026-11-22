@@ -1,0 +1,35 @@
+{
+  "matched_direct_response_choices_and_token_totals": 7,
+  "request_cache_counters": {
+    "ordinary": {
+      "after_stream": 0,
+      "count": 0,
+      "extend": 0,
+      "json": 0,
+      "one_token": 0,
+      "repeat": 0,
+      "stream": 0
+    },
+    "skip": {
+      "after_stream": 16,
+      "count": 0,
+      "extend": 0,
+      "json": 0,
+      "one_token": 0,
+      "repeat": 16,
+      "stream": 16
+    }
+  },
+  "required_skip_exit_code": 1,
+  "sidecar_us": {
+    "ordinary": 893170,
+    "required": 28839946,
+    "required_skip": 2,
+    "skip": 6
+  },
+  "verifier_steps": {
+    "ordinary": 0.0,
+    "required": 107.0,
+    "skip": 0.0
+  }
+}

@@ -2947,7 +2947,7 @@ impl MlxRunner {
         let flash_next_mtp_candidate_attached =
             weights.qwen4_exp.is_some() && weights.qwen4_exp_mtp.is_some();
         let flash_next_mtp_candidate_attach_failed = cfg.model_family == "qwen4_exp"
-            && crate::weights::flash_next_mtp_sidecar_present(artifacts.root_dir())
+            && crate::weights::flash_next_mtp_sidecar_expected(artifacts.root_dir())
             && !flash_next_mtp_candidate_attached;
         let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
             qwen_depth: weights.mtp.as_ref().map(|head| head.max_depth),

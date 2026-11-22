@@ -33,7 +33,7 @@ fn flash_next_mtp_unavailable_schedule_never_opens_sidecar() {
 }
 
 #[test]
-fn flash_next_mtp_sidecar_present_requires_mtp_safetensors() {
+fn flash_next_mtp_sidecar_requires_an_enabled_mtp_safetensors_file() {
     let dir = std::env::temp_dir().join(format!(
         "ax-flash-next-mtp-sidecar-{}-{}",
         std::process::id(),
@@ -43,9 +43,10 @@ fn flash_next_mtp_sidecar_present_requires_mtp_safetensors() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    assert!(!flash_next_mtp_sidecar_present(&dir));
+    assert!(!flash_next_mtp_sidecar_expected_for(&dir, false));
     std::fs::write(dir.join(FLASH_NEXT_MTP_SIDECAR_FILE), b"stub").expect("sidecar");
-    assert!(flash_next_mtp_sidecar_present(&dir));
+    assert!(flash_next_mtp_sidecar_expected_for(&dir, false));
+    assert!(!flash_next_mtp_sidecar_expected_for(&dir, true));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
