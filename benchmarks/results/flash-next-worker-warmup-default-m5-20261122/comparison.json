@@ -1,0 +1,80 @@
+{
+  "scope": "M5 same-snapshot warmup diagnostic",
+  "qualification": false,
+  "modes": {
+    "default": {
+      "matching_http_responses_per_arm": 17,
+      "matching_output_ids_per_arm": 2176,
+      "pairs": [
+        {
+          "order": [
+            "default-1",
+            "default-2"
+          ],
+          "timing_eligible": true,
+          "candidate_observed_within_warm_bound": true,
+          "ready_delta_s": 15.417000000000002,
+          "launch_to_first_token_delta_s": 15.423853000000003,
+          "worker_delta_s": -1.165629,
+          "http_delta_s": 0.028396,
+          "plan_to_worker_start_delta_s": 17.131436000000008,
+          "lengths": {
+            "512": {
+              "warm_ttft_ratio": 0.9975491769747378,
+              "warm_decode_ratio": 0.993515501734658
+            },
+            "2048": {
+              "warm_ttft_ratio": 0.9726290420046906,
+              "warm_decode_ratio": 1.0044607663848013
+            },
+            "8192": {
+              "warm_ttft_ratio": 0.8724081099079123,
+              "warm_decode_ratio": 0.9870880779487922
+            }
+          }
+        },
+        {
+          "order": [
+            "default-3",
+            "default-4"
+          ],
+          "timing_eligible": true,
+          "candidate_observed_within_warm_bound": true,
+          "ready_delta_s": -4.171999999999997,
+          "launch_to_first_token_delta_s": -4.165563999999997,
+          "worker_delta_s": -1.61479,
+          "http_delta_s": 0.010204,
+          "plan_to_worker_start_delta_s": -1.9520040000000023,
+          "lengths": {
+            "512": {
+              "warm_ttft_ratio": 0.9978308818159245,
+              "warm_decode_ratio": 1.0011698504654483
+            },
+            "2048": {
+              "warm_ttft_ratio": 0.9945223542806956,
+              "warm_decode_ratio": 1.0058767489025144
+            },
+            "8192": {
+              "warm_ttft_ratio": 0.9967424687515912,
+              "warm_decode_ratio": 1.023207796583632
+            }
+          }
+        }
+      ]
+    }
+  },
+  "completed_phase": "default",
+  "ready_s_in_process_order": [
+    102.494,
+    117.911,
+    112.923,
+    117.095
+  ],
+  "worker_s_in_process_order": [
+    2.540563,
+    1.374934,
+    1.401255,
+    3.016045
+  ],
+  "normal_pressure_samples": 887
+}
