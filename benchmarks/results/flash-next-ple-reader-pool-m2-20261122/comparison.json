@@ -1,0 +1,165 @@
+{
+  "scope": "native PLE staging functional control on M2 Ultra",
+  "qualification": false,
+  "build": {
+    "base_commit": "bcda076b5fc7f21e18c7b854e4eabcfe2420f0fc",
+    "profile": "release-server test executable",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "1e479a8cc5d5f3163318304889514a1dcdc68c8be3e4bfd44bb711952a78ca08",
+    "probe_patch_sha256": "f6b32bc14497ccb1b7bb2fc3e51caead6b81cecd33ffcd5ed70b2c0d48a57782",
+    "driver_sha256": "f31bfe9f614581655d04c262cab7fc6f309d071d09b5774a6c5ca76a3f2f5175",
+    "workload_sha256": "34a683ec49b1a7604beb65a6ca32059388ab08ffd61304c514325d0f4d9b4492"
+  },
+  "matching_raw_payloads": {
+    "decode": {
+      "sha256": "c9b293bfee1f3404453601589643016d7d34d7155c9ad2a3f68e46a76b34c88e",
+      "requested_rows": 4608,
+      "bytes_read": 829440
+    },
+    "prefill": {
+      "sha256": "bdcd29244125a34e19ba8f22acc38e98e4080d07aae40354ed1154e755eb27eb",
+      "requested_rows": 32768,
+      "bytes_read": 5898240
+    }
+  },
+  "observed": [
+    {
+      "reader_threads": 32,
+      "reader_pool_active": false,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.392354,
+          "p95_ms": 0.607165
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.37652,
+          "p95_ms": 0.45429
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 31.068687,
+          "p95_ms": 32.011742
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 30.086688,
+          "p95_ms": 30.336878
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "reader_pool_active": true,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.101708,
+          "p95_ms": 0.15905
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.094771,
+          "p95_ms": 0.125846
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 30.448104,
+          "p95_ms": 30.940887
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 30.118959,
+          "p95_ms": 30.407344
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "reader_pool_active": true,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.09475,
+          "p95_ms": 0.139106
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.095895,
+          "p95_ms": 0.130846
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 29.904604,
+          "p95_ms": 30.497231
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 29.965584,
+          "p95_ms": 30.143816
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "reader_pool_active": false,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.3565,
+          "p95_ms": 0.419287
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.366667,
+          "p95_ms": 0.400861
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 30.300083,
+          "p95_ms": 30.837219
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 29.902583,
+          "p95_ms": 29.970552
+        }
+      }
+    },
+    {
+      "reader_threads": 1,
+      "reader_pool_active": false,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.046125,
+          "p95_ms": 0.052819
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.035125,
+          "p95_ms": 0.036679
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 22.239021,
+          "p95_ms": 22.732869
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 21.543,
+          "p95_ms": 21.659479
+        }
+      }
+    }
+  ],
+  "m4_pro_synthetic_passes": {
+    "0": 20,
+    "1": 20
+  }
+}

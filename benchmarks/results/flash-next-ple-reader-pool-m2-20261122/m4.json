@@ -1,0 +1,23 @@
+{
+  "scope": "Functional controls",
+  "soc": "Apple M4 Pro",
+  "memory_bytes": 68719476736,
+  "macos": "27.0",
+  "archive_inputs": {
+    "ax-ple-reader-test": "1e479a8cc5d5f3163318304889514a1dcdc68c8be3e4bfd44bb711952a78ca08",
+    "run_m4.sh": "e7786b509989077b80f16d2e6061456f46c7781547c1e3db0ec4ae83a1be68f1",
+    "libmlx.dylib": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "libjaccl.dylib": "7890e84a96e3121c8c1c2f351e41e46ba4d92e7b7bc6275fc2b38c2773891032",
+    "mlx.metallib": "c6d7a3facb83568f6e4cb2cf4a8c736ee29302571a48343cb9a3a4d1cd3e3893"
+  },
+  "test_logs": {
+    "0": {
+      "sha256": "c82fb07421a3ba20707935d70dc664ff8a3617286338ace02a40199a24c08e07",
+      "passes": 20
+    },
+    "1": {
+      "sha256": "0490a89b75a7828bc2459e17bb3d65dde00cf67531bff11296fa3c8e0da35ad6",
+      "passes": 20
+    }
+  }
+}
