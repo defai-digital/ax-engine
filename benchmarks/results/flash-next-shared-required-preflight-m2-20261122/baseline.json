@@ -1,0 +1,28 @@
+{
+  "scope": "Flash Next optional shared SDK Required MTP policy",
+  "qualification": false,
+  "build": {
+    "commit": "fd85d821fa6bfd7fef55475eb6104f498381d022",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "f8ea2a83b7f13a273c6ef8d55c91008bcfb328690ab09d9e9ec2c60b31bb40bf",
+    "instrumented_source_sha256": "606485055a97cbaaa3e2fdb531b8adf3f731f6d5e79562a3f4341547a0109fb5"
+  },
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "publisher_members": 49,
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "os_version": "27.2.1",
+  "shared_loaded_before": false,
+  "shared_loaded_after": true,
+  "elapsed_seconds": 14.811957,
+  "activation_error": "MlxMtpRequiredButUnavailable",
+  "pressure_levels": [
+    1
+  ],
+  "test_output_sha256": "3af39c4c7fcb23ade12770f28894560e4a876467779a8572e2cf7d33b2607884"
+}

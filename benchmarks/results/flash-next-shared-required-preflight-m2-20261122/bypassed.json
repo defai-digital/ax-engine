@@ -1,0 +1,34 @@
+{
+  "scope": "Flash Next optional shared SDK Required MTP policy",
+  "qualification": false,
+  "build": {
+    "commit": "e91bf4afb32f5ba08a6e72b1cfb51d631fced3d3",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "9592265d1cfda68d6ceb5794f1c876cf3b74a1437bd242bd3bf558f264bfb173",
+    "changed_source_sha256": {
+      "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "334a9bc71b043393d8bfbca8419378becaf0dd768189f9c699fad5aa20c217f7",
+      "crates/ax-engine-mlx/src/runner/mod.rs": "cd27b1797ea5699e0fe0867f7163338d70ba9d0325850be825799a268b80c264",
+      "crates/ax-engine-mlx/src/runner/tests.rs": "e6ebabe47f70d84c2c05b932e718dad29d4328e3272dcb5110198a268ab0d36c",
+      "crates/ax-engine-sdk/src/session/native.rs": "9a94b7e154739c1865fa63c48ea951642ca3bc3fd537b25acf41fb545a5033c6"
+    },
+    "source_parent_commit": "fd85d821fa6bfd7fef55475eb6104f498381d022"
+  },
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "publisher_members": 49,
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "os_version": "27.2.1",
+  "shared_loaded_before": false,
+  "shared_loaded_after": false,
+  "elapsed_seconds": 0.057128,
+  "activation_error": "MlxMtpRequiredButUnavailable",
+  "pressure_levels": [
+    1
+  ],
+  "test_output_sha256": "e1e0af5ce25d5510ff04c21e1138b90106c917c67384f9c522468b2d6f189bf1"
+}
