@@ -1,0 +1,13 @@
+{
+  "commit": "38c90b27a3abd3c94b592aabbbc884d441451511",
+  "tree": "3c49611f2eaac9916eea3e35e076c697e59c5a58",
+  "profile": "release-server",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "server_sha256": "6db0b00d90349d78bce160436f14e81d3d9c57db40f7c57a3efd63cf2803f7c9",
+  "cli_sha256": "918b65f52d13ca3e7b2b41e8b3fe12c1474c32a70c146717b37584aeb836e53c",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6"
+}

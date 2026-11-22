@@ -1,0 +1,28 @@
+{
+  "scope": "M2 Ultra 192 GB functional native HTTP two-slot capacity",
+  "qualification": false,
+  "runtime_commit": "38c90b27a3abd3c94b592aabbbc884d441451511",
+  "normal_pressure_samples": 119,
+  "bursts": {
+    "burst-1.json": {
+      "overload_status": 429,
+      "overload_code": "concurrency_limit",
+      "max_live_streams": 2,
+      "matching_generated_ids": 288,
+      "replacement_admitted_while_long_live": true,
+      "replacement_overlap_steps": [
+        419
+      ]
+    },
+    "burst-2.json": {
+      "overload_status": 429,
+      "overload_code": "concurrency_limit",
+      "max_live_streams": 2,
+      "matching_generated_ids": 288,
+      "replacement_admitted_while_long_live": true,
+      "replacement_overlap_steps": [
+        612
+      ]
+    }
+  }
+}
