@@ -207,6 +207,14 @@ struct PrefillTailHold {
     expires: Instant,
 }
 
+fn prefill_tail_was_held(batch: &ExecutionBatch) -> bool {
+    batch
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| key == ROUTE_DECISION_PREFILL_TAIL_DEFERRED && *value == 1)
+}
+
 impl EngineCore {
     pub fn with_kv_config(kv_config: KvManagerConfig) -> Self {
         Self::with_runtime_components(kv_config, DeterministicRunner, DeterministicSampler)
@@ -715,13 +723,10 @@ impl EngineCore {
         );
         self.request_manager.apply_schedule_plan(&schedule_plan)?;
         if self.prefill_tail_hold.is_some()
-            && !schedule_plan.execution_batch.as_ref().is_some_and(|batch| {
-                batch
-                    .route_metadata
-                    .crossover_decisions
-                    .iter()
-                    .any(|(key, value)| key == ROUTE_DECISION_PREFILL_TAIL_DEFERRED && *value == 1)
-            })
+            && !schedule_plan
+                .execution_batch
+                .as_ref()
+                .is_some_and(prefill_tail_was_held)
         {
             self.prefill_tail_hold = None;
         }
@@ -1033,6 +1038,33 @@ impl EngineCore {
         schedule_plan: SchedulePlan,
         global_token_budget: u32,
     ) -> Result<(SchedulePlan, u32, PreemptionMetrics), EngineCoreError> {
+        // A plan may have been descheduled after the initial deadline check.
+        // Replan an expired hold before the resolver can mutate KV ownership.
+        let schedule_plan = if self
+            .prefill_tail_hold
+            .is_some_and(|hold| Instant::now() >= hold.expires)
+            && schedule_plan
+                .execution_batch
+                .as_ref()
+                .is_some_and(prefill_tail_was_held)
+        {
+            self.prefill_tail_hold = None;
+            let mut snapshots = self.request_manager.snapshots();
+            snapshots.retain(|request| {
+                schedule_plan
+                    .selected_requests
+                    .contains(&request.request_id)
+                    || schedule_plan
+                        .deferred_requests
+                        .contains(&request.request_id)
+                    || schedule_plan
+                        .memory_blocked_requests
+                        .contains(&request.request_id)
+            });
+            self.plan_step(schedule_plan.step_id, snapshots, global_token_budget)
+        } else {
+            schedule_plan
+        };
         let (prefix_reuse, schedule_plan) =
             self.apply_prefix_reuse(schedule_plan, global_token_budget)?;
         let prefix_hits = prefix_reuse.len() as u32;
@@ -4217,14 +4249,6 @@ mod tests {
         engine
     }
 
-    fn decode_tail_was_held(batch: &ExecutionBatch) -> bool {
-        batch
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| key == ROUTE_DECISION_PREFILL_TAIL_DEFERRED && *value == 1)
-    }
-
     #[test]
     fn late_prefill_holds_for_at_most_twelve_successful_decode_steps() {
         let mut engine = decode_tail_engine(84);
@@ -4235,7 +4259,7 @@ mod tests {
             }
             let outcome = engine.step(2049, true).unwrap();
             let batch = outcome.schedule_plan.execution_batch.unwrap();
-            assert!(decode_tail_was_held(&batch));
+            assert!(prefill_tail_was_held(&batch));
             assert_eq!(batch.items.len(), 1);
             assert_eq!(batch.items[0].request_id, RequestId(1));
             assert_eq!(outcome.sampled_tokens.len(), 1);
@@ -4255,7 +4279,7 @@ mod tests {
                 .schedule_plan
                 .execution_batch
                 .unwrap();
-            assert!(!decode_tail_was_held(&batch));
+            assert!(!prefill_tail_was_held(&batch));
             assert_eq!(batch.items.len(), 1);
             assert_eq!(batch.items[0].request_id, RequestId(2));
             assert_eq!(batch.items[0].scheduled_token_count, 2048);
@@ -4273,7 +4297,7 @@ mod tests {
                 .schedule_plan
                 .execution_batch
                 .unwrap();
-            assert!(!decode_tail_was_held(&batch));
+            assert!(!prefill_tail_was_held(&batch));
             assert_eq!(batch.items.len(), 2);
             assert_eq!(batch.items[1].scheduled_token_count, 512);
         }
@@ -4288,7 +4312,7 @@ mod tests {
             .schedule_plan
             .execution_batch
             .unwrap();
-        assert!(decode_tail_was_held(&batch));
+        assert!(prefill_tail_was_held(&batch));
         engine.cancel(RequestId(1)).unwrap();
         let batch = engine
             .step(2049, true)
@@ -4296,7 +4320,7 @@ mod tests {
             .schedule_plan
             .execution_batch
             .unwrap();
-        assert!(!decode_tail_was_held(&batch));
+        assert!(!prefill_tail_was_held(&batch));
         assert_eq!(batch.items.len(), 1);
         assert_eq!(batch.items[0].request_id, RequestId(2));
         assert_eq!(batch.items[0].scheduled_token_count, 2048);
@@ -4312,7 +4336,7 @@ mod tests {
                 .schedule_plan
                 .execution_batch
                 .unwrap();
-            assert!(decode_tail_was_held(&batch));
+            assert!(prefill_tail_was_held(&batch));
             let active = engine.prefill_tail_hold.unwrap();
             let mut snapshots = engine.request_manager.snapshots();
             let peer = snapshots
@@ -4337,6 +4361,29 @@ mod tests {
             engine.prepare_prefill_tail_hold(&snapshots, &[RequestId(3)], 2049, now);
             assert!(engine.prefill_tail_hold.is_none(), "{trigger}");
         }
+    }
+
+    #[test]
+    fn expired_tail_plan_replans_before_kv_resolution() {
+        let mut engine = decode_tail_engine(84);
+        let admitted = engine.request_manager.admit_waiting_up_to(Some(2)).unwrap();
+        let snapshots = engine.snapshots_with_refreshed_plan_refs().unwrap();
+        let now = Instant::now();
+        engine.prepare_prefill_tail_hold(&snapshots, &admitted, 2049, now);
+        // Simulate a delay between constructing the scheduler plan and the
+        // first potentially mutating KV operation.
+        engine.prefill_tail_hold.as_mut().unwrap().expires = now + Duration::from_secs(30);
+        let plan = engine.plan_step(StepId(100), snapshots, 2049);
+        assert!(prefill_tail_was_held(
+            plan.execution_batch.as_ref().unwrap()
+        ));
+        engine.prefill_tail_hold.as_mut().unwrap().expires = Instant::now();
+        let (resolved, _, _) = engine.resolve_kv_schedule_plan(plan, 2049).unwrap();
+        let batch = resolved.execution_batch.unwrap();
+        assert!(!prefill_tail_was_held(&batch));
+        assert_eq!(resolved.selected_requests, [RequestId(1), RequestId(2)]);
+        assert_eq!(batch.items[1].scheduled_token_count, 512);
+        assert!(engine.prefill_tail_hold.is_none());
     }
 
     #[test]
