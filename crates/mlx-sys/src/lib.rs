@@ -64,6 +64,8 @@ pub use fast::{
     sdpa_window_capability_report, try_gated_delta_update, try_gated_delta_update_masked,
     try_scaled_dot_product_attention,
 };
+#[cfg(target_os = "macos")]
+pub use io::load_safetensors_filtered_aligned_nocache;
 pub use io::{
     SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,
 };

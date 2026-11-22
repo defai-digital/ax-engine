@@ -122,6 +122,11 @@ mlx_array mlx_array_new(void);
 int mlx_array_free(mlx_array arr);
 mlx_array mlx_array_new_data(
     const void* data, const int* shape, int dim, mlx_dtype dtype);
+#if defined(__APPLE__)
+mlx_array ax_mlx_array_read_aligned_at(
+    int fd, uint64_t offset, uint8_t* scratch, size_t scratch_bytes,
+    const int* shape, int dim, mlx_dtype dtype);
+#endif
 mlx_array mlx_array_new_data_managed_payload(
     void* data, const int* shape, int dim, mlx_dtype dtype,
     void* payload, void (*dtor)(void*));

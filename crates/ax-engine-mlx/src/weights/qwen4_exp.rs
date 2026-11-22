@@ -370,12 +370,18 @@ fn load_with_schedule_admission(
         .transpose()?;
     startup.phase("trunk_admission");
     let specs = manifest.tensors.as_slice();
+    let aligned_nocache = use_aligned_resident_reader(
+        audited_mx,
+        expert_stream.is_some(),
+        crate::fastpath::flash_next_aligned_nocache(),
+    );
     let mut name_map = load_resident_tensors(
         root,
         &canonical_root,
         weight_index.as_ref(),
         manifest,
         &stream_skip,
+        aligned_nocache,
     )?;
     startup.phase("resident_tensors");
     let mut schedule_index = weight_index.unwrap_or_default();
@@ -1384,6 +1390,17 @@ fn validate_expert_paging_contract(
     Ok((layers, modes))
 }
 
+fn use_aligned_resident_reader(
+    audited_mx: Option<ExpertQuantizationMode>,
+    streaming: bool,
+    requested: bool,
+) -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        && requested
+        && !streaming
+        && audited_mx == Some(ExpertQuantizationMode::Mxfp4)
+}
+
 /// Select the exact trunk tensors and their named sidecars before opening
 /// payloads. Unknown tensors and table-only files never enter MLX storage.
 fn load_resident_tensors(
@@ -1392,6 +1409,7 @@ fn load_resident_tensors(
     weight_index: Option<&HashMap<String, PathBuf>>,
     manifest: &NativeModelManifest,
     stream_skip: &HashSet<String>,
+    aligned_nocache: bool,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
     let mut startup = StartupTrace::new();
     let mut files = std::collections::BTreeMap::<PathBuf, HashSet<String>>::new();
@@ -1431,10 +1449,19 @@ fn load_resident_tensors(
         }
     }
     startup.phase("resident_selection");
+    #[cfg(target_os = "macos")]
+    let load = if aligned_nocache {
+        mlx_sys::load_safetensors_filtered_aligned_nocache
+    } else {
+        load_safetensors_filtered
+    };
+    #[cfg(not(target_os = "macos"))]
+    let load = load_safetensors_filtered;
+    tracing::debug!(target: STARTUP_TRACE_TARGET, aligned_nocache, "Flash Next resident reader");
     let mut result = HashMap::new();
     for (path, names) in files {
         let mut shard = StartupTrace(startup.0.map(|_| Instant::now()));
-        let tensors = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names))
+        let tensors = load(&path, SafetensorsNameFilter::Keep(&names))
             .map_err(WeightLoadError::FileMissing)?;
         let read = shard.elapsed();
         mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>()).map_err(|e| {
@@ -3194,6 +3221,7 @@ mod tests {
             index.as_ref(),
             &manifest,
             &HashSet::new(),
+            false,
         )
         .unwrap();
         let loaded_names: Vec<_> = {
@@ -3584,6 +3612,52 @@ mod tests {
         .unwrap();
         manifest.weight_sanitize = sanitize;
         manifest
+    }
+
+    #[test]
+    fn aligned_reader_requires_a_requested_resident_mxfp4_trunk() {
+        let mx = Some(ExpertQuantizationMode::Mxfp4);
+        assert_eq!(
+            use_aligned_resident_reader(mx, false, true),
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        );
+        assert!(!use_aligned_resident_reader(mx, false, false));
+        assert!(!use_aligned_resident_reader(mx, true, true));
+        assert!(!use_aligned_resident_reader(
+            Some(ExpertQuantizationMode::Mxfp8),
+            false,
+            true
+        ));
+        assert!(!use_aligned_resident_reader(None, false, true));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn aligned_reader_keeps_the_mapped_resident_tensor_selection() {
+        let root = norm_contract_dir("resident-reader");
+        let canonical = root.canonicalize().unwrap();
+        let manifest = norm_contract_manifest(WeightSanitize::None);
+        let tensor = &manifest.tensors[0];
+        let name = &tensor.name;
+        let header = serde_json::to_vec(&serde_json::json!({
+            name: {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]},
+            "unused": {"dtype": "UNSUPPORTED", "shape": [2], "data_offsets": [8, 16]},
+        }))
+        .unwrap();
+        let values: [f32; 2] = [1.25, -2.5];
+        let mut shard = (header.len() as u64).to_le_bytes().to_vec();
+        shard.extend(header);
+        shard.extend(values.iter().flat_map(|value| value.to_le_bytes()));
+        shard.extend([0; 8]);
+        std::fs::write(root.join(&tensor.file), shard).unwrap();
+        for aligned in [false, true] {
+            let loaded =
+                load_resident_tensors(&root, &canonical, None, &manifest, &HashSet::new(), aligned)
+                    .unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[name].data_f32(), &values);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn norm_contract_dir(label: &str) -> PathBuf {

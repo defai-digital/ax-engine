@@ -161,6 +161,36 @@ impl MlxArray {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn read_owned_aligned_at(
+        file: &std::fs::File,
+        offset: u64,
+        staging: &mut [u8],
+        shape: &[i32],
+        dtype: MlxDtype,
+    ) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+
+        let dim = i32::try_from(shape.len()).map_err(|_| "tensor rank exceeds i32")?;
+        // The descriptor, exclusive staging buffer and shape outlive this synchronous read.
+        unsafe {
+            prepare_error_capture();
+            let array = ffi::ax_mlx_array_read_aligned_at(
+                file.as_raw_fd(),
+                offset,
+                staging.as_mut_ptr(),
+                staging.len(),
+                shape.as_ptr(),
+                dim,
+                dtype.to_ffi(),
+            );
+            if array.ctx.is_null() {
+                return Err(last_error_message("ax_mlx_array_read_aligned_at"));
+            }
+            Ok(Self::from_raw(array))
+        }
+    }
+
     pub fn ndim(&self) -> usize {
         unsafe {
             ensure_error_handler();
