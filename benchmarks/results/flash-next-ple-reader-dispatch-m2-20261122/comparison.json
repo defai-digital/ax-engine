@@ -1,0 +1,131 @@
+{
+  "scope": "native PLE staging functional control on M2 Ultra",
+  "qualification": false,
+  "build": {
+    "base_commit": "d2d0adefd0bf7dbcab539d4f7667863802f2730d",
+    "profile": "release-server test executable",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "742cffc6636656be5f48ac318f95bc3a13e22c1a8db9b3789c8a0da04ce05ef0",
+    "probe_patch_sha256": "3468da07cb36fb90650de1734aa78a73cdbe4dda6f96ca54adb4cc38805838d4",
+    "driver_sha256": "08fe3c64f0f26f0486c6f54970f58dff3928233f3ba6ccfe06e12726a40960ee",
+    "workload_sha256": "34a683ec49b1a7604beb65a6ca32059388ab08ffd61304c514325d0f4d9b4492"
+  },
+  "matching_raw_payloads": {
+    "decode": {
+      "sha256": "c9b293bfee1f3404453601589643016d7d34d7155c9ad2a3f68e46a76b34c88e",
+      "requested_rows": 4608,
+      "bytes_read": 829440
+    },
+    "prefill": {
+      "sha256": "bdcd29244125a34e19ba8f22acc38e98e4080d07aae40354ed1154e755eb27eb",
+      "requested_rows": 32768,
+      "bytes_read": 5898240
+    }
+  },
+  "observed": [
+    {
+      "reader_threads": 1,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.044083,
+          "p95_ms": 0.058091
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.028208,
+          "p95_ms": 0.029042
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 20.366688,
+          "p95_ms": 21.202742
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 17.27027,
+          "p95_ms": 17.324679
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.282521,
+          "p95_ms": 0.370698
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.350771,
+          "p95_ms": 0.366539
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 30.836292,
+          "p95_ms": 31.055266
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 30.555937,
+          "p95_ms": 30.626521
+        }
+      }
+    },
+    {
+      "reader_threads": 32,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.263145,
+          "p95_ms": 0.363395
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.342209,
+          "p95_ms": 0.365373
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 31.114833,
+          "p95_ms": 31.367241
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 31.262917,
+          "p95_ms": 31.523296
+        }
+      }
+    },
+    {
+      "reader_threads": 1,
+      "stages": {
+        "decode/initial": {
+          "samples": 288,
+          "p50_ms": 0.041938,
+          "p95_ms": 0.048346
+        },
+        "decode/repeated": {
+          "samples": 288,
+          "p50_ms": 0.028167,
+          "p95_ms": 0.028917
+        },
+        "prefill/initial": {
+          "samples": 4,
+          "p50_ms": 19.684708,
+          "p95_ms": 20.528906
+        },
+        "prefill/repeated": {
+          "samples": 4,
+          "p50_ms": 17.414355,
+          "p95_ms": 17.43345
+        }
+      }
+    }
+  ]
+}
