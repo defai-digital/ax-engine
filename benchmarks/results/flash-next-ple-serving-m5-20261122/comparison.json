@@ -1,0 +1,63 @@
+{
+  "scope": "M5 serving comparison",
+  "qualification": false,
+  "readiness_by_arm_s": {
+    "initial": 140.787,
+    "arm-1": 123.172,
+    "arm-2": 117.904,
+    "arm-3": 118.92,
+    "arm-4": 116.941
+  },
+  "cpu_idle_percent": {
+    "initial": [
+      96.9,
+      98.14
+    ],
+    "arm-1": [
+      98.95,
+      92.51
+    ],
+    "arm-2": [
+      91.37,
+      92.33
+    ],
+    "arm-3": [
+      92.94,
+      92.3
+    ],
+    "arm-4": [
+      91.85,
+      81.15
+    ]
+  },
+  "pressure_samples": 1389,
+  "matching_responses_per_arm": 31,
+  "matching_output_ids_per_arm": 3968,
+  "pairs": [
+    {
+      "control": "arm-1",
+      "pooled": "arm-2",
+      "timing_eligible": true,
+      "lengths": {
+        "512": {
+          "ttft_ratio": 1.0147440661326874,
+          "decode_ratio": 0.9861580184030603
+        },
+        "2048": {
+          "ttft_ratio": 0.9867898696709234,
+          "decode_ratio": 0.9863214389014796
+        },
+        "8192": {
+          "ttft_ratio": 1.0439966440105959,
+          "decode_ratio": 0.9999584707028257
+        }
+      }
+    },
+    {
+      "control": "arm-4",
+      "pooled": "arm-3",
+      "timing_eligible": false,
+      "lengths": {}
+    }
+  ]
+}
