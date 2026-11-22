@@ -1,0 +1,118 @@
+{
+  "all_exact": true,
+  "cases": [
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.0002836045459844172,
+        "scratch": 0.0026957294321618974,
+        "split": 0.0002987085026688874
+      },
+      "relative_packed_wall": 0.949435799284185,
+      "relative_scratch_wall": 9.024615664020992,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891296764,
+      "tokens": 1
+    },
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.010497895476873964,
+        "scratch": 0.013008395442739129,
+        "split": 0.010722875013016164
+      },
+      "relative_packed_wall": 0.9790187299703573,
+      "relative_scratch_wall": 1.2131443691126347,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891238400,
+      "tokens": 511
+    },
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.010561520524788648,
+        "scratch": 0.012965541507583112,
+        "split": 0.010701187537051737
+      },
+      "relative_packed_wall": 0.9869484567222556,
+      "relative_scratch_wall": 1.2115983822067677,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    },
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.006882896006572992,
+        "scratch": 0.009265562519431114,
+        "split": 0.0068579999497160316
+      },
+      "relative_packed_wall": 1.0036302212072765,
+      "relative_scratch_wall": 1.3510589949500906,
+      "route_pool": 64,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.00028039602329954505,
+        "scratch": 0.002726937527768314,
+        "split": 0.0002850209712050855
+      },
+      "relative_packed_wall": 0.983773306623769,
+      "relative_scratch_wall": 9.567497844943341,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891296764,
+      "tokens": 1
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.01055181201081723,
+        "scratch": 0.013013374991714954,
+        "split": 0.010702750529162586
+      },
+      "relative_packed_wall": 0.9858972216596021,
+      "relative_scratch_wall": 1.2158907148453508,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891238400,
+      "tokens": 511
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.010494771006051451,
+        "scratch": 0.013012708513997495,
+        "split": 0.010664228990208358
+      },
+      "relative_packed_wall": 0.9841096825365904,
+      "relative_scratch_wall": 1.2202202827738842,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.006860895548015833,
+        "scratch": 0.009255957964342088,
+        "split": 0.00692864548182115
+      },
+      "relative_packed_wall": 0.9902217635491564,
+      "relative_scratch_wall": 1.3358971805711755,
+      "route_pool": 64,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    }
+  ],
+  "prefill_packed_wall_ratio_range": [
+    0.9790187299703573,
+    1.0036302212072765
+  ],
+  "prefill_scratch_wall_ratio_range": [
+    1.2115983822067677,
+    1.3510589949500906
+  ],
+  "scope": "Routed component only"
+}
