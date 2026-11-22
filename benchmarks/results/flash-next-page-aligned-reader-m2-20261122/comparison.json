@@ -1,0 +1,163 @@
+{
+  "scope": "M2 Ultra Darwin reader component only",
+  "qualification": false,
+  "native_control_runs": 24,
+  "matching_payload_observations": 96,
+  "unaligned_tail_bytes": 4194561,
+  "shards": {
+    "model-00017-of-00025.safetensors": {
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2",
+      "selected_bytes": 1677721600,
+      "cache_conditions": {
+        "clone": {
+          "selected_pages": 102404,
+          "initial_resident_pages": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "final_resident_pages": {
+            "mmap": [
+              102404,
+              102404
+            ],
+            "aligned-buffered": [
+              102404,
+              102404
+            ],
+            "aligned-nocache": [
+              0,
+              0
+            ]
+          },
+          "median_seconds": {
+            "mmap": 8.97918327,
+            "aligned-buffered": 0.750710813,
+            "aligned-nocache": 1.14799181
+          },
+          "nocache_difference_percent": -87.215,
+          "nocache_per_order_difference_percent": [
+            -87.315,
+            -87.113
+          ]
+        },
+        "reused": {
+          "selected_pages": 102404,
+          "initial_resident_pages": [
+            102404,
+            102404,
+            102404,
+            102404,
+            102404,
+            102404
+          ],
+          "final_resident_pages": {
+            "mmap": [
+              102404,
+              102404
+            ],
+            "aligned-buffered": [
+              102404,
+              102404
+            ],
+            "aligned-nocache": [
+              102404,
+              102404
+            ]
+          },
+          "median_seconds": {
+            "mmap": 0.2703707915,
+            "aligned-buffered": 0.253824187,
+            "aligned-nocache": 0.246205604
+          },
+          "nocache_difference_percent": -8.938,
+          "nocache_per_order_difference_percent": [
+            -8.714,
+            -9.161
+          ]
+        }
+      }
+    },
+    "model-00018-of-00025.safetensors": {
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe",
+      "selected_bytes": 1677721600,
+      "cache_conditions": {
+        "clone": {
+          "selected_pages": 102404,
+          "initial_resident_pages": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "final_resident_pages": {
+            "mmap": [
+              102404,
+              102404
+            ],
+            "aligned-buffered": [
+              102404,
+              102404
+            ],
+            "aligned-nocache": [
+              0,
+              0
+            ]
+          },
+          "median_seconds": {
+            "mmap": 8.538131395,
+            "aligned-buffered": 2.261328644,
+            "aligned-nocache": 1.12409821
+          },
+          "nocache_difference_percent": -86.834,
+          "nocache_per_order_difference_percent": [
+            -86.906,
+            -86.762
+          ]
+        },
+        "reused": {
+          "selected_pages": 102404,
+          "initial_resident_pages": [
+            102404,
+            102404,
+            102404,
+            102404,
+            102404,
+            102404
+          ],
+          "final_resident_pages": {
+            "mmap": [
+              102404,
+              102404
+            ],
+            "aligned-buffered": [
+              102404,
+              102404
+            ],
+            "aligned-nocache": [
+              102404,
+              102404
+            ]
+          },
+          "median_seconds": {
+            "mmap": 0.273064208,
+            "aligned-buffered": 0.2528255005,
+            "aligned-nocache": 0.2460945
+          },
+          "nocache_difference_percent": -9.877,
+          "nocache_per_order_difference_percent": [
+            -9.838,
+            -9.916
+          ]
+        }
+      }
+    }
+  }
+}

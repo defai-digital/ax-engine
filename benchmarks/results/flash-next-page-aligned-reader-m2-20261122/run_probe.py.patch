@@ -1,0 +1,62 @@
+--- run_probe.py
++++ run_probe.py
+@@ -1,4 +1,4 @@
+-"""Verify byte identity for one or two positional requests into MLX-owned arrays."""
++"""Compare mapped and page-aligned Darwin reads into MLX-owned resident arrays."""
+ from argparse import ArgumentParser
+ import ctypes
+ from hashlib import file_digest, sha256
+@@ -19,7 +19,6 @@
+ LIBC.mincore.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p)
+ LIBC.mincore.restype = ctypes.c_int
+ CHUNK = 4 * 1024 * 1024
+-PAIR_THRESHOLD = 64 * 1024 * 1024
+ SIZES = {"U8": 1, "U32": 4, "BF16": 2, "F32": 4}
+
+
+@@ -134,14 +133,10 @@
+             plan = scratch / "geometry.txt"
+             plan.write_text("".join(" ".join(map(str, (start, length, dtype, len(shape), *shape))) + "\n"
+                                     for start, length, dtype, shape in regions))
+-            modes = ("pread", "pread-pair", "pread-pair", "pread")
++            modes = ("mmap", "aligned-buffered", "aligned-nocache")
+             if index != 0:
+-                modes = ("pread-pair", "pread", "pread", "pread-pair")
+-            sequence = [("clone", mode) for mode in modes]
+-            sequence.extend(("reused", mode) for mode in ("mmap", *modes))
+-            paired_tensors = sum(length >= PAIR_THRESHOLD for _, length, _, _ in regions)
+-            if paired_tensors == 0:
+-                raise ValueError("Shard does not exercise concurrent reads")
++                modes = modes[::-1]
++            sequence = [(cache, mode) for cache in ("clone", "reused") for mode in (*modes, *modes[::-1])]
+             signature = None
+             for reuse, mode in sequence:
+                 before = pressure()
+@@ -158,22 +153,23 @@
+                     if completed.returncode != 0:
+                         raise ValueError(f"Resident reader failed: {completed.stderr.strip()}")
+                     data = json.loads(completed.stdout)
++                    final_cache = page_state(target, regions)
+                 finally:
+                     if reuse == "clone":
+                         target.unlink()
+                 after = pressure()
+                 if data["weights_sha256"] != payload or data["selected_bytes"] != selected:
+                     raise ValueError("Selected model bytes differ from the publisher source")
+-                effective_pairs = paired_tensors if mode == "pread-pair" else 0
+-                if data["paired_tensors"] != effective_pairs:
+-                    raise ValueError("The measured reader did not exercise the expected divided buffers")
++                if (data["nocache"] is not (mode == "aligned-nocache")
++                        or data["staging_bytes"] != (4 * 1024**2 if mode != "mmap" else 0)):
++                    raise ValueError("The measured reader did not exercise the requested cache and staging path")
+                 row = (data["allocated_bytes"], data["metal_sha256"], data["tensors"])
+                 if signature is None:
+                     signature = row
+                 if row != signature or after != 1 or data["mode"] != mode:
+                     raise ValueError("Allocator signature, Metal output, label, or pressure changed")
+                 measurement["arms"].append({"shard": name, "publisher_sha256": entry["publisher_sha256"],
+-                                            "cache": reuse, "file_pages_before": cache,
++                                            "cache": reuse, "file_pages_before": cache, "file_pages_after": final_cache,
+                                             "unaligned_source_tensors": unaligned,
+                                             "pressure_before": before, "pressure_after": after, **data})
+                 args.output.write_text(json.dumps(measurement, indent=2) + "\n")

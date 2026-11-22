@@ -1,0 +1,115 @@
+--- direct_weights.cpp
++++ direct_weights.cpp
+@@ -10,6 +10,7 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <memory>
+ #include <fstream>
+@@ -129,12 +130,44 @@
+     auto first = std::async(std::launch::async, read_exact, fd, out, first_size, offset);
+     read_exact(fd, out + first_size, len - first_size, offset + first_size);
+     first.get();
++}
++
++constexpr size_t native_page_size = 16 * 1024;
++constexpr size_t staging_bytes = 4 * 1024 * 1024;
++
++void read_aligned(int fd, unsigned char* out, size_t len, size_t offset, unsigned char* staging) {
++    size_t finished = 0;
++    while (finished < len) {
++        const size_t position = offset + finished;
++        const size_t skip = position % native_page_size;
++        const size_t span_start = position - skip;
++        const size_t take = std::min(len - finished, staging_bytes - skip);
++        const size_t needed = skip + take;
++        const size_t span = ((needed + native_page_size - 1) / native_page_size) * native_page_size;
++        size_t got = 0;
++        while (got < needed) {
++            const auto n = pread(fd, staging + got, span - got, static_cast<off_t>(span_start + got));
++            if (n < 0 && errno == EINTR) {
++                continue;
++            }
++            if (n <= 0) {
++                throw std::runtime_error("Aligned tensor read did not cover its requested payload");
++            }
++            got += static_cast<size_t>(n);
++            if (got < needed && got % native_page_size != 0) {
++                throw std::runtime_error("Aligned tensor read stopped inside a required page");
++            }
++        }
++        std::memcpy(out + finished, staging + skip, take);
++        finished += take;
++    }
+ }
+
+ constexpr size_t parallel_threshold = 64 * 1024 * 1024;
+ constexpr size_t read_alignment = 4 * 1024 * 1024;
+
+-mx::array materialized(int fd, const void* base, const Tensor& tensor, bool paired) {
++mx::array materialized(int fd, const void* base, const Tensor& tensor, bool paired,
++                       unsigned char* staging = nullptr) {
+     auto storage = mx::allocator::malloc(tensor.len);
+     auto* destination = static_cast<unsigned char*>(storage.buffer().raw_ptr());
+     if (!storage.is_owned() || destination == nullptr) {
+@@ -142,6 +175,8 @@
+     }
+     if (base != nullptr) {
+         std::memcpy(destination, static_cast<const unsigned char*>(base) + tensor.offset, tensor.len);
++    } else if (staging != nullptr) {
++        read_aligned(fd, destination, tensor.len, tensor.offset, staging);
+     } else if (paired && tensor.len >= parallel_threshold) {
+         const size_t first_size = (tensor.len / 2 / read_alignment) * read_alignment;
+         read_pair(fd, destination, tensor.len, tensor.offset, first_size);
+@@ -194,8 +229,9 @@
+
+ void run(const char* file, const char* plan, const std::string& mode) {
+     const bool mapped = mode == "mmap";
+-    const bool paired = mode == "pread-pair";
+-    if (!mapped && !paired && mode != "pread") {
++    const bool bypass = mode == "aligned-nocache";
++    const bool aligned = bypass || mode == "aligned-buffered";
++    if (!mapped && !aligned) {
+         throw std::runtime_error("Unknown diagnostic mode");
+     }
+     Source input(file);
+@@ -214,8 +250,20 @@
+             arrays.push_back(materialized(input.fd, map.memory, tensor, false));
+         }
+     } else {
++        if (sysconf(_SC_PAGESIZE) != static_cast<long>(native_page_size)) {
++            throw std::runtime_error("Expected 16 KiB Darwin pages");
++        }
++        if (bypass && fcntl(input.fd, F_NOCACHE, 1) != 0) {
++            throw std::runtime_error("Could not set Darwin F_NOCACHE on the input descriptor");
++        }
++        void* raw = nullptr;
++        if (posix_memalign(&raw, native_page_size, staging_bytes) != 0 || raw == nullptr) {
++            throw std::runtime_error("Could not allocate the aligned staging buffer");
++        }
++        const std::unique_ptr<void, decltype(&free)> stage(raw, &free);
+         for (const auto& tensor : tensors) {
+-            arrays.push_back(materialized(input.fd, nullptr, tensor, paired));
++            arrays.push_back(materialized(input.fd, nullptr, tensor, false,
++                                           static_cast<unsigned char*>(stage.get())));
+         }
+     }
+     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+@@ -237,13 +285,11 @@
+         selected += array.nbytes();
+         allocated += array.buffer_size();
+     }
+-    const auto large_tensors = std::count_if(tensors.begin(), tensors.end(), [](const Tensor& tensor) {
+-        return tensor.len >= parallel_threshold;
+-    });
+     std::cout << std::setprecision(9) << "{\"mode\":\"" << mode
+               << "\",\"elapsed_seconds\":" << elapsed
+               << ",\"tensors\":" << tensors.size()
+-              << ",\"paired_tensors\":" << (paired ? large_tensors : 0)
++              << ",\"staging_bytes\":" << (aligned ? staging_bytes : 0)
++              << ",\"nocache\":" << (bypass ? "true" : "false")
+               << ",\"selected_bytes\":" << selected
+               << ",\"allocated_bytes\":" << allocated
+               << ",\"weights_sha256\":\"" << data.finish()
