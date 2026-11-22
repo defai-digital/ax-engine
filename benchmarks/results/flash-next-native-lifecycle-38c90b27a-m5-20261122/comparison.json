@@ -1,0 +1,29 @@
+{
+  "lifecycle_gate": {
+    "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+    "gate": "lifecycle",
+    "passed": true
+  },
+  "prior_lifecycle_sha256": "f6aa0a275b29b202063d070cb44976c8fdab79b0ca9013893428458e2d1b4bf8",
+  "receipt_sha256": "a03f5c8bea72f713848c064fa675093b72071e42135cc4b692c175934a0afe66",
+  "release_ready": false,
+  "runs": {
+    "default": {
+      "actions_matching": 7,
+      "all_five_generation_counters_drained": true,
+      "ready_seconds": 124.249
+    },
+    "disabled": {
+      "actions_matching": 7,
+      "all_five_generation_counters_drained": true,
+      "ready_seconds": 105.088
+    }
+  },
+  "scope": "Current-build native lifecycle on M5",
+  "server_sha256": "6db0b00d90349d78bce160436f14e81d3d9c57db40f7c57a3efd63cf2803f7c9",
+  "timing_cpu_idle_percent": [
+    98.75,
+    98.7
+  ],
+  "timing_eligible": true
+}
