@@ -1,0 +1,8 @@
+{
+  "scope": "M5 launcher repair for an imported test binary",
+  "binary_sha256": "9def3b8f4cb369fae887407e226773c62262e4329223ead43f44ca4dcde33c46",
+  "original_launcher_sha256": "0056eecc1a578acf7ef92d7115af6c595bf360dda97797d85bad0600707c0e4a",
+  "repaired_launcher_sha256": "490457b9d2f59a2868c8b8a1ba1f7b24300e457c0ab5ef971635a7e2d0bfea66",
+  "pinned_mlx": "0.32.4",
+  "change": "Set DYLD_LIBRARY_PATH in the child launched by caffeinate."
+}

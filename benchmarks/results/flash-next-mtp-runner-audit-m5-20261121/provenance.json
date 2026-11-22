@@ -1,0 +1,8 @@
+{
+  "typed_result_sha256": "864e39bf6fbe0f61f6a172031a91fa03f44c50ea67df634419b1982b94e420ea",
+  "test_log_sha256": "30a4f78f84eb766f7d9d837036994a7f1448af12ccac836d0804f642efc6f5ba",
+  "pack_before_sha256": "e3592d2d76d4cf1a7a4fb42dce37db6dfcfd3e3e405c5d3959ba60ad4725b19b",
+  "pack_after_sha256": "e3592d2d76d4cf1a7a4fb42dce37db6dfcfd3e3e405c5d3959ba60ad4725b19b",
+  "test_exit": 0,
+  "pack_bindings_stable": true
+}

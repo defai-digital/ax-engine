@@ -1,0 +1,10 @@
+{
+  "tree": "bd3ee09ce1aacc35c28c83a4f0a2fe345f143c52",
+  "profile": "test",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "mlx": "0.32.4",
+  "build_hardware": "Mac Studio M2 Ultra 192 GB, external SSD",
+  "test_sha256": "9def3b8f4cb369fae887407e226773c62262e4329223ead43f44ca4dcde33c46",
+  "commit": "3978cf05ad8f749caa31a61a0e1ff15ada2e9c73"
+}

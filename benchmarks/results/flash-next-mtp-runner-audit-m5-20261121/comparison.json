@@ -1,0 +1,9 @@
+{
+  "accepted_drafts": 55,
+  "controls": 3,
+  "matched_direct_output_ids": 130,
+  "qualification": false,
+  "rejected_drafts": 15,
+  "scope": "Bounded canonical-singleton greedy runner evidence",
+  "verified_steps": 72
+}
