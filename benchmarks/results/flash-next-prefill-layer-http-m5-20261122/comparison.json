@@ -1,0 +1,319 @@
+{
+  "qualification": false,
+  "arms": {
+    "split-1": {
+      "outcomes": {
+        "early-decoder": {
+          "short_p95_gap_ms": 748.3991961053107,
+          "short_max_gap_ms": 756.0602920129895,
+          "long_arrival_to_first_token_ms": 11240.757332998328,
+          "long_first_token_before_short_completion": true,
+          "output_tokens_per_second": 12.464756901256902,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 0,
+          "long_widths": [
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1
+          ],
+          "layer_runner_p95_ms": null
+        },
+        "ending-decoder": {
+          "short_p95_gap_ms": 21.354254585457966,
+          "short_max_gap_ms": 22.822917031589895,
+          "long_arrival_to_first_token_ms": 10202.500709012384,
+          "long_first_token_before_short_completion": false,
+          "output_tokens_per_second": 11.437077925464333,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 0,
+          "long_widths": [
+            2048,
+            2048,
+            2048,
+            2048
+          ],
+          "layer_runner_p95_ms": null
+        }
+      },
+      "ended_cpu_idle_percent": 92.82,
+      "initial_cpu_idle_percent": 92.26,
+      "timing_eligible": true,
+      "peak_footprint_bytes": 81045836648
+    },
+    "layers-1": {
+      "outcomes": {
+        "early-decoder": {
+          "short_p95_gap_ms": 277.15104190283455,
+          "short_max_gap_ms": 287.6419579843059,
+          "long_arrival_to_first_token_ms": 12832.13400002569,
+          "long_first_token_before_short_completion": false,
+          "output_tokens_per_second": 12.406855024605774,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 77,
+          "long_widths": [
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1
+          ],
+          "layer_runner_p95_ms": 278.25440000000003
+        },
+        "ending-decoder": {
+          "short_p95_gap_ms": 20.757062401389703,
+          "short_max_gap_ms": 23.105125001166016,
+          "long_arrival_to_first_token_ms": 9908.742625004379,
+          "long_first_token_before_short_completion": false,
+          "output_tokens_per_second": 11.683994709736208,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 0,
+          "long_widths": [
+            2048,
+            2048,
+            2048,
+            2048
+          ],
+          "layer_runner_p95_ms": null
+        }
+      },
+      "ended_cpu_idle_percent": 91.65,
+      "initial_cpu_idle_percent": 94.82,
+      "timing_eligible": true,
+      "peak_footprint_bytes": 81098642256
+    },
+    "layers-2": {
+      "outcomes": {
+        "early-decoder": {
+          "short_p95_gap_ms": 271.59613731200807,
+          "short_max_gap_ms": 288.16487500444055,
+          "long_arrival_to_first_token_ms": 12832.364959002007,
+          "long_first_token_before_short_completion": false,
+          "output_tokens_per_second": 12.410433526338963,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 77,
+          "long_widths": [
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1
+          ],
+          "layer_runner_p95_ms": 271.7082
+        },
+        "ending-decoder": {
+          "short_p95_gap_ms": 20.743275119457394,
+          "short_max_gap_ms": 23.206832993309945,
+          "long_arrival_to_first_token_ms": 9801.34574996191,
+          "long_first_token_before_short_completion": false,
+          "output_tokens_per_second": 11.737174763924953,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 0,
+          "long_widths": [
+            2048,
+            2048,
+            2048,
+            2048
+          ],
+          "layer_runner_p95_ms": null
+        }
+      },
+      "ended_cpu_idle_percent": 79.9,
+      "initial_cpu_idle_percent": 90.84,
+      "timing_eligible": false,
+      "peak_footprint_bytes": 80700232504
+    },
+    "split-2": {
+      "outcomes": {
+        "early-decoder": {
+          "short_p95_gap_ms": 736.1776543781161,
+          "short_max_gap_ms": 743.615250044968,
+          "long_arrival_to_first_token_ms": 11075.15212497674,
+          "long_first_token_before_short_completion": true,
+          "output_tokens_per_second": 12.6608309510407,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 0,
+          "long_widths": [
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1,
+            512,
+            512,
+            512,
+            511,
+            1
+          ],
+          "layer_runner_p95_ms": null
+        },
+        "ending-decoder": {
+          "short_p95_gap_ms": 20.34752496983856,
+          "short_max_gap_ms": 22.533999988809228,
+          "long_arrival_to_first_token_ms": 9712.875083001563,
+          "long_first_token_before_short_completion": false,
+          "output_tokens_per_second": 11.880066214896875,
+          "matched_output_ids": 192,
+          "layer_progress_steps": 0,
+          "long_widths": [
+            2048,
+            2048,
+            2048,
+            2048
+          ],
+          "layer_runner_p95_ms": null
+        }
+      },
+      "ended_cpu_idle_percent": 98.82,
+      "initial_cpu_idle_percent": 91.81,
+      "timing_eligible": true,
+      "peak_footprint_bytes": 80644756304
+    }
+  },
+  "diagnostic_median_by_mode": {
+    "physical": {
+      "early-decoder": {
+        "short_p95_gap_ms": 742.2884252417134,
+        "short_max_gap_ms": 749.8377710289788,
+        "long_arrival_to_first_token_ms": 11157.954728987534,
+        "output_tokens_per_second": 12.5627939261488
+      },
+      "ending-decoder": {
+        "short_p95_gap_ms": 20.850889777648263,
+        "short_max_gap_ms": 22.67845851019956,
+        "long_arrival_to_first_token_ms": 9957.687896006973,
+        "output_tokens_per_second": 11.658572070180604
+      }
+    },
+    "layers": {
+      "early-decoder": {
+        "short_p95_gap_ms": 274.3735896074213,
+        "short_max_gap_ms": 287.90341649437323,
+        "long_arrival_to_first_token_ms": 12832.249479513848,
+        "output_tokens_per_second": 12.40864427547237
+      },
+      "ending-decoder": {
+        "short_p95_gap_ms": 20.75016876042355,
+        "short_max_gap_ms": 23.15597899723798,
+        "long_arrival_to_first_token_ms": 9855.044187483145,
+        "output_tokens_per_second": 11.71058473683058
+      }
+    }
+  },
+  "timing_eligible_pairs": [
+    [
+      "split-1",
+      "layers-1"
+    ]
+  ],
+  "cancellations": [
+    {
+      "canceled": "long",
+      "requests": [
+        {
+          "closed": false,
+          "request_id": 8,
+          "seen_layer_steps": [],
+          "matched_output_ids": 96
+        },
+        {
+          "closed": true,
+          "request_id": 9,
+          "seen_layer_steps": [
+            517
+          ]
+        }
+      ],
+      "drained": {
+        "ax_engine_jobs_in_flight": 0.0,
+        "ax_engine_generation_jobs_pending": 0.0,
+        "ax_engine_generation_commands_queued": 0.0,
+        "ax_engine_generation_active_streams": 0.0,
+        "ax_engine_generation_buffered_stream_events": 0.0
+      }
+    },
+    {
+      "canceled": "short",
+      "requests": [
+        {
+          "closed": true,
+          "request_id": 10,
+          "seen_layer_steps": []
+        },
+        {
+          "closed": false,
+          "request_id": 11,
+          "seen_layer_steps": [
+            613,
+            614,
+            615
+          ],
+          "matched_output_ids": 96
+        }
+      ],
+      "drained": {
+        "ax_engine_jobs_in_flight": 0.0,
+        "ax_engine_generation_jobs_pending": 0.0,
+        "ax_engine_generation_commands_queued": 0.0,
+        "ax_engine_generation_active_streams": 0.0,
+        "ax_engine_generation_buffered_stream_events": 0.0
+      }
+    }
+  ]
+}
