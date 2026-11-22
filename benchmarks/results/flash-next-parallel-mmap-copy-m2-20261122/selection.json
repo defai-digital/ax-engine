@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "name": "model-00017-of-00025.safetensors",
+      "names": [
+        "language_model.model.layers.16.mlp.switch_mlp.down_proj.weight",
+        "language_model.model.layers.17.mlp.switch_mlp.down_proj.weight",
+        "language_model.model.layers.17.mlp.switch_mlp.gate_proj.weight",
+        "language_model.model.layers.17.mlp.switch_mlp.up_proj.weight"
+      ],
+      "selected_bytes": 1677721600
+    },
+    {
+      "name": "model-00018-of-00025.safetensors",
+      "names": [
+        "language_model.model.layers.20.mlp.switch_mlp.down_proj.weight",
+        "language_model.model.layers.20.mlp.switch_mlp.up_proj.weight",
+        "language_model.model.layers.21.mlp.switch_mlp.down_proj.weight",
+        "language_model.model.layers.21.mlp.switch_mlp.gate_proj.weight"
+      ],
+      "selected_bytes": 1677721600
+    }
+  ]
+}

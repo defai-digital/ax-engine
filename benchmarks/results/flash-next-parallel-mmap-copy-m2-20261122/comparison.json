@@ -1,0 +1,95 @@
+{
+  "scope": "M2 Ultra mapped copy component only",
+  "qualification": false,
+  "native_control_runs": 16,
+  "matching_payload_observations": 64,
+  "non_aligned_tail_bytes": 67109121,
+  "shards": {
+    "model-00017-of-00025.safetensors": {
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2",
+      "selected_bytes": 1677721600,
+      "cache_conditions": {
+        "clone": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_seconds": {
+            "mmap": 21.480196765000002,
+            "mmap-pair": 13.04619311
+          },
+          "paired_median_difference_percent": -39.264,
+          "per_order_difference_percent": [
+            -40.254,
+            -35.401
+          ]
+        },
+        "reused": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            102404,
+            102404,
+            102404,
+            102404
+          ],
+          "median_seconds": {
+            "mmap": 0.2712523745,
+            "mmap-pair": 0.1634510625
+          },
+          "paired_median_difference_percent": -39.742,
+          "per_order_difference_percent": [
+            -40.147,
+            -39.343
+          ]
+        }
+      }
+    },
+    "model-00018-of-00025.safetensors": {
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe",
+      "selected_bytes": 1677721600,
+      "cache_conditions": {
+        "clone": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "median_seconds": {
+            "mmap": 8.717764335,
+            "mmap-pair": 11.0783125
+          },
+          "paired_median_difference_percent": 27.077,
+          "per_order_difference_percent": [
+            33.896,
+            20.287
+          ]
+        },
+        "reused": {
+          "attested_initial_page_state": true,
+          "initial_resident_pages": [
+            102404,
+            102404,
+            102404,
+            102404
+          ],
+          "median_seconds": {
+            "mmap": 0.2692203955,
+            "mmap-pair": 0.166806021
+          },
+          "paired_median_difference_percent": -38.041,
+          "per_order_difference_percent": [
+            -38.49,
+            -37.591
+          ]
+        }
+      }
+    }
+  }
+}

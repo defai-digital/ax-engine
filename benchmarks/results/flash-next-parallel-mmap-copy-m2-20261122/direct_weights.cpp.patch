@@ -1,0 +1,41 @@
+--- direct_weights.cpp
++++ direct_weights.cpp
+@@ -141,7 +141,17 @@
+         throw std::runtime_error("Allocator did not provide owned CPU-accessible storage");
+     }
+     if (base != nullptr) {
+-        std::memcpy(destination, static_cast<const unsigned char*>(base) + tensor.offset, tensor.len);
++        const auto* mapped = static_cast<const unsigned char*>(base) + tensor.offset;
++        if (paired && tensor.len >= parallel_threshold) {
++            const size_t split = (tensor.len / 2 / read_alignment) * read_alignment;
++            auto first = std::async(std::launch::async, [destination, mapped, split] {
++                std::memcpy(destination, mapped, split);
++            });
++            std::memcpy(destination + split, mapped + split, tensor.len - split);
++            first.get();
++        } else {
++            std::memcpy(destination, mapped, tensor.len);
++        }
+     } else if (paired && tensor.len >= parallel_threshold) {
+         const size_t first_size = (tensor.len / 2 / read_alignment) * read_alignment;
+         read_pair(fd, destination, tensor.len, tensor.offset, first_size);
+@@ -193,8 +203,8 @@
+ }
+
+ void run(const char* file, const char* plan, const std::string& mode) {
+-    const bool mapped = mode == "mmap";
+-    const bool paired = mode == "pread-pair";
++    const bool mapped = mode == "mmap" || mode == "mmap-pair";
++    const bool paired = mode == "pread-pair" || mode == "mmap-pair";
+     if (!mapped && !paired && mode != "pread") {
+         throw std::runtime_error("Unknown diagnostic mode");
+     }
+@@ -211,7 +221,7 @@
+     if (mapped) {
+         const Mapping map(input.fd, file_size);
+         for (const auto& tensor : tensors) {
+-            arrays.push_back(materialized(input.fd, map.memory, tensor, false));
++            arrays.push_back(materialized(input.fd, map.memory, tensor, paired));
+         }
+     } else {
+         for (const auto& tensor : tensors) {

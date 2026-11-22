@@ -1,0 +1,339 @@
+{
+  "scope": "functional",
+  "qualification": false,
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "os": "27.2.1",
+    "memory_bytes": 206158430208,
+    "storage": "external SSD"
+  },
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "selection_sha256": "14adc1cfeaea672ba9f2a58f5a7d8d17aed539574e41058e4bd0e25710517c25",
+  "binary_sha256": "a588b2d5d436fa188a20e95530470f3797bb944947b3f86dd8970dcc4536f920",
+  "page_size": 16384,
+  "arms": [
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 34.1949419,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 20.4299888,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 5.66239742,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 8.76545163,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.269217791,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 0.161134,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 0.165768125,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 4,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.273286958,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+      "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 11.648655,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 8.69976892,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 8.73575975,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 10.50797,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 0.165726917,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.269432458,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.269008333,
+      "tensors": 4,
+      "paired_tensors": 0,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-pair",
+      "elapsed_seconds": 0.167885125,
+      "tensors": 4,
+      "paired_tensors": 4,
+      "selected_bytes": 1677721600,
+      "allocated_bytes": 1677721600,
+      "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+      "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+    }
+  ],
+  "short_read_rejected": true,
+  "completed": true
+}

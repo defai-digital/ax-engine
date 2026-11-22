@@ -1,0 +1,32 @@
+--- run_probe.py
++++ run_probe.py
+@@ -1,4 +1,4 @@
+-"""Verify byte identity for one or two positional requests into MLX-owned arrays."""
++"""Compare one or two mapped byte copy ranges into the same MLX-owned storage."""
+ from argparse import ArgumentParser
+ import ctypes
+ from hashlib import file_digest, sha256
+@@ -134,11 +134,11 @@
+             plan = scratch / "geometry.txt"
+             plan.write_text("".join(" ".join(map(str, (start, length, dtype, len(shape), *shape))) + "\n"
+                                     for start, length, dtype, shape in regions))
+-            modes = ("pread", "pread-pair", "pread-pair", "pread")
++            modes = ("mmap", "mmap-pair", "mmap-pair", "mmap")
+             if index != 0:
+-                modes = ("pread-pair", "pread", "pread", "pread-pair")
++                modes = ("mmap-pair", "mmap", "mmap", "mmap-pair")
+             sequence = [("clone", mode) for mode in modes]
+-            sequence.extend(("reused", mode) for mode in ("mmap", *modes))
++            sequence.extend(("reused", mode) for mode in modes)
+             paired_tensors = sum(length >= PAIR_THRESHOLD for _, length, _, _ in regions)
+             if paired_tensors == 0:
+                 raise ValueError("Shard does not exercise concurrent reads")
+@@ -164,7 +164,7 @@
+                 after = pressure()
+                 if data["weights_sha256"] != payload or data["selected_bytes"] != selected:
+                     raise ValueError("Selected model bytes differ from the publisher source")
+-                effective_pairs = paired_tensors if mode == "pread-pair" else 0
++                effective_pairs = paired_tensors if mode == "mmap-pair" else 0
+                 if data["paired_tensors"] != effective_pairs:
+                     raise ValueError("The measured reader did not exercise the expected divided buffers")
+                 row = (data["allocated_bytes"], data["metal_sha256"], data["tensors"])

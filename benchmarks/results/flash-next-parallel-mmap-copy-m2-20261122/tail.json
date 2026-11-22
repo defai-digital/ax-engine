@@ -1,0 +1,25 @@
+{
+  "binary_sha256": "a588b2d5d436fa188a20e95530470f3797bb944947b3f86dd8970dcc4536f920",
+  "source_offset": 37,
+  "truncated_source_rejected": true,
+  "cases": {
+    "mmap": {
+      "mode": "mmap",
+      "tensors": 1,
+      "paired_tensors": 0,
+      "selected_bytes": 67109121,
+      "allocated_bytes": 67125248,
+      "weights_sha256": "439d4b572379f0e918e10520e2c1411e1ade6c8b42a6b8dc4be671bd1701034a",
+      "metal_sha256": "946d357ace2cc8031b4e55d29eff236f1a0ccc42782a0ba4aefd8ddd27d45ad7"
+    },
+    "mmap-pair": {
+      "mode": "mmap-pair",
+      "tensors": 1,
+      "paired_tensors": 1,
+      "selected_bytes": 67109121,
+      "allocated_bytes": 67125248,
+      "weights_sha256": "439d4b572379f0e918e10520e2c1411e1ade6c8b42a6b8dc4be671bd1701034a",
+      "metal_sha256": "946d357ace2cc8031b4e55d29eff236f1a0ccc42782a0ba4aefd8ddd27d45ad7"
+    }
+  }
+}
