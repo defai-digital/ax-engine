@@ -1,0 +1,70 @@
+{
+  "cpu_idle_percent_before": 90.5,
+  "frozen_manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "manifest_fields_changed": [
+    "dropped_tensors"
+  ],
+  "matching_http_controls": 21,
+  "observed_manifest_sha256": "5bb769d05077134e0cf3c612061e35bb9930c3904dbc2cb30ede02d27afc23b5",
+  "pressure_levels": [
+    1
+  ],
+  "pressure_samples": 136,
+  "qualification": false,
+  "reference_readiness_seconds": {
+    "default": 157.292,
+    "disabled": 108.048,
+    "required": 102.931
+  },
+  "scope": "Instrumented startup with a different derived manifest",
+  "server_sha256": "932ff3f0fc69cef65ee0aa2fba90c095aa23e3be242a1c024921b2d58ee025c7",
+  "starts": {
+    "default": {
+      "http_ready_seconds": 64.323,
+      "mtp_sidecar_seconds": 5.101845,
+      "resident_shard_copy_allocation_seconds": 49.799017,
+      "resident_shard_sync_eval_seconds": 0.000154,
+      "resident_tensors_seconds": 49.814522,
+      "slowest_shard": {
+        "eval_us": 11,
+        "name": "model-00021-of-00025.safetensors",
+        "read_us": 7900346,
+        "tensors": 158
+      },
+      "trunk_admission_seconds": 0.024435,
+      "verified_steps": 0.0
+    },
+    "disabled": {
+      "http_ready_seconds": 81.338,
+      "mtp_sidecar_seconds": 8.956434,
+      "resident_shard_copy_allocation_seconds": 63.54104,
+      "resident_shard_sync_eval_seconds": 0.000147,
+      "resident_tensors_seconds": 63.55461,
+      "slowest_shard": {
+        "eval_us": 7,
+        "name": "model-00025-of-00025.safetensors",
+        "read_us": 10671168,
+        "tensors": 69
+      },
+      "trunk_admission_seconds": 0.020669,
+      "verified_steps": 0.0
+    },
+    "required": {
+      "http_ready_seconds": 80.262,
+      "mtp_sidecar_seconds": 8.78625,
+      "resident_shard_copy_allocation_seconds": 61.27879,
+      "resident_shard_sync_eval_seconds": 0.00015,
+      "resident_tensors_seconds": 61.293231,
+      "slowest_shard": {
+        "eval_us": 10,
+        "name": "model-00024-of-00025.safetensors",
+        "read_us": 8501267,
+        "tensors": 158
+      },
+      "trunk_admission_seconds": 0.020763,
+      "verified_steps": 107.0
+    }
+  },
+  "terminal_status": "manifest_mismatch",
+  "trace_result_sha256": "0df5fbedf54be6a5d583276570a787adc482d42f311cf04075743fa43edcb70c"
+}
