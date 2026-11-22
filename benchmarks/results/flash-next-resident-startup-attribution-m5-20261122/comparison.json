@@ -1,0 +1,167 @@
+{
+  "scope": "M5 guarded mmap copy-and-allocation timer attribution",
+  "qualification": false,
+  "evidence_sha256": {
+    "historical": "1872c5a219698e84c63a6122d36cd896759b0a981a995ebb25a64f7f99a3ded3",
+    "matching_manifest": "f2ea687d64414e9ce4b91785e230d9eae571d44a09e43b665a48f2cee72cc1de"
+  },
+  "counterbalanced_direct_starts": {
+    "disabled-first": {
+      "first_mode": "disabled",
+      "second_mode": "default",
+      "total_second_minus_first_us": 20682942,
+      "shards_13_through_18_second_minus_first_us": 22552265,
+      "shards_21_and_24_second_minus_first_us": -1156038,
+      "shards_17_and_18_second_minus_first_us": 8181253,
+      "per_shard_second_minus_first_us": {
+        "1": -2018773,
+        "12": 77173,
+        "13": 3357995,
+        "14": 3594817,
+        "15": 3776537,
+        "16": 3641663,
+        "17": 4055931,
+        "18": 4125322,
+        "19": 4207511,
+        "20": -2544911,
+        "21": 65994,
+        "22": 651359,
+        "23": -746398,
+        "24": -1222032,
+        "25": -339246
+      }
+    },
+    "default-first": {
+      "first_mode": "default",
+      "second_mode": "disabled",
+      "total_second_minus_first_us": 23980517,
+      "shards_13_through_18_second_minus_first_us": 22116564,
+      "shards_21_and_24_second_minus_first_us": 856851,
+      "shards_17_and_18_second_minus_first_us": 7480736,
+      "per_shard_second_minus_first_us": {
+        "1": -2488233,
+        "12": 76196,
+        "13": 3154179,
+        "14": 4287720,
+        "15": 3692602,
+        "16": 3501327,
+        "17": 3724415,
+        "18": 3756321,
+        "19": 2218932,
+        "20": 448755,
+        "21": 194013,
+        "22": -12461,
+        "23": 942909,
+        "24": 662838,
+        "25": -178996
+      }
+    }
+  },
+  "matching_manifest_starts": {
+    "disabled": {
+      "total_copy_and_allocation_us": 83070861,
+      "shards_21_and_24_share_percent": 21.683,
+      "shards_17_and_18_share_percent": 10.195,
+      "per_shard_read_us": {
+        "1": 1984204,
+        "12": 86176,
+        "13": 3771066,
+        "14": 3922963,
+        "15": 4056323,
+        "16": 4325811,
+        "17": 4209580,
+        "18": 4259490,
+        "19": 6249446,
+        "20": 8769022,
+        "21": 9050848,
+        "22": 8462312,
+        "23": 9202316,
+        "24": 8961376,
+        "25": 5759928
+      }
+    },
+    "required": {
+      "total_copy_and_allocation_us": 115917522,
+      "shards_21_and_24_share_percent": 17.929,
+      "shards_17_and_18_share_percent": 10.689,
+      "per_shard_read_us": {
+        "1": 6133074,
+        "12": 159426,
+        "13": 3982106,
+        "14": 7297104,
+        "15": 4091453,
+        "16": 6758345,
+        "17": 6796082,
+        "18": 5593981,
+        "19": 8286758,
+        "20": 10595053,
+        "21": 8701081,
+        "22": 14994913,
+        "23": 13788668,
+        "24": 12081315,
+        "25": 6658163
+      }
+    },
+    "default": {
+      "total_copy_and_allocation_us": 88282398,
+      "shards_21_and_24_share_percent": 22.502,
+      "shards_17_and_18_share_percent": 9.854,
+      "per_shard_read_us": {
+        "1": 1966990,
+        "12": 86515,
+        "13": 3896332,
+        "14": 4082300,
+        "15": 4276017,
+        "16": 4581085,
+        "17": 4328690,
+        "18": 4370879,
+        "19": 6302941,
+        "20": 9714746,
+        "21": 9324598,
+        "22": 8948817,
+        "23": 9261745,
+        "24": 10540606,
+        "25": 6600137
+      }
+    }
+  },
+  "selected_resident_tensors": 1942,
+  "paired_reader_original_shards": [
+    21,
+    24
+  ],
+  "paired_reader_holdout_shards": [
+    17,
+    18
+  ],
+  "holdout": {
+    "scope": "M2 functional",
+    "arms": 18,
+    "unique_tensors": 316,
+    "unique_published_bytes": 10288018560,
+    "wall_seconds_medians": {
+      "model-00017-of-00025.safetensors": {
+        "clone": {
+          "pread": 2.224101,
+          "pread-pair": 2.28295
+        },
+        "reused": {
+          "mmap": 0.78897,
+          "pread": 0.586112,
+          "pread-pair": 0.372519
+        }
+      },
+      "model-00018-of-00025.safetensors": {
+        "clone": {
+          "pread": 4.274986,
+          "pread-pair": 2.297437
+        },
+        "reused": {
+          "mmap": 0.804794,
+          "pread": 0.56508,
+          "pread-pair": 0.364716
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,379 @@
+{
+  "scope": "functional",
+  "qualification": false,
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "os": "27.2.1",
+    "memory_bytes": 206158430208,
+    "storage": "external SSD"
+  },
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "selection_sha256": "a34a39a4343aae4bbb4561ac7114642de185361af20202380b26ffd63ab967bc",
+  "binary_sha256": "f6f3ac987b1180871b639368e8fa33af49c1acdef03aa1268d4572a54d8e802f",
+  "page_size": 16384,
+  "arms": [
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 2.24403125,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 2.28387521,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 2.28202412,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 2.20417017,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.78897025,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 0.591994792,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 0.367356875,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 0.377681666,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "publisher_sha256": "febb6963db738629ac60b87e2991ad6bbff124e545f601c2fa33d90978604d4f",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 51,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 0.580228416,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "5dff011009865fed2a9f53f096cebe8e7f3d0f54b7a4e1218066f941c9a5362f",
+      "metal_sha256": "63d2ce472eae0964c5866a4422769da7a4adab0980fb4474a8bc6d18b23de437"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 2.30100771,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 4.29096842,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 4.259003,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 2.29386696,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.804793792,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 0.365417458,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 0.565035542,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 0.565124625,
+      "tensors": 158,
+      "paired_tensors": 0,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "publisher_sha256": "448f8f0b37f598d7142b675f659b89c22a5538272cd29f0f374fa9a72553f7fd",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 313966,
+        "resident_pages": 313966
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread-pair",
+      "elapsed_seconds": 0.364014292,
+      "tensors": 158,
+      "paired_tensors": 11,
+      "selected_bytes": 5144009280,
+      "allocated_bytes": 5144334912,
+      "weights_sha256": "dc8a4bf00e7b2e11faf7fd15f313e9c0a9d7b789962488a65cee67fe0f9bd0ff",
+      "metal_sha256": "ec4dffedf8eef9194d416a9e4dd75f14a73728914d408d2e9a497a33bd75137c"
+    }
+  ],
+  "short_read_rejected": true,
+  "completed": true
+}
