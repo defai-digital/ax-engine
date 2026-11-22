@@ -1,0 +1,50 @@
+{
+  "qualification": false,
+  "arms": {
+    "group-8": {
+      "layer_group": 8,
+      "matched_output_ids": 192,
+      "layer_progress_steps": 77,
+      "layer_runner_p95_ms": 276.681,
+      "short_p95_gap_ms": 275.84317922592163,
+      "short_max_gap_ms": 283.71408401289955,
+      "long_arrival_to_first_token_ms": 12773.0040839524,
+      "long_first_token_before_short_completion": false,
+      "output_tokens_per_second": 12.494511111655704,
+      "peak_footprint_bytes": 80085603080,
+      "cpu_idle_before_percent": 99.49,
+      "cpu_idle_after_percent": 99.36,
+      "timing_eligible": true
+    },
+    "group-12": {
+      "layer_group": 12,
+      "matched_output_ids": 192,
+      "layer_progress_steps": 48,
+      "layer_runner_p95_ms": 328.06865,
+      "short_p95_gap_ms": 326.90691690077074,
+      "short_max_gap_ms": 337.6309580053203,
+      "long_arrival_to_first_token_ms": 12324.344583961647,
+      "long_first_token_before_short_completion": true,
+      "output_tokens_per_second": 12.402934387595536,
+      "peak_footprint_bytes": 79826539344,
+      "cpu_idle_before_percent": 99.45,
+      "cpu_idle_after_percent": 93.14,
+      "timing_eligible": true
+    },
+    "group-16": {
+      "layer_group": 16,
+      "matched_output_ids": 192,
+      "layer_progress_steps": 32,
+      "layer_runner_p95_ms": 385.57225,
+      "short_p95_gap_ms": 379.9651956069283,
+      "short_max_gap_ms": 389.490041998215,
+      "long_arrival_to_first_token_ms": 11977.630416979082,
+      "long_first_token_before_short_completion": true,
+      "output_tokens_per_second": 12.4366538308269,
+      "peak_footprint_bytes": 79839007544,
+      "cpu_idle_before_percent": 94.95,
+      "cpu_idle_after_percent": 98.74,
+      "timing_eligible": true
+    }
+  }
+}
