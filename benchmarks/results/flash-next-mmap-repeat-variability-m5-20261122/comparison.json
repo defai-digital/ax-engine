@@ -1,0 +1,66 @@
+{
+  "matched_output_ids": 448,
+  "measurements": {
+    "original": {
+      "cpu_idle_percent": [
+        98.14,
+        98.36
+      ],
+      "warmed": {
+        "512": {
+          "median_decode_tokens_per_second": 50.520853704645305,
+          "median_ttft_seconds": 0.521994
+        },
+        "2048": {
+          "median_decode_tokens_per_second": 45.631249457208924,
+          "median_ttft_seconds": 1.643157
+        },
+        "8192": {
+          "median_decode_tokens_per_second": 45.0645586144538,
+          "median_ttft_seconds": 8.987068
+        }
+      }
+    },
+    "reversed": {
+      "cpu_idle_percent": [
+        92.31,
+        96.15
+      ],
+      "warmed": {
+        "512": {
+          "median_decode_tokens_per_second": 50.44751830756712,
+          "median_ttft_seconds": 0.512726
+        },
+        "2048": {
+          "median_decode_tokens_per_second": 46.4558669264199,
+          "median_ttft_seconds": 1.763842
+        },
+        "8192": {
+          "median_decode_tokens_per_second": 45.01051213251095,
+          "median_ttft_seconds": 9.750253
+        }
+      }
+    }
+  },
+  "process_position": {
+    "original": 1,
+    "reversed": 2
+  },
+  "qualification": false,
+  "reversed_relative_to_original_percent": {
+    "512": {
+      "median_decode_tokens_per_second": -0.145,
+      "median_ttft_seconds": -1.775
+    },
+    "2048": {
+      "median_decode_tokens_per_second": 1.807,
+      "median_ttft_seconds": 7.345
+    },
+    "8192": {
+      "median_decode_tokens_per_second": -0.12,
+      "median_ttft_seconds": 8.492
+    }
+  },
+  "scope": "unchanged mmap short-first controls, between two campaigns",
+  "source_commit": "c2358dd814f5bb4a11fce0f22d9d79c2809f63ea"
+}
