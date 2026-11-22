@@ -1,0 +1,111 @@
+{
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "cli_sha256": "918b65f52d13ca3e7b2b41e8b3fe12c1474c32a70c146717b37584aeb836e53c",
+    "commit": "38c90b27a3abd3c94b592aabbbc884d441451511",
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "6db0b00d90349d78bce160436f14e81d3d9c57db40f7c57a3efd63cf2803f7c9",
+    "tree": "3c49611f2eaac9916eea3e35e076c697e59c5a58"
+  },
+  "delivered_copy_readiness": {
+    "delivered": {
+      "default": 125.26,
+      "disabled": 108.096,
+      "required": 126.269
+    },
+    "detail": "delivered required readiness 126.269s exceeds 120s; delivered default readiness 125.26s exceeds 120s",
+    "gate": "readiness",
+    "passed": false
+  },
+  "delivery": {
+    "detail": "49 members, 132261877478 bytes verified from an empty cache",
+    "download_seconds": 1110.398,
+    "failed_attempts": 0,
+    "gate": "delivery",
+    "passed": true
+  },
+  "download_progress_counters": 5812,
+  "evidence_sha256": {
+    "delivered_controls": "f636708bf722e408b3680695cadb09790a9e11c30c90432a452a881637fa623d",
+    "prior_delivered_controls": "73f4e899a9ec1eea4dd1e0eec8a00c35dd309f663385fc6414333a4b3296b78a",
+    "thresholds": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b"
+  },
+  "functional_controls": 21,
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "memory_bytes": 137438953472,
+    "os": "27.2.1",
+    "soc": "Apple M5 Max",
+    "storage": {
+      "bus_protocol": "Apple Fabric",
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true
+    }
+  },
+  "manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "passive_host_samples": {
+    "count": 54,
+    "idle_max_percent": 98.7,
+    "idle_min_percent": 91.37,
+    "pressure_levels": [
+      1
+    ],
+    "startup_idle": {
+      "default": {
+        "count": 8,
+        "min_percent": 93.55,
+        "pressure_levels": [
+          1
+        ]
+      },
+      "disabled": {
+        "count": 7,
+        "min_percent": 96.69,
+        "pressure_levels": [
+          1
+        ]
+      },
+      "required": {
+        "count": 8,
+        "min_percent": 94.73,
+        "pressure_levels": [
+          1
+        ]
+      }
+    }
+  },
+  "readiness_seconds": {
+    "default": 125.26,
+    "disabled": 108.096,
+    "required": 126.269
+  },
+  "release_ready": false,
+  "scope": "Current-build M5 fresh delivery and delivered-copy controls",
+  "server_log_intervals": {
+    "default": {
+      "plan_to_runner_admission_seconds": 118.735,
+      "runner_admission_to_listening_seconds": 5.434
+    },
+    "disabled": {
+      "plan_to_runner_admission_seconds": 102.197,
+      "runner_admission_to_listening_seconds": 5.409
+    },
+    "required": {
+      "plan_to_runner_admission_seconds": 119.005,
+      "runner_admission_to_listening_seconds": 5.927
+    }
+  },
+  "verified_steps": {
+    "default": 0,
+    "disabled": 0,
+    "required": 107
+  }
+}
