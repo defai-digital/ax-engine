@@ -1942,6 +1942,22 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_PREFILL_LAYER_YIELD"
 );
 
+/// Experimental Flash Next layer groups compared by the same-binary M5 trial.
+pub(crate) fn flash_next_prefill_layer_group() -> Option<std::num::NonZeroU32> {
+    if !flash_next_prefill_layer_yield_enabled() {
+        return None;
+    }
+    let layers = match std::env::var("AX_MLX_FLASH_NEXT_PREFILL_LAYER_GROUP") {
+        Ok(value) => value.parse().ok()?,
+        Err(std::env::VarError::NotPresent) => 8,
+        Err(std::env::VarError::NotUnicode(_)) => return None,
+    };
+    match layers {
+        8 | 12 | 16 => std::num::NonZeroU32::new(layers),
+        _ => None,
+    }
+}
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
     /// requests of one engine step take a DFlash2 round, verify them in one

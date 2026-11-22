@@ -1703,7 +1703,7 @@ pub struct MlxRunner {
     mlx_memory_limit: u64,
     /// Explicit session concurrency used by serving experiments.
     configured_live_sequences: Option<u32>,
-    flash_next_layer_prefill: bool,
+    flash_next_layer_prefill: Option<NonZeroU32>,
     /// Live decode sequences this session may run concurrently, resolved by the
     /// priced memory plan at load time.
     ///
@@ -3500,8 +3500,8 @@ impl MlxRunner {
             checkpoint_unsupported: std::sync::atomic::AtomicU32::new(0),
             dflash2: None,
             weight_layout_telemetry,
-            flash_next_layer_prefill: crate::fastpath::flash_next_prefill_layer_yield_enabled()
-                && artifacts.audited_qwen4_exp_mxfp4(),
+            flash_next_layer_prefill: crate::fastpath::flash_next_prefill_layer_group()
+                .filter(|_| artifacts.audited_qwen4_exp_mxfp4()),
             affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
@@ -5250,16 +5250,14 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn prefill_layer_geometry(&self) -> Option<PrefillLayerGeometry> {
-        if !self.flash_next_layer_prefill {
-            return None;
-        }
+        let layers_per_step = self.flash_next_layer_prefill?;
         self.prefill_split_geometry()?;
         let trunk = self.weights.qwen4_exp.as_ref()?;
         if trunk.layers.len() != 48 {
             return None;
         }
         Some(PrefillLayerGeometry {
-            layers_per_step: NonZeroU32::new(8)?,
+            layers_per_step,
             total_layers: NonZeroU32::new(48)?,
         })
     }
