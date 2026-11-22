@@ -481,6 +481,19 @@ impl NgramTable {
     }
 
     #[cfg(test)]
+    pub(crate) fn reader_pool_active_for_probe(&self) -> bool {
+        demand_read_pool().is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_planes_for_probe(&self, rows: &[u64]) -> Result<Vec<Vec<u8>>, String> {
+        self.core
+            .stage(rows, None, None, false)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "reader probe needs a uniform nonempty table".to_string())
+    }
+
+    #[cfg(test)]
     pub(crate) fn payload_bytes_read(&self) -> u64 {
         self.core.payload_bytes_read()
     }
@@ -825,6 +838,31 @@ fn max_read_threads() -> usize {
     crate::fastpath::flash_next_ngram_read_threads()
 }
 
+fn demand_read_pool() -> Option<&'static rayon_core::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon_core::ThreadPool>> = std::sync::OnceLock::new();
+    if !crate::fastpath::flash_next_ngram_read_pool_enabled() {
+        return None;
+    }
+    POOL.get_or_init(|| {
+        let workers = max_read_threads().saturating_sub(1);
+        if workers == 0 {
+            return None;
+        }
+        match rayon_core::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .thread_name(|index| format!("ax-ple-reader-{index}"))
+            .build()
+        {
+            Ok(pool) => Some(pool),
+            Err(error) => {
+                tracing::warn!(%error, "Flash Next PLE reader pool unavailable");
+                None
+            }
+        }
+    })
+    .as_ref()
+}
+
 fn run_row_reads(
     reads: &mut [RowRead<'_>],
     cancel: Option<&prefetch::CancelFlag>,
@@ -857,33 +895,55 @@ fn run_row_reads(
         }
         Ok(())
     }
+    fn worker_panic() -> NgramTableError {
+        NgramTableError::Gather("n-gram row read thread panicked".to_string())
+    }
+    fn merge(
+        current: Result<(), NgramTableError>,
+        next: Result<(), NgramTableError>,
+    ) -> Result<(), NgramTableError> {
+        match (&current, &next) {
+            (Err(NgramTableError::Cancelled), _) => current,
+            (_, Err(NgramTableError::Cancelled)) | (Ok(()), Err(_)) => next,
+            _ => current,
+        }
+    }
+
     let threads = reads.len().min(max_read_threads());
     if threads <= 1 {
         return run(reads, cancel, hook, is_speculative);
     }
     let per_thread = reads.len().div_ceil(threads);
-    let mut chunks = reads.chunks_mut(per_thread);
-    let first = chunks.next();
+    let (first, rest) = reads.split_at_mut(per_thread);
+    // Speculative work keeps its own scoped workers. It cannot tie up the
+    // demand pool while a caller is waiting for synchronous reads.
+    if !is_speculative && let Some(pool) = demand_read_pool() {
+        let mut results = vec![Ok(()); rest.len().div_ceil(per_thread)];
+        let first_result = pool.in_place_scope_fifo(|scope| {
+            for (chunk, result) in rest.chunks_mut(per_thread).zip(&mut results) {
+                scope.spawn_fifo(move |_| {
+                    *result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run(chunk, cancel, hook, is_speculative)
+                    }))
+                    .unwrap_or_else(|_| Err(worker_panic()));
+                });
+            }
+            run(first, cancel, hook, is_speculative)
+        });
+        return results.into_iter().fold(first_result, merge);
+    }
     std::thread::scope(|scope| {
-        let handles: Vec<_> = chunks
+        let handles: Vec<_> = rest
+            .chunks_mut(per_thread)
             .map(|chunk| scope.spawn(move || run(chunk, cancel, hook, is_speculative)))
             .collect();
-        let mut result = first.map_or(Ok(()), |chunk| run(chunk, cancel, hook, is_speculative));
-        for handle in handles {
-            let joined = match handle.join() {
-                Ok(inner) => inner,
-                Err(_) => Err(NgramTableError::Gather(
-                    "n-gram row read thread panicked".to_string(),
-                )),
-            };
-            match (&result, &joined) {
-                (Err(NgramTableError::Cancelled), _) => {}
-                (_, Err(NgramTableError::Cancelled)) => result = joined,
-                (Ok(()), Err(_)) => result = joined,
-                _ => {}
-            }
-        }
-        result
+        let first_result = run(first, cancel, hook, is_speculative);
+        handles.into_iter().fold(first_result, |current, handle| {
+            merge(
+                current,
+                handle.join().unwrap_or_else(|_| Err(worker_panic())),
+            )
+        })
     })
 }
 

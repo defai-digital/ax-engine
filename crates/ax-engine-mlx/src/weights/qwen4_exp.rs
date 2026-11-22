@@ -2610,6 +2610,9 @@ fn build_ple_bundle(
 }
 
 #[cfg(test)]
+mod ple_reader_probe;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;

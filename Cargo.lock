@@ -202,6 +202,7 @@ dependencies = [
  "image",
  "mlx-sys",
  "parking_lot",
+ "rayon-core",
  "rustfft",
  "serde",
  "serde_json",
