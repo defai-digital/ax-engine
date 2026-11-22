@@ -1,0 +1,34 @@
+[
+  {
+    "arm": "no-cache-first",
+    "mode": "no-cache",
+    "ready": false,
+    "batches_completed": 20,
+    "footprint_at_warning_bytes": 68129571128,
+    "compressor_at_warning_bytes": 65633370112
+  },
+  {
+    "arm": "buffered-first",
+    "mode": "buffered",
+    "ready": false,
+    "batches_completed": 50,
+    "footprint_at_warning_bytes": 101864005512,
+    "compressor_at_warning_bytes": 81250304000
+  },
+  {
+    "arm": "buffered-second",
+    "mode": "buffered",
+    "ready": false,
+    "batches_completed": 40,
+    "footprint_at_warning_bytes": 90198081280,
+    "compressor_at_warning_bytes": 74884055040
+  },
+  {
+    "arm": "no-cache-second",
+    "mode": "no-cache",
+    "ready": false,
+    "batches_completed": 28,
+    "footprint_at_warning_bytes": 75973809960,
+    "compressor_at_warning_bytes": 75307794432
+  }
+]
