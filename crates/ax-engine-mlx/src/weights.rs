@@ -17,7 +17,7 @@ use ax_engine_core::{
 
 use crate::fastpath::{
     dense_attention_qkv_packing_enabled, dense_ffn_gate_up_packing_enabled,
-    linear_attention_projection_packing_enabled,
+    linear_attention_projection_packing_enabled, mtp_sidecar_loading_disabled,
 };
 use crate::gemma4_assistant_mtp::{Gemma4AssistantMtpStatus, load_gemma4_assistant_mtp_status};
 use crate::model::MlaAttentionConfig;
@@ -101,7 +101,7 @@ pub struct ModelWeights {
 const FLASH_NEXT_MTP_SIDECAR_FILE: &str = "mtp.safetensors";
 
 pub(crate) fn flash_next_mtp_sidecar_expected(root: &Path) -> bool {
-    flash_next_mtp_sidecar_expected_for(root, skip_mtp_sidecar())
+    flash_next_mtp_sidecar_expected_for(root, mtp_sidecar_loading_disabled())
 }
 
 fn flash_next_mtp_sidecar_expected_for(root: &Path, skip: bool) -> bool {
@@ -3472,12 +3472,6 @@ fn skip_vision_sidecar() -> bool {
     crate::fastpath::env_flag("AX_MLX_SKIP_VISION_SIDECAR")
 }
 
-/// `AX_MLX_SKIP_MTP_SIDECAR=1` skips loading `mtp.safetensors`.
-/// The default keeps available sidecars loaded for eligible MTP sessions.
-fn skip_mtp_sidecar() -> bool {
-    crate::fastpath::env_flag("AX_MLX_SKIP_MTP_SIDECAR")
-}
-
 /// AXQuant protected vision sidecar file and provenance manifest names.
 const VISION_SIDECAR_FILE: &str = "vision.safetensors";
 const VISION_SIDECAR_MANIFEST_FILE: &str = "axquant_vision_sidecar_manifest.json";
@@ -3728,7 +3722,7 @@ fn load_mtp_sidecar(
     if manifest.deepseek_v4.is_enabled() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
-    if skip_mtp_sidecar() {
+    if mtp_sidecar_loading_disabled() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
 

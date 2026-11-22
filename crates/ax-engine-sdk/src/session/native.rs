@@ -121,7 +121,10 @@ fn build_mlx_core(
 
     if config.mlx_mtp_policy == MlxMtpPolicy::Required
         && artifacts.manifest().model_family == "qwen4_exp"
-        && ax_engine_mlx::fastpath::ngram_acceleration_disabled()
+        && (ax_engine_mlx::fastpath::ngram_acceleration_disabled()
+            // A shared runtime can reuse a sidecar that was already loaded.
+            || (shared_weights.is_none()
+                && ax_engine_mlx::fastpath::mtp_sidecar_loading_disabled()))
     {
         return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
     }

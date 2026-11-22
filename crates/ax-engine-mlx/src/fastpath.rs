@@ -388,6 +388,11 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
+/// Whether `AX_MLX_SKIP_MTP_SIDECAR` disables loading `mtp.safetensors`.
+pub fn mtp_sidecar_loading_disabled() -> bool {
+    env_flag("AX_MLX_SKIP_MTP_SIDECAR")
+}
+
 env_flag!(
     /// `AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY` — on pure single-token decode
     /// steps, skip appending the large crossover-decision map (profile
