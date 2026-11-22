@@ -1,0 +1,36 @@
+{
+  "graph_sha256": "bbc459b8456395d817dd0f4a3a9f1b8adaa2763b10897e7f261f6483623c5d33",
+  "ranges": {
+    "full": {
+      "completed_batches": 46,
+      "completed_logical_bytes": 96058830744,
+      "elapsed_observed_materialization_seconds": 13.023909,
+      "host_peak_compressor_bytes": 76173344768,
+      "last_started_unfinished_batch": 46,
+      "phase_peak_mlx_bytes": 96063225824,
+      "phase_peak_physical_footprint_bytes": 96698536048,
+      "pressure_samples": 33,
+      "pressure_warning_sample": {
+        "process_physical_footprint_bytes": 97121489368,
+        "seconds_after_last_phase_event": 0.125801,
+        "system_compressor_bytes": 76173344768
+      },
+      "stopped_for_pressure": true,
+      "terminal_pressure": 2
+    },
+    "ple": {
+      "completed_batches": 15,
+      "completed_logical_bytes": 61149032216,
+      "elapsed_observed_materialization_seconds": 4.945925,
+      "host_peak_compressor_bytes": 6280527872,
+      "last_started_unfinished_batch": null,
+      "phase_peak_mlx_bytes": 61151422304,
+      "phase_peak_physical_footprint_bytes": 61660753696,
+      "pressure_samples": 29,
+      "pressure_warning_sample": null,
+      "stopped_for_pressure": false,
+      "terminal_pressure": 1
+    }
+  },
+  "scope": "Reference materialization only; no prefill or QA"
+}
