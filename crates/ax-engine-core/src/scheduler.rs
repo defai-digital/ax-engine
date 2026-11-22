@@ -242,7 +242,8 @@ pub(crate) const ROUTE_DECISION_AX_SCHEDULER_PREFILL_CAP_WHILE_DECODING_TOKENS: 
     "ax_scheduler_prefill_cap_while_decoding_tokens";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_PREFILL_DEFERRED_FOR_DECODE_DEBT: &str =
     "ax_scheduler_prefill_deferred_for_decode_debt";
-pub(crate) const ROUTE_DECISION_PREFILL_TAIL_DEFERRED: &str = "ax_scheduler_prefill_tail_deferred";
+/// A step-local marker for decoding while a long prefill is held.
+pub const ROUTE_DECISION_PREFILL_TAIL_DEFERRED: &str = "ax_scheduler_prefill_tail_deferred";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED: &str =
     "ax_scheduler_fair_multi_prefill_enabled";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS: &str =

@@ -1,6 +1,7 @@
 use ax_engine_core::RequestId;
 use ax_engine_core::scheduler::{
-    ExecutionMode, PREFILL_SPLIT_END_ROUTE_PREFIX, prefill_split_end_route_key,
+    ExecutionMode, PREFILL_SPLIT_END_ROUTE_PREFIX, ROUTE_DECISION_PREFILL_TAIL_DEFERRED,
+    prefill_split_end_route_key,
 };
 
 use crate::generate::GenerateRouteReport;
@@ -102,7 +103,8 @@ pub(super) fn native_step_local_route(
             && ((has_prefill && key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX))
                 || matches!(
                     key.as_str(),
-                    "ax_mlx_flash_next_selected_expert_gathers"
+                    ROUTE_DECISION_PREFILL_TAIL_DEFERRED
+                        | "ax_mlx_flash_next_selected_expert_gathers"
                         | "ax_mlx_flash_next_selected_expert_payload_kib"
                 ))
         {
@@ -509,7 +511,8 @@ mod tests {
     }
 
     #[test]
-    fn native_step_local_route_retains_split_end_on_single_token_step() {
+    fn native_step_local_route_retains_scheduler_markers_on_single_token_steps()
+    -> Result<(), &'static str> {
         use ax_engine_core::scheduler::{
             ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, SchedulePlan,
         };
@@ -524,7 +527,7 @@ mod tests {
             ("unrelated_counter".into(), 3),
         ];
         let step_id = StepId(13);
-        let outcome = EngineStepOutcome {
+        let mut outcome = EngineStepOutcome {
             admitted_requests: Vec::new(),
             cleanup_results: Vec::new(),
             metrics: StepMetrics {
@@ -573,5 +576,32 @@ mod tests {
                 .into()
             ),
         );
+
+        let batch = outcome
+            .schedule_plan
+            .execution_batch
+            .as_mut()
+            .ok_or("missing fixture batch")?;
+        batch.items[0].mode = ExecutionMode::Decode;
+        batch.items[0].planned_work_unit = WorkUnitKind::TokenDecode;
+        batch.route_metadata.crossover_decisions = vec![
+            (ROUTE_DECISION_PREFILL_TAIL_DEFERRED.into(), 1),
+            ("unrelated_counter".into(), 3),
+        ];
+        outcome.schedule_plan.deferred_requests.push(RequestId(8));
+        assert_eq!(
+            native_step_local_route(&outcome).map(|route| route.crossover_decisions),
+            Some([(ROUTE_DECISION_PREFILL_TAIL_DEFERRED.into(), 1)].into()),
+        );
+        outcome
+            .schedule_plan
+            .execution_batch
+            .as_mut()
+            .ok_or("missing fixture batch")?
+            .route_metadata
+            .crossover_decisions[0]
+            .1 = 0;
+        assert!(native_step_local_route(&outcome).is_none());
+        Ok(())
     }
 }
