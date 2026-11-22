@@ -1,0 +1,102 @@
+{
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "driver_sha256": "0378bc85bd660d7e191860ff337fe3da0527365224d54449f1ad05101d24ff91",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "runtime_base": "192d515bc7a3fa15648d17137fca00399b0722e5",
+    "runtime_diff_sha256": "5a7e98759fcbef25e73f9f67f8cfd27bfc0b3767aa06d17e1f42d702d0af5e5a",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "41d3fcfd63cf2543ff45cd70f3b8ad6bd129e41329ec8dcb1988be6c679808d9"
+  },
+  "candidate_readiness_seconds": {
+    "default": 101.426,
+    "disabled": 109.413,
+    "required": 92.364
+  },
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "memory_bytes": 137438953472,
+    "os": "27.2.1",
+    "soc": "Apple M5 Max",
+    "storage": {
+      "bus_protocol": "Apple Fabric",
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true
+    }
+  },
+  "historical_control_commit": "38c90b27a",
+  "historical_readiness_seconds": {
+    "default": 125.26,
+    "disabled": 108.096,
+    "required": 126.269
+  },
+  "host_samples_by_mode": {
+    "default": {
+      "cpu_idle_percent": [
+        93.78,
+        81.65
+      ],
+      "pressure": [
+        1,
+        1
+      ]
+    },
+    "disabled": {
+      "cpu_idle_percent": [
+        92.79,
+        79.99
+      ],
+      "pressure": [
+        1,
+        1
+      ]
+    },
+    "required": {
+      "cpu_idle_percent": [
+        92.7,
+        83.37
+      ],
+      "pressure": [
+        1,
+        1
+      ]
+    }
+  },
+  "limits_seconds": {
+    "default": 120,
+    "disabled": 300,
+    "required": 120
+  },
+  "matched_functional_controls": 21,
+  "phase_seconds": {
+    "default": {
+      "mtp_sidecar": 1.755021,
+      "resident_tensors": 90.101041,
+      "sidecar_prefetch": 0.419240042
+    },
+    "disabled": {
+      "mtp_sidecar": 1.724203,
+      "resident_tensors": 98.452207,
+      "sidecar_prefetch": 0.39997525
+    },
+    "required": {
+      "mtp_sidecar": 1.320408,
+      "resident_tensors": 81.266577,
+      "sidecar_prefetch": 0.392419667
+    }
+  },
+  "qualification": false,
+  "readiness_band_met": true,
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "timing_eligible_modes": [],
+  "verified_steps": {
+    "default": 0,
+    "disabled": 0,
+    "required": 107
+  }
+}
