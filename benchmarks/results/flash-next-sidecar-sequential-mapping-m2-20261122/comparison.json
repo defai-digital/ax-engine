@@ -1,0 +1,53 @@
+{
+  "scope": "M2 pinned MTP sidecar guarded mapping advice diagnostic",
+  "qualification": false,
+  "matching_tensors_per_arm": 31,
+  "matching_selected_bytes_per_arm": 5214301696,
+  "normal_pressure_boundaries": 16,
+  "pairs": [
+    {
+      "cache": "clone",
+      "observed_page_residency_comparable": true,
+      "resident_pages_before": [
+        0,
+        0
+      ],
+      "ordinary_s": 42.2631673,
+      "sequential_s": 57.4262976,
+      "sequential_over_ordinary": 1.3587788438184565
+    },
+    {
+      "cache": "clone",
+      "observed_page_residency_comparable": true,
+      "resident_pages_before": [
+        0,
+        0
+      ],
+      "ordinary_s": 79.228306,
+      "sequential_s": 49.6081054,
+      "sequential_over_ordinary": 0.6261411849446837
+    },
+    {
+      "cache": "reused",
+      "observed_page_residency_comparable": true,
+      "resident_pages_before": [
+        318256,
+        318256
+      ],
+      "ordinary_s": 1.38340092,
+      "sequential_s": 0.844084125,
+      "sequential_over_ordinary": 0.6101514845024102
+    },
+    {
+      "cache": "reused",
+      "observed_page_residency_comparable": true,
+      "resident_pages_before": [
+        318256,
+        318256
+      ],
+      "ordinary_s": 1.22155471,
+      "sequential_s": 0.8503535,
+      "sequential_over_ordinary": 0.6961239582957361
+    }
+  ]
+}

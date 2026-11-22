@@ -1,0 +1,155 @@
+{
+  "scope": "M2 pinned MTP sidecar guarded mapping advice diagnostic",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "binary_sha256": "bc7175c477608b034181633f4ebdbdf662b599bf087e01daf355348c2010f830",
+  "file_bytes": 5214305544,
+  "publisher_sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+  "payload_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+  "page_size": 16384,
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "os": "27.2.1",
+    "memory_bytes": 206158430208,
+    "storage": "external SSD"
+  },
+  "arms": [
+    {
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 0
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 42.2631673,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 0
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-sequential",
+      "elapsed_seconds": 57.4262976,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 0
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-sequential",
+      "elapsed_seconds": 49.6081054,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 0
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 79.228306,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 318256
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-sequential",
+      "elapsed_seconds": 0.844084125,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 318256
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 1.38340092,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 318256
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 1.22155471,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    },
+    {
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 318256,
+        "resident_pages": 318256
+      },
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap-sequential",
+      "elapsed_seconds": 0.8503535,
+      "tensors": 31,
+      "paired_tensors": 0,
+      "selected_bytes": 5214301696,
+      "allocated_bytes": 5214350848,
+      "weights_sha256": "144364cbe6bac5aa881c0d9073373c00293e73a687ba2553f32cce3759f19439",
+      "metal_sha256": "20d39c126b9e651ee01bd2d9f30e94591355f9ed3e4d55e55fc51523266b5579"
+    }
+  ],
+  "completed": true
+}
