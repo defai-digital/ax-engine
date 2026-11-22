@@ -1,0 +1,40 @@
+{
+  "scope": "M2 Ultra 192 GB functional Required MTP worker warmup",
+  "qualification": false,
+  "arms": {
+    "required-1": {
+      "responses": 17,
+      "generated_ids": 2176,
+      "verified_steps": 1277.0,
+      "accepted_draft_tokens": 882,
+      "ready_seconds": 30.31,
+      "normal_pressure_samples": 240,
+      "worker_passes": 3,
+      "worker_completed_by_shape": [
+        3,
+        3,
+        3
+      ],
+      "http_streams": 3,
+      "worker_elapsed_us": 5681161,
+      "http_elapsed_us": 2915796
+    },
+    "required-2": {
+      "responses": 17,
+      "generated_ids": 2176,
+      "verified_steps": 1277.0,
+      "accepted_draft_tokens": 882,
+      "ready_seconds": 343.589,
+      "normal_pressure_samples": 542,
+      "worker_passes": 1,
+      "worker_completed_by_shape": [
+        1,
+        1,
+        1
+      ],
+      "http_streams": 3,
+      "worker_elapsed_us": 2777741,
+      "http_elapsed_us": 2905424
+    }
+  }
+}
