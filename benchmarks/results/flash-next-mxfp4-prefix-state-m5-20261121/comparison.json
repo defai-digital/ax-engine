@@ -1,0 +1,31 @@
+{
+  "cases_distinguishing_seed_and_suffix": [
+    1
+  ],
+  "input_receipt_sha256": "0e71c75e1c9881d8cf60a1a30a2b6dd76b63b6357f8f820e11daaee6b26bf06c",
+  "matched_generated_ids": 64,
+  "matched_state_and_output_cases": 2,
+  "normal_pressure_samples": 52,
+  "observed_cold_serving_cuts": {
+    "cancelled": {
+      "logical_widths": [
+        2048,
+        64
+      ],
+      "observed_output_ids": 1,
+      "overlapping_prefill_steps": 2
+    },
+    "target": {
+      "logical_widths": [
+        2048,
+        64
+      ],
+      "observed_output_ids": 96,
+      "overlapping_prefill_steps": 2
+    }
+  },
+  "original_harness_status": "failed",
+  "peak_footprint_bytes": 79781355032,
+  "scope": "Isolated fixed-cut state and token controls",
+  "strict_extension_serving_warm_reuse_proven": false
+}
