@@ -296,21 +296,26 @@ mod tests {
     #[cfg(feature = "mlx-native")]
     #[test]
     #[ignore = "requires the pinned resident Flash Next pack and explicit sidecar bypass"]
-    fn real_flash_next_required_shared_preflight_observation() {
+    fn real_flash_next_required_shared_preflight_observation()
+    -> Result<(), Box<dyn std::error::Error>> {
         assert!(
             ax_engine_mlx::fastpath::mtp_sidecar_loading_disabled(),
             "set the sidecar bypass flag in the isolated process"
         );
         assert!(!ax_engine_mlx::fastpath::ngram_acceleration_disabled());
-        let path = std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap();
+        let path = std::env::var_os("AX_FLASH_NEXT_REAL_PACK")
+            .ok_or("set AX_FLASH_NEXT_REAL_PACK to the pinned resident pack")?;
         let config = EngineSessionConfig {
             mlx_mtp_policy: MlxMtpPolicy::Required,
             max_concurrent_requests: Some(1),
             ..EngineSessionConfig::default()
         }
         .with_mlx_model_artifacts_dir(path);
-        let context = super::super::StatelessGenerateContext::new(config).unwrap();
-        let shared = context.native_mlx_shared_weights.as_ref().unwrap();
+        let context = super::super::StatelessGenerateContext::new(config)?;
+        let shared = context
+            .native_mlx_shared_weights
+            .as_ref()
+            .ok_or("set AX_ENGINE_SHARED_WEIGHTS to enable the native shared cell")?;
         assert_eq!(shared.cached_flash_next_drafter(), None);
         println!("shared_before={shared:?}");
         let started = std::time::Instant::now();
@@ -324,6 +329,7 @@ mod tests {
             started.elapsed().as_secs_f64()
         );
         assert_eq!(shared.cached_flash_next_drafter(), None);
+        Ok(())
     }
 
     #[test]

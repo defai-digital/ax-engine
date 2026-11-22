@@ -361,6 +361,9 @@ impl MlxSharedWeightsCell {
     /// Report whether the shared snapshot contains the native Flash Next drafter.
     /// An empty snapshot returns `None`. If a load is in progress, wait for it
     /// before deciding whether its attached drafter can be reused.
+    /// The result describes the state at observation time. A later caller can
+    /// start a new load after an empty observation. Call this outside the
+    /// shared weight loader, which already holds the loading lock.
     pub fn cached_flash_next_drafter(&self) -> Option<bool> {
         let attached = || {
             self.0
