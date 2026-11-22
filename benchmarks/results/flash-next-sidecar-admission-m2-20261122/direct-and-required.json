@@ -1,0 +1,519 @@
+{
+  "scope": "Flash Next attached versus bypassed direct HTTP functional checks",
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "build": {
+    "commit": "88e2598cd249125a78c0eaa08222aef52c348575",
+    "tree": "306a91c288e441007f4adda50173430029cc5660",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "server_sha256": "f44725fa504e808b7ac50916ae1e611ce2f86f7800b7968ff28d7a4f1d1ffa19"
+  },
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "attached": {
+    "depth": 1,
+    "route_safe": true,
+    "mtp_requested": false,
+    "responses": [
+      {
+        "name": "count",
+        "response": {
+          "id": "chatcmpl-4",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "repeat",
+        "response": {
+          "id": "chatcmpl-5",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "extend",
+        "response": {
+          "id": "chatcmpl-6",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 35,
+            "completion_tokens": 38,
+            "total_tokens": 73,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 35,
+              "decode_tokens": 37
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "json",
+        "response": {
+          "id": "chatcmpl-7",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "```json\n{\n  \"color\": \"red\",\n  \"fruit\": \"apple\"\n}\n```"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 33,
+            "completion_tokens": 24,
+            "total_tokens": 57,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 33,
+              "decode_tokens": 23
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "stream",
+        "response": {
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "after_stream",
+        "response": {
+          "id": "chatcmpl-9",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "one_token",
+        "response": {
+          "id": "chatcmpl-10",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "The"
+              },
+              "finish_reason": "length"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 1,
+            "total_tokens": 21,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 20
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      }
+    ]
+  },
+  "bypassed": {
+    "depth": 0,
+    "route_safe": false,
+    "mtp_requested": false,
+    "responses": [
+      {
+        "name": "count",
+        "response": {
+          "id": "chatcmpl-4",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "repeat",
+        "response": {
+          "id": "chatcmpl-5",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "extend",
+        "response": {
+          "id": "chatcmpl-6",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 35,
+            "completion_tokens": 38,
+            "total_tokens": 73,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 35,
+              "decode_tokens": 37
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "json",
+        "response": {
+          "id": "chatcmpl-7",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "```json\n{\n  \"color\": \"red\",\n  \"fruit\": \"apple\"\n}\n```"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 33,
+            "completion_tokens": 24,
+            "total_tokens": 57,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 33,
+              "decode_tokens": 23
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "stream",
+        "response": {
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "after_stream",
+        "response": {
+          "id": "chatcmpl-9",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "decode_tokens": 36
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      },
+      {
+        "name": "one_token",
+        "response": {
+          "id": "chatcmpl-10",
+          "object": "chat.completion",
+          "model": "qwen3.8-flash-next:mxfp4",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "The"
+              },
+              "finish_reason": "length"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 1,
+            "total_tokens": 21,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 20
+            }
+          }
+        },
+        "activation_delta": {
+          "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+          "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+          "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+          "ax_engine_flash_next_mtp_step_errors_total": 0.0
+        }
+      }
+    ]
+  },
+  "required_bypassed": {
+    "depth": 0,
+    "route_safe": false,
+    "mtp_requested": false,
+    "exit_code": 1,
+    "elapsed_seconds": 58.852238874998875
+  }
+}
