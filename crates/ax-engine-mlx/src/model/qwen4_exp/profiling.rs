@@ -1224,6 +1224,200 @@ fn physical_split_prefill_plan(prompt_len: usize) -> Vec<(usize, usize, LogitRow
         .collect()
 }
 
+struct PrefillPeer {
+    owner: u64,
+    state: Qwen4ExpState,
+    tokens: Vec<u32>,
+    logits: Vec<Vec<f32>>,
+    cuts: Vec<PrefillPeerCut>,
+}
+
+#[derive(serde::Serialize)]
+struct PrefillPeerCut {
+    offset: usize,
+    width: usize,
+    layers: usize,
+    eval_seconds: f64,
+    peer_seconds: f64,
+}
+
+thread_local! {
+    static PREFILL_PEER: RefCell<Option<PrefillPeer>> = const { RefCell::new(None) };
+}
+
+struct PrefillPeerGuard;
+
+impl Drop for PrefillPeerGuard {
+    fn drop(&mut self) {
+        PREFILL_PEER.with_borrow_mut(|slot| *slot = None);
+    }
+}
+
+impl PrefillPeer {
+    fn forward(&mut self, weights: &Qwen4ExpWeights, input: &[u32]) -> Result<(), String> {
+        let output = forward_with_rows(
+            weights,
+            input,
+            &self.state,
+            self.owner,
+            ProjectionBatchPolicy::Shared,
+            LogitRows::Last,
+        )?;
+        let selected = mlx_sys::argmax(&output.logits, None);
+        mlx_sys::try_eval(&[&selected]).map_err(|error| error.to_string())?;
+        self.tokens.push(selected.data_u32()[0]);
+        self.logits.push(output.logits.data_f32().to_vec());
+        self.state = output.state;
+        Ok(())
+    }
+
+    fn decode(&mut self, weights: &Qwen4ExpWeights) -> Result<(), String> {
+        self.forward(weights, &[*self.tokens.last().unwrap()])
+    }
+}
+
+pub(super) fn run_prefill_peer_at_layer(
+    weights: &Qwen4ExpWeights,
+    next: &Qwen4ExpState,
+    hidden: &MlxArray,
+    index: usize,
+    offset: usize,
+    width: usize,
+) -> Result<(), String> {
+    let layers = index + 1;
+    if !matches!((offset, width), (0, 512) | (7680, 511))
+        || !layers.is_multiple_of(8)
+        || layers == weights.layers.len()
+    {
+        return Ok(());
+    }
+    let Some(mut peer) = PREFILL_PEER.with_borrow_mut(Option::take) else {
+        return Ok(());
+    };
+    let started = Instant::now();
+    let mut arrays = next.arrays();
+    arrays.push(hidden);
+    mlx_sys::try_eval(&arrays).map_err(|error| error.to_string())?;
+    let eval_seconds = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    peer.decode(weights)?;
+    peer.cuts.push(PrefillPeerCut {
+        offset,
+        width,
+        layers,
+        eval_seconds,
+        peer_seconds: started.elapsed().as_secs_f64(),
+    });
+    PREFILL_PEER.with_borrow_mut(|slot| *slot = Some(peer));
+    begin_chunk(offset, width);
+    layer(index);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the resident pinned Flash Next pack; test-only interleaving"]
+fn flash_next_fixed_prefill_layer_peer_keeps_both_states() {
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(root).unwrap();
+    let model = crate::model::ModelConfig::from_manifest(artifacts.manifest());
+    let tokens = profile_prompt_ids(artifacts.manifest().vocab_size);
+    assert_eq!(tokens.len(), 8192);
+    let plan = physical_split_prefill_plan(tokens.len());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    assert!(trunk.expert_stream.is_none());
+    assert_eq!(trunk.layers.len(), 48);
+    let owner = model.compile_cache_identity;
+    let peer_owner = owner.wrapping_add(1);
+    let make_peer = || {
+        let mut peer = PrefillPeer {
+            owner: peer_owner,
+            state: Qwen4ExpState::new(trunk, peer_owner),
+            tokens: Vec::new(),
+            logits: Vec::new(),
+            cuts: Vec::new(),
+        };
+        peer.forward(trunk, &tokens[8192 - 69..]).unwrap();
+        peer
+    };
+    let mut solo_peer = make_peer();
+    for _ in 0..10 {
+        solo_peer.decode(trunk).unwrap();
+    }
+    let solo_prefill = run_prefill_plan(trunk, &tokens, owner, &plan, false);
+    let peer = make_peer();
+    PREFILL_PEER.with_borrow_mut(|slot| {
+        assert!(slot.is_none());
+        *slot = Some(peer);
+    });
+    let guard = PrefillPeerGuard;
+    let shared_prefill = run_prefill_plan(trunk, &tokens, owner, &plan, false);
+    let shared_peer = PREFILL_PEER.with_borrow_mut(Option::take).unwrap();
+    drop(guard);
+
+    let expected_cuts = [(0, 512), (7680, 511)]
+        .into_iter()
+        .flat_map(|(offset, width)| {
+            (8..48)
+                .step_by(8)
+                .map(move |layers| (offset, width, layers))
+        });
+    assert!(
+        shared_peer
+            .cuts
+            .iter()
+            .map(|cut| (cut.offset, cut.width, cut.layers))
+            .eq(expected_cuts)
+    );
+    assert_eq!(shared_peer.tokens, solo_peer.tokens);
+    let exact = |left: &[f32], right: &[f32]| {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(a, b)| a.is_finite() && a.to_bits() == b.to_bits())
+    };
+    assert_eq!(shared_peer.logits.len(), solo_peer.logits.len());
+    assert!(
+        shared_peer
+            .logits
+            .iter()
+            .zip(&solo_peer.logits)
+            .all(|(a, b)| exact(a, b))
+    );
+    assert!(exact(
+        &shared_prefill.final_logits,
+        &solo_prefill.final_logits
+    ));
+    let peer_state = snapshot(shared_peer.state);
+    assert!(
+        peer_state == snapshot(solo_peer.state),
+        "peer state changed"
+    );
+    assert!(
+        shared_prefill.final_state == solo_prefill.final_state,
+        "prefill state changed"
+    );
+    assert_eq!(solo_prefill.final_logits.len(), model.vocab_size as usize);
+    let evidence = serde_json::json!({
+        "schema": "ax-engine.flash-next.prefill-layer-peer.v1",
+        "qualification": false,
+        "peer_prompt_tokens": 69,
+        "peer_outputs": shared_peer.tokens,
+        "cuts": shared_peer.cuts,
+        "long_widths": plan.iter().map(|(start, end, _)| end - start).collect::<Vec<_>>(),
+        "both_states_and_logits_exact": true,
+        "peer_state_sha256": format!("{:x}", Sha256::digest(&peer_state)),
+        "long_state_sha256": format!("{:x}", Sha256::digest(&shared_prefill.final_state)),
+        "solo_chunks": solo_prefill.chunks,
+        "interleaved_chunks": shared_prefill.chunks,
+        "solo_peak_bytes": solo_prefill.peak_bytes,
+        "interleaved_peak_bytes": shared_prefill.peak_bytes,
+    });
+    let output = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT").unwrap();
+    std::fs::write(output, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+}
+
 #[test]
 fn physical_split_profile_uses_all_production_cut_boundaries() {
     let plan = physical_split_prefill_plan(8192);

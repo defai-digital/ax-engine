@@ -1176,7 +1176,17 @@ fn forward_prepared_rows(
         };
         hidden = read.write(&delta).map_err(|e| e.to_string())?;
         #[cfg(test)]
-        profiling::mark("mlp_hc_write", &[&hidden]);
+        {
+            profiling::mark("mlp_hc_write", &[&hidden]);
+            profiling::run_prefill_peer_at_layer(
+                weights,
+                &next,
+                &hidden,
+                index,
+                state.position,
+                tokens.len(),
+            )?;
+        }
     }
     let mixed = weights
         .mixer

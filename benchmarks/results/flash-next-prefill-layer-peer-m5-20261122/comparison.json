@@ -1,0 +1,32 @@
+{
+  "qualification": false,
+  "peer_outputs": 11,
+  "peer_decodes_between_layers": 10,
+  "long_widths": [
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1
+  ],
+  "both_states_and_logits_exact": true,
+  "layer_barrier_eval_median_ms": 41.76241649999999,
+  "measured_peer_median_ms": 25.818208000000002,
+  "before_idle_pct": 84.12,
+  "after_idle_pct": 97.83
+}
