@@ -242,6 +242,7 @@ pub(crate) const ROUTE_DECISION_AX_SCHEDULER_PREFILL_CAP_WHILE_DECODING_TOKENS: 
     "ax_scheduler_prefill_cap_while_decoding_tokens";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_PREFILL_DEFERRED_FOR_DECODE_DEBT: &str =
     "ax_scheduler_prefill_deferred_for_decode_debt";
+pub(crate) const ROUTE_DECISION_PREFILL_TAIL_DEFERRED: &str = "ax_scheduler_prefill_tail_deferred";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED: &str =
     "ax_scheduler_fair_multi_prefill_enabled";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS: &str =
@@ -491,13 +492,14 @@ impl Scheduler {
     }
 
     pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
-        self.plan_with_prefill_splits(input, &BTreeMap::new())
+        self.plan_with_prefill_splits(input, &BTreeMap::new(), None)
     }
 
     pub(crate) fn plan_with_prefill_splits(
         &self,
         input: &SchedulerInput,
         prefill_splits: &BTreeMap<RequestId, PrefillSplit>,
+        held_prefill_and_peer: Option<(RequestId, RequestId)>,
     ) -> SchedulePlan {
         let mut frozen_quantum_defers = self.frozen_quantum_defers();
         frozen_quantum_defers.retain(|request_id, _| {
@@ -651,6 +653,7 @@ impl Scheduler {
                 .any(|(_, mode)| *mode == ExecutionMode::Decode)
         });
         let mut deferred_for_decode_debt: u32 = 0;
+        let mut deferred_for_decode_tail = false;
 
         for (snapshot, mode) in candidates {
             let requested_tokens = schedulable_token_count(snapshot, mode);
@@ -658,6 +661,20 @@ impl Scheduler {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
                 deferred_for_decode_debt = deferred_for_decode_debt.saturating_add(1);
+                continue;
+            }
+            if mode == ExecutionMode::Prefill
+                && snapshot.processed_prompt_tokens == 0
+                && pressure_prefill_budget.is_none()
+                && let Some((prefill, peer)) = held_prefill_and_peer
+                && snapshot.request_id == prefill
+                && items.len() == 1
+                && items[0].mode == ExecutionMode::Decode
+                && items[0].request_id == peer
+            {
+                token_budget.record_skipped(mode, requested_tokens);
+                deferred_requests.push(prefill);
+                deferred_for_decode_tail = true;
                 continue;
             }
             if remaining_budget == 0 {
@@ -977,6 +994,13 @@ impl Scheduler {
                         deferred_for_decode_debt,
                     ),
                 ]);
+            }
+            if deferred_for_decode_tail {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    ROUTE_DECISION_PREFILL_TAIL_DEFERRED,
+                    1,
+                );
             }
             // ADR-038: surface planned work units and generation kind on the batch.
             if let Some(first) = items.first() {
@@ -1329,13 +1353,13 @@ mod tests {
             },
         )]);
         let scheduler = Scheduler::new();
-        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits);
+        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits, None);
         assert!(blocked.execution_batch.is_none());
         assert_eq!(blocked.memory_blocked_requests, [RequestId(1)]);
 
         input.memory_pressure = None;
         let resumed = scheduler
-            .plan_with_prefill_splits(&input, &prefill_splits)
+            .plan_with_prefill_splits(&input, &prefill_splits, None)
             .execution_batch
             .unwrap();
         assert_eq!(

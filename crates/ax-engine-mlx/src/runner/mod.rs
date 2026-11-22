@@ -5225,6 +5225,10 @@ impl ExecutionRunner for MlxRunner {
             || self.cfg.model_family == "qwen4_exp"
     }
 
+    fn prefill_tail_deferral_enabled(&self) -> bool {
+        crate::fastpath::flash_next_prefill_tail_deferral_enabled()
+    }
+
     fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
         if !crate::fastpath::flash_next_prefill_split_enabled()
             || self.configured_live_sequences != Some(2)

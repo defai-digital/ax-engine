@@ -340,6 +340,11 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         None
     }
 
+    /// Whether the runner admits holding a new prefill for a bounded direct decode tail.
+    fn prefill_tail_deferral_enabled(&self) -> bool {
+        false
+    }
+
     fn begin_ncm(
         &self,
         _request_id: RequestId,

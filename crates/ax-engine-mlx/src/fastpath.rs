@@ -461,7 +461,7 @@ pub(crate) fn batched_prefill_token_budget_override() -> Option<u32> {
 /// weight. On a sparse-expert model it is not: the step reads only the routed
 /// experts and is several times shorter, so the same absolute build cost
 /// becomes ~40% of a step, paid with the GPU idle. Measured on Qwen3.6-35B-A3B
-/// AXQ (`df-macbookpro-m5`, AX Engine 6.14.0): 4.1 ms of build against a
+/// AXQ (`M5 Max 128 GB`, AX Engine 6.14.0): 4.1 ms of build against a
 /// 10.4 ms eval, on every speculative step.
 ///
 /// Submitting each chunk with `async_eval` lets the GPU start the early layers
@@ -1938,6 +1938,12 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_PREFILL_SPLIT"
 );
 
+env_flag!(
+    /// Hold a new long prefill briefly while a resident Flash Next peer finishes decode.
+    flash_next_prefill_tail_deferral_enabled,
+    "AX_MLX_FLASH_NEXT_PREFILL_TAIL_DEFERRAL"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
     /// requests of one engine step take a DFlash2 round, verify them in one
@@ -2400,7 +2406,7 @@ env_flag_default_on!(
     /// `AX_MLX_GEMMA4_FUSED_PREFILL_ATTENTION_P128` — Gemma 4 contract p128
     /// only: attempt mlxcel `fused_causal_prefill_attention` (attn RMSNorm →
     /// packed QKV → QK-norm → RoPE → maskless causal SDPA → o-proj). Profile
-    /// residual on `df-macbookpro-m5`: p128 prefill is layer-stack / first KV
+    /// residual on `M5 Max 128 GB`: p128 prefill is layer-stack / first KV
     /// dominated; 80/96 layers are sliding with `seq <= window` so causal ≡
     /// windowed. Global `AX_MLX_FUSED_PREFILL_ATTENTION` stays OFF. Kill with
     /// `AX_MLX_GEMMA4_FUSED_PREFILL_ATTENTION_P128=0`.
@@ -3025,7 +3031,7 @@ env_flag!(
     /// transformer layer of Gemma 4 contract prefill (`seq >= 128`), skip
     /// packed prefill qmm for the last-only 1-token FFN.
     ///
-    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// **Default: OFF**. Remasured on `M5 Max 128 GB` (2026-08-15,
     /// `gemma4-axq-v7-lastffn` + repeat): 12B p128 647.28/657.70 vs fused
     /// 651.57/659.48 (0.982× / 0.997×). Leaving packed for a split last
     /// FFN does not move 1.10× and dipped the first fleet. Decode
@@ -3212,7 +3218,7 @@ env_flag!(
     /// layer N while the host builds N+1 (mlxcel `pipeline_hint` /
     /// `MLXCEL_PIPELINE_GRANULARITY=layer`).
     ///
-    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// **Default: OFF**. Remasured on `M5 Max 128 GB` (2026-08-15,
     /// `gemma4-axq-v7-pipehint` + repeat): 12B p128 609.66/610.59 vs fused
     /// 651.57/659.48 (0.924× / 0.926×). 26B p128 0.978/0.980 vs baseline.
     /// Per-layer `async_eval` splits the fused lazy graph and undoes the
@@ -3227,7 +3233,7 @@ env_flag!(
     /// layer of Gemma 4 contract p128, write full K/V then run Q / SDPA /
     /// o_proj on the last token only. Does **not** `async_eval` mid-graph.
     ///
-    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// **Default: OFF**. Remasured on `M5 Max 128 GB` (2026-08-15,
     /// `gemma4-axq-v7-lastquery` + repeat): 12B p128 654.41/654.66 vs fused
     /// 651.57/659.48 (0.992× / 0.993×). One last-layer Q/SDPA/o_proj skip
     /// does not move 1.10× and leaves fused for a portable last layer.
@@ -3460,7 +3466,7 @@ env_flag!(
 env_flag_default_on!(
     /// `AX_MLX_GEMMA4_ATTN_NORM_QKV_FUSE_P128` — Gemma 4 contract p128 only:
     /// fuse `attn_norm` into the packed QKV `quantized_matmul` via
-    /// `rms_norm_quantized_matmul`. Profile residual on `df-macbookpro-m5`:
+    /// `rms_norm_quantized_matmul`. Profile residual on `M5 Max 128 GB`:
     /// p128 prefill is forward-dominated; `pre_sdpa_qkv_proj` is the next
     /// named band after FFN (not another MLP compile). 80/96 Gemma 4 AXQ
     /// layers already hold packed QKV. p512/p2048 stay on the portable
@@ -3562,7 +3568,7 @@ env_flag!(
     /// then activation). Global `AX_MLX_ASYNC_DUAL_GATE_UP` stays OFF.
     /// Decode and short MTP verify (`seq < 128`) stay serial.
     ///
-    /// **Default: OFF**. Remasured wash/dip on `df-macbookpro-m5` (2026-08-15)
+    /// **Default: OFF**. Remasured wash/dip on `M5 Max 128 GB` (2026-08-15)
     /// versus the skip-f32 + fused-p128 stack. Mid-graph `async_eval` is not
     /// part of the winning default. Keep opt-in only.
     gemma4_async_dual_gate_up_p128_enabled,
@@ -3597,7 +3603,7 @@ env_flag!(
     /// write, `async_eval` the stored K/V so MLX can start that layer's first-KV
     /// / fused-attention graph while the host encodes the residual + FFN.
     ///
-    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// **Default: OFF**. Remasured on `M5 Max 128 GB` (2026-08-15,
     /// `gemma4-axq-v7-asynckv` + repeat): 12B p128 616.45/624.15 vs fused-p128
     /// 651.57/659.48 (0.946× / 0.958×). The submit undoes the fused-p128 win.
     /// Decode unchanged. Keep opt-in only.
@@ -3630,7 +3636,7 @@ env_flag!(
     /// overlap the pair (mlxcel still runs two sequential UnifiedLinear).
     /// Compiled AXQ split-MLP stays off on this shape so the streams engage.
     ///
-    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// **Default: OFF**. Remasured on `M5 Max 128 GB` (2026-08-15,
     /// `gemma4-axq-v7-dualstream`): 12B p128 567.19/614.92=0.922× and 31B
     /// 310.80/327.53=0.949×. Dual streams plus skipping compiled split-MLP
     /// regresses the fused-p128 stack. Keep opt-in only.
@@ -4879,7 +4885,7 @@ env_flag!(
     /// residual/next-layer rms is built. Not split async-gate-up (closed),
     /// not async-packed-gate-up (closed), not pipeline-block (closed).
     ///
-    /// **Default: OFF**. Remeasured on `df-macbookpro-m5` after-async-down
+    /// **Default: OFF**. Remeasured on `M5 Max 128 GB` after-async-down
     /// (`09d9a68d…`) 3b 1.025088 / 3d 1.048606 wash (0.993× q2only).
     qwen_prefill_async_down_enabled,
     "AX_MLX_QWEN_PREFILL_ASYNC_DOWN"
@@ -6240,7 +6246,7 @@ env_flag!(
     /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING=1`).
     ///
     /// p128/p512 stay on the 512 TG kernel either way. Default-on streaming
-    /// (one 2048 forward) was remasured on df-macbookpro-m5 AXQ p2048 at
+    /// (one 2048 forward) was remasured on M5 Max 128 GB AXQ p2048 at
     /// 871 vs 891 tok/s for two 1024 TG chunks (2026-08-13). Keep 1024.
     qwen_gated_delta_prefill_streaming_enabled,
     "AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING"
@@ -6451,7 +6457,7 @@ pub(crate) const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 256;
 
 /// Gemma 4 contract p128 leading count. Packed prefill compile normally
 /// waits for [`DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`]; this shape is the
-/// measured miss (`df-macbookpro-m5` skip-f32+fused residual).
+/// measured miss (`M5 Max 128 GB` skip-f32+fused residual).
 pub(crate) const GEMMA4_PACKED_FFN_COMPILE_P128_LEADING: i64 = 128;
 
 env_flag!(
@@ -6459,7 +6465,7 @@ env_flag!(
     /// packed gate/up path and shape-compile the dense FFN (Metal GEGLU
     /// inside the closure). Split gate/up stays on for p512/p2048.
     ///
-    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// **Default: OFF**. Remasured on `M5 Max 128 GB` (2026-08-15,
     /// `gemma4-axq-v7-packffn` + repeat): 12B p128 656.50/651.95 vs fused
     /// 651.57/659.48 (1.008× / 1.001×). 26B p128 592.95/592.23 vs fused
     /// 604.22/599.45 (0.981× / 0.980×). No 1.10×; 26B dips vs fused.
@@ -6838,7 +6844,7 @@ env_flag_default_on!(
     /// `AX_MLX_QWEN_MOE_PREFILL_SINGLE_2048` — MoE hybrid linear-attention
     /// models (Qwen 3.6 35B-A3B class) prefill in one 2048-token chunk
     /// instead of two 1024 chunks. Per-chunk MoE argsort/gather/dispatch
-    /// overhead scales with chunk count; `df-macbookpro-m5` A/B
+    /// overhead scales with chunk count; `M5 Max 128 GB` A/B
     /// (2026-08-17, 35B AXQ 6bit, p2048, reps 5): **+11.9%** prefill
     /// (2813.59 → 3149.26 tok/s), decode flat. Dense hybrids (27B) keep the
     /// 1024 TG tile (single-2048 measured wash there, 2026-08-13).
@@ -6859,7 +6865,7 @@ env_flag!(
     /// PRD-M5-FLEET-AX-VS-MLXCEL.
     ///
     /// **Default: OFF** (clear preserved). M5 A/B 2026-08-17
-    /// (`df-macbookpro-m5`, 27B AXQ 6bit, p128/p512, reps 5): **wash** —
+    /// (`M5 Max 128 GB`, 27B AXQ 6bit, p128/p512, reps 5): **wash** —
     /// p128 378.55 (off) vs 378.10 (on), p512 703.77 vs 703.34. The clear
     /// is not the short-prefill gap; do not reopen without new evidence.
     skip_cold_prefill_cache_clear_enabled,
@@ -6884,7 +6890,7 @@ pub(crate) fn should_clear_mlx_cache_before_cold_prefill_for(
 ///
 /// The n−1 cache-only split is the mlx_lm-shaped high-water path, but
 /// mlxcel-bench-decode does a single 128/512/2048 forward. On
-/// `df-macbookpro-m5` Wave-1 that split left Gemma 4 E2B p128 at 0.35×
+/// `M5 Max 128 GB` Wave-1 that split left Gemma 4 E2B p128 at 0.35×
 /// mlxcel. Skip it for Certified non-DeepSeek families up to 2048.
 /// `muse_glimmer` (dense standard route, SWA window 2048 ≥ every contract
 /// shape) joins the list for the Wave-2 AXQ lane: its split cost is the

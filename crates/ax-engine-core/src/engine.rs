@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::execution_plan::{DeterministicExecutionPlanResolver, ExecutionPlanResolver};
 use crate::generation::GenerationKind;
@@ -33,8 +33,9 @@ use crate::sampling::{
     sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
-    ExecutionBatch, ExecutionItem, ExecutionMode, PrefillSplit, PrefillSplitGeometry, SchedulePlan,
-    Scheduler, SchedulerInput, chunk_history_marked_non_reusable, published_prefill_split_end,
+    ExecutionBatch, ExecutionItem, ExecutionMode, PrefillSplit, PrefillSplitGeometry,
+    ROUTE_DECISION_PREFILL_TAIL_DEFERRED, SchedulePlan, Scheduler, SchedulerInput,
+    chunk_history_marked_non_reusable, published_prefill_split_end,
 };
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
@@ -187,9 +188,23 @@ pub struct EngineCore {
     /// life of the request so a later step does not change that quantum.
     frozen_prefill_quantums: BTreeMap<RequestId, u32>,
     prefill_splits: BTreeMap<RequestId, PrefillSplit>,
+    prefill_tail_hold: Option<PrefillTailHold>,
     /// Committed prompt tokens to attach when a spilled or cancelled prefix
     /// resumes. The runner restores from this slice, not from a temp file.
     restore_prefix_tokens: BTreeMap<RequestId, Vec<u32>>,
+}
+
+// Match the measured late arrival, and recheck the deadline before each runner call.
+const MAX_HELD_DECODE_TOKENS: u32 = 12;
+const MIN_DECODE_TOKENS_BEFORE_HOLD: u32 = 84;
+const PREFILL_TAIL_HOLD_LIMIT: Duration = Duration::from_millis(300);
+
+#[derive(Clone, Copy, Debug)]
+struct PrefillTailHold {
+    prefill: RequestId,
+    peer: RequestId,
+    peer_generated: u32,
+    expires: Instant,
 }
 
 impl EngineCore {
@@ -266,6 +281,7 @@ impl EngineCore {
             cancel_checkpoint_attempts: 0,
             frozen_prefill_quantums: BTreeMap::new(),
             prefill_splits: BTreeMap::new(),
+            prefill_tail_hold: None,
             restore_prefix_tokens: BTreeMap::new(),
         }
     }
@@ -652,6 +668,16 @@ impl EngineCore {
         );
 
         let request_snapshots = self.snapshots_with_refreshed_plan_refs()?;
+        if self.prefill_tail_hold.is_some()
+            || (!admitted_requests.is_empty() && self.runner.prefill_tail_deferral_enabled())
+        {
+            self.prepare_prefill_tail_hold(
+                &request_snapshots,
+                &admitted_requests,
+                global_token_budget,
+                Instant::now(),
+            );
+        }
         let schedule_plan = self.plan_step(step_id, request_snapshots, global_token_budget);
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
@@ -688,6 +714,17 @@ impl EngineCore {
             "resolved schedule plan against KV state"
         );
         self.request_manager.apply_schedule_plan(&schedule_plan)?;
+        if self.prefill_tail_hold.is_some()
+            && !schedule_plan.execution_batch.as_ref().is_some_and(|batch| {
+                batch
+                    .route_metadata
+                    .crossover_decisions
+                    .iter()
+                    .any(|(key, value)| key == ROUTE_DECISION_PREFILL_TAIL_DEFERRED && *value == 1)
+            })
+        {
+            self.prefill_tail_hold = None;
+        }
 
         let (runner_output, sampled_tokens, runner_summary, runner_time_us) =
             match self.dispatch_runner(&mut schedule_plan) {
@@ -1443,6 +1480,81 @@ impl EngineCore {
         input
     }
 
+    fn prepare_prefill_tail_hold(
+        &mut self,
+        snapshots: &[crate::request::RequestSnapshot],
+        admitted: &[RequestId],
+        global_token_budget: u32,
+        now: Instant,
+    ) {
+        let previous = self.prefill_tail_hold.take();
+        let Some(geometry) = self.new_prefill_split_geometry(global_token_budget) else {
+            return;
+        };
+        let mut runnable = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.state == RequestState::Runnable);
+        let (Some(first), Some(second), None) = (runnable.next(), runnable.next(), runnable.next())
+        else {
+            return;
+        };
+        let (prefill, peer) = if first.processed_prompt_tokens == 0 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        if prefill.model_id != peer.model_id
+            || prefill.processed_prompt_tokens != 0
+            || prefill.generated_len != 0
+            || prefill.prompt_len < geometry.logical_tokens.saturating_mul(4)
+            || peer.processed_prompt_tokens != peer.prompt_len
+            || peer.prompt_len > geometry.physical_tokens
+            || peer.generated_len < MIN_DECODE_TOKENS_BEFORE_HOLD
+            || !(1..=MAX_HELD_DECODE_TOKENS)
+                .contains(&peer.max_output_tokens.saturating_sub(peer.generated_len))
+            || [prefill, peer].into_iter().any(|request| {
+                request.cancel_requested
+                    || request.has_multimodal_inputs
+                    || request.generation_kind != GenerationKind::Autoregressive
+            })
+        {
+            return;
+        }
+        let expires = if let Some(hold) = previous {
+            // After a stalled step or a peer change this request resumes its ordinary route.
+            if hold.prefill != prefill.request_id
+                || hold.peer != peer.request_id
+                || hold.peer_generated.checked_add(1) != Some(peer.generated_len)
+                || now >= hold.expires
+            {
+                return;
+            }
+            hold.expires
+        } else {
+            if !admitted.contains(&prefill.request_id)
+                || [prefill, peer].into_iter().any(|request| {
+                    !self
+                        .request_manager
+                        .record(request.request_id)
+                        .is_some_and(|record| {
+                            sampling_params_allow_deterministic_argmax_fast_path(
+                                &record.sampling_params,
+                            )
+                        })
+                })
+            {
+                return;
+            }
+            now + PREFILL_TAIL_HOLD_LIMIT
+        };
+        self.prefill_tail_hold = Some(PrefillTailHold {
+            prefill: prefill.request_id,
+            peer: peer.request_id,
+            peer_generated: peer.generated_len,
+            expires,
+        });
+    }
+
     fn plan_step(
         &self,
         step_id: StepId,
@@ -1482,7 +1594,12 @@ impl EngineCore {
                 );
             }
         }
-        self.scheduler.plan_with_prefill_splits(&input, &splits)
+        let held = self
+            .prefill_tail_hold
+            .filter(|hold| Instant::now() < hold.expires)
+            .map(|hold| (hold.prefill, hold.peer));
+        self.scheduler
+            .plan_with_prefill_splits(&input, &splits, held)
     }
 
     fn new_prefill_split_geometry(&self, global_token_budget: u32) -> Option<PrefillSplitGeometry> {
@@ -4047,12 +4164,18 @@ mod tests {
         );
     }
 
-    #[derive(Debug)]
-    struct PhysicalPrefillRunner;
+    #[derive(Debug, Default)]
+    struct PhysicalPrefillRunner {
+        tail_deferral: bool,
+    }
 
     impl ExecutionRunner for PhysicalPrefillRunner {
         fn run(&self, input: RunnerInput) -> RunnerOutput {
             DeterministicRunner.run(input)
+        }
+
+        fn prefill_tail_deferral_enabled(&self) -> bool {
+            self.tail_deferral
         }
 
         fn prefill_split_geometry(&self) -> Option<PrefillSplitGeometry> {
@@ -4063,11 +4186,164 @@ mod tests {
         }
     }
 
+    fn decode_tail_engine(generated: u32) -> EngineCore {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 16, 1024),
+            PhysicalPrefillRunner {
+                tail_deferral: true,
+            },
+            DeterministicSampler,
+        );
+        engine.set_prefix_reuse_enabled(false);
+        engine.set_multi_prefill_fair(true, 2048, 1);
+        engine.set_live_sequence_cap(Some(2));
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![7; 512], 96))
+            .unwrap();
+        for _ in 0..=generated {
+            engine.step(2049, true).unwrap();
+        }
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(1))
+                .unwrap()
+                .generated_len,
+            generated
+        );
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![7; 8192], 8))
+            .unwrap();
+        engine
+    }
+
+    fn decode_tail_was_held(batch: &ExecutionBatch) -> bool {
+        batch
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| key == ROUTE_DECISION_PREFILL_TAIL_DEFERRED && *value == 1)
+    }
+
+    #[test]
+    fn late_prefill_holds_for_at_most_twelve_successful_decode_steps() {
+        let mut engine = decode_tail_engine(84);
+        for _ in 0..12 {
+            // Pin time so this test exercises the step bound under any host load.
+            if let Some(hold) = &mut engine.prefill_tail_hold {
+                hold.expires = Instant::now() + Duration::from_secs(30);
+            }
+            let outcome = engine.step(2049, true).unwrap();
+            let batch = outcome.schedule_plan.execution_batch.unwrap();
+            assert!(decode_tail_was_held(&batch));
+            assert_eq!(batch.items.len(), 1);
+            assert_eq!(batch.items[0].request_id, RequestId(1));
+            assert_eq!(outcome.sampled_tokens.len(), 1);
+            assert_eq!(
+                engine
+                    .request_manager()
+                    .snapshot(RequestId(2))
+                    .unwrap()
+                    .processed_prompt_tokens,
+                0
+            );
+        }
+        for _ in 0..4 {
+            let batch = engine
+                .step(2049, true)
+                .unwrap()
+                .schedule_plan
+                .execution_batch
+                .unwrap();
+            assert!(!decode_tail_was_held(&batch));
+            assert_eq!(batch.items.len(), 1);
+            assert_eq!(batch.items[0].request_id, RequestId(2));
+            assert_eq!(batch.items[0].scheduled_token_count, 2048);
+        }
+        assert!(engine.prefill_tail_hold.is_none());
+    }
+
+    #[test]
+    fn early_long_prefill_keeps_its_physical_splits_at_the_decode_tail() {
+        let mut engine = decode_tail_engine(83);
+        for _ in 0..2 {
+            let batch = engine
+                .step(2049, true)
+                .unwrap()
+                .schedule_plan
+                .execution_batch
+                .unwrap();
+            assert!(!decode_tail_was_held(&batch));
+            assert_eq!(batch.items.len(), 2);
+            assert_eq!(batch.items[1].scheduled_token_count, 512);
+        }
+    }
+
+    #[test]
+    fn cancelled_peer_releases_new_prefill_on_its_original_boundary() {
+        let mut engine = decode_tail_engine(84);
+        let batch = engine
+            .step(2049, true)
+            .unwrap()
+            .schedule_plan
+            .execution_batch
+            .unwrap();
+        assert!(decode_tail_was_held(&batch));
+        engine.cancel(RequestId(1)).unwrap();
+        let batch = engine
+            .step(2049, true)
+            .unwrap()
+            .schedule_plan
+            .execution_batch
+            .unwrap();
+        assert!(!decode_tail_was_held(&batch));
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].request_id, RequestId(2));
+        assert_eq!(batch.items[0].scheduled_token_count, 2048);
+    }
+
+    #[test]
+    fn tail_hold_expires_on_time_limit_stalled_decode_or_peer_replacement() {
+        for trigger in ["deadline", "stalled", "replacement"] {
+            let mut engine = decode_tail_engine(84);
+            let batch = engine
+                .step(2049, true)
+                .unwrap()
+                .schedule_plan
+                .execution_batch
+                .unwrap();
+            assert!(decode_tail_was_held(&batch));
+            let active = engine.prefill_tail_hold.unwrap();
+            let mut snapshots = engine.request_manager.snapshots();
+            let peer = snapshots
+                .iter_mut()
+                .find(|request| request.request_id == RequestId(1))
+                .unwrap();
+            let now = match trigger {
+                "deadline" => active.expires,
+                "stalled" => {
+                    peer.generated_len = active.peer_generated;
+                    active.expires - Duration::from_millis(1)
+                }
+                "replacement" => {
+                    peer.request_id = RequestId(3);
+                    active.expires - Duration::from_millis(1)
+                }
+                _ => unreachable!(),
+            };
+            engine.prepare_prefill_tail_hold(&snapshots, &[], 2049, now);
+            assert!(engine.prefill_tail_hold.is_none(), "{trigger}");
+            // Another eligible decoder cannot restart a hold on this admitted prefill.
+            engine.prepare_prefill_tail_hold(&snapshots, &[RequestId(3)], 2049, now);
+            assert!(engine.prefill_tail_hold.is_none(), "{trigger}");
+        }
+    }
+
     #[test]
     fn physical_prefill_split_commits_the_same_cuts_after_the_decoder_cancels() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 512),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner::default(),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
@@ -4132,7 +4408,7 @@ mod tests {
     fn preempting_and_cancelling_a_physical_prefill_split_releases_its_progress() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 512),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner::default(),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
