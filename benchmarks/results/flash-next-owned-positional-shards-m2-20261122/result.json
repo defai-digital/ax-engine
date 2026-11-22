@@ -1,0 +1,170 @@
+{
+  "scope": "Synchronous resident shard diagnostic",
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "os": "27.2.1",
+    "memory_bytes": 206158430208,
+    "storage": "external SSD"
+  },
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "selection_sha256": "b5482f99f3584854f2b4856a3590bd4674c95c857cef90703f95f3d4cb185bc3",
+  "binary_sha256": "92070e6c2635331e66a8e941969ac9ab5d1f49dc53085aff0acc02d013bf8b9b",
+  "page_size": 16384,
+  "arms": [
+    {
+      "shard": "model-00021-of-00025.safetensors",
+      "publisher_sha256": "6f3d7058e902bb52e2a6d5ded155b29989da5754096f7d38f1be1132f4b6aaa5",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 98301,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 41,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 19.0727266,
+      "tensors": 139,
+      "selected_bytes": 1610308160,
+      "allocated_bytes": 1610633792,
+      "weights_sha256": "8eea5b6d088109ec0b6f250f2884d4d1bf6886be1a14d446a276ddac2c454392",
+      "metal_sha256": "328acbb870fcf9522f931e756061301a0c8f8d9ea5f88128d76bde5b7045983b"
+    },
+    {
+      "shard": "model-00021-of-00025.safetensors",
+      "publisher_sha256": "6f3d7058e902bb52e2a6d5ded155b29989da5754096f7d38f1be1132f4b6aaa5",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 98301,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 41,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 3.90248567,
+      "tensors": 139,
+      "selected_bytes": 1610308160,
+      "allocated_bytes": 1610633792,
+      "weights_sha256": "8eea5b6d088109ec0b6f250f2884d4d1bf6886be1a14d446a276ddac2c454392",
+      "metal_sha256": "328acbb870fcf9522f931e756061301a0c8f8d9ea5f88128d76bde5b7045983b"
+    },
+    {
+      "shard": "model-00021-of-00025.safetensors",
+      "publisher_sha256": "6f3d7058e902bb52e2a6d5ded155b29989da5754096f7d38f1be1132f4b6aaa5",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 98301,
+        "resident_pages": 98301
+      },
+      "unaligned_source_tensors": 41,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 0.197857792,
+      "tensors": 139,
+      "selected_bytes": 1610308160,
+      "allocated_bytes": 1610633792,
+      "weights_sha256": "8eea5b6d088109ec0b6f250f2884d4d1bf6886be1a14d446a276ddac2c454392",
+      "metal_sha256": "328acbb870fcf9522f931e756061301a0c8f8d9ea5f88128d76bde5b7045983b"
+    },
+    {
+      "shard": "model-00021-of-00025.safetensors",
+      "publisher_sha256": "6f3d7058e902bb52e2a6d5ded155b29989da5754096f7d38f1be1132f4b6aaa5",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 98301,
+        "resident_pages": 98301
+      },
+      "unaligned_source_tensors": 41,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.258394209,
+      "tensors": 139,
+      "selected_bytes": 1610308160,
+      "allocated_bytes": 1610633792,
+      "weights_sha256": "8eea5b6d088109ec0b6f250f2884d4d1bf6886be1a14d446a276ddac2c454392",
+      "metal_sha256": "328acbb870fcf9522f931e756061301a0c8f8d9ea5f88128d76bde5b7045983b"
+    },
+    {
+      "shard": "model-00024-of-00025.safetensors",
+      "publisher_sha256": "775c3617399c34fee6e3b9f95941e2dc50653b50ada61b4acad3693351432e27",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 98328,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 4.08771958,
+      "tensors": 127,
+      "selected_bytes": 1610611520,
+      "allocated_bytes": 1610908480,
+      "weights_sha256": "e9f270fae8c5ed3da7a897525cf079f2b18f79b8f45ff23b4784eb2b72fc7078",
+      "metal_sha256": "1560392c1d375e1ab144f6bda28dbda3863105c2e3d4d4e4b87b8198363e2e16"
+    },
+    {
+      "shard": "model-00024-of-00025.safetensors",
+      "publisher_sha256": "775c3617399c34fee6e3b9f95941e2dc50653b50ada61b4acad3693351432e27",
+      "cache": "clone",
+      "file_pages_before": {
+        "selected_pages": 98328,
+        "resident_pages": 0
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 40.7235882,
+      "tensors": 127,
+      "selected_bytes": 1610611520,
+      "allocated_bytes": 1610908480,
+      "weights_sha256": "e9f270fae8c5ed3da7a897525cf079f2b18f79b8f45ff23b4784eb2b72fc7078",
+      "metal_sha256": "1560392c1d375e1ab144f6bda28dbda3863105c2e3d4d4e4b87b8198363e2e16"
+    },
+    {
+      "shard": "model-00024-of-00025.safetensors",
+      "publisher_sha256": "775c3617399c34fee6e3b9f95941e2dc50653b50ada61b4acad3693351432e27",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 98328,
+        "resident_pages": 98328
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "mmap",
+      "elapsed_seconds": 0.251018667,
+      "tensors": 127,
+      "selected_bytes": 1610611520,
+      "allocated_bytes": 1610908480,
+      "weights_sha256": "e9f270fae8c5ed3da7a897525cf079f2b18f79b8f45ff23b4784eb2b72fc7078",
+      "metal_sha256": "1560392c1d375e1ab144f6bda28dbda3863105c2e3d4d4e4b87b8198363e2e16"
+    },
+    {
+      "shard": "model-00024-of-00025.safetensors",
+      "publisher_sha256": "775c3617399c34fee6e3b9f95941e2dc50653b50ada61b4acad3693351432e27",
+      "cache": "reused",
+      "file_pages_before": {
+        "selected_pages": 98328,
+        "resident_pages": 98328
+      },
+      "unaligned_source_tensors": 0,
+      "pressure_before": 1,
+      "pressure_after": 1,
+      "mode": "pread",
+      "elapsed_seconds": 0.199241542,
+      "tensors": 127,
+      "selected_bytes": 1610611520,
+      "allocated_bytes": 1610908480,
+      "weights_sha256": "e9f270fae8c5ed3da7a897525cf079f2b18f79b8f45ff23b4784eb2b72fc7078",
+      "metal_sha256": "1560392c1d375e1ab144f6bda28dbda3863105c2e3d4d4e4b87b8198363e2e16"
+    }
+  ],
+  "short_read_rejected": true,
+  "completed": true
+}

@@ -1,0 +1,30 @@
+{
+  "scope": "Synchronous resident shard diagnostic",
+  "shards": {
+    "model-00021-of-00025.safetensors": {
+      "allocated_bytes": 1610633792,
+      "clone_mmap": 19.0727266,
+      "clone_pread": 3.90248567,
+      "metal_sha256": "328acbb870fcf9522f931e756061301a0c8f8d9ea5f88128d76bde5b7045983b",
+      "reused_mmap": 0.258394209,
+      "reused_pread": 0.197857792,
+      "selected_bytes": 1610308160,
+      "tensors": 139,
+      "unaligned_source_tensors": 41,
+      "weights_sha256": "8eea5b6d088109ec0b6f250f2884d4d1bf6886be1a14d446a276ddac2c454392"
+    },
+    "model-00024-of-00025.safetensors": {
+      "allocated_bytes": 1610908480,
+      "clone_mmap": 40.7235882,
+      "clone_pread": 4.08771958,
+      "metal_sha256": "1560392c1d375e1ab144f6bda28dbda3863105c2e3d4d4e4b87b8198363e2e16",
+      "reused_mmap": 0.251018667,
+      "reused_pread": 0.199241542,
+      "selected_bytes": 1610611520,
+      "tensors": 127,
+      "unaligned_source_tensors": 0,
+      "weights_sha256": "e9f270fae8c5ed3da7a897525cf079f2b18f79b8f45ff23b4784eb2b72fc7078"
+    }
+  },
+  "verified_short_read_rejection": true
+}
