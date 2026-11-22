@@ -1,0 +1,52 @@
+{
+  "cases": {
+    "BF16": [
+      {
+        "byte_offset": 16384,
+        "extra_active_mlx_bytes": 0,
+        "output_sha256": "86c59c7cda59632d4d64969862021083a8bbdf2e4a77baf50e3bef088141ad44",
+        "scalar_aligned": true
+      },
+      {
+        "byte_offset": 16385,
+        "extra_active_mlx_bytes": 65536,
+        "output_sha256": "97e07881e90ba91df51b99cc5bf5a9d23c80637fdf822b1b216a1c39a1a84c53",
+        "scalar_aligned": false
+      }
+    ],
+    "I64": [
+      {
+        "byte_offset": 16384,
+        "extra_active_mlx_bytes": 0,
+        "output_sha256": "86c59c7cda59632d4d64969862021083a8bbdf2e4a77baf50e3bef088141ad44",
+        "scalar_aligned": true
+      },
+      {
+        "byte_offset": 16385,
+        "extra_active_mlx_bytes": 65536,
+        "output_sha256": "97e07881e90ba91df51b99cc5bf5a9d23c80637fdf822b1b216a1c39a1a84c53",
+        "scalar_aligned": false
+      }
+    ],
+    "U32": [
+      {
+        "byte_offset": 16384,
+        "extra_active_mlx_bytes": 0,
+        "output_sha256": "86c59c7cda59632d4d64969862021083a8bbdf2e4a77baf50e3bef088141ad44",
+        "scalar_aligned": true
+      },
+      {
+        "byte_offset": 16385,
+        "extra_active_mlx_bytes": 65536,
+        "output_sha256": "97e07881e90ba91df51b99cc5bf5a9d23c80637fdf822b1b216a1c39a1a84c53",
+        "scalar_aligned": false
+      }
+    ]
+  },
+  "scope": "M2 Ultra synthetic MLX Metal typed views",
+  "versions": {
+    "mlx": "0.32.4",
+    "mlx-metal": "0.32.4"
+  },
+  "view_bytes": 65536
+}
