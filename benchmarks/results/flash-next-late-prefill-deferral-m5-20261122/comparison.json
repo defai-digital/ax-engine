@@ -1,0 +1,141 @@
+{
+  "qualification": false,
+  "arms": {
+    "physical-1": {
+      "timing_eligible": true,
+      "idle_before_percent": 98.12,
+      "idle_after_percent": 92.7,
+      "exact_output_ids": 192,
+      "burst_seconds": 14.903265041008126,
+      "burst_output_tokens_per_second": 12.883082966832363,
+      "short_tail_service_ms": 5804.976000043098,
+      "observed_normal_pressure_samples": 138,
+      "peak_footprint_bytes": 81218032416,
+      "deferral": false,
+      "short_tail_gap_p95_ms": 744.9347917136038,
+      "short_tail_max_gap_ms": 748.6207080073655,
+      "long_dispatch_wait_ms": 0.042208004742860794,
+      "long_call_ttft_ms": 10482.447584043257,
+      "long_offered_ttft_ms": 10482.489792048,
+      "long_scheduled_widths": [
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        2048
+      ]
+    },
+    "deferred-1": {
+      "timing_eligible": true,
+      "idle_before_percent": 96.66,
+      "idle_after_percent": 98.74,
+      "exact_output_ids": 192,
+      "burst_seconds": 13.569911000027787,
+      "burst_output_tokens_per_second": 14.148950571570207,
+      "short_tail_service_ms": 229.2138339835219,
+      "observed_normal_pressure_samples": 122,
+      "peak_footprint_bytes": 81326625640,
+      "deferral": true,
+      "short_tail_gap_p95_ms": 20.86805607250426,
+      "short_tail_max_gap_ms": 21.065207954961807,
+      "long_dispatch_wait_ms": 229.975291993469,
+      "long_call_ttft_ms": 8952.310666965786,
+      "long_offered_ttft_ms": 9182.285958959255,
+      "long_scheduled_widths": [
+        2048,
+        2048,
+        2048,
+        2048
+      ]
+    },
+    "deferred-2": {
+      "timing_eligible": true,
+      "idle_before_percent": 90.3,
+      "idle_after_percent": 90.6,
+      "exact_output_ids": 192,
+      "burst_seconds": 13.7378790830262,
+      "burst_output_tokens_per_second": 13.975956466033034,
+      "short_tail_service_ms": 231.24570900108665,
+      "observed_normal_pressure_samples": 133,
+      "peak_footprint_bytes": 81116042112,
+      "deferral": true,
+      "short_tail_gap_p95_ms": 21.85697066015564,
+      "short_tail_max_gap_ms": 22.7735000080429,
+      "long_dispatch_wait_ms": 231.9804590079002,
+      "long_call_ttft_ms": 9111.802625004202,
+      "long_offered_ttft_ms": 9343.783084012102,
+      "long_scheduled_widths": [
+        2048,
+        2048,
+        2048,
+        2048
+      ]
+    },
+    "physical-2": {
+      "timing_eligible": true,
+      "idle_before_percent": 91.8,
+      "idle_after_percent": 94.3,
+      "exact_output_ids": 192,
+      "burst_seconds": 14.970883083995432,
+      "burst_output_tokens_per_second": 12.824894758897484,
+      "short_tail_service_ms": 5885.656667000148,
+      "observed_normal_pressure_samples": 135,
+      "peak_footprint_bytes": 81224667984,
+      "deferral": false,
+      "short_tail_gap_p95_ms": 760.7470728078624,
+      "short_tail_max_gap_ms": 761.5394159802236,
+      "long_dispatch_wait_ms": 0.04249997437000275,
+      "long_call_ttft_ms": 10606.023500033189,
+      "long_offered_ttft_ms": 10606.066000007559,
+      "long_scheduled_widths": [
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        512,
+        512,
+        512,
+        511,
+        1,
+        2048
+      ]
+    }
+  },
+  "pairs": [
+    {
+      "order": 1,
+      "timing_eligible": true,
+      "short_tail_max_gap_change_percent": -97.18613074289223,
+      "short_tail_service_change_ms": -5575.762166059576,
+      "burst_output_rate_change_percent": 9.825812718871973,
+      "long_extra_dispatch_wait_ms": 229.93308398872614,
+      "long_offered_ttft_change_percent": -12.403578337610943
+    },
+    {
+      "order": 2,
+      "timing_eligible": true,
+      "short_tail_max_gap_change_percent": -97.0095441509446,
+      "short_tail_service_change_ms": -5654.410957999062,
+      "burst_output_rate_change_percent": 8.97521366666172,
+      "long_extra_dispatch_wait_ms": 231.9379590335302,
+      "long_offered_ttft_change_percent": -11.901518583747794
+    }
+  ]
+}
