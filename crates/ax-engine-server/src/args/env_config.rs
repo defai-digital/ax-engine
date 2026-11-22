@@ -33,6 +33,8 @@ pub(crate) const AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT_ENV: &str =
     "AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT";
 pub(crate) const AX_SERVER_LONG_PREFILL_EXCLUSIVE_ENV: &str = "AX_SERVER_LONG_PREFILL_EXCLUSIVE";
 pub(crate) const AX_SERVER_LONG_PREFILL_WARM_ENV: &str = "AX_SERVER_LONG_PREFILL_WARM";
+pub(crate) const AX_SERVER_FLASH_NEXT_STARTUP_WARMUP_ONCE_ENV: &str =
+    "AX_SERVER_FLASH_NEXT_STARTUP_WARMUP_ONCE";
 pub(crate) const AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS_ENV: &str =
     "AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS";
 pub(crate) const AX_SERVER_WORKER_RECYCLE_AFTER_TICKS_ENV: &str =
@@ -89,6 +91,10 @@ pub(crate) struct ServerEnvConfig {
     /// `1`, `true`, `TRUE`, `yes`, or `YES` (case-sensitive, **no
     /// trimming**); every other value, including ` True ` or `1 `, is off.
     pub(crate) long_prefill_warm: bool,
+    /// `AX_SERVER_FLASH_NEXT_STARTUP_WARMUP_ONCE` (default off): run
+    /// one worker-path warmup pass for resident single-slot Flash Next.
+    /// Accepts trimmed `1`, `true`, `on`, or `yes` (case-insensitive).
+    pub(crate) flash_next_startup_warmup_once: bool,
     /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS` (default `64`): the
     /// starting sibling-active prefill quantum for the adaptive isolation
     /// controller. Accepted: any positive integer; `0`, empty, or
@@ -195,6 +201,9 @@ impl ServerEnvConfig {
             ),
             long_prefill_warm: resolve_long_prefill_warm(
                 vars(AX_SERVER_LONG_PREFILL_WARM_ENV).as_deref(),
+            ),
+            flash_next_startup_warmup_once: resolve_incremental_tool_args(
+                vars(AX_SERVER_FLASH_NEXT_STARTUP_WARMUP_ONCE_ENV).as_deref(),
             ),
             adaptive_prefill_latency_tokens: resolve_adaptive_prefill_latency_tokens(
                 vars(AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS_ENV).as_deref(),

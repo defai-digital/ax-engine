@@ -317,6 +317,7 @@ async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_
     ) {
         return;
     }
+    let started = std::time::Instant::now();
     // Three short streams: first warms tokenize+SSE; later passes exercise the
     // warmed direct-decode path so fresh-process flip S0 TTFT is stable.
     // A third pass reduced residual first-client spikes after dual warm
@@ -346,6 +347,13 @@ async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_
         let response = app.clone().oneshot(request).await.expect("infallible");
         let _ = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024).await;
     }
+    tracing::debug!(
+        target: "ax_engine_server::startup_warmup",
+        phase = "http",
+        streams = 3,
+        elapsed_us = started.elapsed().as_micros() as u64,
+        "completed HTTP startup warmup"
+    );
 }
 
 fn should_warm_http_completions(

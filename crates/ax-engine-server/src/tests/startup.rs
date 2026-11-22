@@ -5,6 +5,8 @@ use ax_engine_sdk::SelectedBackend;
 use axum::Router;
 use axum::routing::any;
 
+use crate::app_state::startup_worker_warmup_passes;
+use crate::args::ServerEnvConfig;
 use crate::{should_warm_http_completions, warm_http_completions_path};
 
 use super::fixtures::{TEST_MODEL_ID, llama_cpp_state};
@@ -50,6 +52,33 @@ async fn native_mlx_startup_issues_three_generation_warmup_requests() {
     warm_http_completions_path(&app, &state, TEST_MODEL_ID).await;
 
     assert_eq!(requests.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn flash_next_startup_warmup_once_preserves_other_profiles_and_default() {
+    assert!(!ServerEnvConfig::default().flash_next_startup_warmup_once);
+    let env = ServerEnvConfig::from_vars(|key| {
+        (key == "AX_SERVER_FLASH_NEXT_STARTUP_WARMUP_ONCE").then(|| " on ".to_owned())
+    });
+    assert!(env.flash_next_startup_warmup_once);
+    for (family, slots, enabled, expected) in [
+        (
+            Some("qwen4_exp"),
+            Some(1),
+            env.flash_next_startup_warmup_once,
+            1,
+        ),
+        (Some("qwen4_exp"), Some(1), false, 3),
+        (Some("qwen4_exp"), Some(2), true, 3),
+        (Some("qwen4_exp"), None, true, 3),
+        (Some("qwen3_5"), Some(1), true, 3),
+        (None, Some(1), true, 3),
+    ] {
+        assert_eq!(
+            startup_worker_warmup_passes(family, slots, enabled),
+            expected
+        );
+    }
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSessionConfig, EngineSessionError, EngineStepReport, EngineTokenizer,
@@ -1765,9 +1765,26 @@ fn build_live_state_inner(
             // Three short passes stabilize first-token TTFT under process cold-start
             // variance (flip S0 thr/gap pass but TTFT often 0.94–0.98× on 3-rep
             // medians; 5-rep alone has cleared ≤0.90×).
-            run_production_path_warmup(&generation_service, &model_id);
-            run_production_path_warmup(&generation_service, &model_id);
-            run_production_path_warmup(&generation_service, &model_id);
+            let model_family = runtime_report
+                .mlx_model
+                .as_ref()
+                .map(|row| row.model_family.as_str());
+            let passes = startup_worker_warmup_passes(
+                model_family,
+                session_config.max_concurrent_requests,
+                env.flash_next_startup_warmup_once,
+            );
+            let started = Instant::now();
+            for _ in 0..passes {
+                run_production_path_warmup(&generation_service, &model_id);
+            }
+            tracing::debug!(
+                target: "ax_engine_server::startup_warmup",
+                phase = "worker",
+                passes,
+                elapsed_us = started.elapsed().as_micros() as u64,
+                "completed worker-path startup warmup"
+            );
             // Long S1 geometry is paid after multi-model publish (under
             // adaptive isolation) in model_load — first-load here stays short
             // so solo Qwen S0 is not slowed.
@@ -1796,6 +1813,18 @@ fn build_live_state_inner(
         embedding_batcher,
         last_used: Arc::new(AtomicU64::new(unix_now_secs())),
     })
+}
+
+pub(crate) fn startup_worker_warmup_passes(
+    model_family: Option<&str>,
+    max_concurrent_requests: Option<usize>,
+    flash_next_once: bool,
+) -> u32 {
+    if flash_next_once && max_concurrent_requests == Some(1) && model_family == Some("qwen4_exp") {
+        1
+    } else {
+        3
+    }
 }
 
 /// Run a short greedy generate on the worker thread so first client request TTFT
@@ -1955,7 +1984,15 @@ fn run_warmup_generate_request(
     {
         return false;
     }
-    rx.recv().is_ok()
+    let result = rx.recv();
+    tracing::debug!(
+        target: "ax_engine_server::startup_warmup",
+        phase = "worker_request",
+        shape = offset,
+        generated = matches!(&result, Ok(Ok(()))),
+        "worker-path warmup request finished"
+    );
+    result.is_ok()
 }
 
 pub(crate) fn unix_now_secs() -> u64 {
