@@ -1,0 +1,10 @@
+{
+  "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "binary_sha256": "a35350f18b7a568f9f0d3275a5c2f28db356123db229fca059b54cf6d11e0938",
+  "reader_source_sha256": "ac7beba8ed8ee975e3f5d0d01b00767fd52499f996b66f3c81a881cc5fecf003",
+  "base_probe_sha256": "056ea011dd05843792b33c3b12d2637dff05cdada4de372c8328756cf8e2154b",
+  "runner_sha256": "6199a9444ae05df713a4fdbc7c4f51fb6fdcd329cc9bbb2e54e6076e062fc340"
+}

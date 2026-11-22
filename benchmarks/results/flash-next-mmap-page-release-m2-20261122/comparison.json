@@ -1,0 +1,117 @@
+{
+  "cpu_and_metal_matches": 128,
+  "hardware": {
+    "macos": "27.2.1",
+    "memory_bytes": 206158430208,
+    "soc": "Apple M2 Ultra",
+    "storage": "external SSD"
+  },
+  "matched_mapped_restart_runs": 16,
+  "measured_runs": 16,
+  "qualification": false,
+  "scope": "M2 Ultra selected mapped cache release",
+  "shards": {
+    "model-00017-of-00025.safetensors": {
+      "nonresident": {
+        "median_initial_read_seconds": {
+          "mmap": 29.490566315000002,
+          "mmap-reclaim-shared": 8.73656585
+        },
+        "median_mapped_restart_seconds": {
+          "mmap": 0.254517479,
+          "mmap-reclaim-shared": 9.587815295
+        },
+        "median_release_seconds": 0.067664,
+        "resident_pages_after": {
+          "mmap": [
+            102404,
+            102404
+          ],
+          "mmap-reclaim-shared": [
+            8,
+            8
+          ]
+        }
+      },
+      "primed": {
+        "median_initial_read_seconds": {
+          "mmap": 0.25646514600000003,
+          "mmap-reclaim-shared": 0.322239292
+        },
+        "median_mapped_restart_seconds": {
+          "mmap": 0.25379202050000005,
+          "mmap-reclaim-shared": 12.361154710000001
+        },
+        "median_release_seconds": 0.0675562915,
+        "resident_pages_after": {
+          "mmap": [
+            102404,
+            102404
+          ],
+          "mmap-reclaim-shared": [
+            8,
+            8
+          ]
+        }
+      }
+    },
+    "model-00018-of-00025.safetensors": {
+      "nonresident": {
+        "median_initial_read_seconds": {
+          "mmap": 8.52670196,
+          "mmap-reclaim-shared": 17.0340805
+        },
+        "median_mapped_restart_seconds": {
+          "mmap": 0.2583618125,
+          "mmap-reclaim-shared": 25.636384635
+        },
+        "median_release_seconds": 0.09828637550000001,
+        "resident_pages_after": {
+          "mmap": [
+            102404,
+            102404
+          ],
+          "mmap-reclaim-shared": [
+            8,
+            8
+          ]
+        }
+      },
+      "primed": {
+        "median_initial_read_seconds": {
+          "mmap": 0.2609534165,
+          "mmap-reclaim-shared": 0.323417729
+        },
+        "median_mapped_restart_seconds": {
+          "mmap": 0.2546763545,
+          "mmap-reclaim-shared": 8.421036045000001
+        },
+        "median_release_seconds": 0.064569958,
+        "resident_pages_after": {
+          "mmap": [
+            102404,
+            102404
+          ],
+          "mmap-reclaim-shared": [
+            8,
+            8
+          ]
+        }
+      }
+    }
+  },
+  "synthetic_resident_pages_after": {
+    "mmap": [
+      1,
+      4
+    ],
+    "mmap-reclaim-private": [
+      1,
+      4
+    ],
+    "mmap-reclaim-shared": [
+      0,
+      4
+    ]
+  }
+}

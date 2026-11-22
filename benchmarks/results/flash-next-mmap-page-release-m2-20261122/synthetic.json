@@ -1,0 +1,87 @@
+{
+  "scope": "synthetic mapped MLX copies on Darwin",
+  "status": "complete",
+  "regions": [
+    "selected full page",
+    "excluded and partially selected neighbor pages"
+  ],
+  "targeted_release_observed": {
+    "mmap": false,
+    "mmap-reclaim-private": false,
+    "mmap-reclaim-shared": true
+  },
+  "arms": {
+    "mmap": {
+      "pages_before": [
+        1,
+        4
+      ],
+      "pages_after": [
+        1,
+        4
+      ],
+      "arrays": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.026584375,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 2,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 32768,
+        "allocated_bytes": 49100,
+        "weights_sha256": "a913557be909426a35f2aa30a5ca42cf55a3bf8a57396921b0df0a37ce7fb616",
+        "metal_sha256": "9eff8408bc80a36fc56f1de9a0f856c2b96da6168adb1766c9f099940ba107d9"
+      }
+    },
+    "mmap-reclaim-private": {
+      "pages_before": [
+        1,
+        4
+      ],
+      "pages_after": [
+        1,
+        4
+      ],
+      "arrays": {
+        "mode": "mmap-reclaim-private",
+        "elapsed_seconds": 0.026173917,
+        "reclaim_seconds": 5.667e-06,
+        "requested_invalidate_pages": 1,
+        "reclaim_errno": 0,
+        "tensors": 2,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 32768,
+        "allocated_bytes": 49100,
+        "weights_sha256": "a913557be909426a35f2aa30a5ca42cf55a3bf8a57396921b0df0a37ce7fb616",
+        "metal_sha256": "9eff8408bc80a36fc56f1de9a0f856c2b96da6168adb1766c9f099940ba107d9"
+      }
+    },
+    "mmap-reclaim-shared": {
+      "pages_before": [
+        1,
+        4
+      ],
+      "pages_after": [
+        0,
+        4
+      ],
+      "arrays": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 0.026537459,
+        "reclaim_seconds": 1.1459e-05,
+        "requested_invalidate_pages": 1,
+        "reclaim_errno": 0,
+        "tensors": 2,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 32768,
+        "allocated_bytes": 49100,
+        "weights_sha256": "a913557be909426a35f2aa30a5ca42cf55a3bf8a57396921b0df0a37ce7fb616",
+        "metal_sha256": "9eff8408bc80a36fc56f1de9a0f856c2b96da6168adb1766c9f099940ba107d9"
+      }
+    }
+  }
+}

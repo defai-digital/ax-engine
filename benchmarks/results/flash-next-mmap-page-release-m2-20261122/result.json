@@ -1,0 +1,779 @@
+{
+  "status": "complete",
+  "qualification": false,
+  "scope": "M2 Ultra selected mapped cache release",
+  "hardware": {
+    "soc": "Apple M2 Ultra",
+    "macos": "27.2.1",
+    "memory_bytes": 206158430208,
+    "storage": "external SSD"
+  },
+  "build": {
+    "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "binary_sha256": "a35350f18b7a568f9f0d3275a5c2f28db356123db229fca059b54cf6d11e0938",
+    "reader_source_sha256": "ac7beba8ed8ee975e3f5d0d01b00767fd52499f996b66f3c81a881cc5fecf003",
+    "base_probe_sha256": "056ea011dd05843792b33c3b12d2637dff05cdada4de372c8328756cf8e2154b",
+    "runner_sha256": "6199a9444ae05df713a4fdbc7c4f51fb6fdcd329cc9bbb2e54e6076e062fc340"
+  },
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "selection_sha256": "14adc1cfeaea672ba9f2a58f5a7d8d17aed539574e41058e4bd0e25710517c25",
+  "synthetic_sha256": "ea5b4bdd48e9fb0998ec2e0bb9d58529fb03d0c31e7667fe7cc9a2589aef6620",
+  "page_bytes": 16384,
+  "arms": [
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 1,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 8.89777733,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.256014042,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 2,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 8.72238837,
+        "reclaim_seconds": 0.069235625,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 9.29088813,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 3,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 8.75074333,
+        "reclaim_seconds": 0.066092375,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 9.88474246,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 4,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 50.0833553,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.253020916,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 1,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.256820292,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.253944916,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 2,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 0.324791542,
+        "reclaim_seconds": 0.069926167,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 15.3624245,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 3,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 0.319687042,
+        "reclaim_seconds": 0.065186416,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 9.35988492,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00017-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 4,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.25611,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.253639125,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "d968d223846f191b83f286987598e2e36bc733024a2c48d7703a538c77c08ab1",
+        "metal_sha256": "58dae586e3a9184a78c1c8c272d0582ba01cfd625cdf06990175cb82c30697e2"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 1,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 11.1996629,
+        "reclaim_seconds": 0.066119959,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 8.57566267,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 2,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 8.54599613,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.259158875,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 3,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 8.50740779,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.25756475,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "nonresident",
+      "trial": 4,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 0
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 22.8684981,
+        "reclaim_seconds": 0.130452792,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 42.6971066,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 1,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 0.324534958,
+        "reclaim_seconds": 0.064185833,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 8.39177417,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 2,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.259474416,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.251897,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 3,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.262432417,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 0.257455709,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    },
+    {
+      "shard": "model-00018-of-00025.safetensors",
+      "condition": "primed",
+      "trial": 4,
+      "eligible_pages": 102396,
+      "before": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "after": {
+        "selected_pages": 102404,
+        "resident_pages": 8
+      },
+      "restart_after": {
+        "selected_pages": 102404,
+        "resident_pages": 102404
+      },
+      "pressure": 1,
+      "initial_read": {
+        "mode": "mmap-reclaim-shared",
+        "elapsed_seconds": 0.3223005,
+        "reclaim_seconds": 0.064954083,
+        "requested_invalidate_pages": 102396,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      },
+      "mapped_restart": {
+        "mode": "mmap",
+        "elapsed_seconds": 8.45029792,
+        "reclaim_seconds": 0,
+        "requested_invalidate_pages": 0,
+        "reclaim_errno": 0,
+        "tensors": 4,
+        "staging_bytes": 0,
+        "nocache": false,
+        "selected_bytes": 1677721600,
+        "allocated_bytes": 1677721600,
+        "weights_sha256": "c6b15fd7867657d76dcf9c86264897d500ba181a392d4514c7d19e4c6ee07913",
+        "metal_sha256": "0b35f2f991e83901f346686bf03cdf45db305c06177bc6d73966188c51962afe"
+      }
+    }
+  ]
+}
