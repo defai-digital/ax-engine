@@ -1,0 +1,118 @@
+{
+  "all_exact": true,
+  "cases": [
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.000245749979512766,
+        "scratch": 0.0035730834933929145,
+        "split": 0.000264728965703398
+      },
+      "relative_packed_wall": 0.9283078595490906,
+      "relative_scratch_wall": 13.497138418151767,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891296764,
+      "tokens": 1
+    },
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.004199520510155708,
+        "scratch": 0.007534957985626534,
+        "split": 0.004206479032291099
+      },
+      "relative_packed_wall": 0.9983457608888634,
+      "relative_scratch_wall": 1.7912743479247883,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891238400,
+      "tokens": 511
+    },
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.004204062512144446,
+        "scratch": 0.007608332991367206,
+        "split": 0.0042169585067313164
+      },
+      "relative_packed_wall": 0.9969418730190764,
+      "relative_scratch_wall": 1.8042228727701282,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    },
+    {
+      "layer": 0,
+      "median_seconds": {
+        "packed": 0.002141874487278983,
+        "scratch": 0.005516187462490052,
+        "split": 0.0021462079894263297
+      },
+      "relative_packed_wall": 0.9979808563901092,
+      "relative_scratch_wall": 2.5702017184105723,
+      "route_pool": 64,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.00024177049635909498,
+        "scratch": 0.0035787290253210813,
+        "split": 0.00021408297470770776
+      },
+      "relative_packed_wall": 1.1293307965717012,
+      "relative_scratch_wall": 16.716551282077425,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891296764,
+      "tokens": 1
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.004198353999527171,
+        "scratch": 0.007571396010462195,
+        "split": 0.00421783298952505
+      },
+      "relative_packed_wall": 0.9953817540793449,
+      "relative_scratch_wall": 1.7950914674112721,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891238400,
+      "tokens": 511
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.004199249990051612,
+        "scratch": 0.0076142709876876324,
+        "split": 0.004212708008708432
+      },
+      "relative_packed_wall": 0.9968053758701054,
+      "relative_scratch_wall": 1.8074528241567067,
+      "route_pool": 512,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    },
+    {
+      "layer": 32,
+      "median_seconds": {
+        "packed": 0.0021373960189521313,
+        "scratch": 0.005588749976595864,
+        "split": 0.0021469164930749685
+      },
+      "relative_packed_wall": 0.99556551260678,
+      "relative_scratch_wall": 2.6031520064347045,
+      "route_pool": 64,
+      "scratch_minus_split_bytes": 891254784,
+      "tokens": 512
+    }
+  ],
+  "prefill_packed_wall_ratio_range": [
+    0.9953817540793449,
+    0.9983457608888634
+  ],
+  "prefill_scratch_wall_ratio_range": [
+    1.7912743479247883,
+    2.6031520064347045
+  ],
+  "scope": "Routed component only"
+}
