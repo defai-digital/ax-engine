@@ -1,0 +1,143 @@
+{
+  "eligible_orders": [
+    "short",
+    "long"
+  ],
+  "both_positional_arms_under_required_readiness_seconds": true,
+  "matched_output_ids_per_arm": 448,
+  "matched_required_verifier_decisions": 279.0,
+  "slowest_positional_to_fastest_mmap_ready_ratio": 0.9120681038092211,
+  "arms": {
+    "mmap-short": {
+      "ready_seconds": 70.17595545900986,
+      "load_phase_seconds": 56.467821,
+      "sidecar_load_seconds": 4.168396,
+      "first_prompt_tokens": 512,
+      "first_request": {
+        "ttft_seconds": 0.607498,
+        "decode_tokens_per_second": 44.30603176599555
+      },
+      "ready_seconds_plus_first_ttft": 70.78345345900986,
+      "warmed_medians": {
+        "512": {
+          "ttft_seconds": 0.589435,
+          "decode_tokens_per_second": 43.53871434389966
+        },
+        "2048": {
+          "ttft_seconds": 1.869473,
+          "decode_tokens_per_second": 41.1453266208936
+        },
+        "8192": {
+          "ttft_seconds": 10.152284,
+          "decode_tokens_per_second": 39.839715827162465
+        }
+      }
+    },
+    "pread-short": {
+      "ready_seconds": 42.10751366603654,
+      "load_phase_seconds": 31.053444,
+      "sidecar_load_seconds": 0.528025,
+      "first_prompt_tokens": 512,
+      "first_request": {
+        "ttft_seconds": 1.625538,
+        "decode_tokens_per_second": 44.67154883464899
+      },
+      "ready_seconds_plus_first_ttft": 43.73305166603654,
+      "warmed_medians": {
+        "512": {
+          "ttft_seconds": 0.633307,
+          "decode_tokens_per_second": 43.956729562602185
+        },
+        "2048": {
+          "ttft_seconds": 1.924221,
+          "decode_tokens_per_second": 41.01717296412585
+        },
+        "8192": {
+          "ttft_seconds": 10.649267,
+          "decode_tokens_per_second": 39.09486558302425
+        }
+      }
+    },
+    "pread-long": {
+      "ready_seconds": 40.15851641597692,
+      "load_phase_seconds": 30.283631,
+      "sidecar_load_seconds": 0.529595,
+      "first_prompt_tokens": 8192,
+      "first_request": {
+        "ttft_seconds": 10.185434,
+        "decode_tokens_per_second": 39.69641208461226
+      },
+      "ready_seconds_plus_first_ttft": 50.34395041597692,
+      "warmed_medians": {
+        "512": {
+          "ttft_seconds": 0.553119,
+          "decode_tokens_per_second": 44.61478015707281
+        },
+        "2048": {
+          "ttft_seconds": 1.821694,
+          "decode_tokens_per_second": 41.47689870538558
+        },
+        "8192": {
+          "ttft_seconds": 9.822497,
+          "decode_tokens_per_second": 40.243695046260775
+        }
+      }
+    },
+    "mmap-long": {
+      "ready_seconds": 46.16707183397375,
+      "load_phase_seconds": 32.318763,
+      "sidecar_load_seconds": 4.950421,
+      "first_prompt_tokens": 8192,
+      "first_request": {
+        "ttft_seconds": 10.192761,
+        "decode_tokens_per_second": 40.18078762120664
+      },
+      "ready_seconds_plus_first_ttft": 56.359832833973755,
+      "warmed_medians": {
+        "512": {
+          "ttft_seconds": 0.554198,
+          "decode_tokens_per_second": 44.369509273227436
+        },
+        "2048": {
+          "ttft_seconds": 1.828317,
+          "decode_tokens_per_second": 42.388525016066616
+        },
+        "8192": {
+          "ttft_seconds": 9.90555,
+          "decode_tokens_per_second": 40.64129338949698
+        }
+      }
+    }
+  },
+  "warm_candidate_to_control_ratios": {
+    "short": {
+      "512": {
+        "ttft_seconds": 1.07443059879376,
+        "decode_tokens_per_second": 1.0096010005118834
+      },
+      "2048": {
+        "ttft_seconds": 1.0292852584658885,
+        "decode_tokens_per_second": 0.9968853411239498
+      },
+      "8192": {
+        "ttft_seconds": 1.0489528267727735,
+        "decode_tokens_per_second": 0.9813038263784407
+      }
+    },
+    "long": {
+      "512": {
+        "ttft_seconds": 0.998053042414444,
+        "decode_tokens_per_second": 1.005527915180107
+      },
+      "2048": {
+        "ttft_seconds": 0.9963775428440472,
+        "decode_tokens_per_second": 0.9784935590390206
+      },
+      "8192": {
+        "ttft_seconds": 0.9916155084775707,
+        "decode_tokens_per_second": 0.990216887552625
+      }
+    }
+  },
+  "warmed_timing_band_met": false
+}
