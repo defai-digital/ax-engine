@@ -141,7 +141,7 @@ fn load_safetensors_mmap_filtered(
     filter: Option<SafetensorsNameFilter<'_>>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
-    load_safetensors_mmap_open_file(path, &file, filter)
+    load_safetensors_open_file(path, &file, filter, PayloadRead::Mapped)
 }
 
 /// Materialize selected tensors from the same open file used for admission.
@@ -152,13 +152,32 @@ pub fn load_safetensors_filtered_from_file(
     file: &std::fs::File,
     filter: SafetensorsNameFilter<'_>,
 ) -> Result<HashMap<String, MlxArray>, String> {
-    load_safetensors_mmap_open_file(path, file, Some(filter))
+    load_safetensors_open_file(path, file, Some(filter), PayloadRead::Mapped)
 }
 
-fn load_safetensors_mmap_open_file(
+/// Materialize selected payload ranges directly into owned MLX storage.
+/// The mapped header and file identity checks are shared with the mmap loader.
+#[cfg(unix)]
+pub fn load_safetensors_filtered_positional(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    load_safetensors_open_file(path, &file, Some(filter), PayloadRead::Positional)
+}
+
+#[derive(Clone, Copy)]
+enum PayloadRead {
+    Mapped,
+    #[cfg(unix)]
+    Positional,
+}
+
+fn load_safetensors_open_file(
     path: &Path,
     file: &std::fs::File,
     filter: Option<SafetensorsNameFilter<'_>>,
+    read: PayloadRead,
 ) -> Result<HashMap<String, MlxArray>, String> {
     // NAS/SMB-backed caches can replace or truncate a shard while it is
     // mapped. Stat before and after the copies and fail closed on any drift,
@@ -297,23 +316,21 @@ fn load_safetensors_mmap_open_file(
                  shape {shape:?} dtype {dtype_str} expected {expected_byte_len}"
             ));
         }
-        let ptr = unsafe { mmap.as_ptr().add(absolute_start) };
-
-        // We use the copy-on-create C entry (`mlx_array_new_data` via
-        // `from_raw_data`) rather than the managed/borrowed variant.
-        // Empirically with the borrowed variant MLX did not read the
-        // mmap-backed bytes correctly for f16 / quantized tensors
-        // (values came back as garbage), and the upstream C API docs
-        // do say "buffer will be copied" for that path. The copy is
-        // unavoidable, but the rest of the cold-start path benefits:
-        // no userspace heap allocation for the safetensors file, no
-        // libc read() into a temp buffer, and any pages already in
-        // the OS page cache are reused directly.
-        let arr = MlxArray::from_raw_data(ptr, byte_len, &shape, dtype);
+        let arr = match read {
+            PayloadRead::Mapped => {
+                // The raw constructor copies bytes into owned MLX storage.
+                let ptr = unsafe { mmap.as_ptr().add(absolute_start) };
+                MlxArray::from_raw_data(ptr, byte_len, &shape, dtype)
+            }
+            #[cfg(unix)]
+            PayloadRead::Positional => {
+                MlxArray::read_owned_at(file, absolute_start as u64, &shape, dtype)
+                    .map_err(|error| format!("read {} tensor {name}: {error}", path.display()))?
+            }
+        };
         result.insert(name.clone(), arr);
     }
-    // Drop the mmap explicitly at function end so the mapping outlives
-    // every `from_raw_data` copy above; MLX owns its own buffer by then.
+    // No MLX array retains the mapping after materialization.
     drop(mmap);
     ensure_unchanged_since(path, &stat_before)?;
     Ok(result)
@@ -566,6 +583,50 @@ mod tests {
         std::io::Write::write_all(&mut file, &(header_bytes.len() as u64).to_le_bytes()).unwrap();
         std::io::Write::write_all(&mut file, &header_bytes).unwrap();
         std::io::Write::write_all(&mut file, payload).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn positional_and_mapped_reads_preserve_unaligned_tensor_bytes() {
+        let dir = std::env::temp_dir().join(format!("ax-unaligned-shards-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("weights.safetensors");
+        let header = serde_json::json!({
+            "pad": {"dtype": "U8", "shape": [1], "data_offsets": [0, 1]},
+            "quant": {"dtype": "U32", "shape": [1], "data_offsets": [1, 5]},
+            "scale": {"dtype": "BF16", "shape": [1], "data_offsets": [5, 7]}
+        });
+        let mut header = serde_json::to_vec(&header).unwrap();
+        header.resize(header.len().next_multiple_of(8), b' ');
+        let word = 0x8765_4321_u32;
+        let scale = 0x3fa0_u16;
+        let mut encoded = (header.len() as u64).to_le_bytes().to_vec();
+        encoded.extend(header);
+        let data_base = encoded.len();
+        encoded.push(0);
+        encoded.extend(word.to_le_bytes());
+        encoded.extend(scale.to_le_bytes());
+        std::fs::write(&path, encoded).unwrap();
+
+        let keep = HashSet::from([String::from("quant"), String::from("scale")]);
+        let mapped = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&keep)).unwrap();
+        let positional =
+            load_safetensors_filtered_positional(&path, SafetensorsNameFilter::Keep(&keep))
+                .unwrap();
+        for loaded in [mapped, positional] {
+            eval(&loaded.values().collect::<Vec<_>>());
+            assert_eq!(loaded.len(), 2);
+            assert_eq!(loaded["quant"].data_u32(), &[word]);
+            assert_eq!(loaded["scale"].dtype(), MlxDtype::Bfloat16);
+            let bytes = unsafe { std::slice::from_raw_parts(loaded["scale"].data_raw(), 2) };
+            assert_eq!(bytes, scale.to_le_bytes());
+        }
+
+        let file = std::fs::File::open(&path).unwrap();
+        let error = MlxArray::read_owned_at(&file, data_base as u64 + 5, &[2], MlxDtype::Bfloat16)
+            .expect_err("a partial read cannot return an array");
+        assert!(error.contains("ended early"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -4,17 +4,25 @@
 #include "ax_shim.h"
 #include "ax_shim_internal.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <variant>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
+
+#include "mlx/allocator.h"
 #include "mlx/fast.h"
 #include "mlx/io.h"
 #include "mlx/memory.h"
@@ -125,36 +133,35 @@ inline mx::Dtype to_dtype(mlx_dtype d) {
   return m[idx];
 }
 
-inline mx::array make_array(const void* data, mx::Shape shape, mx::Dtype dtype) {
+size_t array_byte_count(const mx::Shape& shape, mx::Dtype dtype) {
   const size_t count = ax_shape_nelem(shape);
-  if (count > 0 && !data) {
+  const size_t itemsize = mx::size_of(dtype);
+  if (count > std::numeric_limits<size_t>::max() / itemsize) {
+    throw std::runtime_error("array byte count overflows");
+  }
+  return count * itemsize;
+}
+
+void normalize_bool_bytes(void* buffer, size_t bytes, mx::Dtype dtype) {
+  if (dtype == mx::bool_) {
+    auto* raw = static_cast<uint8_t*>(buffer);
+    for (size_t i = 0; i < bytes; ++i) raw[i] = raw[i] != 0;
+  }
+}
+
+mx::array make_array(const void* data, mx::Shape shape, mx::Dtype dtype) {
+  const size_t bytes = array_byte_count(shape, dtype);
+  if (bytes != 0 && !data) {
     throw std::runtime_error("mlx_array_new_data: data pointer is null for a non-empty array");
   }
-  switch (dtype.val()) {
-    case mx::Dtype::Val::bool_: {
-      // Reading arbitrary bytes through `const bool*` is UB for byte values
-      // other than 0/1; normalize into a materialized 0/1 buffer first.
-      std::vector<uint8_t> normalized(count);
-      const uint8_t* raw = static_cast<const uint8_t*>(data);
-      for (size_t i = 0; i < count; ++i) normalized[i] = raw[i] ? 1 : 0;
-      return mx::array(reinterpret_cast<const bool*>(normalized.data()),
-                       std::move(shape), dtype);
-    }
-    case mx::Dtype::Val::uint8:     return mx::array(static_cast<const uint8_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::uint16:    return mx::array(static_cast<const uint16_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::uint32:    return mx::array(static_cast<const uint32_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::uint64:    return mx::array(static_cast<const uint64_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::int8:      return mx::array(static_cast<const int8_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::int16:     return mx::array(static_cast<const int16_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::int32:     return mx::array(static_cast<const int32_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::int64:     return mx::array(static_cast<const int64_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::float16:   return mx::array(static_cast<const mx::float16_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::float32:   return mx::array(static_cast<const float*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::float64:   return mx::array(static_cast<const double*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::bfloat16:  return mx::array(static_cast<const mx::bfloat16_t*>(data), std::move(shape), dtype);
-    case mx::Dtype::Val::complex64: return mx::array(static_cast<const mx::complex64_t*>(data), std::move(shape), dtype);
-    default: throw std::runtime_error("unknown dtype");
+  auto storage = mx::allocator::malloc(bytes);
+  if (bytes != 0) {
+    void* destination = storage.buffer().raw_ptr();
+    // Safetensors payloads may start at an offset unaligned for their dtype.
+    std::memcpy(destination, data, bytes);
+    normalize_bool_bytes(destination, bytes, dtype);
   }
+  return mx::array(std::move(storage), std::move(shape), dtype);
 }
 
 using device_info_t = std::unordered_map<std::string, std::variant<std::string, size_t>>;
@@ -226,6 +233,44 @@ extern "C" mlx_array mlx_array_new_data(
         make_array(data, make_shape(shape, static_cast<size_t>(dim)), to_dtype(dtype)))};
   } AX_CATCH_NULL
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+extern "C" mlx_array ax_mlx_array_read_at(
+    int fd, uint64_t offset, const int* shape, int dim, mlx_dtype dtype) {
+  AX_TRY {
+    if (dim < 0) {
+      throw std::runtime_error("ax_mlx_array_read_at: dim must be non-negative");
+    }
+    auto cpp_shape = make_shape(shape, static_cast<size_t>(dim));
+    auto cpp_dtype = to_dtype(dtype);
+    const size_t bytes = array_byte_count(cpp_shape, cpp_dtype);
+    const auto max_offset = static_cast<uint64_t>(std::numeric_limits<off_t>::max());
+    if (offset > max_offset || bytes > max_offset - offset) {
+      throw std::runtime_error("positional tensor range exceeds off_t");
+    }
+    auto storage = mx::allocator::malloc(bytes);
+    if (bytes != 0) {
+      auto* destination = static_cast<uint8_t*>(storage.buffer().raw_ptr());
+      constexpr size_t max_read = 4 * 1024 * 1024;
+      for (size_t done = 0; done < bytes;) {
+        const auto count = pread(fd, destination + done, std::min(max_read, bytes - done),
+                                 static_cast<off_t>(offset + done));
+        if (count == 0) {
+          throw std::runtime_error("positional tensor read ended early");
+        }
+        if (count < 0) {
+          if (errno == EINTR) continue;
+          throw std::runtime_error("positional tensor read failed");
+        }
+        done += static_cast<size_t>(count);
+      }
+      normalize_bool_bytes(destination, bytes, cpp_dtype);
+    }
+    return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(
+        std::move(storage), std::move(cpp_shape), cpp_dtype)};
+  } AX_CATCH_NULL
+}
+#endif
 
 extern "C" mlx_array mlx_array_new_data_managed_payload(
     void* data, const int* shape, int dim, mlx_dtype dtype,
