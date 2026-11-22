@@ -1,0 +1,117 @@
+{
+  "decode_sensitivity": {
+    "p10": {
+      "decode_only_runner_us": 20013,
+      "first_short_p95_improvement": {
+        "long_first_token_added_runner_us_before_short_completion": null,
+        "repayment_percent": 25,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 728950.7999999999,
+        "short_runner_gaps_at_least_100ms": 10,
+        "unstarted_long_slices_at_short_completion": 8
+      },
+      "largest_repayment_finishing_long_before_short_ends": {
+        "long_first_token_added_runner_us_before_short_completion": 1420923,
+        "repayment_percent": 11,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 735985.6,
+        "short_runner_gaps_at_least_100ms": 16,
+        "unstarted_long_slices_at_short_completion": 0
+      },
+      "shared_decode_runner_us": 42239,
+      "short_p95_improvements_finishing_long_before_short_ends": 0,
+      "zero_repayment": {
+        "long_first_token_added_runner_us_before_short_completion": 0,
+        "repayment_percent": 0,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 735985.6,
+        "short_runner_gaps_at_least_100ms": 16,
+        "unstarted_long_slices_at_short_completion": 0
+      }
+    },
+    "p50": {
+      "decode_only_runner_us": 20388,
+      "first_short_p95_improvement": {
+        "long_first_token_added_runner_us_before_short_completion": null,
+        "repayment_percent": 25,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 728950.7999999999,
+        "short_runner_gaps_at_least_100ms": 10,
+        "unstarted_long_slices_at_short_completion": 8
+      },
+      "largest_repayment_finishing_long_before_short_ends": {
+        "long_first_token_added_runner_us_before_short_completion": 1529100,
+        "repayment_percent": 12,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 735985.6,
+        "short_runner_gaps_at_least_100ms": 16,
+        "unstarted_long_slices_at_short_completion": 0
+      },
+      "shared_decode_runner_us": 42890,
+      "short_p95_improvements_finishing_long_before_short_ends": 0,
+      "zero_repayment": {
+        "long_first_token_added_runner_us_before_short_completion": 0,
+        "repayment_percent": 0,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 735985.6,
+        "short_runner_gaps_at_least_100ms": 16,
+        "unstarted_long_slices_at_short_completion": 0
+      }
+    },
+    "p90": {
+      "decode_only_runner_us": 20916,
+      "first_short_p95_improvement": {
+        "long_first_token_added_runner_us_before_short_completion": null,
+        "repayment_percent": 26,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 728950.7999999999,
+        "short_runner_gaps_at_least_100ms": 10,
+        "unstarted_long_slices_at_short_completion": 8
+      },
+      "largest_repayment_finishing_long_before_short_ends": {
+        "long_first_token_added_runner_us_before_short_completion": 1568700,
+        "repayment_percent": 12,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 735985.6,
+        "short_runner_gaps_at_least_100ms": 16,
+        "unstarted_long_slices_at_short_completion": 0
+      },
+      "shared_decode_runner_us": 43622,
+      "short_p95_improvements_finishing_long_before_short_ends": 0,
+      "zero_repayment": {
+        "long_first_token_added_runner_us_before_short_completion": 0,
+        "repayment_percent": 0,
+        "short_runner_gap_max_us": 747376,
+        "short_runner_gap_p95_us": 735985.6,
+        "short_runner_gaps_at_least_100ms": 16,
+        "unstarted_long_slices_at_short_completion": 0
+      }
+    }
+  },
+  "fixed_step_widths": [
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1,
+    512,
+    512,
+    512,
+    511,
+    1
+  ],
+  "grid_rows": 303,
+  "input_archive_sha256": "bd8cd3e0ce8aebca20109d280538570ff089615f4e01559bf474ea9af48781a0",
+  "observed_runner_time_from_first_short_to_first_long_us": 11016465,
+  "scope": "Fixed-cost M5 scheduling projection with observed physical widths"
+}
