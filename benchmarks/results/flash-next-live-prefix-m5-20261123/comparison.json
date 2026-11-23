@@ -1,0 +1,85 @@
+{
+  "arms": {
+    "cold-1": {
+      "cpu_idle_percent": [
+        92.3,
+        74.66
+      ],
+      "exact_pair_wall_seconds": 8.450015959038865,
+      "exact_peer_gap_p95_seconds": 0.0457562915107701,
+      "exact_peer_max_gap_seconds": 1.6938439999939874,
+      "exact_shared_steps": 96,
+      "exact_target_ttft_seconds": 1.7149265839834698,
+      "normal_pressure_samples": 159,
+      "peak_footprint_bytes": 77324800848,
+      "timing_eligible": false
+    },
+    "cold-2": {
+      "cpu_idle_percent": [
+        91.4,
+        85.79
+      ],
+      "exact_pair_wall_seconds": 8.12745441601146,
+      "exact_peer_gap_p95_seconds": 0.04386245849309489,
+      "exact_peer_max_gap_seconds": 1.5812033339752816,
+      "exact_shared_steps": 96,
+      "exact_target_ttft_seconds": 1.6009062500088476,
+      "normal_pressure_samples": 153,
+      "peak_footprint_bytes": 76824777456,
+      "timing_eligible": false
+    },
+    "warm-1": {
+      "cpu_idle_percent": [
+        91.17,
+        92.18
+      ],
+      "exact_pair_wall_seconds": 6.523426584026311,
+      "exact_peer_gap_p95_seconds": 0.043479521496919915,
+      "exact_peer_max_gap_seconds": 0.050920500012580305,
+      "exact_shared_steps": 96,
+      "exact_target_ttft_seconds": 0.07022424996830523,
+      "normal_pressure_samples": 152,
+      "peak_footprint_bytes": 78253348864,
+      "timing_eligible": true
+    },
+    "warm-2": {
+      "cpu_idle_percent": [
+        91.44,
+        87.61
+      ],
+      "exact_pair_wall_seconds": 6.473700666043442,
+      "exact_peer_gap_p95_seconds": 0.042529917001957074,
+      "exact_peer_max_gap_seconds": 0.05005137500120327,
+      "exact_shared_steps": 96,
+      "exact_target_ttft_seconds": 0.07072820898611099,
+      "normal_pressure_samples": 148,
+      "peak_footprint_bytes": 78143264192,
+      "timing_eligible": false
+    }
+  },
+  "cancel_and_replacement_pairs": 4,
+  "matched_exact_and_extension_pairs": 8,
+  "matched_output_ids_per_arm": 867,
+  "order": [
+    "cold-1",
+    "warm-1",
+    "warm-2",
+    "cold-2"
+  ],
+  "pairs": [
+    {
+      "cold": "cold-1",
+      "timing_eligible": false,
+      "warm": "warm-1",
+      "warm_to_cold_ratio": null
+    },
+    {
+      "cold": "cold-2",
+      "timing_eligible": false,
+      "warm": "warm-2",
+      "warm_to_cold_ratio": null
+    }
+  ],
+  "qualification": false,
+  "timing_eligible": false
+}
