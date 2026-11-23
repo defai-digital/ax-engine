@@ -36,8 +36,10 @@ import urllib.request
 
 try:
     import check_flash_next_native_support as native
+    import run_flash_next_qa_cohort as qa
 except ImportError:
     from scripts import check_flash_next_native_support as native
+    from scripts import run_flash_next_qa_cohort as qa
 
 ROOT = Path(__file__).resolve().parents[1]
 MODES = ("disabled", "required")
@@ -212,13 +214,15 @@ def decode_rate(timing: dict[str, Any]) -> float | None:
 def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[str, ...] = PROMPTS,
              lengths: tuple[int, ...] = LENGTHS, label: str | None = None,
              verifier: str = "canonical",
-             extra_env: dict[str, str] | None = None) -> dict[str, Any]:
+             extra_env: dict[str, str] | None = None,
+             ordinary_launch: bool = False) -> dict[str, Any]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     log_path = output / f"server-{label or mode}.log"
-    command = [*native.server_command(server, root, mode, port), "--total-blocks", str(TOTAL_BLOCKS)]
+    command = (qa.server_command(server, root, mode, port, ordinary_launch=True) if ordinary_launch
+               else [*native.server_command(server, root, mode, port), "--total-blocks", str(TOTAL_BLOCKS)])
     started = time.monotonic()
     result: dict[str, Any] = {"mode": mode, "verifier": arm_verifier(mode, verifier),
                               "trajectories": [], "cells": []}
@@ -233,13 +237,16 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                 if process.poll() is not None:
                     raise RuntimeError(f"owned {mode} server exited with {process.returncode}")
                 try:
-                    native.request(base, "/v1/models")
+                    models_raw = native.request(base, "/v1/models")
                     break
                 except (OSError, ValueError):
                     if time.monotonic() - started >= READY_TIMEOUT:
                         raise TimeoutError("native server readiness timeout") from None
                     time.sleep(1)
             result["ready_seconds"] = round(time.monotonic() - started, 3)
+            if ordinary_launch:
+                model_id = qa.ORDINARY_MODEL_ID if mode == "default" else qa.MODEL_ID
+                result["model"] = qa.check_standard_model(json.loads(models_raw), model_id)
             vocab_size = pack_vocab_size(root)
             result["vocab_size"] = vocab_size
             result["prompt_id_hashes"] = {}
@@ -379,7 +386,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--limit-prompts", type=int, help="smoke runs: first N trajectory prompts")
     parser.add_argument("--lengths", type=int, nargs="+", help="smoke runs: input lengths to measure")
-    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
+    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES,
                         help="the disabled baseline plus one challenger: required MTP or default")
     parser.add_argument("--no-warm-pass", action="store_true",
                         help="skip the discarded warm-up pass (smoke runs only)")
@@ -394,9 +401,15 @@ def main() -> int:
     parser.add_argument("--ax-server-env", action="append", default=[], metavar="KEY=VALUE",
                         help="extra server environment override passed explicitly to every arm "
                              "and recorded in the contract (repeatable)")
+    parser.add_argument("--ordinary-launch", action="store_true",
+                        help="compare the unmodified 32K product launch and a matched disabled arm")
     args = parser.parse_args()
+    if args.modes is None:
+        args.modes = ["disabled", "default"] if args.ordinary_launch else list(MODES)
     if len(args.modes) != 2 or "disabled" not in args.modes:
         parser.error("--modes must be the disabled baseline plus exactly one challenger")
+    if args.ordinary_launch and (set(args.modes) != {"disabled", "default"} or args.ax_server_env):
+        parser.error("--ordinary-launch requires disabled and default arms without environment overrides")
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
     if args.mtp_verifier != "canonical" and "required" not in args.modes:
@@ -423,6 +436,8 @@ def main() -> int:
                 "warm_pass": "discarded pass of the first mode over the identical workload, "
                              "kept as the cold-regime observation" if not args.no_warm_pass else "skipped",
                 "scope": "server-path token identity and timings; MTP-S/P/D not assessed"}
+    if args.ordinary_launch:
+        contract.update(ordinary_launch=True, total_blocks=qa.STANDARD_CONTEXT_TOKENS // 16)
     if args.dry_run:
         print(json.dumps(contract, indent=2))
         return 0
@@ -448,7 +463,8 @@ def main() -> int:
     warm_pass = None
     if not args.no_warm_pass:
         warm_pass = run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output,
-                             args.modes[0], (), lengths, label="warm", extra_env=ax_server_env)
+                             args.modes[0], (), lengths, label="warm", extra_env=ax_server_env,
+                             ordinary_launch=args.ordinary_launch)
     # Each arm runs in `--repeats` independent server processes, interleaved in
     # time. The host showed time-varying background interference (2,048-token
     # TTFT 5.8 s versus 4.3 s for tens of minutes) while clean repeats agree to
@@ -460,7 +476,7 @@ def main() -> int:
             repeats[mode].append(run_mode(args.server_bin.resolve(), args.model_dir.resolve(),
                                           args.output, mode, prompts, lengths,
                                           label=f"{mode}-{repeat + 1}", verifier=args.mtp_verifier,
-                                          extra_env=ax_server_env))
+                                          extra_env=ax_server_env, ordinary_launch=args.ordinary_launch))
     runs = {mode: best_repeat(items, lengths) for mode, items in repeats.items()}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:

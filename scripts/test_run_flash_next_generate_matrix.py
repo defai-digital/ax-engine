@@ -172,6 +172,24 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertGreater(contract["total_blocks"] * 16,
                            max(contract["lengths"]) + contract["output_tokens"])
 
+    def test_ordinary_launch_keeps_the_frozen_workload_at_32k(self):
+        def dry(*extra):
+            return subprocess.run([sys.executable, str(SCRIPT), "--dry-run", *extra],
+                                  capture_output=True, text=True)
+
+        legacy = json.loads(dry().stdout)
+        ordinary = json.loads(dry("--ordinary-launch").stdout)
+        self.assertEqual(legacy["total_blocks"], 4096)
+        self.assertEqual(legacy["modes"], ["disabled", "required"])
+        self.assertTrue(ordinary["ordinary_launch"])
+        self.assertEqual(ordinary["total_blocks"], 2048)
+        self.assertEqual(ordinary["modes"], ["disabled", "default"])
+        for key in ("lengths", "workload_seed", "trajectory_prompts", "output_tokens",
+                    "measured", "warmups", "repeats_per_arm", "warm_pass", "mtp_verifier"):
+            self.assertEqual(ordinary[key], legacy[key], key)
+        self.assertNotEqual(dry("--ordinary-launch", "--modes", "disabled", "required").returncode, 0)
+        self.assertNotEqual(dry("--ordinary-launch", "--ax-server-env", "AX_NO_SPEC=1").returncode, 0)
+
     def test_best_repeat_keeps_the_lowest_latency_process_and_identity_is_checked(self):
         def process(ttft, tokens=(1, 2)):
             cells = [{"length": 512, "run": r, "warmup": r < mod.WARMUPS, "output_tokens": list(tokens),

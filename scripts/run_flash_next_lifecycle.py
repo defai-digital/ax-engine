@@ -26,8 +26,10 @@ import urllib.request
 
 try:
     import check_flash_next_native_support as native
+    import run_flash_next_qa_cohort as qa
 except ImportError:
     from scripts import check_flash_next_native_support as native
+    from scripts import run_flash_next_qa_cohort as qa
 
 MODES = ("disabled", "required")
 MODEL_ID = "qwen3.8-flash-next:mxfp4"
@@ -117,11 +119,11 @@ def check_recovery(baseline: dict[str, Any], recovery: dict[str, Any]) -> None:
             raise ValueError(f"recovery usage.{field} differs from the baseline")
 
 
-def disconnect_midstream(base: str) -> dict[str, Any]:
+def disconnect_midstream(base: str, model_id: str = MODEL_ID) -> dict[str, Any]:
     """Open a long stream, confirm the server tracks it, then drop the socket."""
     host, port = base.removeprefix("http://").split(":")
     conn = http.client.HTTPConnection(host, int(port), timeout=REQUEST_TIMEOUT)
-    body = json.dumps(chat_body(LONG_PROMPT, 512, stream=True))
+    body = json.dumps(chat_body(LONG_PROMPT, 512, model=model_id, stream=True))
     conn.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
     response = conn.getresponse()
     first = b""
@@ -143,7 +145,7 @@ def disconnect_midstream(base: str) -> dict[str, Any]:
     return {"first_event_received": True, "active_streams_while_open": seen_active}
 
 
-def run_actions(base: str, mode: str) -> list[dict[str, Any]]:
+def run_actions(base: str, mode: str, model_id: str = MODEL_ID) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     baseline: dict[str, Any] = {}
 
@@ -153,7 +155,7 @@ def run_actions(base: str, mode: str) -> list[dict[str, Any]]:
         print(f"{mode}/{name}: ok", flush=True)
 
     before = native.metrics(native.request(base, "/metrics").decode())
-    baseline.update(complete(base, chat_body(BASELINE_PROMPT, 48)))
+    baseline.update(complete(base, chat_body(BASELINE_PROMPT, 48, model=model_id)))
     if baseline["finish_reason"] != "stop" or not baseline["text"].strip():
         raise ValueError("baseline did not complete normally")
     after = native.metrics(native.request(base, "/metrics").decode())
@@ -161,40 +163,44 @@ def run_actions(base: str, mode: str) -> list[dict[str, Any]]:
                                          baseline["usage"]["completion_tokens"], 48)
     record("baseline", {**baseline, "activation_delta": activation})
 
-    streamed = parse_sse(post(base, chat_body(BASELINE_PROMPT, 48, stream=True,
+    streamed = parse_sse(post(base, chat_body(BASELINE_PROMPT, 48, model=model_id, stream=True,
                                               stream_options={"include_usage": True})))
     if streamed["text"] != baseline["text"] or streamed["finish_reason"] != "stop":
         raise ValueError("SSE stream differs from the baseline completion")
     record("sse", streamed)
 
     for tokens in (1, 2):
-        out = complete(base, chat_body(BASELINE_PROMPT, tokens))
+        out = complete(base, chat_body(BASELINE_PROMPT, tokens, model=model_id))
         if out["usage"]["completion_tokens"] != tokens or out["finish_reason"] != "length":
             raise ValueError(f"{tokens}-token budget was not honored: {out}")
         record(f"budget_{tokens}", out)
 
-    out = complete(base, chat_body(BASELINE_PROMPT, 48, stop=["4"]))
+    out = complete(base, chat_body(BASELINE_PROMPT, 48, model=model_id, stop=["4"]))
     if out["finish_reason"] != "stop" or "4" in out["text"] \
             or not baseline["text"].startswith(out["text"].rstrip()):
         raise ValueError(f"stop sequence was not honored: {out}")
     record("stop", out)
 
-    record("disconnect", disconnect_midstream(base))
+    record("disconnect", disconnect_midstream(base, model_id))
 
-    again = complete(base, chat_body(BASELINE_PROMPT, 48))
+    again = complete(base, chat_body(BASELINE_PROMPT, 48, model=model_id))
     check_recovery(baseline, again)
     record("recovery", again)
     return results
 
 
-def run_mode(server: Path, root: Path, output: Path, mode: str) -> dict[str, Any]:
+def run_mode(server: Path, root: Path, output: Path, mode: str,
+             ordinary_launch: bool = False) -> dict[str, Any]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     log_path = output / f"server-{mode}.log"
     started = time.monotonic()
-    command = [*native.server_command(server, root, mode, port), "--total-blocks", str(TOTAL_BLOCKS)]
+    command = (qa.server_command(server, root, mode, port, ordinary_launch=True) if ordinary_launch
+               else [*native.server_command(server, root, mode, port), "--total-blocks", str(TOTAL_BLOCKS)])
+    model_id = qa.ORDINARY_MODEL_ID if ordinary_launch and mode == "default" else MODEL_ID
+    advertised_model = None
     with log_path.open("wb") as log:
         process = subprocess.Popen(command, stdout=log, stderr=log, env=native.server_env(),
                                    start_new_session=True)
@@ -203,14 +209,16 @@ def run_mode(server: Path, root: Path, output: Path, mode: str) -> dict[str, Any
                 if process.poll() is not None:
                     raise RuntimeError(f"owned {mode} server exited with {process.returncode}")
                 try:
-                    native.request(base, "/v1/models")
+                    models_raw = native.request(base, "/v1/models")
                     break
                 except (OSError, ValueError):
                     if time.monotonic() - started >= READY_TIMEOUT:
                         raise TimeoutError("native server readiness timeout") from None
                     time.sleep(1)
             ready = round(time.monotonic() - started, 3)
-            actions = run_actions(base, mode)
+            if ordinary_launch:
+                advertised_model = qa.check_standard_model(json.loads(models_raw), model_id)
+            actions = run_actions(base, mode, model_id)
             alive = process.poll() is None
             final_verified = native.metrics(native.request(base, "/metrics").decode()).get(native.VERIFIED)
         finally:
@@ -218,8 +226,11 @@ def run_mode(server: Path, root: Path, output: Path, mode: str) -> dict[str, Any
     native.scrub_log(log_path)
     if not alive:
         raise RuntimeError(f"{mode} server died during the lifecycle controls")
-    return {"mode": mode, "ready_seconds": ready, "actions": actions,
-            "final_verified_steps": final_verified, "exit_code_after_stop": process.returncode}
+    result = {"mode": mode, "ready_seconds": ready, "actions": actions,
+              "final_verified_steps": final_verified, "exit_code_after_stop": process.returncode}
+    if advertised_model is not None:
+        result["model"] = advertised_model
+    return result
 
 
 def main() -> int:
@@ -229,16 +240,24 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
+    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES,
                         help="control modes; `default` runs the server with no policy flags")
+    parser.add_argument("--ordinary-launch", action="store_true",
+                        help="compare the unmodified 32K product launch and a matched disabled arm")
     args = parser.parse_args()
+    if args.modes is None:
+        args.modes = ["disabled", "default"] if args.ordinary_launch else list(MODES)
     if len(set(args.modes)) != len(args.modes):
         parser.error("--modes must list each mode once")
+    if args.ordinary_launch and set(args.modes) != {"disabled", "default"}:
+        parser.error("--ordinary-launch compares only the disabled and default arms")
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
                 "modes": list(args.modes), "actions": list(ACTIONS), "counters": list(COUNTERS),
                 "total_blocks": TOTAL_BLOCKS, "expert_stream": "auto", "qualification": False,
                 "release_ready": False,
                 "scope": "API lifecycle; MTP-S/P/D, quality and performance not assessed"}
+    if args.ordinary_launch:
+        contract.update(ordinary_launch=True, total_blocks=qa.STANDARD_CONTEXT_TOKENS // 16)
     if args.dry_run:
         print(json.dumps(contract, indent=2))
         return 0
@@ -256,7 +275,8 @@ def main() -> int:
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
     host_quiet = native.wait_for_quiet()
-    runs = [run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode)
+    runs = [run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
+                     args.ordinary_launch)
             for mode in args.modes]
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:

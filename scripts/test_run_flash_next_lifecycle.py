@@ -109,6 +109,21 @@ class LifecycleTests(unittest.TestCase):
                               capture_output=True, text=True)
         self.assertNotEqual(done.returncode, 0)
 
+    def test_ordinary_launch_keeps_all_actions_with_the_matching_32k_control(self):
+        def dry(*extra):
+            return subprocess.run([sys.executable, str(SCRIPT), "--dry-run", *extra],
+                                  capture_output=True, text=True)
+
+        legacy = json.loads(dry().stdout)
+        ordinary = json.loads(dry("--ordinary-launch").stdout)
+        self.assertEqual(legacy["total_blocks"], 4096)
+        self.assertEqual(legacy["modes"], ["disabled", "required"])
+        self.assertTrue(ordinary["ordinary_launch"])
+        self.assertEqual(ordinary["total_blocks"], 2048)
+        self.assertEqual(ordinary["modes"], ["disabled", "default"])
+        self.assertEqual(ordinary["actions"], legacy["actions"])
+        self.assertNotEqual(dry("--ordinary-launch", "--modes", "disabled", "required").returncode, 0)
+
     def test_live_run_requires_all_inputs(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertNotEqual(done.returncode, 0)
