@@ -1,0 +1,103 @@
+{
+  "matrix": {
+    "cpu_idle": [
+      97.99,
+      91.73
+    ],
+    "matching_signed_arrays": 124,
+    "native": {
+      "default": {
+        "cells": {
+          "2048": {
+            "decode_tok_s": 45.9243246683414,
+            "full_length": 3,
+            "measured": 3,
+            "ttft_s": 1.625934
+          },
+          "512": {
+            "decode_tok_s": 47.8891445490464,
+            "full_length": 3,
+            "measured": 3,
+            "ttft_s": 0.545596
+          },
+          "8192": {
+            "decode_tok_s": 44.35503586820617,
+            "full_length": 3,
+            "measured": 3,
+            "ttft_s": 10.011902
+          }
+        },
+        "http_ready_seconds": 110.743
+      },
+      "disabled": {
+        "cells": {
+          "2048": {
+            "decode_tok_s": 44.63711431951598,
+            "full_length": 3,
+            "measured": 3,
+            "ttft_s": 1.64305
+          },
+          "512": {
+            "decode_tok_s": 46.21941557550633,
+            "full_length": 3,
+            "measured": 3,
+            "ttft_s": 0.724366
+          },
+          "8192": {
+            "decode_tok_s": 42.54053409473074,
+            "full_length": 3,
+            "measured": 3,
+            "ttft_s": 9.657354
+          }
+        },
+        "http_ready_seconds": 104.677
+      }
+    },
+    "qualification": false,
+    "raw_matrix_sha256": "5dc8a87ac66623518a4bfe86bfbd9eb51d9d2a4065ccae91d5dbd8917bb9274c",
+    "raw_repeats_sha256": "f8c14da02d471c132fcf8ef71e7e7ae031137fb85d1196451ca75d113043be15",
+    "source": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+    "timing_eligible": true
+  },
+  "passive_host_observations": {
+    "after-last-matrix-cell": {
+      "observations": 9,
+      "observations_below_90_percent": 9,
+      "seconds": 45.065849541977514,
+      "weighted_cpu_idle_percent": 86.92503837203544
+    },
+    "matrix": {
+      "observations": 62,
+      "observations_below_90_percent": 54,
+      "seconds": 310.35405358299613,
+      "weighted_cpu_idle_percent": 85.00238982026748
+    }
+  },
+  "routes": {
+    "server-default-1.log": {
+      "elapsed_ms": 429.804375,
+      "prefetched_bytes": 5214301696,
+      "sha256": "06172f551a7d456b0e348c9901660e16b1781648fa39e8c09300d9553dee9355"
+    },
+    "server-default-2.log": {
+      "elapsed_ms": 495.866917,
+      "prefetched_bytes": 5214301696,
+      "sha256": "901d5a393cac2e5896d23c79eeb8af6a310b22b1dc9a8a14e0071f5893066df3"
+    },
+    "server-disabled-1.log": {
+      "elapsed_ms": 411.050209,
+      "prefetched_bytes": 5214301696,
+      "sha256": "d3124d99ede2d46e12d2e8a5e4585313a378bac49cc66e7dc4f79021a48dbd9a"
+    },
+    "server-disabled-2.log": {
+      "elapsed_ms": 410.34008300000005,
+      "prefetched_bytes": 5214301696,
+      "sha256": "94e5a545587f9ba300932c7e266b8c7c6946d3b5b76bc7616589e65326e75602"
+    },
+    "server-warm.log": {
+      "elapsed_ms": 426.018959,
+      "prefetched_bytes": 5214301696,
+      "sha256": "e896b33dd9a290c20616d09c9f03fd91ebd43544a7a9f9b1dcfab5c046c087ca"
+    }
+  }
+}
