@@ -1,0 +1,562 @@
+{
+  "arms": {
+    "off-1": {
+      "cases": {
+        "aligned": {
+          "memory_before": {
+            "footprint_bytes": 77048142448,
+            "rss_bytes": 76005769216
+          },
+          "memory_drained": {
+            "footprint_bytes": 77339499240,
+            "rss_bytes": 76333547520
+          },
+          "pair_wall_seconds": 9.550391458964441,
+          "peer_max_gap_seconds": 1.5653946669772267,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 3.0271994160139
+        },
+        "boundary": {
+          "memory_before": {
+            "footprint_bytes": 77296328120,
+            "rss_bytes": 77035700224
+          },
+          "memory_drained": {
+            "footprint_bytes": 77851385608,
+            "rss_bytes": 77472268288
+          },
+          "pair_wall_seconds": 11.039305582991801,
+          "peer_max_gap_seconds": 2.672669332998339,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 4.328040540975053
+        },
+        "cancel": {
+          "memory_before": {
+            "footprint_bytes": 76901604000,
+            "rss_bytes": 76305235968
+          },
+          "memory_drained": {
+            "footprint_bytes": 77472570904,
+            "rss_bytes": 77100711936
+          },
+          "pair_wall_seconds": 7.006619583000429,
+          "peer_max_gap_seconds": 1.6027248749742284,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.495967875001952
+        },
+        "first": {
+          "memory_before": {
+            "footprint_bytes": 74722890912,
+            "rss_bytes": 74623320064
+          },
+          "memory_drained": {
+            "footprint_bytes": 76109600600,
+            "rss_bytes": 75153948672
+          },
+          "pair_wall_seconds": 8.587796959036496,
+          "peer_max_gap_seconds": 1.624405000009574,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 1.7397405829979107
+        },
+        "outside": {
+          "memory_before": {
+            "footprint_bytes": 77616307880,
+            "rss_bytes": 77410402304
+          },
+          "memory_drained": {
+            "footprint_bytes": 78228168144,
+            "rss_bytes": 77482590208
+          },
+          "pair_wall_seconds": 11.176603833038826,
+          "peer_max_gap_seconds": 2.6779699999606237,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 4.555309457995463
+        },
+        "replacement": {
+          "memory_before": {
+            "footprint_bytes": 75787754024,
+            "rss_bytes": 75643715584
+          },
+          "memory_drained": {
+            "footprint_bytes": 77132110472,
+            "rss_bytes": 76018745344
+          },
+          "pair_wall_seconds": 8.632382583979052,
+          "peer_max_gap_seconds": 1.5787792920018546,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.0899883749661967
+        },
+        "unseeded": {
+          "memory_before": {
+            "footprint_bytes": 76054632280,
+            "rss_bytes": 75153948672
+          },
+          "memory_drained": {
+            "footprint_bytes": 76380314200,
+            "rss_bytes": 75731795968
+          },
+          "pair_wall_seconds": 8.70180362497922,
+          "peer_max_gap_seconds": 1.6143632089952007,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.1569522909703664
+        }
+      },
+      "eligible": true,
+      "idle_after": 95.23,
+      "idle_before": 90.71,
+      "normal_pressure_samples": 201,
+      "peak_footprint_bytes": 84354505064,
+      "peak_rss_bytes": 78965358592
+    },
+    "off-2": {
+      "cases": {
+        "aligned": {
+          "memory_before": {
+            "footprint_bytes": 76735503008,
+            "rss_bytes": 75966480384
+          },
+          "memory_drained": {
+            "footprint_bytes": 77726440336,
+            "rss_bytes": 76455772160
+          },
+          "pair_wall_seconds": 9.746389749983791,
+          "peer_max_gap_seconds": 1.5839093339745887,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 3.12272354203742
+        },
+        "boundary": {
+          "memory_before": {
+            "footprint_bytes": 77391584864,
+            "rss_bytes": 77100220416
+          },
+          "memory_drained": {
+            "footprint_bytes": 78053842816,
+            "rss_bytes": 77482639360
+          },
+          "pair_wall_seconds": 11.391654291015584,
+          "peer_max_gap_seconds": 2.7817863330128603,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 4.442604375013616
+        },
+        "cancel": {
+          "memory_before": {
+            "footprint_bytes": 77619796808,
+            "rss_bytes": 76446334976
+          },
+          "memory_drained": {
+            "footprint_bytes": 77500685920,
+            "rss_bytes": 77106774016
+          },
+          "pair_wall_seconds": 6.923565000004601,
+          "peer_max_gap_seconds": 1.6253497080178931,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.5426924590137787
+        },
+        "first": {
+          "memory_before": {
+            "footprint_bytes": 74727363744,
+            "rss_bytes": 74622910464
+          },
+          "memory_drained": {
+            "footprint_bytes": 76085843968,
+            "rss_bytes": 75153309696
+          },
+          "pair_wall_seconds": 8.244348790962249,
+          "peer_max_gap_seconds": 1.6183392910170369,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 1.7333328340318985
+        },
+        "outside": {
+          "memory_before": {
+            "footprint_bytes": 77913857920,
+            "rss_bytes": 77482639360
+          },
+          "memory_drained": {
+            "footprint_bytes": 78220320304,
+            "rss_bytes": 77478641664
+          },
+          "pair_wall_seconds": 10.849711125018075,
+          "peer_max_gap_seconds": 2.5641436250298284,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 4.3163373750285245
+        },
+        "replacement": {
+          "memory_before": {
+            "footprint_bytes": 76703177376,
+            "rss_bytes": 75814223872
+          },
+          "memory_drained": {
+            "footprint_bytes": 76921838240,
+            "rss_bytes": 75966480384
+          },
+          "pair_wall_seconds": 8.667463499994483,
+          "peer_max_gap_seconds": 1.5602290410315618,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.0757017500000075
+        },
+        "unseeded": {
+          "memory_before": {
+            "footprint_bytes": 76031662080,
+            "rss_bytes": 75151212544
+          },
+          "memory_drained": {
+            "footprint_bytes": 76770892472,
+            "rss_bytes": 75833425920
+          },
+          "pair_wall_seconds": 8.769367250031792,
+          "peer_max_gap_seconds": 1.6198107080417685,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.1797227499773726
+        }
+      },
+      "eligible": true,
+      "idle_after": 96.87,
+      "idle_before": 97.24,
+      "normal_pressure_samples": 183,
+      "peak_footprint_bytes": 84410653032,
+      "peak_rss_bytes": 78674886656
+    },
+    "on-1": {
+      "cases": {
+        "aligned": {
+          "memory_before": {
+            "footprint_bytes": 77225352200,
+            "rss_bytes": 76344590336
+          },
+          "memory_drained": {
+            "footprint_bytes": 78068604032,
+            "rss_bytes": 76661424128
+          },
+          "pair_wall_seconds": 8.441445915959775,
+          "peer_max_gap_seconds": 1.6753452499979176,
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          },
+          "target_ttft_seconds": 1.7316449169884436
+        },
+        "boundary": {
+          "memory_before": {
+            "footprint_bytes": 77556473152,
+            "rss_bytes": 76973277184
+          },
+          "memory_drained": {
+            "footprint_bytes": 78295113600,
+            "rss_bytes": 77519585280
+          },
+          "pair_wall_seconds": 9.392857083003037,
+          "peer_max_gap_seconds": 2.576886916998774,
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          },
+          "target_ttft_seconds": 2.627510749967769
+        },
+        "cancel": {
+          "memory_before": {
+            "footprint_bytes": 77969153128,
+            "rss_bytes": 76652773376
+          },
+          "memory_drained": {
+            "footprint_bytes": 77666032960,
+            "rss_bytes": 76973932544
+          },
+          "pair_wall_seconds": 5.464995416987222,
+          "peer_max_gap_seconds": 0.8487689580069855,
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          },
+          "target_ttft_seconds": 0.9058126660529524
+        },
+        "first": {
+          "memory_before": {
+            "footprint_bytes": 74728838376,
+            "rss_bytes": 74631561216
+          },
+          "memory_drained": {
+            "footprint_bytes": 76064872520,
+            "rss_bytes": 75172741120
+          },
+          "pair_wall_seconds": 8.669071083015297,
+          "peer_max_gap_seconds": 1.6765402079909109,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 1.8135411670082249
+        },
+        "outside": {
+          "memory_before": {
+            "footprint_bytes": 78159863680,
+            "rss_bytes": 77519585280
+          },
+          "memory_drained": {
+            "footprint_bytes": 78275288744,
+            "rss_bytes": 76991791104
+          },
+          "pair_wall_seconds": 10.967546500032768,
+          "peer_max_gap_seconds": 2.5021229999838397,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 4.215867416001856
+        },
+        "replacement": {
+          "memory_before": {
+            "footprint_bytes": 76718922376,
+            "rss_bytes": 75834114048
+          },
+          "memory_drained": {
+            "footprint_bytes": 77316004944,
+            "rss_bytes": 76407963648
+          },
+          "pair_wall_seconds": 8.806078249996062,
+          "peer_max_gap_seconds": 1.5770055829780176,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.1364530410501175
+        },
+        "unseeded": {
+          "memory_before": {
+            "footprint_bytes": 76007036952,
+            "rss_bytes": 75145478144
+          },
+          "memory_drained": {
+            "footprint_bytes": 76784376480,
+            "rss_bytes": 75846828032
+          },
+          "pair_wall_seconds": 8.957391500007361,
+          "peer_max_gap_seconds": 1.6928118750220165,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.2879625000059605
+        }
+      },
+      "eligible": false,
+      "idle_after": 87.4,
+      "idle_before": 96.61,
+      "normal_pressure_samples": 195,
+      "peak_footprint_bytes": 84093509336,
+      "peak_rss_bytes": 78778793984
+    },
+    "on-2": {
+      "cases": {
+        "aligned": {
+          "memory_before": {
+            "footprint_bytes": 77310467176,
+            "rss_bytes": 76402376704
+          },
+          "memory_drained": {
+            "footprint_bytes": 78056479920,
+            "rss_bytes": 76657344512
+          },
+          "pair_wall_seconds": 8.20290783297969,
+          "peer_max_gap_seconds": 1.426637666998431,
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          },
+          "target_ttft_seconds": 1.4814299590070732
+        },
+        "boundary": {
+          "memory_before": {
+            "footprint_bytes": 77582654760,
+            "rss_bytes": 76969410560
+          },
+          "memory_drained": {
+            "footprint_bytes": 78338891696,
+            "rss_bytes": 77515620352
+          },
+          "pair_wall_seconds": 9.101241583004594,
+          "peer_max_gap_seconds": 2.5744599999743514,
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          },
+          "target_ttft_seconds": 2.6230587090249173
+        },
+        "cancel": {
+          "memory_before": {
+            "footprint_bytes": 77958093976,
+            "rss_bytes": 76648693760
+          },
+          "memory_drained": {
+            "footprint_bytes": 77682023720,
+            "rss_bytes": 76972687360
+          },
+          "pair_wall_seconds": 5.343204916978721,
+          "peer_max_gap_seconds": 0.8496102499775589,
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          },
+          "target_ttft_seconds": 0.8998605830129236
+        },
+        "first": {
+          "memory_before": {
+            "footprint_bytes": 74724562104,
+            "rss_bytes": 74625204224
+          },
+          "memory_drained": {
+            "footprint_bytes": 76098164568,
+            "rss_bytes": 75159371776
+          },
+          "pair_wall_seconds": 8.305837999971118,
+          "peer_max_gap_seconds": 1.6290392500231974,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 1.7459901250549592
+        },
+        "outside": {
+          "memory_before": {
+            "footprint_bytes": 78224973744,
+            "rss_bytes": 77515620352
+          },
+          "memory_drained": {
+            "footprint_bytes": 78242061992,
+            "rss_bytes": 77511311360
+          },
+          "pair_wall_seconds": 10.84662354196189,
+          "peer_max_gap_seconds": 2.5838028339785524,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 4.309895084006712
+        },
+        "replacement": {
+          "memory_before": {
+            "footprint_bytes": 76724296328,
+            "rss_bytes": 75833098240
+          },
+          "memory_drained": {
+            "footprint_bytes": 77377150056,
+            "rss_bytes": 76402376704
+          },
+          "pair_wall_seconds": 8.524582999991253,
+          "peer_max_gap_seconds": 1.567261292017065,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.112007499963511
+        },
+        "unseeded": {
+          "memory_before": {
+            "footprint_bytes": 76044785496,
+            "rss_bytes": 75159371776
+          },
+          "memory_drained": {
+            "footprint_bytes": 76793813664,
+            "rss_bytes": 75839389696
+          },
+          "pair_wall_seconds": 8.68292404199019,
+          "peer_max_gap_seconds": 1.6216913749813102,
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          },
+          "target_ttft_seconds": 2.187627791950945
+        }
+      },
+      "eligible": true,
+      "idle_after": 93.79,
+      "idle_before": 92.31,
+      "normal_pressure_samples": 179,
+      "peak_footprint_bytes": 85015779976,
+      "peak_rss_bytes": 78605123584
+    }
+  },
+  "cpu_idle_floor_percent": 90.0,
+  "pairs": [
+    {
+      "cost": null,
+      "off": "off-1",
+      "on": "on-1"
+    },
+    {
+      "cost": {
+        "aligned": {
+          "pair_wall_on_minus_off_seconds": -1.543481917004101,
+          "peer_max_gap_on_minus_off_seconds": -0.15727166697615758,
+          "target_ttft_on_minus_off_seconds": -1.6412935830303468
+        },
+        "boundary": {
+          "pair_wall_on_minus_off_seconds": -2.29041270801099,
+          "peer_max_gap_on_minus_off_seconds": -0.2073263330385089,
+          "target_ttft_on_minus_off_seconds": -1.8195456659886986
+        },
+        "first": {
+          "pair_wall_on_minus_off_seconds": 0.061489209008868784,
+          "peer_max_gap_on_minus_off_seconds": 0.010699959006160498,
+          "target_ttft_on_minus_off_seconds": 0.01265729102306068
+        },
+        "questions_2_and_3_ttft_on_minus_off_seconds": -1.6049878330668435,
+        "replacement": {
+          "pair_wall_on_minus_off_seconds": -0.14288050000322983,
+          "peer_max_gap_on_minus_off_seconds": 0.007032250985503197,
+          "target_ttft_on_minus_off_seconds": 0.03630574996350333
+        },
+        "unseeded": {
+          "pair_wall_on_minus_off_seconds": -0.08644320804160088,
+          "peer_max_gap_on_minus_off_seconds": 0.0018806669395416975,
+          "target_ttft_on_minus_off_seconds": 0.007905041973572224
+        }
+      },
+      "off": "off-2",
+      "on": "on-2"
+    }
+  ],
+  "timing_eligible": false,
+  "tokens_per_arm": 1921
+}
