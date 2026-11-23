@@ -1172,14 +1172,14 @@ mod tests {
         }
     }
 
-    struct TempRoot(PathBuf);
+    pub(super) struct TempRoot(pub(super) PathBuf);
     impl Drop for TempRoot {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
-    fn temp_root(tag: &str) -> TempRoot {
+    pub(super) fn temp_root(tag: &str) -> TempRoot {
         let root = std::env::temp_dir().join(format!(
             "ax-flash-mtp-{tag}-{}-{}",
             std::process::id(),

@@ -80,8 +80,41 @@ pub(crate) fn flash_next_mtp_sidecar_prefetch_override() -> Option<bool> {
     static ENV: OnceLock<Option<bool>> = OnceLock::new();
     *ENV.get_or_init(|| {
         std::env::var_os("AX_MLX_FLASH_NEXT_MTP_SIDECAR_PREFETCH")
-            .map(|raw| raw.to_str().is_some_and(parse_bool_value))
+            .as_deref()
+            .and_then(parse_flash_next_mtp_sidecar_prefetch)
     })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_flash_next_mtp_sidecar_prefetch(raw: &std::ffi::OsStr) -> Option<bool> {
+    match raw.to_str() {
+        Some(value) if value.trim().eq_ignore_ascii_case("auto") => None,
+        value => Some(value.is_some_and(parse_bool_value)),
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn flash_next_mtp_sidecar_prefetch_override_accepts_auto() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    for (raw, expected) in [
+        (" AUTO ", None),
+        ("1", Some(true)),
+        ("0", Some(false)),
+        ("", Some(false)),
+        ("unknown", Some(false)),
+    ] {
+        assert_eq!(
+            parse_flash_next_mtp_sidecar_prefetch(OsStr::new(raw)),
+            expected
+        );
+    }
+    assert_eq!(
+        parse_flash_next_mtp_sidecar_prefetch(OsStr::from_bytes(&[0xff])),
+        Some(false)
+    );
 }
 
 /// Process-level Flash Next numerics preset.
