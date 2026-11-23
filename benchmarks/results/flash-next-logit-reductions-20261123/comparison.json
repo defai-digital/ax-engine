@@ -1,0 +1,173 @@
+{
+  "captures": {
+    "m2": {
+      "hardware": {
+        "memory_bytes": 206158430208,
+        "os": "27.2.1",
+        "soc": "Apple M2 Ultra"
+      },
+      "host": null,
+      "routes": {
+        "gathered_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 285.9375,
+          "p95_us": 301.25
+        },
+        "mask_correction": {
+          "adversarial_differences": [
+            "subnormal",
+            "subnormal/0",
+            "subnormal/248316",
+            "subnormal/511",
+            "subnormal/513"
+          ],
+          "finite_bit_differences": [],
+          "median_us": 316.72900000000004,
+          "p95_us": 334.708
+        },
+        "maximum_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 284.7085,
+          "p95_us": 301.708
+        },
+        "scatter_correction": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 383.72900000000004,
+          "p95_us": 413.167
+        },
+        "sorted_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 521.562,
+          "p95_us": 544.167
+        },
+        "sorted_correction": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 556.542,
+          "p95_us": 576.125
+        }
+      }
+    },
+    "m5-first": {
+      "hardware": {
+        "memory_bytes": 137438953472,
+        "os": "27.2.1",
+        "soc": "Apple M5 Max"
+      },
+      "host": {
+        "cpu_idle_percent": [
+          96.4,
+          80.8
+        ],
+        "timing_eligible": false
+      },
+      "routes": {
+        "gathered_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 182.10399999999998,
+          "p95_us": 272.417
+        },
+        "mask_correction": {
+          "adversarial_differences": [
+            "subnormal",
+            "subnormal/0",
+            "subnormal/248316",
+            "subnormal/511",
+            "subnormal/513"
+          ],
+          "finite_bit_differences": [],
+          "median_us": 196.1255,
+          "p95_us": 274.875
+        },
+        "maximum_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 181.08350000000002,
+          "p95_us": 206.583
+        },
+        "scatter_correction": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 228.688,
+          "p95_us": 255.792
+        },
+        "sorted_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 301.7085,
+          "p95_us": 363.542
+        },
+        "sorted_correction": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 325.083,
+          "p95_us": 382.25
+        }
+      }
+    },
+    "m5-repeat": {
+      "hardware": {
+        "memory_bytes": 137438953472,
+        "os": "27.2.1",
+        "soc": "Apple M5 Max"
+      },
+      "host": {
+        "cpu_idle_percent": [
+          95.8,
+          98.18
+        ],
+        "timing_eligible": true
+      },
+      "routes": {
+        "gathered_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 280.20849999999996,
+          "p95_us": 394.333
+        },
+        "mask_correction": {
+          "adversarial_differences": [
+            "subnormal",
+            "subnormal/0",
+            "subnormal/248316",
+            "subnormal/511",
+            "subnormal/513"
+          ],
+          "finite_bit_differences": [],
+          "median_us": 324.9375,
+          "p95_us": 433.083
+        },
+        "maximum_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 270.9375,
+          "p95_us": 369.375
+        },
+        "scatter_correction": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 375.375,
+          "p95_us": 543.209
+        },
+        "sorted_bonus": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 597.1875,
+          "p95_us": 889.083
+        },
+        "sorted_correction": {
+          "adversarial_differences": [],
+          "finite_bit_differences": [],
+          "median_us": 636.354,
+          "p95_us": 908.084
+        }
+      }
+    }
+  },
+  "qualification": false
+}

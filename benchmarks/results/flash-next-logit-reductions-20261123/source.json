@@ -1,0 +1,22 @@
+{
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "m5_host_samples": {
+    "m5-first": {
+      "cpu_idle_percent": [
+        96.4,
+        80.8
+      ],
+      "timing_eligible": false
+    },
+    "m5-repeat": {
+      "cpu_idle_percent": [
+        95.8,
+        98.18
+      ],
+      "timing_eligible": true
+    }
+  },
+  "mlx_reference_commit": "36969c094354086e15d2a327a9c50feb20b9cf11",
+  "mlx_reference_tag": "v0.32.4",
+  "probe_sha256": "99a5fde6678a26890942524f4b8419c5fb3f12ca53e3f79374ff190a7ed39c9c"
+}
