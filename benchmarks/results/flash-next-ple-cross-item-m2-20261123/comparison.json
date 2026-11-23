@@ -1,0 +1,42 @@
+{
+  "boundary_gathers": {
+    "candidate": {
+      "boundary_events": 12,
+      "host_gather_median_us": 8420.0,
+      "ready_match_host_gather_median_us": 8420.0,
+      "ready_matches": 12
+    },
+    "control": {
+      "boundary_events": 12,
+      "host_gather_median_us": 40189.5,
+      "ready_match_host_gather_median_us": null,
+      "ready_matches": 0
+    }
+  },
+  "case_pairs": 4,
+  "matched_output_ids": 56,
+  "paired_prefill": [
+    {
+      "candidate_change_percent": -0.231093543513905,
+      "candidate_seconds": 18.633475956999998,
+      "control_seconds": 18.676636458
+    },
+    {
+      "candidate_change_percent": -0.5225694679616089,
+      "candidate_seconds": 18.551526207000002,
+      "control_seconds": 18.648980083
+    },
+    {
+      "candidate_change_percent": -0.019870277809741488,
+      "candidate_seconds": 18.620014874,
+      "control_seconds": 18.623715458
+    },
+    {
+      "candidate_change_percent": -0.7977139931291677,
+      "candidate_seconds": 18.559841375,
+      "control_seconds": 18.709086375
+    }
+  ],
+  "qualification": false,
+  "scope": "Feasibility on M2 Ultra, with pack and input reuse"
+}

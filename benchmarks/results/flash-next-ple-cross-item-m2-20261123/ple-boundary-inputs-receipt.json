@@ -1,0 +1,16 @@
+{
+  "corpus_sha256": "2c0c205d803207df6316dbd0076eef97451a55c80c0413fdc6b3bee5ffef7e9a",
+  "inputs_sha256": "d18211dd991d188cdfe0e965538a796d2b56588017e85c6634a3dace58b2680d",
+  "prompt_ids": [
+    "mixed-003",
+    "mixed-053",
+    "mixed-103",
+    "mixed-153"
+  ],
+  "arm_order": [
+    "AB",
+    "BA",
+    "AB",
+    "BA"
+  ]
+}
