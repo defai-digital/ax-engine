@@ -1,0 +1,40 @@
+{
+  "arms": {
+    "bounded": {
+      "cpu_idle_percent": [
+        91.89,
+        92.11
+      ],
+      "normal_pressure_samples": 53,
+      "peak_mlx_memory_bytes": 72917052626,
+      "peak_process_rss_bytes": 69079957504,
+      "receipt_sha256": "3a4211594a942bfb8df43a68cee721ff4b32ba260add9a3645bd9b7f504cbb90",
+      "weights_materialized": 1942
+    },
+    "resident": {
+      "cpu_idle_percent": [
+        95.49,
+        96.2
+      ],
+      "normal_pressure_samples": 59,
+      "peak_mlx_memory_bytes": 130519526610,
+      "peak_process_rss_bytes": 96114147328,
+      "receipt_sha256": "00eb18bf934802503e95435e5176707ad752664c14882e22039f4861d651e112",
+      "weights_materialized": 2326
+    }
+  },
+  "bounded_only_qa_failures": [],
+  "matching_qa_grades": true,
+  "matrix_differences": [],
+  "matrix_rows_exact": 15,
+  "qa_differences": [],
+  "qa_rows_exact": 105,
+  "qualification": false,
+  "resident_only_qa_failures": [],
+  "scope": "Same-host reference PLE storage-only diagnostic",
+  "source": {
+    "matrix_sha256": "3243fb0e4eb33f033417bf994464819ad5485927446a5e2e16745d4c52dda0d5",
+    "runner_sha256": "f083c5e400b0c2472be05de846891a4a06aafc310103343f6b8d1d082e6a9d21",
+    "watch_sha256": "33c9f522ae0bc60ea96815e2176f66b2787bce03d917e1934aad0bd0ebb2fb7b"
+  }
+}
