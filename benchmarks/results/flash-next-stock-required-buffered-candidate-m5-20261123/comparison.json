@@ -1,0 +1,27 @@
+{
+  "candidate_commit": "d2220c26f3cfccf2583c583c6b264e22b9459f88",
+  "cpu_idle_percent": [
+    91.86,
+    90.91
+  ],
+  "functional_controls_passed": true,
+  "observed_context_tokens": {
+    "disabled": 32768,
+    "required": 16384
+  },
+  "qualification": false,
+  "ready_seconds": {
+    "disabled": 29.129,
+    "required": 113.45
+  },
+  "required_warm_delivery_limit_seconds": 120,
+  "required_within_limit": true,
+  "scope": "Stock Required controls on retained publisher files",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "stable_prior_controls_matched": 14,
+  "timing_eligible": true,
+  "verified_steps": {
+    "disabled": 0,
+    "required": 107
+  }
+}
