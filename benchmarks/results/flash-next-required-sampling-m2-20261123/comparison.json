@@ -1,0 +1,72 @@
+{
+  "arms": {
+    "disabled": {
+      "max_footprint_bytes": 85374000496,
+      "normal_pressure_samples": 45,
+      "records": {
+        "greedy-after": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 0.0
+        },
+        "greedy-before": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 0.0
+        },
+        "penalized-greedy": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 0.0
+        },
+        "seed-a": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 0.0
+        },
+        "seed-a-repeat": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 0.0
+        },
+        "seed-b": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 0.0
+        }
+      }
+    },
+    "required": {
+      "max_footprint_bytes": 86260077440,
+      "normal_pressure_samples": 46,
+      "records": {
+        "greedy-after": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 41.0
+        },
+        "greedy-before": {
+          "not_strict_greedy": 0.0,
+          "verified_steps": 41.0
+        },
+        "penalized-greedy": {
+          "not_strict_greedy": 63.0,
+          "verified_steps": 0.0
+        },
+        "seed-a": {
+          "not_strict_greedy": 63.0,
+          "verified_steps": 0.0
+        },
+        "seed-a-repeat": {
+          "not_strict_greedy": 63.0,
+          "verified_steps": 0.0
+        },
+        "seed-b": {
+          "not_strict_greedy": 63.0,
+          "verified_steps": 0.0
+        }
+      }
+    }
+  },
+  "cases": 6,
+  "cross_policy_differences": {},
+  "different_seed_result": true,
+  "qualification": false,
+  "same_mode_seed_replay": true,
+  "scope": "Native Flash Next SSE sampling fallback and greedy request isolation",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "verified_output_positions_per_arm": 384
+}
