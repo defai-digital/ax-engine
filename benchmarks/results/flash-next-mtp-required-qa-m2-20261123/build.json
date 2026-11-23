@@ -1,0 +1,11 @@
+{
+  "codesign_verified": true,
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "patch_sha256": "c70848ee652b8a8f01c6c178ade7831a57abafceae06317dcace28c1a72ccc28",
+  "profile": "release-server (lib test)",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "server_test_sha256": "137aa270c03562ae2c7380e42a92f30fb67e8c509591d3770d88e2d2bf39c2c3",
+  "source_base": "1d49fd2ea3253791678ec75fc4d882450d9c38ac"
+}

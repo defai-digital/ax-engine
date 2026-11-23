@@ -1,0 +1,9 @@
+{
+  "case_count": 105,
+  "frozen_file_sha256": {
+    "full-qa-items.json": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+    "full-qa-inputs.json": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4"
+  },
+  "audit_input_sha256": "1a866d62447a3d50acb5a2aef931f8fc0aa28a27cf13b48e544a650cf7f0f0f0",
+  "scope": "Production Required session policy, greedy tokens and positive output budgets"
+}
