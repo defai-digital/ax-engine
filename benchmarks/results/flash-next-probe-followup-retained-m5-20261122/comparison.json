@@ -1,0 +1,25 @@
+{
+  "matched_output_arrays": 124,
+  "matrix_cpu_idle_percent": [
+    93.5,
+    78.15
+  ],
+  "matrix_readiness_seconds": {
+    "default": 103.377,
+    "disabled": 103.421
+  },
+  "matrix_timing_eligible": false,
+  "opt_out_cpu_idle_percent": [
+    98.59,
+    92.61
+  ],
+  "opt_out_matched_cases": 7,
+  "opt_out_pressure": [
+    1,
+    1
+  ],
+  "opt_out_readiness_seconds": 105.9,
+  "qualification": false,
+  "raw_repeats_sha256": "934da2a11fd5c24519b8a2ded324121b4f523ea3b87e0bcff5c1e711aada2fb4",
+  "source_commit": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0"
+}
