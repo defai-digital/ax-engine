@@ -1,0 +1,54 @@
+{
+  "candidate_commit": "d2220c26f3cfccf2583c583c6b264e22b9459f88",
+  "context_tokens": {
+    "default": 32768,
+    "disabled": 32768,
+    "required": 16384
+  },
+  "download_progress_counters": 7504,
+  "download_seconds": 1390.139,
+  "publisher_bytes": 132261877478,
+  "publisher_members": 49,
+  "readiness_seconds": {
+    "default": 30.213,
+    "disabled": 30.212,
+    "required": 114.947
+  },
+  "release_ready": false,
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "software": {
+    "candidate_commit": "d2220c26f3cfccf2583c583c6b264e22b9459f88",
+    "checks": {
+      "clippy": true,
+      "flash-next-dry-run": true,
+      "fmt": true,
+      "maturin": true,
+      "primary-claims": true,
+      "python": true,
+      "qwen27b-dry-run": true,
+      "rust": true,
+      "scripts": true
+    },
+    "integration_base": "16ed46747",
+    "patch_sha256": "149f8f1e77dfad368c0e359da47aef26cd264c0c9ae1bcaf0fa98df7b885e599",
+    "python_tests_passed": 345,
+    "rust_tests_passed": 4807,
+    "software_log_sha256": {
+      "clippy": "d33effc83348485073239678e6bb82fabb8893ff21806a8f2da3b7a11a62bc2e",
+      "flash-next-dry-run": "51c5101dd46b5c2bfe5fd18c9b8b6eeb986e54f9fe8f57bfca396d9be7acb424",
+      "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "maturin": "7713297b4d4dc6306b47366a6f5440c86fce0ba220c2715abaccd46280f34d25",
+      "primary-claims": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "python": "bfbb6d84b91c694d5ef9dd6498c10bdefdb98e9cf52e0ad32f7fa2762aab334b",
+      "qwen27b-dry-run": "2580474f75573e939e1f454b822c85fcc7c078f36e18a51357485fb722115373",
+      "rust": "9fe0473ce8da75d42fbc9a7165062a20d831e568378384c5151650eb10ba7766",
+      "scripts": "98315d00df9aced9c4db09b0656110557e08589d5709536c5bf8a8c9ad52a967"
+    }
+  },
+  "stable_response_controls": 21,
+  "verified_steps": {
+    "default": 0,
+    "disabled": 0,
+    "required": 107
+  }
+}
