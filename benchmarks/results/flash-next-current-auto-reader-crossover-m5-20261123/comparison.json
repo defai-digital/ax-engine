@@ -1,0 +1,86 @@
+{
+  "arms": {
+    "auto-1": {
+      "cpu_idle_percent": [
+        94.48,
+        91.54
+      ],
+      "matching_actions": 7,
+      "startup": {
+        "http_ready_seconds": 144.714,
+        "memory_plan_to_prefetch_completion_seconds": 135.42,
+        "memory_plan_to_runner_admission_seconds": 138.76,
+        "outside_logged_intervals_seconds": 0.82,
+        "runner_admission_to_listener_seconds": 5.134
+      },
+      "timing_eligible": true,
+      "within_staged_readiness_bound": false
+    },
+    "auto-2": {
+      "cpu_idle_percent": [
+        90.77,
+        96.72
+      ],
+      "matching_actions": 7,
+      "startup": {
+        "http_ready_seconds": 130.687,
+        "memory_plan_to_prefetch_completion_seconds": 121.235,
+        "memory_plan_to_runner_admission_seconds": 124.432,
+        "outside_logged_intervals_seconds": 0.815,
+        "runner_admission_to_listener_seconds": 5.441
+      },
+      "timing_eligible": true,
+      "within_staged_readiness_bound": false
+    },
+    "mapped-1": {
+      "cpu_idle_percent": [
+        91.37,
+        89.46
+      ],
+      "matching_actions": 7,
+      "startup": {
+        "http_ready_seconds": 144.622,
+        "memory_plan_to_runner_admission_seconds": 137.429,
+        "outside_logged_intervals_seconds": 1.628,
+        "runner_admission_to_listener_seconds": 5.566
+      },
+      "timing_eligible": false,
+      "within_staged_readiness_bound": false
+    },
+    "mapped-2": {
+      "cpu_idle_percent": [
+        97.44,
+        95.92
+      ],
+      "matching_actions": 7,
+      "startup": {
+        "http_ready_seconds": 141.76,
+        "memory_plan_to_runner_admission_seconds": 135.515,
+        "outside_logged_intervals_seconds": 0.786,
+        "runner_admission_to_listener_seconds": 5.459
+      },
+      "timing_eligible": true,
+      "within_staged_readiness_bound": false
+    }
+  },
+  "automatic_readiness_passed": false,
+  "crossover_timing_eligible": false,
+  "paired_timing": [
+    {
+      "automatic": "auto-1",
+      "automatic_minus_mapped_seconds": null,
+      "mapped": "mapped-1",
+      "timing_eligible": false
+    },
+    {
+      "automatic": "auto-2",
+      "automatic_minus_mapped_seconds": -11.073,
+      "mapped": "mapped-2",
+      "timing_eligible": true
+    }
+  ],
+  "patch_sha256": "a7ac99469aef046c1193b65a0df996d002dfd839ceef90135a7ea43ecd7f9183",
+  "release_ready": false,
+  "server_sha256": "76f7f1ab3e2a159bc60f7d043fdd9c39f416eabe310ec5666973f6475007ff09",
+  "source_base": "5c43cf896048eda1cb3a1f8444a2d4670a78ba17"
+}
