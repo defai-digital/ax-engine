@@ -1,0 +1,63 @@
+{
+  "scope": "Paired retained-delivery lifecycle on M5 Max 128 GB",
+  "qualification": false,
+  "runtime_commit": "eb57f768a7b1807b3832609779b59b03dad59d33",
+  "readiness_seconds_max": 120,
+  "timing_eligible": true,
+  "arms": {
+    "mapped": {
+      "lifecycle": {
+        "gate": "lifecycle",
+        "passed": true,
+        "detail": "7 actions in each of ['disabled', 'default'] with drained counters"
+      },
+      "readiness_seconds": {
+        "disabled": 117.486,
+        "default": 123.539
+      },
+      "ready_seconds_max": 120,
+      "readiness_band_met": false,
+      "timing_eligible": true,
+      "host_idle_percent": [
+        96.32,
+        96.8
+      ],
+      "pressure_samples": [
+        1,
+        1
+      ],
+      "prefetch_seconds": {
+        "disabled": 0,
+        "default": 0
+      },
+      "raw_lifecycle_sha256": "7e519941138faaeaf08025e91dfc705318eb18bea581e60fedfe1a28c23929b5"
+    },
+    "prefetch": {
+      "lifecycle": {
+        "gate": "lifecycle",
+        "passed": true,
+        "detail": "7 actions in each of ['disabled', 'default'] with drained counters"
+      },
+      "readiness_seconds": {
+        "disabled": 97.901,
+        "default": 119.778
+      },
+      "ready_seconds_max": 120,
+      "readiness_band_met": true,
+      "timing_eligible": true,
+      "host_idle_percent": [
+        98.68,
+        98.47
+      ],
+      "pressure_samples": [
+        1,
+        1
+      ],
+      "prefetch_seconds": {
+        "disabled": 0.394914375,
+        "default": 0.399888791
+      },
+      "raw_lifecycle_sha256": "4ca23edfd4fbfed2abfed4dd711b980726775b6f1b8fe9d9fbd03ec02b604bfe"
+    }
+  }
+}
