@@ -491,7 +491,7 @@ impl Scheduler {
     }
 
     pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
-        self.plan_with_prefill_splits(input, &BTreeMap::new(), None)
+        self.plan_with_prefill_splits(input, &BTreeMap::new(), None, None)
     }
 
     pub(crate) fn plan_with_prefill_splits(
@@ -499,6 +499,7 @@ impl Scheduler {
         input: &SchedulerInput,
         prefill_splits: &BTreeMap<RequestId, PrefillSplit>,
         preferred_prefill: Option<RequestId>,
+        held_prefill: Option<(RequestId, RequestId)>,
     ) -> SchedulePlan {
         let mut frozen_quantum_defers = self.frozen_quantum_defers();
         frozen_quantum_defers.retain(|request_id, _| {
@@ -656,6 +657,17 @@ impl Scheduler {
 
         for (snapshot, mode) in candidates {
             let requested_tokens = schedulable_token_count(snapshot, mode);
+            if let Some((long, short)) = held_prefill
+                && mode == ExecutionMode::Prefill
+                && snapshot.request_id == long
+                && items
+                    .iter()
+                    .any(|item| item.request_id == short && item.mode == ExecutionMode::Decode)
+            {
+                token_budget.record_skipped(mode, requested_tokens);
+                deferred_requests.push(snapshot.request_id);
+                continue;
+            }
             if mode == ExecutionMode::Prefill && decode_cap == Some(0) {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
@@ -1331,13 +1343,13 @@ mod tests {
             },
         )]);
         let scheduler = Scheduler::new();
-        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits, None);
+        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits, None, None);
         assert!(blocked.execution_batch.is_none());
         assert_eq!(blocked.memory_blocked_requests, [RequestId(1)]);
 
         input.memory_pressure = None;
         let resumed = scheduler
-            .plan_with_prefill_splits(&input, &prefill_splits, None)
+            .plan_with_prefill_splits(&input, &prefill_splits, None, None)
             .execution_batch
             .unwrap();
         assert_eq!(

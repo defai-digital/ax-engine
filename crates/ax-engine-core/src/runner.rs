@@ -345,6 +345,11 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         false
     }
 
+    /// Let the short request that used a priority turn finish before resuming its long peer.
+    fn drain_priority_short_in_resident_pair(&self) -> bool {
+        false
+    }
+
     fn begin_ncm(
         &self,
         _request_id: RequestId,

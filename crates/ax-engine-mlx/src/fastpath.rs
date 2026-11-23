@@ -1999,6 +1999,12 @@ env_flag!(
 );
 
 env_flag!(
+    /// Measure finishing a priority short decode before resuming its long prefill peer.
+    flash_next_drain_priority_short_enabled,
+    "AX_MLX_FLASH_NEXT_DRAIN_PRIORITY_SHORT"
+);
+
+env_flag!(
     /// Reuse an audited Flash Next prefix at its existing 2,048-row prefill boundary.
     flash_next_fixed_prefix_extension_enabled,
     "AX_MLX_FLASH_NEXT_FIXED_PREFIX_EXTENSION"

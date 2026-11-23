@@ -5292,6 +5292,10 @@ impl ExecutionRunner for MlxRunner {
         crate::fastpath::flash_next_short_prefill_first_enabled()
     }
 
+    fn drain_priority_short_in_resident_pair(&self) -> bool {
+        crate::fastpath::flash_next_drain_priority_short_enabled()
+    }
+
     fn touch_idle_residency(&self) -> bool {
         // The worker thread already made this stream the default at load.
         // Pin it again so the copy and its eval stay on that stream.
