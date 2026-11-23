@@ -1,0 +1,38 @@
+{
+  "arms": {
+    "drain": {
+      "exact_output_ids": 288,
+      "long_at_handoff": {
+        "output_len": 0,
+        "processed_prompt_tokens": 2048,
+        "state": "runnable"
+      },
+      "medium_started_one_step_after_long_end": true,
+      "medium_wait_steps": 98,
+      "normal_pressure_samples": 91,
+      "peak_footprint_bytes": 92232834512
+    },
+    "mixed": {
+      "exact_output_ids": 288,
+      "long_at_handoff": {
+        "output_len": 81,
+        "processed_prompt_tokens": 8192,
+        "state": "runnable"
+      },
+      "medium_started_one_step_after_long_end": true,
+      "medium_wait_steps": 15,
+      "normal_pressure_samples": 93,
+      "peak_footprint_bytes": 92232604944
+    }
+  },
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "macos": "27.2.1",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "prompt_ids": [
+    "mixed-073",
+    "mixed-074",
+    "mixed-075"
+  ],
+  "qualification": false,
+  "tested_experimental_commit": "71f891b255a4e943a2bb924221ebe62cf6b3fa6e"
+}
