@@ -1,0 +1,34 @@
+{
+  "build": "9df17f26a5d135357b8556a6881e2f1306a5bd29",
+  "cases": [
+    {
+      "accepted_drafts": 25,
+      "budget": 64,
+      "changed_from_direct": [],
+      "input_tokens": 29774,
+      "name": "long_context_record_mass",
+      "rejected_drafts": 13,
+      "verified_output_positions": 63,
+      "verified_steps": 38
+    },
+    {
+      "accepted_drafts": 53,
+      "budget": 128,
+      "changed_from_direct": [],
+      "input_tokens": 32640,
+      "name": "matrix-32640-1",
+      "rejected_drafts": 20,
+      "verified_output_positions": 127,
+      "verified_steps": 74
+    }
+  ],
+  "hardware": {
+    "form_factor": "unrecognized (Mac14,14)",
+    "memory_bytes": 206158430208,
+    "os": "27.2.1",
+    "soc": "Apple M2 Ultra"
+  },
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "qualification": false,
+  "report_sha256": "86e91441e974f6216dd1cb698072a1eec682d146ff7e65722e725ad81bd071a1"
+}

@@ -1,0 +1,21 @@
+{
+  "qa_source_sha256": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4",
+  "matrix_source_sha256": "e962a8c9b41f4002966ff8ec3d8f3d341619d5517833afe41154e40322a255cf",
+  "matrix_vocab_size": 248320,
+  "matrix_workload_seed": "flash-next-fixed-workload",
+  "cases_sha256": "92167309755b18e69805f91ec9484ba5103c968f1fe298ebc3f4247bbe48c6e6",
+  "cases": [
+    {
+      "name": "long_context_record_mass",
+      "budget": 64,
+      "input_tokens": 29774,
+      "prompt_sha256": "678c21a8b07334c90a50d9967f74e051c6174448189f5a0765928978a6d46f6f"
+    },
+    {
+      "name": "matrix-32640-1",
+      "budget": 128,
+      "input_tokens": 32640,
+      "prompt_sha256": "ca8b43f4c3f9d650d8555f7f5684d0f5a9210feed58a493a4d8f51e65d552e0f"
+    }
+  ]
+}
