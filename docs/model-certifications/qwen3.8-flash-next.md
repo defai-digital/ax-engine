@@ -7,8 +7,10 @@ the affine 6-bit/group64 MTP pack (ADR-050). `qwen3.8-flash-next:axq` and
 `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`; `qwen3.8-flash-next:axq-6bit`
 selects `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP` at
 `3c1dd547d70cb7bf01dd0a89c41c400dde32ed39`. Other standalone affine widths stay
-unsupported; MXFP8 pack audit and native admission are pending. Receipts of
-one format do not qualify another.
+unsupported. MXFP8 at `48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b` is an
+explicit local preview with verified publisher files and paged functional
+evidence on M5. Its catalog admission and qualification remain open.
+[MXFP8 preview evidence](../../benchmarks/results/qualification/2026-11-18-flash-next-mxfp8-preview/README.md).
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
 Status: **Candidate; MTP gates open**
@@ -111,17 +113,20 @@ by itself close any gate.
 
 ## Affine 6-bit MTP on MacBook Pro M5 Max 128 GB (2026-10-23, signal only)
 
-The 6-bit pack (`qwen3.8-flash-next:axq-6bit`, ADR-050) runs on the standard host
-only with experts resident: start the server with `--stream-experts off`
-and `--max-concurrent-requests 1`. The default Auto placement streams its
-experts from the SSD there and decodes at 0.17 tok/s. Resident, one request at a
-time with MTP off, it decodes 44.3 / 41.6 / 41.1 tok/s at 1,905 / 2,207 / 8,976
-prompt tokens (TTFT 3.3 / 3.8 / 30.7 s) at about 103 GiB server RSS with no swap
-growth and 15-17% memory free, against MXFP4's 49.9 / 47.3 / 45.7 tok/s at 78 GiB.
-No QA cohort, context above 9k, concurrency, MTP or endurance evidence exists for
-it on this host, and it exceeds the 96 GiB bound of the MXFP4 release gates, so it
-is supported but not qualified. Record:
-[6-bit on M5 Max](../../benchmarks/results/flash-next-6bit-m5-20261023/README.md).
+The October 23 run of `qwen3.8-flash-next:axq-6bit` used
+`--stream-experts off`, `--max-concurrent-requests 1`, and MTP off. Resident
+decode reached 44.3 / 41.6 / 41.1 tok/s at 1,905 / 2,207 / 8,976 prompt
+tokens (TTFT 3.3 / 3.8 / 30.7 s) at about 103 GiB server RSS with no swap
+growth and 15–17% memory free. The then-current Auto planner streamed
+experts and reached 0.17 tok/s. [October 23 measurement](../../benchmarks/results/flash-next-6bit-m5-20261023/README.md).
+
+The priced Auto plan kept the pack resident on the same hardware by
+admitting one live sequence and queueing additional work. Use
+`--max-concurrent-requests 1` to request that limit explicitly and
+`--stream-experts off` to reproduce the earlier forced-resident placement.
+Check the placement and any priced admission cap in `GET /v1/memory`.
+The 6-bit pack has its own support evidence and still needs qualification.
+[Priced-placement measurement](../../benchmarks/results/reference-wave-m5max-20261024/README.md).
 
 ## Published v7.9.0 on the standard host (2026-10-24)
 
