@@ -31,7 +31,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_ACTIVATION_DTYPE", shipped: "auto", class: SwitchClass::Token("act=f16") },
     SwitchRow { env: "AX_NO_SPEC", shipped: "off", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_SKIP_MTP_SIDECAR", shipped: "off", class: SwitchClass::NonNumeric("draft") },
-    SwitchRow { env: "AX_MLX_FLASH_NEXT_MTP_SIDECAR_PREFETCH", shipped: "off", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_MTP_SIDECAR_PREFETCH", shipped: "auto", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY", shipped: "off", class: SwitchClass::NonNumeric("telemetry") },
     SwitchRow { env: "AX_MLX_DECODE_SAMPLING_GPU_TOPK", shipped: "on", class: SwitchClass::NonNumeric("sampling") },
     SwitchRow { env: "AX_THINK_SOFT_CLOSE", shipped: "on", class: SwitchClass::NonNumeric("sampling") },

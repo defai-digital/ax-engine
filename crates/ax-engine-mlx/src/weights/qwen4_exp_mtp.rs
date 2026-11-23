@@ -36,6 +36,9 @@ use super::qwen4_exp::{
 };
 use super::{QuantizedWeight, WeightLoadError, take_named_weight};
 
+#[cfg(target_os = "macos")]
+mod prefetch_policy;
+
 const MTP_SIDECAR_FILE: &str = "mtp.safetensors";
 const MTP_RUNTIME_FILE: &str = "mtplx_runtime.json";
 const MTP_HEADER_MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -555,7 +558,12 @@ pub(crate) fn load(
         &source,
         &specs,
         #[cfg(target_os = "macos")]
-        crate::fastpath::flash_next_mtp_sidecar_prefetch_enabled(),
+        prefetch_policy::enabled(
+            &canonical_root,
+            &source.metadata,
+            source.matches_prefetch_layout,
+            trunk.expert_stream.is_some(),
+        ),
     )?;
     validate_loaded(&specs, &name_map)?;
     apply_norm_layout(norm_layout, &expected, &mut name_map)?;
@@ -781,6 +789,8 @@ fn ensure_sidecar_unchanged(path: &Path, header_source: &Metadata) -> Result<(),
 struct SidecarSource {
     file: File,
     metadata: Metadata,
+    #[cfg(target_os = "macos")]
+    matches_prefetch_layout: bool,
 }
 
 fn load_sidecar_payload(
@@ -963,6 +973,8 @@ fn read_sidecar_header_specs(
         specs,
         SidecarSource {
             file,
+            #[cfg(target_os = "macos")]
+            matches_prefetch_layout: prefetch_policy::matches_header(header_source.len(), &header),
             metadata: header_source,
         },
     ))
