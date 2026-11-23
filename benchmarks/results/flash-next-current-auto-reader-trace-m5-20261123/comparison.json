@@ -1,0 +1,129 @@
+{
+  "binary_bound_to_crossover": true,
+  "endpoint_cpu_idle_percent": [
+    97.45,
+    93.43
+  ],
+  "geometry_sha256": "2dee8d00f1666356bcd8c79189ab13b28324e4bc3e4258b5bd1133e9a5af9110",
+  "matched_lifecycle_actions": 7,
+  "qualification": false,
+  "ready_seconds": 131.7,
+  "release_ready": false,
+  "resident_fraction_of_ready": 0.9137,
+  "resident_timer_breakdown": {
+    "read_and_allocate_us": 120320806,
+    "sync_eval_us": 348,
+    "unattributed_us": 1805
+  },
+  "scope": "Instrumented retained-pack startup and seven API lifecycle controls",
+  "server_sha256": "76f7f1ab3e2a159bc60f7d043fdd9c39f416eabe310ec5666973f6475007ff09",
+  "shards": [
+    {
+      "name": "model-00001-of-00025.safetensors",
+      "read_and_allocate_us": 5950296,
+      "sync_eval_us": 215,
+      "tensors": 78
+    },
+    {
+      "name": "model-00012-of-00025.safetensors",
+      "read_and_allocate_us": 11059,
+      "sync_eval_us": 6,
+      "tensors": 35
+    },
+    {
+      "name": "model-00013-of-00025.safetensors",
+      "read_and_allocate_us": 543143,
+      "sync_eval_us": 9,
+      "tensors": 124
+    },
+    {
+      "name": "model-00014-of-00025.safetensors",
+      "read_and_allocate_us": 534984,
+      "sync_eval_us": 9,
+      "tensors": 158
+    },
+    {
+      "name": "model-00015-of-00025.safetensors",
+      "read_and_allocate_us": 3758719,
+      "sync_eval_us": 10,
+      "tensors": 158
+    },
+    {
+      "name": "model-00016-of-00025.safetensors",
+      "read_and_allocate_us": 11109399,
+      "sync_eval_us": 9,
+      "tensors": 124
+    },
+    {
+      "name": "model-00017-of-00025.safetensors",
+      "read_and_allocate_us": 11308340,
+      "sync_eval_us": 10,
+      "tensors": 158
+    },
+    {
+      "name": "model-00018-of-00025.safetensors",
+      "read_and_allocate_us": 11423108,
+      "sync_eval_us": 10,
+      "tensors": 158
+    },
+    {
+      "name": "model-00019-of-00025.safetensors",
+      "read_and_allocate_us": 11424895,
+      "sync_eval_us": 12,
+      "tensors": 124
+    },
+    {
+      "name": "model-00020-of-00025.safetensors",
+      "read_and_allocate_us": 11510595,
+      "sync_eval_us": 10,
+      "tensors": 158
+    },
+    {
+      "name": "model-00021-of-00025.safetensors",
+      "read_and_allocate_us": 11632166,
+      "sync_eval_us": 12,
+      "tensors": 158
+    },
+    {
+      "name": "model-00022-of-00025.safetensors",
+      "read_and_allocate_us": 10402933,
+      "sync_eval_us": 9,
+      "tensors": 124
+    },
+    {
+      "name": "model-00023-of-00025.safetensors",
+      "read_and_allocate_us": 12366033,
+      "sync_eval_us": 11,
+      "tensors": 158
+    },
+    {
+      "name": "model-00024-of-00025.safetensors",
+      "read_and_allocate_us": 10581739,
+      "sync_eval_us": 10,
+      "tensors": 158
+    },
+    {
+      "name": "model-00025-of-00025.safetensors",
+      "read_and_allocate_us": 7763397,
+      "sync_eval_us": 6,
+      "tensors": 69
+    }
+  ],
+  "startup_phases_us": {
+    "mtp_sidecar": 1444794,
+    "resident_selection": 12906,
+    "resident_tensors": 120335865,
+    "trunk_admission": 23190,
+    "trunk_assembly": 13209,
+    "trunk_weight_contract": 677608,
+    "vision_tower": 40
+  },
+  "system_vm_delta_bytes": {
+    "compressions": 0,
+    "decompressions": 3522560,
+    "pageins": 61644668928,
+    "pageouts": 0,
+    "swapins": 0,
+    "swapouts": 0
+  }
+}
