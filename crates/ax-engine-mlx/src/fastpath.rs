@@ -1946,6 +1946,12 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_PREFILL_SPLIT"
 );
 
+env_flag!(
+    /// Reuse an audited Flash Next prefix at its existing 2,048-row prefill boundary.
+    flash_next_fixed_prefix_extension_enabled,
+    "AX_MLX_FLASH_NEXT_FIXED_PREFIX_EXTENSION"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
     /// requests of one engine step take a DFlash2 round, verify them in one
@@ -7682,6 +7688,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 pub(crate) struct NumericsTierSwitches {
     pub(crate) dflash2_cohort_lane_head: bool,
     pub(crate) flash_next_direct_coalescing: bool,
+    pub(crate) flash_next_fixed_prefix_extension: bool,
     pub(crate) indexed_prefill: bool,
     pub(crate) tiled_prefill_chunk: Option<usize>,
     pub(crate) decode_block_key: bool,
@@ -7834,6 +7841,7 @@ impl Default for NumericsTierSwitches {
         Self {
             dflash2_cohort_lane_head: false,
             flash_next_direct_coalescing: false,
+            flash_next_fixed_prefix_extension: false,
             indexed_prefill: false,
             tiled_prefill_chunk: None,
             decode_block_key: false,
@@ -7994,6 +8002,8 @@ impl NumericsTierSwitches {
                 && dflash2_cohort_lane_head_enabled(),
             flash_next_direct_coalescing: model_family == "qwen4_exp"
                 && flash_next_direct_coalescing_enabled(),
+            flash_next_fixed_prefix_extension: model_family == "qwen4_exp"
+                && flash_next_fixed_prefix_extension_enabled(),
             indexed_prefill: flash_next_qsa_indexed_prefill_enabled(),
             tiled_prefill_chunk: flash_next_qsa_tiled_outer_prefill_chunk(),
             decode_block_key: flash_next_qsa_decode_block_key_enabled(),
@@ -8255,6 +8265,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if switches.flash_next_direct_coalescing {
         tokens.push("two_resident_direct_rows".to_string());
+    }
+    if switches.flash_next_fixed_prefix_extension {
+        tokens.push("flash_next_fixed_prefix_extension".to_string());
     }
     if switches.indexed_prefill {
         tokens.push("indexed".to_string());

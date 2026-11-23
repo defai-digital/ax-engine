@@ -1278,7 +1278,11 @@ enum NgramRequestDisableReason {
     LinearInitialNoDraft,
 }
 
+const FLASH_NEXT_FIXED_PREFIX_TOKENS: usize = 2048;
+const FLASH_NEXT_FIXED_PREFIX_SUFFIX: usize = 64;
+
 struct PromptPrefixSnapshotStoreOptions<'a> {
+    flash_next_fixed_prefix: bool,
     linear_boundary_snapshot: Option<&'a (usize, MlxKVCache)>,
     prefill_completes_prompt: bool,
     greedy_prefill_output_token: Option<u32>,
@@ -1653,6 +1657,8 @@ pub struct MlxRunner {
     /// prefix tier is then ineligible (a path-only identity could restore
     /// stale KV after an in-place checkpoint replacement).
     artifact_fingerprint: Option<String>,
+    /// Fixed-partition reuse is restricted to the audited MXFP4 format.
+    flash_next_fixed_prefix_mxfp4: bool,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Full direct Flash Next snapshots admitted before scheduler reuse.
     /// Retaining the Arc prevents eviction from turning a hit into a replay
@@ -3480,6 +3486,9 @@ impl MlxRunner {
                 artifacts,
                 crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
             ),
+            flash_next_fixed_prefix_mxfp4:
+                crate::fastpath::flash_next_fixed_prefix_extension_enabled()
+                    && artifacts.audited_qwen4_exp_mxfp4(),
             states: Mutex::new(HashMap::new()),
             prepared_prefixes: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
@@ -7451,6 +7460,7 @@ impl MlxRunner {
                 block_size_tokens,
                 state,
                 PromptPrefixSnapshotStoreOptions {
+                    flash_next_fixed_prefix: false,
                     linear_boundary_snapshot: None,
                     prefill_completes_prompt: true,
                     greedy_prefill_output_token:
@@ -8424,6 +8434,39 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
+                    let flash_next_fixed_prefix = self.flash_next_fixed_prefix_mxfp4
+                        && is_greedy
+                        && staged_batched_prefill.is_none()
+                        && (prefill_completes_prompt
+                            || ctx.is_some_and(|context| context.prompt_len as usize
+                                == FLASH_NEXT_FIXED_PREFIX_TOKENS + FLASH_NEXT_FIXED_PREFIX_SUFFIX))
+                        && state.cache.seq_len() == 0
+                        && item.position_range.start == 0
+                        && item.reused_prefix_token_slice.is_empty()
+                        && prefill_tokens.len() == FLASH_NEXT_FIXED_PREFIX_TOKENS
+                        && token_ids.len() == FLASH_NEXT_FIXED_PREFIX_TOKENS
+                        && prefill_chunk_for_request == 512
+                        && adaptive_prefill_chunk.is_none()
+                        && prefill_split_end.is_none()
+                        && media_key.as_deref() == Some("")
+                        && ctx.is_some_and(|context| context.processed_prompt_tokens == 0)
+                        && prefill_output_token_cacheable(ctx, sampling)
+                        && self.flash_next_exact_prefix_only()
+                        && self.disable_ngram_acceleration
+                        && self.disk_prefix_cache.is_none()
+                        && self.prefill_chunk == 1024
+                        && self.cold_prefill_chunk == 1024
+                        && block_size_tokens == 16
+                        && !crate::fastpath::prefix_semantic_cuts_enabled()
+                        && !crate::fastpath::prefix_restore_value_enabled()
+                        && self.cfg.kv_cache_quant.iter().all(Option::is_none)
+                        && !self.native_fa_prefix_sharing_enabled()
+                        && !state.cache.has_fa_pool()
+                        && self.weights.qwen4_exp.as_ref().is_some_and(|weights| {
+                            weights.expert_stream.is_none()
+                                && matches!(weights.target_schedule,
+                                    crate::weights::qwen4_exp::Qwen4ExpTargetSchedule::CanonicalSingleton)
+                        });
                     let prefill_output_token = if let Some(logical_end) = prefill_split_end {
                         let single = prefill_tokens.len() == 1;
                         let end = item.position_range.end_exclusive;
@@ -8603,22 +8646,35 @@ impl MlxRunner {
                         };
                         Some(tok)
                     } else if !prefill_completes_prompt {
-                        chunked_prefill_cache_only(
-                            &self.cfg,
-                            &self.weights,
-                            prefill_tokens,
-                            &mut state.cache,
-                            prefill_chunk_for_request,
-                            if is_greedy {
-                                CacheOnlyPrefillLayout::PreserveFinalTokenStep
-                            } else {
-                                CacheOnlyPrefillLayout::Batched
-                            },
-                            // This quantum does not complete the prompt: more
-                            // prefill items follow, so submit instead of
-                            // blocking on a growing full-cache barrier.
-                            crate::generate::CacheOnlyBarrier::AsyncSubmit,
-                        );
+                        // Keep the original cache-only item in the scheduler. A
+                        // successful restore skips its GPU forwards and leaves the
+                        // uncached suffix to the next ordinary prefill item.
+                        if !flash_next_fixed_prefix
+                            || !self.restore_flash_next_fixed_prefix(
+                                &mut state.cache,
+                                model_id,
+                                block_size_tokens,
+                                prefill_tokens,
+                                &mut prefix_cache,
+                            )
+                        {
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                prefill_tokens,
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                if is_greedy {
+                                    CacheOnlyPrefillLayout::PreserveFinalTokenStep
+                                } else {
+                                    CacheOnlyPrefillLayout::Batched
+                                },
+                                // This quantum does not complete the prompt: more
+                                // prefill items follow, so submit instead of
+                                // blocking on a growing full-cache barrier.
+                                crate::generate::CacheOnlyBarrier::AsyncSubmit,
+                            );
+                        }
                         state
                             .decode_telemetry
                             .record_prefill_cache_only_continuation();
@@ -8757,6 +8813,8 @@ impl MlxRunner {
                                 block_size_tokens,
                                 &state,
                                 PromptPrefixSnapshotStoreOptions {
+                                    flash_next_fixed_prefix: flash_next_fixed_prefix
+                                        && prefill_completes_prompt,
                                     linear_boundary_snapshot: linear_boundary_snapshot.as_ref(),
                                     prefill_completes_prompt,
                                     greedy_prefill_output_token: prefill_output_token
@@ -10110,6 +10168,49 @@ impl MlxRunner {
         self.cfg.model_family == "qwen4_exp" && !self.mtp_requested
     }
 
+    fn restore_flash_next_fixed_prefix(
+        &self,
+        cache: &mut MlxKVCache,
+        model_id: &str,
+        block_size_tokens: u32,
+        tokens: &[u32],
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) -> bool {
+        if crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal {
+            return false;
+        }
+        let key = self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, "");
+        let mut store = self.prefix_cache.lock();
+        let Some(snapshot) =
+            store.get_flash_next_fixed_prefix(&key, tokens, self.cfg.compile_cache_identity)
+        else {
+            return false;
+        };
+        let stats = store.stats();
+        drop(store);
+        let Ok(mut restored) = snapshot.rehydrate_cache() else {
+            telemetry.record_blocked_restore_error();
+            return false;
+        };
+        if restored.has_fa_pool()
+            || self
+                .verify_restored_prefix_snapshot(&mut restored, tokens.len())
+                .is_err()
+        {
+            telemetry.record_blocked_snapshot_incomplete();
+            return false;
+        }
+        restored.set_kv_quant_table(self.cfg.kv_cache_quant.clone());
+        *cache = restored;
+        telemetry.hits = telemetry.hits.saturating_add(1);
+        telemetry.reused_tokens = telemetry
+            .reused_tokens
+            .saturating_add(saturating_u32(tokens.len()));
+        telemetry.record_stats(stats);
+        telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+        true
+    }
+
     fn restore_prepared_flash_prefix(
         &self,
         state: &mut RequestState,
@@ -11185,6 +11286,7 @@ impl MlxRunner {
             return MlxPrefixCacheTelemetry::default();
         }
         let PromptPrefixSnapshotStoreOptions {
+            flash_next_fixed_prefix,
             linear_boundary_snapshot,
             prefill_completes_prompt,
             greedy_prefill_output_token,
@@ -11402,6 +11504,12 @@ impl MlxRunner {
                         .get(&prefix_len)
                         .map(Arc::as_ref),
                 );
+                let superseding = superseding
+                    && (!flash_next_fixed_prefix
+                        || cache.entries.get(&store_key).is_some_and(|entry| {
+                            entry.snapshot.flash_next_fixed_prefix_owner
+                                == Some(self.cfg.compile_cache_identity)
+                        }));
                 if superseding {
                     telemetry.record_stats(cache.stats());
                 }
@@ -11584,17 +11692,21 @@ impl MlxRunner {
             let key_for_disk = disk_payload.as_ref().map(|_| store_key.clone());
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
-                let outcome = cache.insert(
-                    store_key.clone(),
-                    MlxPrefixSnapshot::from_shared_payload(
-                        payload,
-                        tokens.to_vec(),
-                        prefix_len,
-                        snapshot_prefill_output_token,
-                        mtp_cursor_payload,
-                    )
-                    .with_dflash2(state.dflash2_prefix_snapshots.get(&prefix_len).cloned()),
-                );
+                let mut snapshot = MlxPrefixSnapshot::from_shared_payload(
+                    payload,
+                    tokens.to_vec(),
+                    prefix_len,
+                    snapshot_prefill_output_token,
+                    mtp_cursor_payload,
+                )
+                .with_dflash2(state.dflash2_prefix_snapshots.get(&prefix_len).cloned());
+                if flash_next_fixed_prefix
+                    && prefix_len == FLASH_NEXT_FIXED_PREFIX_TOKENS
+                    && snapshot_prefill_output_token.is_some()
+                {
+                    snapshot.flash_next_fixed_prefix_owner = Some(self.cfg.compile_cache_identity);
+                }
+                let outcome = cache.insert(store_key.clone(), snapshot);
                 telemetry.record_stats(cache.stats());
                 outcome
             };

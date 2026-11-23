@@ -3828,8 +3828,58 @@ fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefix
         token_count,
         bytes,
         greedy_prefill_output_token: Some(7),
+        flash_next_fixed_prefix_owner: None,
         mtp_cursor_payload: None,
     }
+}
+
+#[test]
+fn flash_next_fixed_prefix_requires_the_same_loaded_model() {
+    let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1024,
+        max_entries: 2,
+    });
+    let key = test_prefix_key(1);
+    let mut snapshot = test_prefix_snapshot(1, 4, 100);
+    cache.insert(key.clone(), snapshot.clone());
+    assert!(
+        cache
+            .get_flash_next_fixed_prefix(&key, &[1; 4], 3)
+            .is_none()
+    );
+
+    snapshot.flash_next_fixed_prefix_owner = Some(3);
+    cache.insert(key.clone(), snapshot);
+    cache.insert(test_prefix_key(2), test_prefix_snapshot(2, 4, 100));
+    assert!(
+        cache
+            .get_flash_next_fixed_prefix(&key, &[1; 4], 4)
+            .is_none()
+    );
+    assert!(
+        cache
+            .get_flash_next_fixed_prefix(&key, &[9; 4], 3)
+            .is_none()
+    );
+    cache.insert(test_prefix_key(3), test_prefix_snapshot(3, 4, 100));
+    assert!(
+        cache.get(&key, &[1; 4]).is_none(),
+        "rejected looks must stay cold"
+    );
+
+    let mut replacement = test_prefix_snapshot(1, 4, 100);
+    replacement.flash_next_fixed_prefix_owner = Some(4);
+    cache.insert(key.clone(), replacement);
+    assert!(
+        cache
+            .get_flash_next_fixed_prefix(&key, &[1; 4], 3)
+            .is_none()
+    );
+    assert!(
+        cache
+            .get_flash_next_fixed_prefix(&key, &[1; 4], 4)
+            .is_some()
+    );
 }
 
 #[test]
@@ -3997,6 +4047,7 @@ fn portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder() {
                     token_count: len,
                     bytes: snapshot_charge_bytes(per_token * len as u64 + header, len),
                     greedy_prefill_output_token: None,
+                    flash_next_fixed_prefix_owner: None,
                     mtp_cursor_payload: None,
                 };
                 cache.insert(key, snapshot);
