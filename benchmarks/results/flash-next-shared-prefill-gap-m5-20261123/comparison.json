@@ -1,0 +1,123 @@
+{
+  "arms": {
+    "drain-first": {
+      "gaps_by_ending_work": {
+        "short_decode": {
+          "at_least_100_ms": 0,
+          "maximum_ms": 28.305417043156922,
+          "median_ms": 20.1416244963184,
+          "minimum_ms": 0.4628750029951334,
+          "p95_ms": 22.409333963878453,
+          "samples": 1330
+        }
+      },
+      "largest_gap_by_ending_work": {
+        "short_decode": 14
+      },
+      "matched_short_requests": 14
+    },
+    "drain-second": {
+      "gaps_by_ending_work": {
+        "short_decode": {
+          "at_least_100_ms": 0,
+          "maximum_ms": 31.190167006570846,
+          "median_ms": 20.65308397868648,
+          "minimum_ms": 0.46679197112098336,
+          "p95_ms": 27.09683298598975,
+          "samples": 1425
+        }
+      },
+      "largest_gap_by_ending_work": {
+        "short_decode": 15
+      },
+      "matched_short_requests": 15
+    },
+    "mixed-first": {
+      "gaps_by_ending_work": {
+        "shared_prefill_1": {
+          "at_least_100_ms": 1,
+          "maximum_ms": 103.51124999579042,
+          "median_ms": 63.61610401654616,
+          "minimum_ms": 55.71616598172113,
+          "p95_ms": 95.75404203496873,
+          "samples": 42
+        },
+        "shared_prefill_511": {
+          "at_least_100_ms": 42,
+          "maximum_ms": 958.8350420235656,
+          "median_ms": 825.8133539929986,
+          "minimum_ms": 773.1977499788627,
+          "p95_ms": 921.5599590097554,
+          "samples": 42
+        },
+        "shared_prefill_512": {
+          "at_least_100_ms": 126,
+          "maximum_ms": 1074.8168749851175,
+          "median_ms": 817.4560210318305,
+          "minimum_ms": 740.1901669800282,
+          "p95_ms": 925.6796659901738,
+          "samples": 126
+        },
+        "two_decoders": {
+          "at_least_100_ms": 0,
+          "maximum_ms": 60.74841599911451,
+          "median_ms": 43.326146027538925,
+          "minimum_ms": 22.400583024136722,
+          "p95_ms": 47.34520800411701,
+          "samples": 1120
+        }
+      },
+      "largest_gap_by_ending_work": {
+        "shared_prefill_511": 6,
+        "shared_prefill_512": 8
+      },
+      "matched_short_requests": 14
+    },
+    "mixed-second": {
+      "gaps_by_ending_work": {
+        "shared_prefill_1": {
+          "at_least_100_ms": 0,
+          "maximum_ms": 95.50075000151992,
+          "median_ms": 60.92758401064202,
+          "minimum_ms": 57.37491598119959,
+          "p95_ms": 90.78349999617785,
+          "samples": 45
+        },
+        "shared_prefill_511": {
+          "at_least_100_ms": 45,
+          "maximum_ms": 895.8785000140779,
+          "median_ms": 798.6373750027269,
+          "minimum_ms": 772.332834021654,
+          "p95_ms": 876.1152499937452,
+          "samples": 45
+        },
+        "shared_prefill_512": {
+          "at_least_100_ms": 135,
+          "maximum_ms": 915.6501659890637,
+          "median_ms": 787.3133749817498,
+          "minimum_ms": 739.913749974221,
+          "p95_ms": 876.4755830052309,
+          "samples": 135
+        },
+        "two_decoders": {
+          "at_least_100_ms": 0,
+          "maximum_ms": 54.73229201743379,
+          "median_ms": 43.078541493741795,
+          "minimum_ms": 22.49791700160131,
+          "p95_ms": 47.06812504446134,
+          "samples": 1200
+        }
+      },
+      "largest_gap_by_ending_work": {
+        "shared_prefill_511": 8,
+        "shared_prefill_512": 7
+      },
+      "matched_short_requests": 15
+    }
+  },
+  "qualification": false,
+  "scope": "Client output gaps of matched short requests in the signed M5 natural-arrival capture",
+  "server_sha256": "eb4bb164783b57f32d63197c924588f76526d8e220f49fccd77e72a6e10060a2",
+  "source_archive_sha256": "33217dc7bbeb396fc92cab92d7403eb48a67a995c5a28d0d5776a56f3a0ff54d",
+  "source_comparison_sha256": "2fbc0a55003b6fc9a8785a9392d4912993878dbb4568f2ac6ebab919c3e133fa"
+}
