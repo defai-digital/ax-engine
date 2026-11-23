@@ -1,0 +1,118 @@
+{
+  "disclosure": "The memory, readiness and long-lookup bounds were set after observing the single measurements named above and are therefore descriptive guard rails, not independently pre-registered limits. The reference-relative, quality and identity bounds were frozen before any reference or product-default data were collected.",
+  "evidence_sha256": {
+    "delivery": "7d499e108421f4c06f7ec29a43079a446249afefa2eca1d87f574ce706ba94ea",
+    "delivery_controls": "5408dfbe7759535a17afd95de83a95119f83180fb26e1417e83cf32147abe5af",
+    "lifecycle": "7924bbe552fe85e16d80f61b5f4db55ef860cd11526dc61625a7c209ed6a3ba1",
+    "matrix": "a1d7fd14eee0f4193382ee06597e77c8c3943ae98e239799d4a6f9c985ebf686",
+    "matrix_raw": "934da2a11fd5c24519b8a2ded324121b4f523ea3b87e0bcff5c1e711aada2fb4",
+    "qa": "236351765891c26d225865f1d9ff5efc841cb80c20bc139ebc8d7c5c781b7e4a",
+    "qa_default_rows": "0f2d3a14cea1299c8a2d10eea66ae7c0d8e5c47a3125500573e86e49c6be4f38",
+    "qa_disabled_rows": "7b6f68ed3c39678db9afe776343037217f483abd2d5175c715cb935be1275e59",
+    "reference": "868bdf9cd3937b3b49323e75fe38979a206ba16e8d529efa54c016820322673d"
+  },
+  "frozen_inputs_sha256": {
+    "check_flash_next_release_gates.py": "3041a6fbd8099193b32c817ca830661b07a5da0e400a6523f9d05212b5631ead",
+    "flash_next_release_thresholds.json": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b",
+    "qualify_qwen38_flash_next.py": "ff020ed48cdc87e56d56a3213f0485e56a2dbf7c1f1c60587d0174c5fc9f0b4c"
+  },
+  "gates": [
+    {
+      "detail": "49 members, 132261877478 bytes verified from an empty cache",
+      "download_seconds": 1001.417,
+      "failed_attempts": 0,
+      "gate": "delivery",
+      "passed": true
+    },
+    {
+      "detail": "matrix: before and after must record CPU idle between 90.0% and 100%; reference: before and after must record CPU idle between 90.0% and 100%",
+      "gate": "integrity",
+      "passed": false
+    },
+    {
+      "ax_failures": {
+        "default": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "disabled": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ]
+      },
+      "ax_only_failures": {
+        "default": null,
+        "disabled": null
+      },
+      "detail": "reference QA is incomplete",
+      "gate": "quality",
+      "passed": false,
+      "reference_failures": null
+    },
+    {
+      "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+      "gate": "lifecycle",
+      "passed": true
+    },
+    {
+      "detail": "peak server RSS {disabled: 78.7, default: 78.9} GiB within 96 GiB",
+      "gate": "memory",
+      "passed": true,
+      "peaks_gib": {
+        "default": 78.879,
+        "disabled": 78.747
+      }
+    },
+    {
+      "delivered": {
+        "default": 112.099,
+        "disabled": 94.949,
+        "required": 112.088
+      },
+      "detail": "first load after delivery 94.949s; staged-pack worst 111.074s",
+      "gate": "readiness",
+      "passed": true
+    },
+    {
+      "detail": "29774-token lookup took {'disabled': 42.118, 'default': 40.811} s (limit 400 s)",
+      "gate": "long_lookup",
+      "passed": true,
+      "seconds": {
+        "default": 40.811,
+        "disabled": 42.118
+      }
+    },
+    {
+      "cells": {},
+      "detail": "reference matrix is incomplete; reference: expected two warmups and three measurements at each of (512, 2048, 8192); reference: expected a SHA-256 for every fixed-workload prompt; 512/disabled: missing timing; 512/default: missing timing; 2048/disabled: missing timing; 2048/default: missing timing; 8192/disabled: missing timing; 8192/default: missing timing",
+      "gate": "reference_relative",
+      "passed": false
+    },
+    {
+      "default_verified_steps": {
+        "lifecycle": 0.0,
+        "matrix": 0.0,
+        "qa": 0.0
+      },
+      "detail": "default mode never activated the drafter in any harness; required MTP stays an explicit opt-in and MTP-S/P/D remain not_assessed",
+      "gate": "mtp_policy",
+      "passed": true
+    }
+  ],
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  },
+  "native_build_commit": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+  "native_server_sha256": "935178edb7bfb90d61ec780c3350bf409dfa61c2fc1a4e2dd131af24b7ac6778",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "release_ready": false,
+  "release_scope": "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in (--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed.",
+  "schema": "ax-engine.flash-next.release-verdict.v1",
+  "thresholds_sha256": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b"
+}
