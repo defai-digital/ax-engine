@@ -26,6 +26,14 @@ client run and show unequal CPU conditions during service. Relative
 throughput and offered TTFT change direction between orders. The
 run supplies no repeatable whole-workload speedup.
 
+The reverse drain run's host CPU idle drops to 13.7% in the fourth
+minute and 41.6% in the fifth. Median client-lane wait for arrivals
+in those minutes rises from 4.36 s in minute three to 38.20 s and
+53.52 s. It reaches 92.01 s in minute 14, when host idle is back at
+92.2%. The time series uses only CPU sample intervals that fall
+inside each minute at every plausible clock offset. The host ticks
+cannot identify which processes used the CPU.
+
 Matching on short prompt, long peer and long cursor at the priority
 turn gives 14 first-order and 15 reverse-order pairs. Every matched
 short request has a smaller maximum output gap with drain. The median
@@ -57,4 +65,5 @@ client metadata fields and retains the original capture hashes.
 ```sh
 shasum -a 256 -c SHA256SUMS
 python3.12 -B replay.py | cmp comparison.json -
+python3.12 -B replay.py --client-window | cmp client-window.json -
 ```

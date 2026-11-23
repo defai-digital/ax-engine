@@ -1,0 +1,362 @@
+{
+  "comparison_sha256": "2fbc0a55003b6fc9a8785a9392d4912993878dbb4568f2ac6ebab919c3e133fa",
+  "scope": "Descriptive time alignment of host CPU and client queues",
+  "arms": {
+    "drain-first": {
+      "clock_offset_upper_bound_s": 6.487914459023159,
+      "conservative_minute_windows": [
+        {
+          "minute": 1,
+          "client_lane_wait_median_s": 0.627,
+          "host_cpu_idle_percent": 91.435,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 2,
+          "client_lane_wait_median_s": 2.976,
+          "host_cpu_idle_percent": 93.496,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 3,
+          "client_lane_wait_median_s": 2.187,
+          "host_cpu_idle_percent": 90.97,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 4,
+          "client_lane_wait_median_s": 4.944,
+          "host_cpu_idle_percent": 88.146,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 5,
+          "client_lane_wait_median_s": 3.799,
+          "host_cpu_idle_percent": 93.499,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 6,
+          "client_lane_wait_median_s": 4.883,
+          "host_cpu_idle_percent": 92.188,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 7,
+          "client_lane_wait_median_s": 3.727,
+          "host_cpu_idle_percent": 91.194,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 8,
+          "client_lane_wait_median_s": 5.638,
+          "host_cpu_idle_percent": 92.449,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 9,
+          "client_lane_wait_median_s": 4.371,
+          "host_cpu_idle_percent": 92.164,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 10,
+          "client_lane_wait_median_s": 6.322,
+          "host_cpu_idle_percent": 91.871,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 11,
+          "client_lane_wait_median_s": 5.069,
+          "host_cpu_idle_percent": 93.924,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 12,
+          "client_lane_wait_median_s": 6.228,
+          "host_cpu_idle_percent": 94.481,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 13,
+          "client_lane_wait_median_s": 4.173,
+          "host_cpu_idle_percent": 93.824,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 14,
+          "client_lane_wait_median_s": 6.356,
+          "host_cpu_idle_percent": 90.861,
+          "whole_cpu_intervals": 10
+        }
+      ]
+    },
+    "drain-second": {
+      "clock_offset_upper_bound_s": 7.180846875009479,
+      "conservative_minute_windows": [
+        {
+          "minute": 1,
+          "client_lane_wait_median_s": 1.206,
+          "host_cpu_idle_percent": 90.542,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 2,
+          "client_lane_wait_median_s": 1.655,
+          "host_cpu_idle_percent": 89.56,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 3,
+          "client_lane_wait_median_s": 4.362,
+          "host_cpu_idle_percent": 77.008,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 4,
+          "client_lane_wait_median_s": 38.204,
+          "host_cpu_idle_percent": 13.691,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 5,
+          "client_lane_wait_median_s": 53.524,
+          "host_cpu_idle_percent": 41.559,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 6,
+          "client_lane_wait_median_s": 63.224,
+          "host_cpu_idle_percent": 77.572,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 7,
+          "client_lane_wait_median_s": 65.847,
+          "host_cpu_idle_percent": 86.555,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 8,
+          "client_lane_wait_median_s": 71.53,
+          "host_cpu_idle_percent": 87.135,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 9,
+          "client_lane_wait_median_s": 74.585,
+          "host_cpu_idle_percent": 87.032,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 10,
+          "client_lane_wait_median_s": 80.33,
+          "host_cpu_idle_percent": 86.233,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 11,
+          "client_lane_wait_median_s": 84.295,
+          "host_cpu_idle_percent": 86.913,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 12,
+          "client_lane_wait_median_s": 88.574,
+          "host_cpu_idle_percent": 86.646,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 13,
+          "client_lane_wait_median_s": 88.788,
+          "host_cpu_idle_percent": 88.857,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 14,
+          "client_lane_wait_median_s": 92.008,
+          "host_cpu_idle_percent": 92.194,
+          "whole_cpu_intervals": 10
+        }
+      ]
+    },
+    "mixed-first": {
+      "clock_offset_upper_bound_s": 6.613603416015394,
+      "conservative_minute_windows": [
+        {
+          "minute": 1,
+          "client_lane_wait_median_s": 0.397,
+          "host_cpu_idle_percent": 91.717,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 2,
+          "client_lane_wait_median_s": 1.424,
+          "host_cpu_idle_percent": 85.428,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 3,
+          "client_lane_wait_median_s": 3.374,
+          "host_cpu_idle_percent": 89.574,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 4,
+          "client_lane_wait_median_s": 7.567,
+          "host_cpu_idle_percent": 89.347,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 5,
+          "client_lane_wait_median_s": 7.874,
+          "host_cpu_idle_percent": 88.719,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 6,
+          "client_lane_wait_median_s": 9.818,
+          "host_cpu_idle_percent": 90.487,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 7,
+          "client_lane_wait_median_s": 11.906,
+          "host_cpu_idle_percent": 83.74,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 8,
+          "client_lane_wait_median_s": 15.021,
+          "host_cpu_idle_percent": 91.62,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 9,
+          "client_lane_wait_median_s": 17.147,
+          "host_cpu_idle_percent": 88.205,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 10,
+          "client_lane_wait_median_s": 23.271,
+          "host_cpu_idle_percent": 85.849,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 11,
+          "client_lane_wait_median_s": 26.504,
+          "host_cpu_idle_percent": 83.494,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 12,
+          "client_lane_wait_median_s": 30.512,
+          "host_cpu_idle_percent": 90.431,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 13,
+          "client_lane_wait_median_s": 34.984,
+          "host_cpu_idle_percent": 85.016,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 14,
+          "client_lane_wait_median_s": 42.939,
+          "host_cpu_idle_percent": 81.686,
+          "whole_cpu_intervals": 10
+        }
+      ]
+    },
+    "mixed-second": {
+      "clock_offset_upper_bound_s": 7.245895166008154,
+      "conservative_minute_windows": [
+        {
+          "minute": 1,
+          "client_lane_wait_median_s": 1.455,
+          "host_cpu_idle_percent": 90.877,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 2,
+          "client_lane_wait_median_s": 4.285,
+          "host_cpu_idle_percent": 87.302,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 3,
+          "client_lane_wait_median_s": 5.793,
+          "host_cpu_idle_percent": 90.33,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 4,
+          "client_lane_wait_median_s": 9.932,
+          "host_cpu_idle_percent": 91.477,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 5,
+          "client_lane_wait_median_s": 10.763,
+          "host_cpu_idle_percent": 93.138,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 6,
+          "client_lane_wait_median_s": 12.951,
+          "host_cpu_idle_percent": 93.295,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 7,
+          "client_lane_wait_median_s": 12.712,
+          "host_cpu_idle_percent": 93.443,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 8,
+          "client_lane_wait_median_s": 14.585,
+          "host_cpu_idle_percent": 94.251,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 9,
+          "client_lane_wait_median_s": 14.321,
+          "host_cpu_idle_percent": 93.695,
+          "whole_cpu_intervals": 10
+        },
+        {
+          "minute": 10,
+          "client_lane_wait_median_s": 16.675,
+          "host_cpu_idle_percent": 91.924,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 11,
+          "client_lane_wait_median_s": 18.007,
+          "host_cpu_idle_percent": 89.077,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 12,
+          "client_lane_wait_median_s": 22.133,
+          "host_cpu_idle_percent": 89.866,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 13,
+          "client_lane_wait_median_s": 25.236,
+          "host_cpu_idle_percent": 88.037,
+          "whole_cpu_intervals": 9
+        },
+        {
+          "minute": 14,
+          "client_lane_wait_median_s": 30.896,
+          "host_cpu_idle_percent": 88.443,
+          "whole_cpu_intervals": 9
+        }
+      ]
+    }
+  }
+}
