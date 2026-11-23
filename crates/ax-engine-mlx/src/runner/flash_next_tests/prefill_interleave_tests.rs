@@ -442,3 +442,191 @@ fn flash_next_runner_routes_physical_prefill_without_early_sampling() {
         assert_eq!(state(split_id), state(baseline_id));
     }
 }
+
+#[test]
+#[ignore = "requires the pinned resident Flash Next MXFP4 pack and prefix fork fixture"]
+fn flash_next_serialized_prefix_fork_survives_peer_and_abort() {
+    let ((), dispatches) =
+        crate::model::shared::qwen4_exp_gdn_metal::with_mode(true, flash_next_prefix_fork_body);
+    assert!(
+        dispatches > 0,
+        "the probe must exercise native singleton GDN"
+    );
+    eprintln!("FLASH_NEXT_PREFIX_FORK_NATIVE_GDN_DISPATCHES {dispatches}");
+}
+
+fn flash_next_prefix_fork_body() {
+    use super::MlxPrefixSnapshot;
+
+    const CUT: usize = 2048;
+    const SUFFIX: usize = 64;
+    const REPLY: usize = 16;
+    const ABANDONED: usize = 4;
+    const WIDTH: usize = 512;
+
+    let pack = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
+    let source = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PREFIX_FORK_CASES").unwrap());
+    let [seed, first_suffix, second_suffix, peer]: [Vec<u32>; 4] =
+        serde_json::from_slice(&std::fs::read(source).unwrap()).unwrap();
+    assert_eq!(
+        [
+            seed.len(),
+            first_suffix.len(),
+            second_suffix.len(),
+            peer.len()
+        ],
+        [CUT, SUFFIX, SUFFIX, WIDTH]
+    );
+    assert_ne!(first_suffix, second_suffix);
+    assert_ne!(seed[0], peer[0]);
+
+    let artifacts = NativeModelArtifacts::from_dir(pack).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    assert_eq!(cfg.model_family, "qwen4_exp");
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    assert!(trunk.expert_stream.is_none());
+    let suffix_width = crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+        1024,
+        SUFFIX,
+        &cfg.model_family,
+    );
+    assert_eq!(
+        crate::fastpath::scale_prefill_chunk_for_remaining_in_family(1024, CUT, &cfg.model_family),
+        WIDTH
+    );
+
+    let sampling = MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]);
+    let cache = || MlxKVCache::new_contiguous(cfg.layer_count);
+    let first = |tokens: &[u32], state: &mut MlxKVCache, width| {
+        chunked_prefill(
+            &cfg,
+            &weights,
+            tokens,
+            state,
+            width,
+            sampling,
+            &mut Xorshift64::new(42),
+        )
+    };
+    let next = |state: &mut MlxKVCache, token| {
+        decode_step(
+            &cfg,
+            &weights,
+            token,
+            state,
+            sampling,
+            &mut Xorshift64::new(42),
+        )
+    };
+    let state_hash = |cache: &MlxKVCache| ax_engine_core::sha256_hex(&cache.serialize_to_bytes());
+
+    let mut seed_cache = cache();
+    let seed_token = first(&seed, &mut seed_cache, WIDTH);
+    let wire = seed_cache.serialize_to_bytes();
+    let seed_hash = ax_engine_core::sha256_hex(&wire);
+    let snapshot =
+        MlxPrefixSnapshot::from_shared_payload(wire.into(), seed, CUT, Some(seed_token), None);
+    drop(seed_cache);
+    let cold = |suffix: &[u32]| {
+        let mut state = cache();
+        chunked_prefill_cache_only(
+            &cfg,
+            &weights,
+            &snapshot.tokens,
+            &mut state,
+            WIDTH,
+            CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+            CacheOnlyBarrier::AsyncSubmit,
+        );
+        assert_eq!(state_hash(&state), seed_hash);
+        let mut ids = vec![first(suffix, &mut state, suffix_width)];
+        assert_eq!(state.seq_len(), CUT + SUFFIX);
+        let suffix_hash = state_hash(&state);
+        for _ in 1..REPLY {
+            ids.push(next(&mut state, *ids.last().unwrap()));
+        }
+        (ids, suffix_hash, state_hash(&state))
+    };
+    let first_cold = cold(&first_suffix);
+    let second_cold = cold(&second_suffix);
+    assert_ne!(first_cold.1, second_cold.1);
+    assert_ne!(first_cold.0, second_cold.0);
+    assert!(
+        [first_cold.0[0], second_cold.0[0]]
+            .iter()
+            .any(|token| *token != seed_token)
+    );
+
+    let mut peer_solo = cache();
+    let mut peer_solo_ids = vec![first(&peer, &mut peer_solo, WIDTH)];
+    for _ in 0..(ABANDONED + REPLY) {
+        peer_solo_ids.push(next(&mut peer_solo, *peer_solo_ids.last().unwrap()));
+    }
+    let peer_hash = state_hash(&peer_solo);
+    drop(peer_solo);
+    let restore = || {
+        let mut restored = snapshot.rehydrate_cache().unwrap();
+        restored
+            .verify_restored_snapshot(cfg.layer_count, CUT, None)
+            .unwrap();
+        restored
+            .qwen4_exp
+            .as_mut()
+            .unwrap()
+            .rebind_for_model(trunk, cfg.compile_cache_identity)
+            .unwrap();
+        assert_eq!(state_hash(&restored), seed_hash);
+        restored
+    };
+
+    let mut peer_live = cache();
+    let mut peer_live_ids = vec![first(&peer, &mut peer_live, WIDTH)];
+    let mut advance_peer = || {
+        peer_live_ids.push(next(&mut peer_live, *peer_live_ids.last().unwrap()));
+    };
+    let mut abandoned = restore();
+    let mut abandoned_ids = vec![first(&first_suffix, &mut abandoned, suffix_width)];
+    assert_eq!(state_hash(&abandoned), first_cold.1);
+    advance_peer();
+    for _ in 1..ABANDONED {
+        abandoned_ids.push(next(&mut abandoned, *abandoned_ids.last().unwrap()));
+        advance_peer();
+    }
+    assert_eq!(abandoned_ids, first_cold.0[..ABANDONED]);
+    drop(abandoned);
+
+    let mut replacement = restore();
+    let mut second_ids = vec![first(&second_suffix, &mut replacement, suffix_width)];
+    assert_eq!(state_hash(&replacement), second_cold.1);
+    advance_peer();
+    for _ in 1..REPLY {
+        second_ids.push(next(&mut replacement, *second_ids.last().unwrap()));
+        advance_peer();
+    }
+    assert_eq!(second_ids, second_cold.0);
+    assert_eq!(state_hash(&replacement), second_cold.2);
+    assert_eq!(peer_live_ids, peer_solo_ids);
+    assert_eq!(state_hash(&peer_live), peer_hash);
+    assert_eq!(
+        ax_engine_core::sha256_hex(&snapshot.kv_cache_payload),
+        seed_hash
+    );
+    eprintln!(
+        "FLASH_NEXT_PREFIX_FORK {}",
+        serde_json::json!({
+            "qualification": false,
+            "prefix_tokens": CUT,
+            "suffix_tokens": SUFFIX,
+            "physical_width": WIDTH,
+            "suffix_width": suffix_width,
+            "abandoned_outputs": abandoned_ids,
+            "replacement_outputs": second_ids,
+            "peer_outputs": peer_live_ids,
+            "seed_state_sha256": seed_hash,
+            "suffix_state_sha256": [first_cold.1, second_cold.1],
+            "replacement_decode_state_sha256": second_cold.2,
+            "peer_decode_state_sha256": peer_hash,
+        })
+    );
+}
