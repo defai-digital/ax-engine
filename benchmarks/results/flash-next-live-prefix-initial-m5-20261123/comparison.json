@@ -1,0 +1,25 @@
+{
+  "cancelled_cache_events_observed": 0,
+  "cancelled_first_step_scheduled_tokens": 2,
+  "cold": {
+    "first_step_scheduled_tokens": 2049,
+    "pair_wall_seconds": 8.0513669999782,
+    "peer_maximum_gap_seconds": 1.580020124965813,
+    "target_ttft_seconds": 1.6009581250254996
+  },
+  "cold_cpu_idle_percent": [
+    96.96,
+    96.18
+  ],
+  "matched_complete_output_ids": 288,
+  "qualification": false,
+  "timing_eligible": false,
+  "trial_exit_code": 1,
+  "warm": {
+    "first_step_scheduled_tokens": 2,
+    "pair_wall_seconds": 6.566810500051361,
+    "peer_maximum_gap_seconds": 0.05049608403351158,
+    "target_ttft_seconds": 0.06986150000011548
+  },
+  "warm_cpu_idle_before_percent": 97.32
+}
