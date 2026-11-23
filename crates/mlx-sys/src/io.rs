@@ -155,10 +155,71 @@ pub fn load_safetensors_filtered_from_file(
     load_safetensors_mmap_open_file(path, file, Some(filter))
 }
 
+/// Materialize selected tensors with page-aligned reads that use the file cache.
+#[cfg(target_os = "macos")]
+pub fn load_safetensors_filtered_aligned_buffered(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_filtered_aligned(path, filter, false)
+}
+
+/// Materialize selected tensors with page-aligned reads that bypass the file cache.
+#[cfg(target_os = "macos")]
+pub fn load_safetensors_filtered_aligned_nocache(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_filtered_aligned(path, filter, true)
+}
+
+#[cfg(target_os = "macos")]
+fn load_safetensors_filtered_aligned(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+    nocache: bool,
+) -> Result<HashMap<String, MlxArray>, String> {
+    use std::os::fd::AsRawFd;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    // File-local cache policy. The staged reads verify 16 KiB alignment before using the buffer.
+    if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } != 16 * 1024 {
+        return Err("aligned tensor reads require 16 KiB pages".into());
+    }
+    if nocache && unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
+        return Err(format!(
+            "F_NOCACHE {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut staging = memmap2::MmapMut::map_anon(4 * 1024 * 1024)
+        .map_err(|e| format!("allocate aligned tensor staging: {e}"))?;
+    load_safetensors_open_file_with(path, &file, Some(filter), |_, start, shape, dtype| {
+        MlxArray::read_owned_aligned_at(&file, start as u64, &mut staging, shape, dtype)
+    })
+}
+
 fn load_safetensors_mmap_open_file(
     path: &Path,
     file: &std::fs::File,
     filter: Option<SafetensorsNameFilter<'_>>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_open_file_with(path, file, filter, |bytes, _, shape, dtype| {
+        Ok(MlxArray::from_raw_data(
+            bytes.as_ptr(),
+            bytes.len(),
+            shape,
+            dtype,
+        ))
+    })
+}
+
+fn load_safetensors_open_file_with(
+    path: &Path,
+    file: &std::fs::File,
+    filter: Option<SafetensorsNameFilter<'_>>,
+    mut materialize: impl FnMut(&[u8], usize, &[i32], MlxDtype) -> Result<MlxArray, String>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     // NAS/SMB-backed caches can replace or truncate a shard while it is
     // mapped. Stat before and after the copies and fail closed on any drift,
@@ -297,19 +358,13 @@ fn load_safetensors_mmap_open_file(
                  shape {shape:?} dtype {dtype_str} expected {expected_byte_len}"
             ));
         }
-        let ptr = unsafe { mmap.as_ptr().add(absolute_start) };
-
-        // We use the copy-on-create C entry (`mlx_array_new_data` via
-        // `from_raw_data`) rather than the managed/borrowed variant.
-        // Empirically with the borrowed variant MLX did not read the
-        // mmap-backed bytes correctly for f16 / quantized tensors
-        // (values came back as garbage), and the upstream C API docs
-        // do say "buffer will be copied" for that path. The copy is
-        // unavoidable, but the rest of the cold-start path benefits:
-        // no userspace heap allocation for the safetensors file, no
-        // libc read() into a temp buffer, and any pages already in
-        // the OS page cache are reused directly.
-        let arr = MlxArray::from_raw_data(ptr, byte_len, &shape, dtype);
+        let arr = materialize(
+            &mmap[absolute_start..absolute_end],
+            absolute_start,
+            &shape,
+            dtype,
+        )
+        .map_err(|error| format!("load tensor {name} from {}: {error}", path.display()))?;
         result.insert(name.clone(), arr);
     }
     // Drop the mmap explicitly at function end so the mapping outlives
@@ -389,6 +444,81 @@ mod tests {
     use super::*;
     use crate::transforms::eval;
     use std::collections::HashSet;
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn aligned_filtered_loader_preserves_unaligned_weights_and_owned_arrays() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("ax-aligned-weights-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.safetensors");
+        let count = 1024 * 1024 + 1;
+        let end = 3 + count * 4;
+        let header = serde_json::json!({
+            "bools": {"dtype": "BOOL", "shape": [3], "data_offsets": [0, 3]},
+            "packed": {"dtype": "U32", "shape": [count], "data_offsets": [3, end]},
+            "empty": {"dtype": "U32", "shape": [0], "data_offsets": [end, end]},
+            "excluded": {"dtype": "UNSUPPORTED", "shape": [1], "data_offsets": [end, end]},
+        });
+        let mut header = serde_json::to_vec(&header).unwrap();
+        if (8 + header.len() + 3).is_multiple_of(4) {
+            header.push(b' ');
+        }
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&(header.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&header).unwrap();
+        file.write_all(&[0, 127, 255]).unwrap();
+        let packed: Vec<_> = (0..count as u32)
+            .map(|i| i.wrapping_mul(1_234_567_891))
+            .collect();
+        let payload: Vec<_> = packed.iter().flat_map(|val| val.to_le_bytes()).collect();
+        file.write_all(&payload).unwrap();
+        drop(file);
+
+        let selected = HashSet::from(["packed".into(), "empty".into(), "bools".into()]);
+        let readers = [
+            load_safetensors_filtered_aligned_buffered,
+            load_safetensors_filtered_aligned_nocache,
+        ];
+        let loaded =
+            readers.map(|load| load(&path, SafetensorsNameFilter::Keep(&selected)).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        for arrays in loaded {
+            assert_eq!(arrays.len(), 3);
+            assert_eq!(arrays["empty"].shape(), vec![0]);
+            assert_eq!(arrays["packed"].data_u32(), packed);
+            let booleans = crate::ops::astype(&arrays["bools"], MlxDtype::Uint32, None);
+            eval(&[&booleans]);
+            assert_eq!(booleans.data_u32(), &[0, 1, 1]);
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn aligned_loader_native_read_rejects_short_and_unrepresentable_ranges() {
+        let path = std::env::temp_dir().join(format!("ax-aligned-short-{}", std::process::id()));
+        std::fs::write(&path, [17, 42]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut buffer = memmap2::MmapMut::map_anon(4 * 1024 * 1024).unwrap();
+        for (offset, shape, expected) in [
+            (0, &[3][..], "made no page progress"),
+            (2, &[16 * 1024][..], "made no page progress"),
+            (u64::MAX, &[1][..], "range exceeds off_t"),
+            (
+                0,
+                &[i32::MAX, i32::MAX, i32::MAX][..],
+                "shape element count overflows",
+            ),
+        ] {
+            let error =
+                MlxArray::read_owned_aligned_at(&file, offset, &mut buffer, shape, MlxDtype::Uint8)
+                    .err()
+                    .unwrap();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
 
     #[test]
     fn filtered_loader_rejects_inconsistent_tensor_geometry_without_panicking() {

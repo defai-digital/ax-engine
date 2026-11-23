@@ -396,6 +396,52 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
+env_flag!(
+    /// Opt-in page-aligned no-cache reads for the resident Flash Next MXFP4 trunk.
+    flash_next_aligned_nocache,
+    "AX_MLX_FLASH_NEXT_ALIGNED_NOCACHE"
+);
+
+/// Override the resident Flash Next buffered reader. An unset value or `auto`
+/// uses the measured serving profile. Explicit off retains the mapped reader.
+pub(crate) fn flash_next_aligned_buffered_override() -> Option<bool> {
+    static ENV: OnceLock<Option<bool>> = OnceLock::new();
+    *ENV.get_or_init(|| {
+        std::env::var_os("AX_MLX_FLASH_NEXT_ALIGNED_BUFFERED")
+            .as_deref()
+            .and_then(parse_flash_next_aligned_buffered)
+    })
+}
+
+fn parse_flash_next_aligned_buffered(raw: &std::ffi::OsStr) -> Option<bool> {
+    let Some(value) = raw.to_str() else {
+        return Some(false);
+    };
+    if value.trim().eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    Some(parse_bool_value(value))
+}
+
+#[test]
+fn flash_next_aligned_buffered_override_distinguishes_auto_from_off() {
+    use std::ffi::OsStr;
+
+    for (value, expected) in [
+        ("0", Some(false)),
+        ("false", Some(false)),
+        ("1", Some(true)),
+        ("on", Some(true)),
+        (" auto ", None),
+        ("unknown", Some(false)),
+    ] {
+        assert_eq!(
+            parse_flash_next_aligned_buffered(OsStr::new(value)),
+            expected
+        );
+    }
+}
+
 /// Whether `AX_MLX_SKIP_MTP_SIDECAR` disables loading `mtp.safetensors`.
 pub fn mtp_sidecar_loading_disabled() -> bool {
     env_flag("AX_MLX_SKIP_MTP_SIDECAR")

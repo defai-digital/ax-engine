@@ -1,7 +1,7 @@
 //! Bounded dedicated weight loader for Qwen 3.8 Flash Next (`qwen4_exp`).
 //!
 //! Loads every resident tensor (everything except the n-gram lexical table)
-//! through [`mlx_sys::load_safetensors_filtered`], so the 51B n-gram table
+//! through a name-filtered safetensors reader, so the 51B n-gram table
 //! never enters this crate's resident working set. The table itself is
 //! opened separately through [`crate::ngram_table::NgramTable`], which serves
 //! bounded row gathers instead of a whole-tensor load. Construction never
@@ -49,6 +49,9 @@ use crate::qwen4_exp_ngram::NgramLayout;
 use crate::qwen4_exp_qsa::{QsaConfig, QsaIndexer, QsaIndexerWeights};
 
 use super::{QuantizedWeight, WeightLoadError, take_weight, take_weight_spec, try_take_plain};
+
+#[cfg(target_os = "macos")]
+mod buffered_reader_policy;
 
 const STARTUP_TRACE_TARGET: &str = "ax_engine_mlx::flash_next_startup";
 
@@ -213,6 +216,7 @@ pub(crate) fn load(
 
 pub(crate) fn load_artifacts(
     artifacts: &NativeModelArtifacts,
+    session_budget: Option<crate::expert_stream::SessionResidencyBudget>,
 ) -> Result<Qwen4ExpWeights, WeightLoadError> {
     load_with_schedule_admission(
         artifacts.root_dir(),
@@ -222,6 +226,7 @@ pub(crate) fn load_artifacts(
         crate::expert_stream::stream_experts_mode_checked()?,
         crate::expert_stream::expert_layer_budget(),
         audited_mx_format(artifacts),
+        session_budget,
     )
 }
 
@@ -248,7 +253,7 @@ pub(crate) fn load_with_paging_policy(
         NativeModelArtifacts::from_manifest_and_root(root.to_path_buf(), manifest.clone())
             .ok()
             .and_then(|artifacts| audited_mx_format(&artifacts));
-    load_with_schedule_admission(root, manifest, mode, budget_layers, audited_mx)
+    load_with_schedule_admission(root, manifest, mode, budget_layers, audited_mx, None)
 }
 
 /// Bytes of the whole n-gram lexical table, which this loader never makes
@@ -283,6 +288,7 @@ fn load_with_schedule_admission(
     mode: crate::expert_stream::StreamExpertsMode,
     budget_layers: usize,
     audited_mx: Option<ExpertQuantizationMode>,
+    session_budget: Option<crate::expert_stream::SessionResidencyBudget>,
 ) -> Result<Qwen4ExpWeights, WeightLoadError> {
     let mut startup = StartupTrace::new();
     if manifest.model_family != "qwen4_exp" {
@@ -370,12 +376,20 @@ fn load_with_schedule_admission(
         .transpose()?;
     startup.phase("trunk_admission");
     let specs = manifest.tensors.as_slice();
+    let resident_reader = select_resident_reader(
+        audited_mx,
+        expert_stream.is_some(),
+        crate::fastpath::flash_next_aligned_buffered_override(),
+        crate::fastpath::flash_next_aligned_nocache(),
+        session_budget,
+    );
     let mut name_map = load_resident_tensors(
         root,
         &canonical_root,
         weight_index.as_ref(),
         manifest,
         &stream_skip,
+        resident_reader,
     )?;
     startup.phase("resident_tensors");
     let mut schedule_index = weight_index.unwrap_or_default();
@@ -1384,6 +1398,45 @@ fn validate_expert_paging_contract(
     Ok((layers, modes))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResidentReader {
+    Mapped,
+    AlignedBuffered,
+    AlignedNoCache,
+    Automatic,
+}
+
+fn select_resident_reader(
+    audited_mx: Option<ExpertQuantizationMode>,
+    streaming: bool,
+    buffered: Option<bool>,
+    nocache: bool,
+    session_budget: Option<crate::expert_stream::SessionResidencyBudget>,
+) -> ResidentReader {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        || streaming
+        || audited_mx != Some(ExpertQuantizationMode::Mxfp4)
+    {
+        ResidentReader::Mapped
+    } else if nocache {
+        ResidentReader::AlignedNoCache
+    } else {
+        match buffered {
+            Some(true) => ResidentReader::AlignedBuffered,
+            Some(false) => ResidentReader::Mapped,
+            None if session_budget.is_some_and(|budget| {
+                budget.kv_pool_tokens == 32_768
+                    && budget.max_live_sequences == Some(1)
+                    && budget.prefill_chunk == 2_048
+            }) =>
+            {
+                ResidentReader::Automatic
+            }
+            None => ResidentReader::Mapped,
+        }
+    }
+}
+
 /// Select the exact trunk tensors and their named sidecars before opening
 /// payloads. Unknown tensors and table-only files never enter MLX storage.
 fn load_resident_tensors(
@@ -1392,6 +1445,7 @@ fn load_resident_tensors(
     weight_index: Option<&HashMap<String, PathBuf>>,
     manifest: &NativeModelManifest,
     stream_skip: &HashSet<String>,
+    reader: ResidentReader,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
     let mut startup = StartupTrace::new();
     let mut files = std::collections::BTreeMap::<PathBuf, HashSet<String>>::new();
@@ -1431,10 +1485,35 @@ fn load_resident_tensors(
         }
     }
     startup.phase("resident_selection");
+    #[cfg(target_os = "macos")]
+    let reader = match reader {
+        ResidentReader::Automatic
+            if buffered_reader_policy::eligible(
+                root,
+                canonical_root,
+                files.keys().map(PathBuf::as_path),
+            ) =>
+        {
+            ResidentReader::AlignedBuffered
+        }
+        ResidentReader::Automatic => ResidentReader::Mapped,
+        explicit => explicit,
+    };
+    #[cfg(target_os = "macos")]
+    let load = match reader {
+        ResidentReader::Mapped | ResidentReader::Automatic => load_safetensors_filtered,
+        ResidentReader::AlignedBuffered => mlx_sys::load_safetensors_filtered_aligned_buffered,
+        ResidentReader::AlignedNoCache => mlx_sys::load_safetensors_filtered_aligned_nocache,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let load = load_safetensors_filtered;
+    tracing::debug!(target: STARTUP_TRACE_TARGET,
+        aligned_nocache = reader == ResidentReader::AlignedNoCache,
+        ?reader, "Flash Next resident reader");
     let mut result = HashMap::new();
     for (path, names) in files {
         let mut shard = StartupTrace(startup.0.map(|_| Instant::now()));
-        let tensors = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names))
+        let tensors = load(&path, SafetensorsNameFilter::Keep(&names))
             .map_err(WeightLoadError::FileMissing)?;
         let read = shard.elapsed();
         mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>()).map_err(|e| {
@@ -3194,6 +3273,7 @@ mod tests {
             index.as_ref(),
             &manifest,
             &HashSet::new(),
+            ResidentReader::Mapped,
         )
         .unwrap();
         let loaded_names: Vec<_> = {
@@ -3586,7 +3666,152 @@ mod tests {
         manifest
     }
 
-    fn norm_contract_dir(label: &str) -> PathBuf {
+    #[test]
+    fn aligned_reader_requires_a_requested_resident_mxfp4_trunk() {
+        use ResidentReader::{AlignedBuffered, AlignedNoCache, Mapped};
+        let mx = Some(ExpertQuantizationMode::Mxfp4);
+        for (buffered, nocache, aligned) in [
+            (false, false, Mapped),
+            (true, false, AlignedBuffered),
+            (false, true, AlignedNoCache),
+            (true, true, AlignedNoCache),
+        ] {
+            let expected = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                aligned
+            } else {
+                Mapped
+            };
+            assert_eq!(
+                select_resident_reader(mx, false, Some(buffered), nocache, None),
+                expected
+            );
+            assert_eq!(
+                select_resident_reader(mx, true, Some(buffered), nocache, None),
+                Mapped
+            );
+            assert_eq!(
+                select_resident_reader(
+                    Some(ExpertQuantizationMode::Mxfp8),
+                    false,
+                    Some(buffered),
+                    nocache,
+                    None,
+                ),
+                Mapped
+            );
+            assert_eq!(
+                select_resident_reader(None, false, Some(buffered), nocache, None),
+                Mapped
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_buffered_reader_requires_an_exact_session_budget() {
+        use crate::expert_stream::SessionResidencyBudget;
+        use ResidentReader::{AlignedBuffered, AlignedNoCache, Automatic, Mapped};
+
+        let format = Some(ExpertQuantizationMode::Mxfp4);
+        let budget = SessionResidencyBudget {
+            kv_pool_tokens: 32_768,
+            max_live_sequences: Some(1),
+            prefill_chunk: 2_048,
+        };
+        let cases = [
+            (None, false, Some(budget), Automatic),
+            (Some(false), false, Some(budget), Mapped),
+            (Some(true), false, None, AlignedBuffered),
+            (Some(false), true, Some(budget), AlignedNoCache),
+            (None, true, Some(budget), AlignedNoCache),
+            (None, false, None, Mapped),
+            (
+                None,
+                false,
+                Some(SessionResidencyBudget {
+                    prefill_chunk: 512,
+                    ..budget
+                }),
+                Mapped,
+            ),
+            (
+                None,
+                false,
+                Some(SessionResidencyBudget {
+                    kv_pool_tokens: 65_536,
+                    ..budget
+                }),
+                Mapped,
+            ),
+            (
+                None,
+                false,
+                Some(SessionResidencyBudget {
+                    max_live_sequences: Some(2),
+                    ..budget
+                }),
+                Mapped,
+            ),
+            (
+                None,
+                false,
+                Some(SessionResidencyBudget {
+                    max_live_sequences: None,
+                    ..budget
+                }),
+                Mapped,
+            ),
+        ];
+        for (buffered, nocache, budget, expected) in cases {
+            let expected = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                expected
+            } else {
+                Mapped
+            };
+            assert_eq!(
+                select_resident_reader(format, false, buffered, nocache, budget),
+                expected
+            );
+        }
+        assert_eq!(
+            select_resident_reader(format, true, None, false, Some(budget)),
+            Mapped
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn aligned_reader_keeps_the_mapped_resident_tensor_selection() {
+        let root = norm_contract_dir("resident-reader");
+        let canonical = root.canonicalize().unwrap();
+        let manifest = norm_contract_manifest(WeightSanitize::None);
+        let tensor = &manifest.tensors[0];
+        let name = &tensor.name;
+        let header = serde_json::to_vec(&serde_json::json!({
+            name: {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]},
+            "unused": {"dtype": "UNSUPPORTED", "shape": [2], "data_offsets": [8, 16]},
+        }))
+        .unwrap();
+        let values: [f32; 2] = [1.25, -2.5];
+        let mut shard = (header.len() as u64).to_le_bytes().to_vec();
+        shard.extend(header);
+        shard.extend(values.iter().flat_map(|value| value.to_le_bytes()));
+        shard.extend([0; 8]);
+        std::fs::write(root.join(&tensor.file), shard).unwrap();
+        for reader in [
+            ResidentReader::Mapped,
+            ResidentReader::AlignedBuffered,
+            ResidentReader::AlignedNoCache,
+        ] {
+            let loaded =
+                load_resident_tensors(&root, &canonical, None, &manifest, &HashSet::new(), reader)
+                    .unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[name].data_f32(), &values);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    pub(super) fn norm_contract_dir(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "ax-qwen4-norm-{label}-{}-{}",
             std::process::id(),
@@ -3779,6 +4004,7 @@ mod tests {
             crate::expert_stream::StreamExpertsMode::Off,
             0,
             None,
+            None,
         )
         .err()
         .expect("missing norm contract")
@@ -3817,6 +4043,7 @@ mod tests {
             &norm_contract_manifest(WeightSanitize::HfNormOnly),
             crate::expert_stream::StreamExpertsMode::Off,
             0,
+            None,
             None,
         )
         .err()
