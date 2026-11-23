@@ -1,0 +1,10 @@
+{
+  "cancel_and_replace_passed": true,
+  "held_long_cursor": 2048,
+  "held_short_decode_steps": 95,
+  "matched_completed_output_ids": 576,
+  "normal_pressure_samples": 191,
+  "peak_footprint_bytes": 92226117240,
+  "qualification": false,
+  "resumed_long_cursor": 4096
+}
