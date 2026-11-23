@@ -9,6 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -92,16 +93,62 @@ fn tested_host(brand: Option<&str>, memory: Option<u64>) -> bool {
     brand == Some("Apple M5 Max") && memory == Some(TESTED_MEMORY_BYTES)
 }
 
-fn tested_internal_startup() -> bool {
-    static ELIGIBLE: Mutex<Option<bool>> = Mutex::new(None);
-    let Some(mut cached) = ELIGIBLE.try_lock() else {
-        return false;
-    };
-    if let Some(eligible) = *cached {
-        return eligible;
+#[derive(Default)]
+struct StartupProbe {
+    pending: Option<Receiver<Option<bool>>>,
+    known: Option<bool>,
+}
+
+impl StartupProbe {
+    fn check(
+        &mut self,
+        launch: impl FnOnce() -> Option<Receiver<Option<bool>>>,
+        timeout: Duration,
+    ) -> bool {
+        if let Some(known) = self.known {
+            return known;
+        }
+        let budget = if self.pending.is_some() {
+            Duration::ZERO
+        } else {
+            self.pending = launch();
+            timeout
+        };
+        let Some(pending) = &self.pending else {
+            return false;
+        };
+        match pending.recv_timeout(budget) {
+            Err(RecvTimeoutError::Timeout) => false,
+            result => {
+                self.pending = None;
+                self.known = result.ok().flatten();
+                self.known.unwrap_or(false)
+            }
+        }
     }
-    *cached = probe_tested_internal_startup();
-    cached.unwrap_or(false)
+}
+
+fn tested_internal_startup() -> bool {
+    static PROBE: Mutex<StartupProbe> = Mutex::new(StartupProbe {
+        pending: None,
+        known: None,
+    });
+    PROBE
+        .try_lock()
+        .is_some_and(|mut probe| probe.check(launch_startup_probe, DISK_PROBE_TIMEOUT))
+}
+
+fn launch_startup_probe() -> Option<Receiver<Option<bool>>> {
+    // Keep spawn, I/O, and reaping off the loader thread. A pending worker
+    // makes subsequent loads fall back immediately without starting another.
+    let (send, receive) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("flash-next-storage-probe".into())
+        .spawn(move || {
+            let _ = send.send(probe_tested_internal_startup());
+        })
+        .ok()?;
+    Some(receive)
 }
 
 fn probe_tested_internal_startup() -> Option<bool> {
@@ -110,12 +157,13 @@ fn probe_tested_internal_startup() -> Option<bool> {
     if !tested_host(Some(&brand), Some(memory)) {
         return Some(false);
     }
-    let report =
-        bounded_probe(Command::new("/usr/sbin/diskutil").args(["info", "-plist", STARTUP_DATA]))?;
+    let mut command = Command::new("/usr/sbin/diskutil");
+    command.args(["info", "-plist", STARTUP_DATA]);
+    let report = bounded_probe(command)?;
     internal_solid_state(&report)
 }
 
-fn bounded_probe(command: &mut Command) -> Option<Vec<u8>> {
+fn bounded_probe(mut command: Command) -> Option<Vec<u8>> {
     let (mut reader, writer) = UnixStream::pair().ok()?;
     reader.set_nonblocking(true).ok()?;
     let child_stdout: OwnedFd = writer.into();
@@ -125,8 +173,7 @@ fn bounded_probe(command: &mut Command) -> Option<Vec<u8>> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    // A reusable Command retains the configured stdout descriptor after spawn.
-    command.stdout(Stdio::null());
+    drop(command);
     let output = collect_probe(&mut child, &mut reader, Instant::now() + DISK_PROBE_TIMEOUT);
     if output.is_none() {
         let _ = child.kill();
@@ -169,21 +216,27 @@ fn collect_probe(child: &mut Child, reader: &mut UnixStream, deadline: Instant) 
 }
 
 fn internal_solid_state(plist: &[u8]) -> Option<bool> {
-    fn property(plist: &str, key: &str) -> Option<bool> {
-        let mut values = plist.split(key).skip(1);
-        let value = values.next()?.trim_start();
-        if values.next().is_some() {
+    fn property(dict: &str, key: &str) -> Option<bool> {
+        // diskutil's XML plist indents the root dictionary's entries by one tab.
+        let mut lines = dict.lines();
+        lines.find(|line| *line == key)?;
+        let value = lines.next()?;
+        if lines.any(|line| line == key) {
             return None;
         }
-        if value.starts_with("<true/>") {
-            return Some(true);
+        match value {
+            "\t<true/>" => Some(true),
+            "\t<false/>" => Some(false),
+            _ => None,
         }
-        value.starts_with("<false/>").then_some(false)
     }
     let plist = std::str::from_utf8(plist).ok()?;
-    let internal = property(plist, "<key>Internal</key>")?;
-    let solid_state = property(plist, "<key>SolidState</key>")?;
-    Some(internal && solid_state)
+    let (_, dict) = plist.split_once("\n<dict>\n")?;
+    let (dict, _) = dict.split_once("\n</dict>")?;
+    if !property(dict, "\t<key>Internal</key>")? {
+        return Some(false);
+    }
+    property(dict, "\t<key>SolidState</key>")
 }
 
 #[cfg(test)]
@@ -232,35 +285,66 @@ mod tests {
     }
 
     #[test]
-    fn disk_probe_requires_the_internal_solid_state_booleans() {
+    fn disk_probe_requires_top_level_internal_solid_state_booleans() {
+        let check = |values| {
+            let plist = format!("<plist version=\"1.0\">\n<dict>\n{values}\n</dict>\n</plist>");
+            internal_solid_state(plist.as_bytes())
+        };
+        let internal = "\t<key>Internal</key>\n\t<true/>";
+        let external = "\t<key>Internal</key>\n\t<false/>";
+        let solid_state = "\t<key>SolidState</key>\n\t<true/>";
+        let rotating = "\t<key>SolidState</key>\n\t<false/>";
+        let nested = concat!(
+            "\t<key>APFSPhysicalStores</key>\n\t<array>\n\t\t<dict>\n",
+            "\t\t\t<key>Internal</key>\n\t\t\t<true/>\n",
+            "\t\t\t<key>SolidState</key>\n\t\t\t<true/>\n\t\t</dict>\n\t</array>",
+        );
+        assert_eq!(check(format!("{solid_state}\n{internal}")), Some(true));
         assert_eq!(
-            internal_solid_state(b"<key>SolidState</key>\n\t<true/>\n<key>Internal</key><true/>"),
+            check(format!("{internal}\n{nested}\n{solid_state}")),
             Some(true)
         );
-        assert_eq!(
-            internal_solid_state(b"<key>Internal</key><false/><key>SolidState</key><true/>"),
-            Some(false)
-        );
-        assert_eq!(
-            internal_solid_state(b"<key>Internal</key><true/><key>SolidState</key><false/>"),
-            Some(false)
-        );
-        for report in [
-            b"<key>Internal</key><true/>".as_slice(),
-            b"<key>Internal</key><true/><key>SolidState</key><string>true</string>",
-            b"<key>Internal</key><true/><key>Internal</key><false/><key>SolidState</key><true/>",
+        assert_eq!(check(format!("{internal}\n{rotating}")), Some(false));
+        assert_eq!(check(external.to_owned()), Some(false));
+        for values in [
+            nested.to_owned(),
+            internal.to_owned(),
+            format!("{internal}\n\t<key>SolidState</key>\n\t<string>true</string>"),
+            format!("{internal}\n{external}\n{solid_state}"),
         ] {
-            assert_eq!(internal_solid_state(report), None);
+            assert_eq!(check(values), None);
         }
     }
 
     #[test]
+    fn storage_probe_timeout_keeps_a_single_pending_worker() {
+        let mut probe = StartupProbe::default();
+        let (send, pending) = mpsc::channel();
+        assert!(!probe.check(|| Some(pending), Duration::ZERO));
+        assert!(!probe.check(|| unreachable!(), Duration::from_secs(10)));
+        send.send(Some(true)).unwrap();
+        assert!(probe.check(|| unreachable!(), Duration::ZERO));
+        assert!(probe.check(|| unreachable!(), Duration::ZERO));
+    }
+
+    #[test]
+    fn storage_probe_retries_after_an_inconclusive_worker() {
+        let mut probe = StartupProbe::default();
+        let (send, failed) = mpsc::channel();
+        send.send(None).unwrap();
+        assert!(!probe.check(|| Some(failed), Duration::ZERO));
+        let (send, external) = mpsc::channel();
+        send.send(Some(false)).unwrap();
+        assert!(!probe.check(|| Some(external), Duration::ZERO));
+        assert!(!probe.check(|| unreachable!(), Duration::ZERO));
+    }
+
+    #[test]
     fn probe_drains_stdout_and_caps_the_result() {
-        assert_eq!(
-            bounded_probe(Command::new("/bin/echo").arg("disk probe")),
-            Some(b"disk probe\n".to_vec())
-        );
-        assert!(bounded_probe(&mut Command::new("/usr/bin/yes")).is_none());
+        let mut echo = Command::new("/bin/echo");
+        echo.arg("disk probe");
+        assert_eq!(bounded_probe(echo), Some(b"disk probe\n".to_vec()));
+        assert!(bounded_probe(Command::new("/usr/bin/yes")).is_none());
     }
 
     #[test]
