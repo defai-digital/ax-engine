@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "exact_output_elements": 1308160,
+      "float_acc_differences": 445089,
+      "layer": 0,
+      "projections_and_tail_ratio": 0.9890580505619925,
+      "route_pool": 512,
+      "tail_ratio": 0.6859867830747076,
+      "width": 511
+    },
+    {
+      "exact_output_elements": 1310720,
+      "float_acc_differences": 450613,
+      "layer": 0,
+      "projections_and_tail_ratio": 0.9839568474739584,
+      "route_pool": 512,
+      "tail_ratio": 0.6494594186742735,
+      "width": 512
+    },
+    {
+      "exact_output_elements": 1310720,
+      "float_acc_differences": 441737,
+      "layer": 0,
+      "projections_and_tail_ratio": 0.9940304991757729,
+      "route_pool": 64,
+      "tail_ratio": 0.6321053042990098,
+      "width": 512
+    },
+    {
+      "exact_output_elements": 1308160,
+      "float_acc_differences": 429337,
+      "layer": 32,
+      "projections_and_tail_ratio": 0.9884702880667607,
+      "route_pool": 512,
+      "tail_ratio": 0.6172250520583054,
+      "width": 511
+    },
+    {
+      "exact_output_elements": 1310720,
+      "float_acc_differences": 433567,
+      "layer": 32,
+      "projections_and_tail_ratio": 0.9910944605560638,
+      "route_pool": 512,
+      "tail_ratio": 0.6332064115551864,
+      "width": 512
+    },
+    {
+      "exact_output_elements": 1310720,
+      "float_acc_differences": 424900,
+      "layer": 32,
+      "projections_and_tail_ratio": 0.984290985497587,
+      "route_pool": 64,
+      "tail_ratio": 0.6443643004817188,
+      "width": 512
+    }
+  ],
+  "cpu_idle_percent": [
+    96.1,
+    91.0
+  ],
+  "exact_output_elements": 7859200,
+  "float_acc_differences": 2625243,
+  "macos": "27.2.1",
+  "qualification": false,
+  "soc": "Apple M2 Ultra"
+}
