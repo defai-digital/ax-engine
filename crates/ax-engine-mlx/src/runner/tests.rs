@@ -3882,6 +3882,142 @@ fn flash_next_fixed_prefix_requires_the_same_loaded_model() {
     );
 }
 
+fn flash_next_fork_test_runner() -> (MlxRunner, NativeModelArtifacts) {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
+    runner.flash_next_fork_history = Some(Mutex::new(VecDeque::new()));
+    runner.prefix_cache = Arc::new(Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1 << 20,
+        max_entries: 2,
+    })));
+    (runner, artifacts)
+}
+
+#[test]
+fn flash_next_learned_fork_survives_full_prompt_eviction() {
+    let (runner, artifacts) = flash_next_fork_test_runner();
+    let mut checkpoint = MlxKVCache::new(1);
+    checkpoint.set_seq_len(FLASH_NEXT_FIXED_PREFIX_TOKENS);
+    let tokens = vec![1; FLASH_NEXT_FIXED_PREFIX_TOKENS];
+    let key = |prompt: &[u32]| runner.prefix_cache_key_with_media("flash-next", 16, prompt, "");
+    let insert_full = |prompt: &[u32]| {
+        let mut snapshot = test_prefix_snapshot(prompt[0], prompt.len(), 64 * 1024);
+        snapshot.tokens.copy_from_slice(prompt);
+        runner.prefix_cache.lock().insert(key(prompt), snapshot)
+    };
+    let mut first = tokens.clone();
+    first.push(2);
+    let mut second = tokens.clone();
+    second.extend([3; 65]);
+    let mut telemetry = MlxPrefixCacheTelemetry::default();
+    let observation = runner
+        .capture_flash_next_fork(&checkpoint, "flash-next", 16, &tokens)
+        .unwrap();
+    assert!(observation.checkpoint.is_none());
+    assert!(insert_full(&first).stored);
+    runner.finish_flash_next_fork("flash-next", 16, observation, &mut telemetry);
+    assert_eq!(telemetry.stores, 0);
+
+    let learner = runner
+        .capture_flash_next_fork(&checkpoint, "flash-next", 16, &tokens)
+        .unwrap();
+    assert!(learner.checkpoint.is_some());
+    checkpoint.set_seq_len(second.len());
+    assert!(insert_full(&second).stored);
+    runner.finish_flash_next_fork("flash-next", 16, learner, &mut telemetry);
+    assert_eq!(telemetry.stores, 1);
+    assert_eq!(telemetry.evictions, 1);
+    assert_eq!(insert_full(&[4; 16]).evictions, 1);
+
+    let mut store = runner.prefix_cache.lock();
+    assert!(!store.contains_exact_tokens(&key(&first), &first));
+    assert!(!store.contains_exact_tokens(&key(&second), &second));
+    let fork = store
+        .get_flash_next_fixed_prefix(&key(&tokens), &tokens, runner.cfg.compile_cache_identity)
+        .unwrap();
+    assert_eq!(fork.rehydrate_cache().unwrap().seq_len(), tokens.len());
+    assert_eq!(fork.greedy_prefill_output_token, None);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn flash_next_competing_fork_learners_publish_one_snapshot() {
+    let (runner, artifacts) = flash_next_fork_test_runner();
+    let tokens = vec![1; FLASH_NEXT_FIXED_PREFIX_TOKENS];
+    let mut checkpoint = MlxKVCache::new(1);
+    checkpoint.set_seq_len(tokens.len());
+    let capture = || {
+        runner
+            .capture_flash_next_fork(&checkpoint, "flash-next", 16, &tokens)
+            .unwrap()
+    };
+    runner.finish_flash_next_fork(
+        "flash-next",
+        16,
+        capture(),
+        &mut MlxPrefixCacheTelemetry::default(),
+    );
+    let first = capture();
+    let second = capture();
+    assert!(first.checkpoint.is_some());
+    assert!(second.checkpoint.is_some());
+    let ready = std::sync::Barrier::new(2);
+    let finish = |pending| {
+        ready.wait();
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        runner.finish_flash_next_fork("flash-next", 16, pending, &mut telemetry);
+        telemetry.stores
+    };
+    let stores = std::thread::scope(|scope| {
+        let left = scope.spawn(|| finish(first));
+        let right = scope.spawn(|| finish(second));
+        left.join().unwrap() + right.join().unwrap()
+    });
+    assert_eq!(stores, 1);
+    let mut store = runner.prefix_cache.lock();
+    assert_eq!(store.stats().entries, 1);
+    let key = runner.prefix_cache_key_with_media("flash-next", 16, &tokens, "");
+    assert!(
+        store
+            .get_flash_next_fixed_prefix(&key, &tokens, runner.cfg.compile_cache_identity)
+            .is_some()
+    );
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
+#[test]
+fn flash_next_cancelled_fork_learner_releases_unpublished_checkpoint() {
+    let (runner, artifacts) = flash_next_fork_test_runner();
+    let tokens = vec![1; FLASH_NEXT_FIXED_PREFIX_TOKENS];
+    let mut state = RequestState::new(1, 99, None);
+    state.cache.set_seq_len(tokens.len());
+    let observation = runner
+        .capture_flash_next_fork(&state.cache, "flash-next", 16, &tokens)
+        .unwrap();
+    runner.finish_flash_next_fork(
+        "flash-next",
+        16,
+        observation,
+        &mut MlxPrefixCacheTelemetry::default(),
+    );
+    state.pending_flash_next_fork =
+        runner.capture_flash_next_fork(&state.cache, "flash-next", 16, &tokens);
+    assert!(
+        state
+            .pending_flash_next_fork
+            .as_ref()
+            .unwrap()
+            .checkpoint
+            .is_some()
+    );
+    let request_id = RequestId(42);
+    runner.states.lock().insert(request_id, state);
+    runner.release_request_state(request_id);
+
+    assert!(!runner.states.lock().contains_key(&request_id));
+    assert_eq!(runner.prefix_cache.lock().stats().entries, 0);
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
 #[test]
 fn host_pressure_reclaims_only_unborrowed_portable_prefix_snapshots() {
     let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {

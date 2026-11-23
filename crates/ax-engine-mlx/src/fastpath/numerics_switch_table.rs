@@ -256,6 +256,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_DIRECT_COALESCING", shipped: "off", class: SwitchClass::Token("two_resident_direct_rows") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_PREFILL_SPLIT", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_FIXED_PREFIX_EXTENSION", shipped: "off", class: SwitchClass::Token("flash_next_fixed_prefix_extension") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_LEARN_PREFIX_FORK", shipped: "off", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI", shipped: "on", class: SwitchClass::Token("qsa_multi_select=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DECODE_BLOCK_KEY", shipped: "off", class: SwitchClass::Token("decode_key") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT", shipped: "on", class: SwitchClass::ProvenExact("prefill_device_selection_matches_host_on_subnormal_scores_zeros_ties_and_normals") },
