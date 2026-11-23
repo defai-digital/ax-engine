@@ -1,0 +1,155 @@
+{
+  "cross_device_differences": {
+    "format_bracket_list": {
+      "direct": [],
+      "mtp": []
+    },
+    "instruction_sort_numbers": {
+      "direct": [],
+      "mtp": []
+    },
+    "long_context_record_mass": {
+      "direct": [],
+      "mtp": []
+    }
+  },
+  "hardware_results": {
+    "m2": {
+      "build": {
+        "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+        "codesign_verified": true,
+        "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+        "mlx": "0.32.4",
+        "mlx_metal": "0.32.4",
+        "patch_sha256": "8d0363bd1eac0a2c0503779dda2bf118ef259320fc8a7e44c6d96e2edbc57808",
+        "profile": "release-server",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        "source_base": "5b2c5b7efe45dc607b513e4444a69309879d39af",
+        "test_sha256": "9f184efb74805fadcc02d4c588a2e237b252387f7dc3c0405400a7d40fe5b30e",
+        "tree": "c8b384c758152f47af73107434ee305593df19bb"
+      },
+      "cases": [
+        {
+          "accepted_drafts": 5,
+          "budget": 64,
+          "changed_from_direct": [],
+          "direct_output_tokens": 11,
+          "input_tokens": 35,
+          "name": "instruction_sort_numbers",
+          "output_tokens": 11,
+          "rejected_drafts": 0,
+          "steps": 5,
+          "terminal_route": "bonus",
+          "terminal_token_id": 248046
+        },
+        {
+          "accepted_drafts": 3,
+          "budget": 64,
+          "changed_from_direct": [],
+          "direct_output_tokens": 8,
+          "input_tokens": 34,
+          "name": "format_bracket_list",
+          "output_tokens": 8,
+          "rejected_drafts": 1,
+          "steps": 4,
+          "terminal_route": "correction",
+          "terminal_token_id": 248046
+        },
+        {
+          "accepted_drafts": 2,
+          "budget": 64,
+          "changed_from_direct": [],
+          "direct_output_tokens": 5,
+          "input_tokens": 29774,
+          "name": "long_context_record_mass",
+          "output_tokens": 5,
+          "rejected_drafts": 0,
+          "steps": 2,
+          "terminal_route": "bonus",
+          "terminal_token_id": 248046
+        }
+      ],
+      "hardware": {
+        "form_factor": "unrecognized (Mac14,14)",
+        "memory_bytes": 206158430208,
+        "os": "27.2.1",
+        "soc": "Apple M2 Ultra"
+      },
+      "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+      "pressure_sample_count": 35,
+      "qualification": false,
+      "raw_report_sha256": "ac6b190e0f5023063d98c42ba30b96f66e0bc078ff9e8aa27a2b1e507931691e"
+    },
+    "m5": {
+      "build": {
+        "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+        "codesign_verified": true,
+        "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+        "mlx": "0.32.4",
+        "mlx_metal": "0.32.4",
+        "patch_sha256": "8d0363bd1eac0a2c0503779dda2bf118ef259320fc8a7e44c6d96e2edbc57808",
+        "profile": "release-server",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        "source_base": "5b2c5b7efe45dc607b513e4444a69309879d39af",
+        "test_sha256": "9f184efb74805fadcc02d4c588a2e237b252387f7dc3c0405400a7d40fe5b30e",
+        "tree": "c8b384c758152f47af73107434ee305593df19bb"
+      },
+      "cases": [
+        {
+          "accepted_drafts": 5,
+          "budget": 64,
+          "changed_from_direct": [],
+          "direct_output_tokens": 11,
+          "input_tokens": 35,
+          "name": "instruction_sort_numbers",
+          "output_tokens": 11,
+          "rejected_drafts": 0,
+          "steps": 5,
+          "terminal_route": "bonus",
+          "terminal_token_id": 248046
+        },
+        {
+          "accepted_drafts": 3,
+          "budget": 64,
+          "changed_from_direct": [],
+          "direct_output_tokens": 8,
+          "input_tokens": 34,
+          "name": "format_bracket_list",
+          "output_tokens": 8,
+          "rejected_drafts": 1,
+          "steps": 4,
+          "terminal_route": "correction",
+          "terminal_token_id": 248046
+        },
+        {
+          "accepted_drafts": 2,
+          "budget": 64,
+          "changed_from_direct": [],
+          "direct_output_tokens": 5,
+          "input_tokens": 29774,
+          "name": "long_context_record_mass",
+          "output_tokens": 5,
+          "rejected_drafts": 0,
+          "steps": 2,
+          "terminal_route": "bonus",
+          "terminal_token_id": 248046
+        }
+      ],
+      "hardware": {
+        "form_factor": "MacBook Pro",
+        "memory_bytes": 137438953472,
+        "os": "27.2.1",
+        "soc": "Apple M5 Max"
+      },
+      "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+      "pressure_sample_count": 38,
+      "qualification": false,
+      "raw_report_sha256": "ac6b190e0f5023063d98c42ba30b96f66e0bc078ff9e8aa27a2b1e507931691e"
+    }
+  },
+  "qualification": false,
+  "source": {
+    "commit": "3df69023ab67517b9712c3bc34f9561ebf11cc8f",
+    "tree": "c8b384c758152f47af73107434ee305593df19bb"
+  }
+}

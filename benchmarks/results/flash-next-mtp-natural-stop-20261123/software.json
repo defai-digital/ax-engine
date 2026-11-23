@@ -1,0 +1,24 @@
+{
+  "checks": [
+    "cargo fmt",
+    "cargo clippy all targets and features",
+    "cargo test",
+    "maturin develop",
+    "pytest python/tests",
+    "check-scripts",
+    "27B qualification dry run",
+    "Flash Next qualification dry run",
+    "Qwen 3.8 primary claims"
+  ],
+  "python": {
+    "passed": 345,
+    "skipped": 7
+  },
+  "rust": {
+    "ignored": 108,
+    "passed": 4788
+  },
+  "source_commit": "3df69023ab67517b9712c3bc34f9561ebf11cc8f",
+  "source_tree": "c8b384c758152f47af73107434ee305593df19bb",
+  "status": "passed"
+}

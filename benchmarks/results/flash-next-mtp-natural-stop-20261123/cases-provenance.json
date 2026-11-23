@@ -1,0 +1,28 @@
+{
+  "qa_inputs_sha256": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4",
+  "signed_ordinary_reference_sha256": "2eeeb8ab3b5f329726550b675ec61d57edeab6558a582582d75287983d4a19b7",
+  "cases": [
+    {
+      "name": "instruction_sort_numbers",
+      "input_tokens": 35,
+      "prompt_sha256": "a580a97e033a5e1ac7bed9d59edc93577956187e92343a194b3e47872ec9d998",
+      "budget": 64,
+      "signed_reference_natural_stop": 248046
+    },
+    {
+      "name": "format_bracket_list",
+      "input_tokens": 34,
+      "prompt_sha256": "73294744a66b79f80ebc4ea6920128c1f803445843ba15fd28f185a352bcfda3",
+      "budget": 64,
+      "signed_reference_natural_stop": 248046
+    },
+    {
+      "name": "long_context_record_mass",
+      "input_tokens": 29774,
+      "prompt_sha256": "678c21a8b07334c90a50d9967f74e051c6174448189f5a0765928978a6d46f6f",
+      "budget": 64,
+      "signed_reference_natural_stop": 248046
+    }
+  ],
+  "cases_sha256": "1dd43419766012a14897649c1364d5a058ad46e0a033550c09b666026101b515"
+}

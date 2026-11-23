@@ -1,0 +1,13 @@
+{
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "codesign_verified": true,
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "patch_sha256": "8d0363bd1eac0a2c0503779dda2bf118ef259320fc8a7e44c6d96e2edbc57808",
+  "profile": "release-server",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "source_base": "5b2c5b7efe45dc607b513e4444a69309879d39af",
+  "test_sha256": "9f184efb74805fadcc02d4c588a2e237b252387f7dc3c0405400a7d40fe5b30e",
+  "tree": "c8b384c758152f47af73107434ee305593df19bb"
+}
