@@ -1,0 +1,83 @@
+{
+  "scope": "automatic reader on the signed native build",
+  "qualification": false,
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "cli_sha256": "e994cb17c98698be937ab7d4df48d6f5aab97ec7b86f99109b62f73f852d8552",
+    "codesign_verified": true,
+    "commit": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "935178edb7bfb90d61ec780c3350bf409dfa61c2fc1a4e2dd131af24b7ac6778",
+    "tree": "f4fc662735072661225e98e2b240b3907516adb2"
+  },
+  "automatic": {
+    "qualification": false,
+    "delivery": {
+      "gate": "delivery",
+      "passed": true,
+      "detail": "49 members, 132261877478 bytes verified from an empty cache",
+      "download_seconds": 1001.417,
+      "failed_attempts": 0
+    },
+    "delivery_readiness": {
+      "gate": "readiness",
+      "passed": true,
+      "detail": "first load after delivery 94.949s; staged-pack worst 0s",
+      "delivered": {
+        "disabled": 94.949,
+        "required": 112.088,
+        "default": 112.099
+      }
+    },
+    "timing_eligible": true,
+    "observed_host": {
+      "disabled": {
+        "cpu_idle_percent": [
+          97.13,
+          98.92
+        ],
+        "pressure": [
+          1,
+          1
+        ]
+      },
+      "required": {
+        "cpu_idle_percent": [
+          98.27,
+          95.72
+        ],
+        "pressure": [
+          1,
+          1
+        ]
+      },
+      "default": {
+        "cpu_idle_percent": [
+          98.43,
+          99.1
+        ],
+        "pressure": [
+          1,
+          1
+        ]
+      }
+    },
+    "verifier_steps": {
+      "disabled": 0,
+      "required": 107,
+      "default": 0
+    },
+    "prefetch_seconds": {
+      "disabled": 0.394855333,
+      "required": 0.395071542,
+      "default": 0.400489041
+    },
+    "raw_delivery_sha256": "7d499e108421f4c06f7ec29a43079a446249afefa2eca1d87f574ce706ba94ea",
+    "raw_native_sha256": "5408dfbe7759535a17afd95de83a95119f83180fb26e1417e83cf32147abe5af",
+    "verified_transfer_progress_events": 5194
+  }
+}
