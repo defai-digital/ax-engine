@@ -1,0 +1,42 @@
+{
+  "audit": {
+    "accepted_drafts": 363,
+    "all_post_first_reconciled": 105,
+    "both_eos": 105,
+    "cases": 105,
+    "cost_would_park": 0,
+    "mtp_decisions_observed": 105,
+    "output_ids": 948,
+    "output_positions_audited": 843,
+    "rejected_drafts": 117,
+    "same_direct_output": 105,
+    "verified_steps": 480
+  },
+  "cross_hardware_changed_cases": {
+    "decisions": [
+      "reasoning_cause_effect",
+      "reasoning_syllogism_roses",
+      "math_train_speed",
+      "science_gravity_earth",
+      "science_proton_charge"
+    ],
+    "direct_tokens": [
+      "reasoning_syllogism_roses",
+      "science_gravity_earth",
+      "science_proton_charge"
+    ],
+    "mtp_tokens": [
+      "reasoning_syllogism_roses",
+      "science_gravity_earth",
+      "science_proton_charge"
+    ]
+  },
+  "long_lookup": {
+    "accepted": 2,
+    "input_tokens": 29774,
+    "verified_steps": 2
+  },
+  "normal_pressure_samples": 152,
+  "peak_sampled_rss_kib": 76919536,
+  "qualification": false
+}
