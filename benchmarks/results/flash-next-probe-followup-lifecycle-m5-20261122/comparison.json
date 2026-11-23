@@ -1,0 +1,60 @@
+{
+  "lifecycle_gate": {
+    "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+    "gate": "lifecycle",
+    "passed": true
+  },
+  "prior_lifecycle_sha256": "f6aa0a275b29b202063d070cb44976c8fdab79b0ca9013893428458e2d1b4bf8",
+  "receipt_sha256": "7924bbe552fe85e16d80f61b5f4db55ef860cd11526dc61625a7c209ed6a3ba1",
+  "release_ready": false,
+  "runs": {
+    "default": {
+      "actions_matching": 7,
+      "all_five_generation_counters_drained": true,
+      "ready_seconds": 111.074
+    },
+    "disabled": {
+      "actions_matching": 7,
+      "all_five_generation_counters_drained": true,
+      "ready_seconds": 94.915
+    }
+  },
+  "runtime_commit": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+  "scope": "Current-build native lifecycle on M5",
+  "server_sha256": "935178edb7bfb90d61ec780c3350bf409dfa61c2fc1a4e2dd131af24b7ac6778",
+  "startup_intervals": {
+    "default": {
+      "http_ready_seconds": 111.074,
+      "memory_plan_to_prefetch_completion_seconds": 102.304,
+      "memory_plan_to_runner_admission_seconds": 105.121,
+      "original_log_sha256": "b563997559f55e9572bee7b0100d9b20d271222080ad9b0064c3f8365a860f28",
+      "outside_logged_intervals_seconds": 0.5,
+      "runner_admission_to_listener_seconds": 5.453,
+      "timestamps": {
+        "listener": "2026-11-23T04:31:21.872754Z",
+        "memory_plan": "2026-11-23T04:29:31.298790Z",
+        "prefetch_complete": "2026-11-23T04:31:13.602837Z",
+        "runner_admission": "2026-11-23T04:31:16.419766Z"
+      }
+    },
+    "disabled": {
+      "http_ready_seconds": 94.915,
+      "memory_plan_to_prefetch_completion_seconds": 85.982,
+      "memory_plan_to_runner_admission_seconds": 88.833,
+      "original_log_sha256": "eb2a669e49e9b63c0e0eb66a28bc3361e7cd3a3e6c7d6be800a1370264577f38",
+      "outside_logged_intervals_seconds": 0.65,
+      "runner_admission_to_listener_seconds": 5.431,
+      "timestamps": {
+        "listener": "2026-11-23T04:29:24.338713Z",
+        "memory_plan": "2026-11-23T04:27:50.074168Z",
+        "prefetch_complete": "2026-11-23T04:29:16.055821Z",
+        "runner_admission": "2026-11-23T04:29:18.907429Z"
+      }
+    }
+  },
+  "timing_cpu_idle_percent": [
+    98.9,
+    94.26
+  ],
+  "timing_eligible": true
+}
