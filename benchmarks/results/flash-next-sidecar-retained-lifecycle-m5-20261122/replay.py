@@ -59,6 +59,8 @@ def replay(package, repo):
 
 
 if __name__ == "__main__":
+    if sys.version_info < (3, 12):
+        raise SystemExit("Replay requires Python 3.12 or newer.")
     cli = ArgumentParser(description=__doc__)
     cli.add_argument("--repo", type=Path, default=ROOT.parents[2])
     cli.add_argument("--archive", type=Path, default=ROOT / "evidence.tar.xz")

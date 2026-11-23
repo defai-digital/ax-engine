@@ -30,5 +30,5 @@ sidecar route markers. Run the replay on macOS with Python 3.12+.
 
 ```sh
 shasum -a 256 -c SHA256SUMS
-python3 -B replay.py | cmp comparison.json -
+python3.12 -B replay.py | cmp comparison.json -
 ```
