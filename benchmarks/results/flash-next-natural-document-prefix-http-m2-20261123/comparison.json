@@ -1,0 +1,77 @@
+{
+  "arms": {
+    "cold": {
+      "normal_pressure_samples": 144,
+      "patch_sha256": "7163b99db193ba2ac693ad0218d544cb107924befd8c3cbc88d0b0304631c780",
+      "physical_reuse": {
+        "aligned": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "boundary": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "cancel": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "first": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "outside": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "replacement": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "unseeded": {
+          "hits": 0.0,
+          "tokens": 0.0
+        }
+      },
+      "server_sha256": "610a2b5bdbe16dce4156fe34fdbdefb2dc40bfa2cb9a746d8aeafc0fbf446e17"
+    },
+    "learned": {
+      "normal_pressure_samples": 129,
+      "patch_sha256": "7b5fe847fdcd9f0a5b9bbcdcfea53226a5102b356624c916011a46a573f35783",
+      "physical_reuse": {
+        "aligned": {
+          "hits": 1.0,
+          "tokens": 2048.0
+        },
+        "boundary": {
+          "hits": 1.0,
+          "tokens": 2048.0
+        },
+        "cancel": {
+          "hits": 1.0,
+          "tokens": 2048.0
+        },
+        "first": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "outside": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "replacement": {
+          "hits": 0.0,
+          "tokens": 0.0
+        },
+        "unseeded": {
+          "hits": 0.0,
+          "tokens": 0.0
+        }
+      },
+      "server_sha256": "2afbbafcb2340c1801fe1ab1b68a1fa6557ab3aa3fb23aa818c58e3521084009"
+    }
+  },
+  "compared_token_ids": 1921,
+  "explicit_seed_requests": 0,
+  "qualification": false
+}
