@@ -1,0 +1,36 @@
+{
+  "file_count": 12,
+  "layout": {
+    "bits": 8,
+    "group_size": 32,
+    "shards": 128,
+    "width": 160
+  },
+  "mlx_version": "0.32.4",
+  "mlx_vlm_commit": "138d7617d39653b39a5cbc379b1b5907a4481d67",
+  "modes": {
+    "prefetched": {
+      "bf16_as_f32le_sha256": "b0f28de07c7ee2ae6098d648562d3c7271b04cf8ee14537cc4ef2c4bd136813f",
+      "values_equal": 62720
+    },
+    "synchronous": {
+      "bf16_as_f32le_sha256": "b0f28de07c7ee2ae6098d648562d3c7271b04cf8ee14537cc4ef2c4bd136813f",
+      "values_equal": 62720
+    }
+  },
+  "negative_controls": [
+    "negative index",
+    "past vocabulary",
+    "closed reader"
+  ],
+  "omlx_commit": "5eeec7757f83bfc99eeb87abe49686d00a0bba1f",
+  "pack_hashes": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+    "model.safetensors.index.json": "37344288777e7e78b35901cb1d572dad0dc640cb9cedb90024860b932a657696"
+  },
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "positional_oracle_payload_bytes": 70560,
+  "positions_per_mode": 392,
+  "scope": "PLE component row addressing and prefetch",
+  "vendor_sha256": "65704a21e611ad0c69c38524ec5f0b4e4292a3f9a87b10aee3cdc7cdd5623e9e"
+}
