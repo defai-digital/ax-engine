@@ -1,0 +1,59 @@
+{
+  "arms": {
+    "disabled": {
+      "normal_pressure_samples": 34,
+      "openai": {
+        "baseline": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        },
+        "disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 6.0,
+          "verified_steps": 0.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        }
+      },
+      "openai_accepted_before_disconnect": 0.0,
+      "openai_disconnect_visible_chunks": 3,
+      "openai_verified_before_disconnect": 0.0,
+      "peak_footprint_bytes": 85512051960
+    },
+    "required": {
+      "normal_pressure_samples": 37,
+      "openai": {
+        "baseline": {
+          "accepted_steps": 22.0,
+          "engine_steps": 42.0,
+          "verified_steps": 41.0
+        },
+        "disconnect": {
+          "accepted_steps": 2.0,
+          "engine_steps": 7.0,
+          "verified_steps": 6.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 22.0,
+          "engine_steps": 42.0,
+          "verified_steps": 41.0
+        }
+      },
+      "openai_accepted_before_disconnect": 1.0,
+      "openai_disconnect_visible_chunks": 4,
+      "openai_verified_before_disconnect": 4.0,
+      "peak_footprint_bytes": 86457750664
+    }
+  },
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "macos": "27.2.1",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "qualification": false,
+  "reader": "Mapped",
+  "same_openai_complete_text_across_policies": true,
+  "server_sha256": "abd50e858dcccd941baee7e2336700e65ad635028c79e64070cacf6bae7cd681"
+}
