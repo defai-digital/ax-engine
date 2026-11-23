@@ -1,0 +1,38 @@
+{
+  "lifecycle": {
+    "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+    "gate": "lifecycle",
+    "passed": true
+  },
+  "lifecycle_sha256": "b37a3c0b384a5f886c38e915f3aa010cd1ee63efe461d8d61d0d522abd19fc4f",
+  "readiness": {
+    "delivered": {
+      "default": 30.213,
+      "disabled": 30.212,
+      "required": 114.947
+    },
+    "detail": "first load after delivery 30.212s; staged-pack worst 29.15s",
+    "gate": "readiness",
+    "passed": true
+  },
+  "release_ready": false,
+  "runs": {
+    "default": {
+      "actions_matching": 7,
+      "final_verified_steps": 0.0,
+      "ready_seconds": 29.14
+    },
+    "disabled": {
+      "actions_matching": 7,
+      "final_verified_steps": 0.0,
+      "ready_seconds": 29.15
+    }
+  },
+  "scope": "Guarded-reader ordinary native lifecycle on M5",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "timing_cpu_idle_percent": [
+    90.7,
+    96.29
+  ],
+  "timing_eligible": true
+}
