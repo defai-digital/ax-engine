@@ -23,7 +23,7 @@ fn flash_next_runner_mtp_uses_same_state_greedy_decisions() {
     for (index, (length, budget)) in [(16, 64), (512, 64), (16, 2)].into_iter().enumerate() {
         let prompt: Vec<u32> = (1..=length).collect();
         let base = 6100 + index as u64 * 2;
-        let audit = audit_case(&mut runner, &prompt, budget, base);
+        let audit = audit_case(&mut runner, &prompt, context(base, prompt.len(), budget));
         let audited = audit.decisions.len();
         let accepted_in_run = audit.accepted;
         rejected += audit.rejected;
@@ -52,30 +52,49 @@ fn flash_next_runner_mtp_uses_same_state_greedy_decisions() {
 struct CaseAudit {
     direct: Vec<u32>,
     mtp: Vec<u32>,
+    stop_reason: Option<StopReason>,
     decisions: Vec<runner_audit::Decision>,
     accepted: usize,
     rejected: usize,
     output_decisions: usize,
 }
 
-fn audit_case(runner: &mut MlxRunner, prompt: &[u32], budget: u32, base: u64) -> CaseAudit {
+fn audit_case(
+    runner: &mut MlxRunner,
+    prompt: &[u32],
+    direct_ctx: RunnerRequestContext,
+) -> CaseAudit {
+    let budget = direct_ctx.max_output_tokens as usize;
+    let mtp_ctx = RunnerRequestContext {
+        request_id: RequestId(direct_ctx.request_id.0 + 1),
+        ..direct_ctx
+    };
     runner.set_mtp_requested(false);
-    let (direct, silent) = runner_audit::capture(|| {
-        generate(runner, prompt, 2048, context(base, prompt.len(), budget))
-    });
+    let (direct, silent) = runner_audit::capture(|| generate(runner, prompt, 2048, direct_ctx));
     assert!(silent.is_empty());
     assert_eq!(direct.maximum("ax_mlx_flash_next_mtp_verified_steps"), 0);
+    if !direct_ctx.ignore_eos {
+        assert!(!runner.states.lock().contains_key(&direct_ctx.request_id));
+    }
     runner.set_mtp_requested(true);
-    let (mtp, decisions) = runner_audit::capture(|| {
-        generate(
-            runner,
-            prompt,
-            2048,
-            context(base + 1, prompt.len(), budget),
-        )
-    });
-    assert_eq!(mtp.tokens.len(), budget as usize);
-    assert_eq!(direct.tokens.len(), budget as usize);
+    let (mtp, decisions) = runner_audit::capture(|| generate(runner, prompt, 2048, mtp_ctx));
+    if direct_ctx.ignore_eos {
+        assert_eq!(mtp.tokens.len(), budget);
+        assert_eq!(direct.tokens.len(), budget);
+    } else {
+        for run in [&direct, &mtp] {
+            assert_eq!(run.stop_reason, Some(StopReason::EosToken));
+            assert!(run.tokens.len() < budget);
+            let (last, preceding) = run.tokens.split_last().unwrap();
+            assert!(runner.terminal_token_ids.contains(last));
+            assert!(
+                preceding
+                    .iter()
+                    .all(|id| !runner.terminal_token_ids.contains(id))
+            );
+        }
+        assert!(!runner.states.lock().contains_key(&mtp_ctx.request_id));
+    }
     assert_eq!(mtp.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
     assert_eq!(
         decisions.len(),
@@ -90,7 +109,7 @@ fn audit_case(runner: &mut MlxRunner, prompt: &[u32], budget: u32, base: u64) ->
         let start = primary_at + 1;
         let end = start + decided.emitted.len();
         assert!(covered_until <= start && end <= mtp.tokens.len());
-        assert_eq!(decided.remaining, budget as usize - start);
+        assert_eq!(decided.remaining, budget - start);
         assert_eq!(mtp.tokens[primary_at], decided.primary);
         assert_eq!(&mtp.tokens[start..end], &decided.emitted);
         covered_until = end;
@@ -105,6 +124,7 @@ fn audit_case(runner: &mut MlxRunner, prompt: &[u32], budget: u32, base: u64) ->
     CaseAudit {
         direct: direct.tokens,
         mtp: mtp.tokens,
+        stop_reason: mtp.stop_reason,
         decisions,
         accepted: accepted_in_run,
         rejected: rejected_in_run,
@@ -122,7 +142,25 @@ struct AuditWorkload {
 #[test]
 #[ignore = "requires pinned Flash Next MXFP4 and an explicit workload inventory"]
 fn flash_next_runner_mtp_audits_long_workloads() {
-    let inputs = std::env::var_os("AX_FLASH_NEXT_MTP_AUDIT_INPUTS").unwrap();
+    audit_workloads(
+        "AX_FLASH_NEXT_MTP_AUDIT_INPUTS",
+        "AX_FLASH_NEXT_MTP_AUDIT_OUTPUT",
+        true,
+    );
+}
+
+#[test]
+#[ignore = "requires pinned Flash Next MXFP4 and an explicit natural-stop workload inventory"]
+fn flash_next_runner_mtp_audits_natural_stops() {
+    audit_workloads(
+        "AX_FLASH_NEXT_MTP_NATURAL_STOP_INPUTS",
+        "AX_FLASH_NEXT_MTP_NATURAL_STOP_OUTPUT",
+        false,
+    );
+}
+
+fn audit_workloads(inputs_env: &str, output_env: &str, ignore_eos: bool) {
+    let inputs = std::env::var_os(inputs_env).unwrap();
     let cases: Vec<AuditWorkload> =
         serde_json::from_slice(&std::fs::read(inputs).unwrap()).unwrap();
     assert!(!cases.is_empty());
@@ -135,38 +173,44 @@ fn flash_next_runner_mtp_audits_long_workloads() {
         assert!(case.budget > 1 && !case.prompt.is_empty());
         assert!(case.prompt.len() + case.budget as usize <= 32768);
         assert!(case.prompt.iter().all(|&token| (token as usize) < vocab));
-        let audit = audit_case(
-            &mut runner,
-            &case.prompt,
-            case.budget,
-            8200 + index as u64 * 2,
-        );
+        let request = RunnerRequestContext {
+            ignore_eos,
+            ..context(8200 + index as u64 * 2, case.prompt.len(), case.budget)
+        };
+        let audit = audit_case(&mut runner, &case.prompt, request);
         assert!(
             audit.output_decisions > 0,
             "{} did not exercise MTP",
             case.name
         );
-        let changed: Vec<_> = audit
-            .direct
-            .iter()
-            .zip(&audit.mtp)
-            .enumerate()
-            .filter_map(|(index, (direct, mtp))| (direct != mtp).then_some(index))
+        let changed: Vec<_> = (0..audit.direct.len().max(audit.mtp.len()))
+            .filter(|&index| audit.direct.get(index) != audit.mtp.get(index))
             .collect();
-        observations.push(serde_json::json!({
+        let mut observation = serde_json::json!({
             "name": case.name, "input_tokens": case.prompt.len(), "budget": case.budget,
             "direct_tokens": audit.direct, "mtp_tokens": audit.mtp,
             "verified_steps": audit.decisions.len(), "accepted": audit.accepted,
             "rejected": audit.rejected, "output_positions_audited": audit.output_decisions,
             "changed_from_direct": changed, "decisions": audit.decisions,
-        }));
+        });
+        if !ignore_eos {
+            assert_eq!(audit.output_decisions, audit.mtp.len() - 1, "{}", case.name);
+            assert!(audit.accepted > 0, "{} did not accept a draft", case.name);
+            observation["stop_reason"] = serde_json::json!(audit.stop_reason);
+        }
+        observations.push(observation);
     }
+    let schema = if ignore_eos {
+        "ax-engine.flash-next.runner-mtp-greedy-long-audit.v1"
+    } else {
+        "ax-engine.flash-next.runner-mtp-greedy-natural-stop-audit.v1"
+    };
     let report = serde_json::json!({
-        "schema": "ax-engine.flash-next.runner-mtp-greedy-long-audit.v1",
-        "qualification": false, "prefill_quantum": 2048, "ignore_eos": true,
+        "schema": schema,
+        "qualification": false, "prefill_quantum": 2048, "ignore_eos": ignore_eos,
         "cases": observations,
     });
-    let output = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_AUDIT_OUTPUT").unwrap());
+    let output = PathBuf::from(std::env::var_os(output_env).unwrap());
     use std::io::Write;
     std::fs::OpenOptions::new()
         .write(true)

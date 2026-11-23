@@ -134,6 +134,7 @@ fn execute_with_route_decisions(
 struct Generation {
     prompt_len: usize,
     tokens: Vec<u32>,
+    stop_reason: Option<StopReason>,
     routes: Vec<Vec<(String, u32)>>,
     prefill_seconds: f64,
     decode_seconds: f64,
@@ -602,6 +603,7 @@ fn generate_observed(
     let mut result = Generation {
         prompt_len: prompt.len(),
         tokens: Vec::new(),
+        stop_reason: None,
         routes: Vec::new(),
         prefill_seconds: 0.0,
         decode_seconds: 0.0,
@@ -627,7 +629,8 @@ fn generate_observed(
         if ctx.processed_prompt_tokens < ctx.prompt_len {
             assert!(result.tokens.is_empty());
         }
-        if update.stop_reason.is_some() {
+        if let Some(reason) = update.stop_reason {
+            result.stop_reason = Some(reason);
             return result;
         }
     }
@@ -670,7 +673,8 @@ fn generate_observed(
                 }
             }
         }
-        if update.stop_reason.is_some() {
+        if let Some(reason) = update.stop_reason {
+            result.stop_reason = Some(reason);
             break;
         }
     }
