@@ -1,0 +1,83 @@
+{
+  "scope": "automatic reader on the signed native build",
+  "qualification": false,
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "cli_sha256": "bbd8750aba3dd8c164b8d0db9d16ac61a022c9b9363f7873b33431b2aedfb5ac",
+    "codesign_verified": true,
+    "commit": "88c480c03ec1fdf13516f648ab320e63d1ff3361",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "b2cec79174ef9e7efa074d21665cd3d5f33df0c7cb7185d162dd9fa5cdf26839",
+    "tree": "f91291c6a3cf859e04115838424283b8f3b7b17e"
+  },
+  "automatic": {
+    "qualification": false,
+    "delivery": {
+      "gate": "delivery",
+      "passed": true,
+      "detail": "49 members, 132261877478 bytes verified from an empty cache",
+      "download_seconds": 945.38,
+      "failed_attempts": 0
+    },
+    "delivery_readiness": {
+      "gate": "readiness",
+      "passed": true,
+      "detail": "first load after delivery 98.865s; staged-pack worst 0s",
+      "delivered": {
+        "disabled": 98.865,
+        "required": 112.553,
+        "default": 110.482
+      }
+    },
+    "timing_eligible": false,
+    "observed_host": {
+      "disabled": {
+        "cpu_idle_percent": [
+          97.11,
+          92.23
+        ],
+        "pressure": [
+          1,
+          1
+        ]
+      },
+      "required": {
+        "cpu_idle_percent": [
+          98.35,
+          93.1
+        ],
+        "pressure": [
+          1,
+          1
+        ]
+      },
+      "default": {
+        "cpu_idle_percent": [
+          98.43,
+          89.95
+        ],
+        "pressure": [
+          1,
+          1
+        ]
+      }
+    },
+    "verifier_steps": {
+      "disabled": 0,
+      "required": 107,
+      "default": 0
+    },
+    "prefetch_seconds": {
+      "disabled": 0.395272542,
+      "required": 0.410474125,
+      "default": 0.396449458
+    },
+    "raw_delivery_sha256": "a991a419cb3845027c53b43de9f781fbe8d03126dbe099b10f62362585ed0685",
+    "raw_native_sha256": "0d8946b13afcdd22ec00161e864fbdae7f24a03923b8987e0d17c38b380bc9f0",
+    "verified_transfer_progress_events": 4805
+  }
+}
