@@ -1,0 +1,79 @@
+{
+  "exact_archive_case_count": 1,
+  "exact_same_host_tokens": 41,
+  "hardware": {
+    "macos": "27.2.1",
+    "memory_bytes": 206158430208,
+    "soc": "Apple M2 Ultra",
+    "storage": {
+      "bus_protocol": "Apple Fabric",
+      "internal": true,
+      "solid_state": true
+    }
+  },
+  "mixed_median_forward_fraction": 0.9705505088192119,
+  "prefill_attributed_cases": 3,
+  "qualification": false,
+  "samples": [
+    {
+      "archive_sse_gap_ms": 844.1412080428563,
+      "archived_ids_match": false,
+      "mixed_core_us": 1349542,
+      "mixed_runner_us": 1349497,
+      "mixed_step_http_us": 1350489,
+      "output_tokens": 15,
+      "prefill_forward_us": 1309755,
+      "prefill_interval_us": 1309760,
+      "same_step_core_outside_runner_us": 45,
+      "same_step_runner_outside_prefill_us": 39737,
+      "short_id": "mixed-104",
+      "solo_decode_runner_us": 28599,
+      "width": 511
+    },
+    {
+      "archive_sse_gap_ms": 958.8350420235656,
+      "archived_ids_match": false,
+      "mixed_core_us": 1346953,
+      "mixed_runner_us": 1346909,
+      "mixed_step_http_us": 1347895,
+      "output_tokens": 15,
+      "prefill_forward_us": 1308002,
+      "prefill_interval_us": 1308008,
+      "same_step_core_outside_runner_us": 44,
+      "same_step_runner_outside_prefill_us": 38901,
+      "short_id": "mixed-134",
+      "solo_decode_runner_us": 28024,
+      "width": 511
+    },
+    {
+      "archive_sse_gap_ms": 897.5324999773875,
+      "archived_ids_match": true,
+      "mixed_core_us": 1337479,
+      "mixed_runner_us": 1337438,
+      "mixed_step_http_us": 1338378,
+      "output_tokens": 9,
+      "prefill_forward_us": 1296669,
+      "prefill_interval_us": 1298213,
+      "same_step_core_outside_runner_us": 41,
+      "same_step_runner_outside_prefill_us": 39225,
+      "short_id": "mixed-144",
+      "solo_decode_runner_us": 27858,
+      "width": 512
+    },
+    {
+      "archive_sse_gap_ms": 1074.8168749851175,
+      "archived_ids_match": false,
+      "mixed_core_us": 1312534,
+      "mixed_runner_us": 1312489,
+      "mixed_step_http_us": 1313362,
+      "output_tokens": 2,
+      "prefill_forward_us": null,
+      "prefill_interval_us": null,
+      "same_step_core_outside_runner_us": 45,
+      "same_step_runner_outside_prefill_us": null,
+      "short_id": "mixed-194",
+      "solo_decode_runner_us": 28899,
+      "width": 512
+    }
+  ]
+}
