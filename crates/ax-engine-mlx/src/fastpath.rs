@@ -1952,6 +1952,12 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_FIXED_PREFIX_EXTENSION"
 );
 
+env_flag!(
+    /// Learn fixed Flash Next prefixes from completed follow-up requests.
+    flash_next_learn_prefix_fork_enabled,
+    "AX_MLX_FLASH_NEXT_LEARN_PREFIX_FORK"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_DFLASH2_COHORT` — batched DFlash2: when two or more decode
     /// requests of one engine step take a DFlash2 round, verify them in one

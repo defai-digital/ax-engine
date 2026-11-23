@@ -419,9 +419,20 @@ struct Gemma4AssistantMtpRuntime {
     target_shared_layers: crate::model::Gemma4AssistantSharedKvLayers,
 }
 
+struct ObservedFlashNextFork {
+    key: MlxPrefixCacheKey,
+    tokens: Box<[u32]>,
+}
+
+struct PendingFlashNextFork {
+    tokens: Box<[u32]>,
+    checkpoint: Option<Box<MlxKVCache>>,
+}
+
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
     cache: MlxKVCache,
+    pending_flash_next_fork: Option<PendingFlashNextFork>,
     /// Set only by successful native media prefill, never by a prefix restore.
     multimodal_prefill_complete: bool,
     prompt_prefix_tokens: Vec<u32>,
@@ -1279,7 +1290,7 @@ enum NgramRequestDisableReason {
 }
 
 const FLASH_NEXT_FIXED_PREFIX_TOKENS: usize = 2048;
-const FLASH_NEXT_FIXED_PREFIX_SUFFIX: usize = 64;
+const FLASH_NEXT_FIXED_PREFIX_MAX_SUFFIX: usize = 2048;
 
 struct PromptPrefixSnapshotStoreOptions<'a> {
     flash_next_fixed_prefix: bool,
@@ -1321,6 +1332,7 @@ impl RequestState {
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             prefill_boundary_snapshot: None,
+            pending_flash_next_fork: None,
             prefill_grid_snapshot: None,
             ngram: NgramTable::new(),
             rng: crate::sampling::request_rng(explicit_seed, fallback_seed),
@@ -1659,6 +1671,8 @@ pub struct MlxRunner {
     artifact_fingerprint: Option<String>,
     /// Fixed-partition reuse is restricted to the audited MXFP4 format.
     flash_next_fixed_prefix_mxfp4: bool,
+    /// Completed eligible prefill observations, private to this loaded model.
+    flash_next_fork_history: Option<Mutex<VecDeque<ObservedFlashNextFork>>>,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Full direct Flash Next snapshots admitted before scheduler reuse.
     /// Retaining the Arc prevents eviction from turning a hit into a replay
@@ -3469,6 +3483,9 @@ impl MlxRunner {
                         .expect("default FA slab pool config must be valid")
                 }
             });
+        let flash_next_fixed_prefix_mxfp4 =
+            crate::fastpath::flash_next_fixed_prefix_extension_enabled()
+                && artifacts.audited_qwen4_exp_mxfp4();
         Ok(Self {
             cfg,
             cfg_arc,
@@ -3486,9 +3503,10 @@ impl MlxRunner {
                 artifacts,
                 crate::artifact_identity::PREFIX_CACHE_ARTIFACT_DOMAIN,
             ),
-            flash_next_fixed_prefix_mxfp4:
-                crate::fastpath::flash_next_fixed_prefix_extension_enabled()
-                    && artifacts.audited_qwen4_exp_mxfp4(),
+            flash_next_fixed_prefix_mxfp4,
+            flash_next_fork_history: (flash_next_fixed_prefix_mxfp4
+                && crate::fastpath::flash_next_learn_prefix_fork_enabled())
+            .then(Mutex::default),
             states: Mutex::new(HashMap::new()),
             prepared_prefixes: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
@@ -8438,8 +8456,12 @@ impl MlxRunner {
                         && is_greedy
                         && staged_batched_prefill.is_none()
                         && (prefill_completes_prompt
-                            || ctx.is_some_and(|context| context.prompt_len as usize
-                                == FLASH_NEXT_FIXED_PREFIX_TOKENS + FLASH_NEXT_FIXED_PREFIX_SUFFIX))
+                            || ctx.is_some_and(|context| {
+                                let prompt_tokens = context.prompt_len as usize;
+                                (FLASH_NEXT_FIXED_PREFIX_TOKENS + 1
+                                    ..=FLASH_NEXT_FIXED_PREFIX_TOKENS + FLASH_NEXT_FIXED_PREFIX_MAX_SUFFIX)
+                                    .contains(&prompt_tokens)
+                            }))
                         && state.cache.seq_len() == 0
                         && item.position_range.start == 0
                         && item.reused_prefix_token_slice.is_empty()
@@ -8674,6 +8696,14 @@ impl MlxRunner {
                                 // blocking on a growing full-cache barrier.
                                 crate::generate::CacheOnlyBarrier::AsyncSubmit,
                             );
+                            if flash_next_fixed_prefix && self.flash_next_fork_history.is_some() {
+                                state.pending_flash_next_fork = self.capture_flash_next_fork(
+                                    &state.cache,
+                                    model_id,
+                                    block_size_tokens,
+                                    prefill_tokens,
+                                );
+                            }
                         }
                         state
                             .decode_telemetry
@@ -8823,6 +8853,22 @@ impl MlxRunner {
                                     media_key: media_key.as_deref(),
                                 },
                             ),
+                        );
+                    }
+                    if prefill_completes_prompt
+                        && let Some(pending) = state.pending_flash_next_fork.take()
+                        && prefill_output_token.is_some()
+                        && prefill_output_token_cacheable(ctx, sampling)
+                        && media_key.as_deref() == Some("")
+                        && state.cache.seq_len() == state.prompt_prefix_tokens.len()
+                        && state.prompt_prefix_tokens.len() > pending.tokens.len()
+                        && state.prompt_prefix_tokens.starts_with(&pending.tokens)
+                    {
+                        self.finish_flash_next_fork(
+                            model_id,
+                            block_size_tokens,
+                            pending,
+                            &mut prefix_cache,
                         );
                     }
                     if let Some((rung_len, rung_cache)) = state.prefill_grid_snapshot.take()
@@ -10166,6 +10212,107 @@ impl MlxRunner {
 
     fn flash_next_exact_prefix_only(&self) -> bool {
         self.cfg.model_family == "qwen4_exp" && !self.mtp_requested
+    }
+
+    fn capture_flash_next_fork(
+        &self,
+        cache: &MlxKVCache,
+        model_id: &str,
+        block_size_tokens: u32,
+        tokens: &[u32],
+    ) -> Option<PendingFlashNextFork> {
+        let history = self.flash_next_fork_history.as_ref()?;
+        if cache.seq_len() != tokens.len()
+            || crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal
+            || cache.has_unserializable_layers()
+        {
+            return None;
+        }
+        let policy = self.prefix_cache.lock().policy;
+        if !policy.admits_lower_bound(snapshot_charge_bytes(
+            cache.usage_snapshot().logical_bytes,
+            tokens.len(),
+        )) {
+            return None;
+        }
+        let key = self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, "");
+        let seen = history
+            .lock()
+            .iter()
+            .any(|prior| prior.key == key && prior.tokens.as_ref() == tokens);
+        Some(PendingFlashNextFork {
+            tokens: tokens.into(),
+            checkpoint: seen.then(|| Box::new(cache.clone())),
+        })
+    }
+
+    fn finish_flash_next_fork(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        pending: PendingFlashNextFork,
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) {
+        let Some(history) = &self.flash_next_fork_history else {
+            return;
+        };
+        if crate::host_pressure::sample() != crate::host_pressure::HostPressure::Normal {
+            return;
+        }
+        let policy = self.prefix_cache.lock().policy;
+        let count = pending.tokens.len();
+        let limit = policy.max_entries.min(
+            usize::try_from(
+                policy.max_bytes / snapshot_charge_bytes(0, FLASH_NEXT_FIXED_PREFIX_TOKENS),
+            )
+            .unwrap_or(usize::MAX),
+        );
+        if limit == 0 {
+            return;
+        }
+        let key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, &pending.tokens, "");
+        {
+            let mut recent = history.lock();
+            recent.retain(|prior| prior.key != key || prior.tokens != pending.tokens);
+            while recent.len() >= limit {
+                recent.pop_front();
+            }
+            recent.push_back(ObservedFlashNextFork {
+                key: key.clone(),
+                tokens: pending.tokens.clone(),
+            });
+        }
+        let Some(checkpoint) = pending.checkpoint else {
+            return;
+        };
+        if checkpoint.seq_len() != count {
+            return;
+        }
+        let owner = self.cfg.compile_cache_identity;
+        let mut snapshot = MlxPrefixSnapshot::from_shared_payload(
+            checkpoint.serialize_to_bytes().into(),
+            pending.tokens.into_vec(),
+            count,
+            None,
+            None,
+        );
+        snapshot.flash_next_fixed_prefix_owner = Some(owner);
+        let mut store = self.prefix_cache.lock();
+        if store.entries.get(&key).is_some_and(|entry| {
+            let old = &entry.snapshot;
+            old.tokens != snapshot.tokens
+                || old.greedy_prefill_output_token.is_some()
+                || old.flash_next_fixed_prefix_owner == Some(owner)
+        }) {
+            return;
+        }
+        let result = store.insert(key, snapshot);
+        telemetry.record_stats(store.stats());
+        if result.stored {
+            telemetry.stores = telemetry.stores.saturating_add(1);
+        }
+        telemetry.evictions = telemetry.evictions.saturating_add(result.evictions);
     }
 
     fn restore_flash_next_fixed_prefix(
