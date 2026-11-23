@@ -1279,7 +1279,7 @@ enum NgramRequestDisableReason {
 }
 
 const FLASH_NEXT_FIXED_PREFIX_TOKENS: usize = 2048;
-const FLASH_NEXT_FIXED_PREFIX_SUFFIX: usize = 64;
+const FLASH_NEXT_FIXED_PREFIX_MAX_SUFFIX: usize = 2048;
 
 struct PromptPrefixSnapshotStoreOptions<'a> {
     flash_next_fixed_prefix: bool,
@@ -8438,8 +8438,12 @@ impl MlxRunner {
                         && is_greedy
                         && staged_batched_prefill.is_none()
                         && (prefill_completes_prompt
-                            || ctx.is_some_and(|context| context.prompt_len as usize
-                                == FLASH_NEXT_FIXED_PREFIX_TOKENS + FLASH_NEXT_FIXED_PREFIX_SUFFIX))
+                            || ctx.is_some_and(|context| {
+                                let prompt_tokens = context.prompt_len as usize;
+                                (FLASH_NEXT_FIXED_PREFIX_TOKENS + 1
+                                    ..=FLASH_NEXT_FIXED_PREFIX_TOKENS + FLASH_NEXT_FIXED_PREFIX_MAX_SUFFIX)
+                                    .contains(&prompt_tokens)
+                            }))
                         && state.cache.seq_len() == 0
                         && item.position_range.start == 0
                         && item.reused_prefix_token_slice.is_empty()
