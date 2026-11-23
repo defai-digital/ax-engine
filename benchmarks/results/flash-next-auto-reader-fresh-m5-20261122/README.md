@@ -16,10 +16,14 @@ The reader environment override was absent in all three launches.
 All three launches meet the delivery readiness bound with normal memory
 pressure. The default arm's final CPU sample falls below 90%, so the
 campaign is ineligible for a timing comparison. The required activation
-kill-switch control rejected before sidecar payload startup. The archive
-covers the automatic delivery checkpoint. Explicit opt-out, continued
-native testing, and the independent MLX-VLM reference are tracked
-separately.
+kill-switch control rejected before sidecar payload startup.
+
+The same executable then served the retained pack with the reader override
+set to `0`. The mapped launch reached readiness in 117.586 seconds and
+matched all seven default HTTP responses, usage fields, and activation
+counters. The log records a listening server and no prefetch. This
+follow-up uses the retained cache. The complete native campaign and
+independent MLX-VLM reference are still open.
 
 The portable evidence binds the native controls to the signed build and
 replays all 4,805 recorded byte-progress events and the per-mode reader

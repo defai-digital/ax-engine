@@ -19,7 +19,9 @@ PINNED = {
 RAW = {
     "auto-delivery.json", "build.json", "harness-inputs.sha256",
     "delivery/result.json", "delivery/download.ndjson", "delivery/native-support/result.json",
-    "delivery/native-support/host-samples.json",
+    "delivery/native-support/host-samples.json", "opt-out/server-default.log",
+    *(f"opt-out/default-{name}.json"
+      for name in ("after_stream", "count", "extend", "json", "one_token", "repeat", "stream")),
     *(f"delivery/native-support/server-{mode}.log"
       for mode in ("disabled", "required", "default", "required-kill-switch")),
 }

@@ -79,5 +79,10 @@
     "raw_delivery_sha256": "a991a419cb3845027c53b43de9f781fbe8d03126dbe099b10f62362585ed0685",
     "raw_native_sha256": "0d8946b13afcdd22ec00161e864fbdae7f24a03923b8987e0d17c38b380bc9f0",
     "verified_transfer_progress_events": 4805
+  },
+  "opt_out": {
+    "matched_http_controls": 7,
+    "readiness_seconds": 117.586,
+    "log_sha256": "cb8280d7c1a4948d49dd592dcaa1ea67308fe78cc5602e6b9d82041d494fa981"
   }
 }
