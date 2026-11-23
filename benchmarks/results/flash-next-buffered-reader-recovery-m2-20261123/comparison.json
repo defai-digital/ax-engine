@@ -1,0 +1,10 @@
+{
+  "fault_exit_code": 1,
+  "normal_pressure_samples": 10,
+  "port_reused": true,
+  "publisher_members_rechecked": 49,
+  "qualification": false,
+  "scope": "Forced buffered-reader startup failure and restart",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "verified_recovery_token_ids": 128
+}
