@@ -1,0 +1,34 @@
+{
+  "cases": 8,
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "normal_pressure_samples": 6,
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "qualification": false,
+  "scope": "Two publisher-backed routed expert layers with deterministic BF16 activations",
+  "stages": {
+    "compiled_with_bf16_activation": {
+      "activation": {
+        "different_bits": 0,
+        "elements": 19660800,
+        "max_abs_difference": 0
+      },
+      "down": {
+        "different_bits": 0,
+        "elements": 78643200,
+        "max_abs_difference": 0
+      }
+    },
+    "late_bf16_round": {
+      "activation": {
+        "different_bits": 5248877,
+        "elements": 19660800,
+        "max_abs_difference": 0.03125
+      },
+      "down": {
+        "different_bits": 43397139,
+        "elements": 78643200,
+        "max_abs_difference": 0.015625
+      }
+    }
+  }
+}

@@ -1,0 +1,287 @@
+{
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "layer_results": [
+    {
+      "cases": [
+        {
+          "distinct_experts": 10,
+          "route_pool": 512,
+          "rows": 1,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 6400,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 25600,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 1708,
+                "elements": 6400,
+                "max_abs_difference": 0.015625
+              },
+              "down": {
+                "different_bits": 14491,
+                "elements": 25600,
+                "max_abs_difference": 0.001953125
+              }
+            }
+          }
+        },
+        {
+          "distinct_experts": 512,
+          "route_pool": 512,
+          "rows": 511,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 3270400,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 13081600,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 874683,
+                "elements": 3270400,
+                "max_abs_difference": 0.03125
+              },
+              "down": {
+                "different_bits": 7202784,
+                "elements": 13081600,
+                "max_abs_difference": 0.015625
+              }
+            }
+          }
+        },
+        {
+          "distinct_experts": 512,
+          "route_pool": 512,
+          "rows": 512,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 3276800,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 13107200,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 875949,
+                "elements": 3276800,
+                "max_abs_difference": 0.03125
+              },
+              "down": {
+                "different_bits": 7211989,
+                "elements": 13107200,
+                "max_abs_difference": 0.015625
+              }
+            }
+          }
+        },
+        {
+          "distinct_experts": 64,
+          "route_pool": 64,
+          "rows": 512,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 3276800,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 13107200,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 876520,
+                "elements": 3276800,
+                "max_abs_difference": 0.03125
+              },
+              "down": {
+                "different_bits": 7201511,
+                "elements": 13107200,
+                "max_abs_difference": 0.015625
+              }
+            }
+          }
+        }
+      ],
+      "layer": 0
+    },
+    {
+      "cases": [
+        {
+          "distinct_experts": 10,
+          "route_pool": 512,
+          "rows": 1,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 6400,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 25600,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 1678,
+                "elements": 6400,
+                "max_abs_difference": 0.015625
+              },
+              "down": {
+                "different_bits": 14156,
+                "elements": 25600,
+                "max_abs_difference": 0.00103759765625
+              }
+            }
+          }
+        },
+        {
+          "distinct_experts": 512,
+          "route_pool": 512,
+          "rows": 511,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 3270400,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 13081600,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 871202,
+                "elements": 3270400,
+                "max_abs_difference": 0.03125
+              },
+              "down": {
+                "different_bits": 7233708,
+                "elements": 13081600,
+                "max_abs_difference": 0.00390625
+              }
+            }
+          }
+        },
+        {
+          "distinct_experts": 512,
+          "route_pool": 512,
+          "rows": 512,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 3276800,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 13107200,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 873201,
+                "elements": 3276800,
+                "max_abs_difference": 0.03125
+              },
+              "down": {
+                "different_bits": 7250242,
+                "elements": 13107200,
+                "max_abs_difference": 0.0078125
+              }
+            }
+          }
+        },
+        {
+          "distinct_experts": 64,
+          "route_pool": 64,
+          "rows": 512,
+          "variants": {
+            "compiled_with_bf16_activation": {
+              "activation": {
+                "different_bits": 0,
+                "elements": 3276800,
+                "max_abs_difference": 0.0
+              },
+              "down": {
+                "different_bits": 0,
+                "elements": 13107200,
+                "max_abs_difference": 0.0
+              }
+            },
+            "late_bf16_round": {
+              "activation": {
+                "different_bits": 873936,
+                "elements": 3276800,
+                "max_abs_difference": 0.03125
+              },
+              "down": {
+                "different_bits": 7268258,
+                "elements": 13107200,
+                "max_abs_difference": 0.001953125
+              }
+            }
+          }
+        }
+      ],
+      "layer": 32
+    }
+  ],
+  "macos": "27.2.1",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "probe_sha256": "8f8b6beebca5623e19c2bfc485939aee269ac7bd6a656d4e00c51b0604162796",
+  "publisher_shards_verified_before_and_after": [
+    "model-00001-of-00025.safetensors",
+    "model-00021-of-00025.safetensors"
+  ],
+  "python": "3.12.13",
+  "qualification": false,
+  "reused_probe_sha256": "af1f4c1bf83147ff4406adfb829d97c490932261ba2c3f1834148724ba217455",
+  "sampled_pressure_levels": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "scope": "Two publisher-backed routed expert layers with deterministic BF16 activations",
+  "versions": {
+    "mlx": "0.32.4",
+    "mlx-metal": "0.32.4",
+    "numpy": "2.5.4"
+  }
+}
