@@ -265,6 +265,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DENSE_SHORT_CONTEXT", shipped: "on", class: SwitchClass::Token("qsa_dense=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION", shipped: "on", class: SwitchClass::Token("qsa_batched=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER", shipped: "on", class: SwitchClass::ProvenExact("fused_gather_batched_attention_matches_bit_for_bit") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_PAIRED_GATHER", shipped: "off", class: SwitchClass::ProvenExact("paired_gather_keeps_padding_order_and_segment_boundaries") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL", shipped: "off", class: SwitchClass::Token("indexed") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES", shipped: "off", class: SwitchClass::ProvenExact("qsa_tiled_score_bits_match_monolithic") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK", shipped: "unset", class: SwitchClass::Token("chunk=8192") },

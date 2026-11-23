@@ -6177,6 +6177,14 @@ env_flag_default_on!(
     "AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER"
 );
 
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_PAIRED_GATHER` uses the experimental paired
+    /// BF16 K/V copy for single-batch selected prefill with up to 8K history
+    /// tokens. It retains the existing tile sizes, mask and SDPA. Default OFF.
+    flash_next_qsa_paired_gather_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_PAIRED_GATHER"
+);
+
 /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
 /// chunks by reading each query's selected K/V rows straight out of the
 /// sealed/tail history in a custom Metal kernel, instead of gathering a

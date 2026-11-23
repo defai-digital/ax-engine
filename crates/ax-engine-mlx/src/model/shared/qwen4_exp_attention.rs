@@ -19,6 +19,7 @@ use mlx_sys::{
 };
 use thiserror::Error;
 
+use super::qwen4_exp_attention_gather::{self, PairedGather};
 use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_kv_history::{KvHistory, gather_selected};
 use super::qwen4_exp_residual::{
@@ -971,8 +972,17 @@ fn attend_selected(
         } else {
             None
         };
-    // Padded sub-batches reshape one contiguous array per batch row; the
-    // per-query decode path gathers straight from the segments.
+    let paired = if batched
+        && batch == 1
+        && queries.dtype() == MlxDtype::Bfloat16
+        && qwen4_exp_attention_gather::enabled()
+    {
+        PairedGather::new(&keys, &values)
+    } else {
+        None
+    };
+    // The stock padded gather uses a flat history. For the experimental
+    // paired copy these lazy arrays are only evaluated if it falls back.
     let flat = if batched {
         Some(flat_pair(&keys, &values)?)
     } else {
@@ -981,7 +991,9 @@ fn attend_selected(
     // Test-only attribution: a segmented history flattened for the padded
     // sub-batches is a whole-history copy, separate from the tile gathers.
     #[cfg(test)]
-    if let Some((key_rows, value_rows)) = &flat {
+    if paired.is_none()
+        && let Some((key_rows, value_rows)) = &flat
+    {
         crate::model::qwen4_exp::profiling::mark("qsa_da_flatten", &[key_rows, value_rows]);
     }
     let mut batch_out = Vec::new();
@@ -1029,8 +1041,11 @@ fn attend_selected(
             };
             batch_out.push(attend_selected_batched(
                 &q_b,
-                &k_b,
-                &v_b,
+                BatchedKv {
+                    keys: &k_b,
+                    values: &v_b,
+                    paired: paired.as_ref(),
+                },
                 selection,
                 b as usize,
                 compact.as_ref(),
@@ -1249,6 +1264,12 @@ fn sub_batch_cap_width(cap: usize, per_token: usize, initial: usize, window_max:
     (cap / bytes_per_row).clamp(1, initial)
 }
 
+struct BatchedKv<'a> {
+    keys: &'a MlxArray,
+    values: &'a MlxArray,
+    paired: Option<&'a PairedGather<'a>>,
+}
+
 /// Attend a chunk of selected queries as padded sub-batches.
 ///
 /// Each query owns its selected token list; lists are padded with `-1` to the
@@ -1263,8 +1284,7 @@ fn sub_batch_cap_width(cap: usize, per_token: usize, initial: usize, window_max:
 /// their index lists into that buffer.
 fn attend_selected_batched(
     q_b: &MlxArray,
-    k_b: &MlxArray,
-    v_b: &MlxArray,
+    kv: BatchedKv<'_>,
     selection: &QsaSelection,
     batch_index: usize,
     compact: Option<&MlxArray>,
@@ -1272,10 +1292,10 @@ fn attend_selected_batched(
 ) -> Result<MlxArray> {
     let q_shape = q_b.shape();
     let (q_heads, seq, dim) = (q_shape[1], q_shape[2] as usize, q_shape[3]);
-    let kv_shape = k_b.shape();
+    let kv_shape = kv.keys.shape();
     let (tokens, kv_heads) = (kv_shape[1], kv_shape[2]);
-    let keys = reshape(k_b, &[tokens, kv_heads, dim], None);
-    let values = reshape(v_b, &[tokens, kv_heads, dim], None);
+    let keys = reshape(kv.keys, &[tokens, kv_heads, dim], None);
+    let values = reshape(kv.values, &[tokens, kv_heads, dim], None);
     let element_bytes = if q_b.dtype() == MlxDtype::Float32 {
         4
     } else {
@@ -1353,12 +1373,17 @@ fn attend_selected_batched(
             )
         };
         let valid = greater_equal(&indices, &int32_scalar(0), None);
-        let safe = maximum(&indices, &int32_scalar(0), None);
-        let fused = fused_gather_enabled();
-        let gather = |source: &MlxArray| {
-            gather_selected_tile(source, &safe, width_i, padded_i, kv_heads, dim, fused)
-        };
-        let (k_sel, v_sel) = (gather(&keys), gather(&values));
+        let (k_sel, v_sel) = kv
+            .paired
+            .and_then(|paired| paired.gather(&indices))
+            .unwrap_or_else(|| {
+                let safe = maximum(&indices, &int32_scalar(0), None);
+                let fused = fused_gather_enabled();
+                let gather = |source: &MlxArray| {
+                    gather_selected_tile(source, &safe, width_i, padded_i, kv_heads, dim, fused)
+                };
+                (gather(&keys), gather(&values))
+            });
         // Test-only attribution. `qsa_da_gather` is the gather copy;
         // `qsa_da_layout` the transpose copy, which is a no-op when the fused
         // gather already landed in SDPA order; `qsa_da_sdpa` the kernel.
@@ -3023,6 +3048,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn paired_gather_keeps_padding_order_and_segment_boundaries() {
+        use super::super::qwen4_exp_kv_history::with_kv_segments;
+
+        let dtype = MlxDtype::Bfloat16;
+        let k = reshape(&tile_rows(12, 2, 256, dtype), &[1, 12, 2, 256], None);
+        let v = multiply(&k, &astype(&int32_scalar(-2), dtype, None), None);
+        let flat_k = KvHistory::from_flat(k.clone());
+        let flat_v = KvHistory::from_flat(v.clone());
+        let make_segmented = |array: &MlxArray| {
+            let prefix = slice(array, &[0, 0, 0, 0], &[1, 8, 2, 256], &[1; 4], None);
+            let tail = slice(array, &[0, 8, 0, 0], &[1, 12, 2, 256], &[1; 4], None);
+            with_kv_segments(Some((8, 16)), || KvHistory::from_flat(prefix).append(&tail))
+        };
+        let (segmented_k, segmented_v) = (make_segmented(&k), make_segmented(&v));
+        assert_eq!(segmented_k.sealed_rows(), Some(8));
+        let indices = [7_i32, 8, 0, 11, -1, 9, -1, 8, 8, 2];
+        let indices = MlxArray::from_raw_data(
+            indices.as_ptr().cast(),
+            std::mem::size_of_val(&indices),
+            &[2, 5],
+            MlxDtype::Int32,
+        );
+        let safe = maximum(&indices, &int32_scalar(0), None);
+        let expected_k =
+            gather_selected_tile(&reshape(&k, &[12, 2, 256], None), &safe, 2, 5, 2, 256, true);
+        let expected_v =
+            gather_selected_tile(&reshape(&v, &[12, 2, 256], None), &safe, 2, 5, 2, 256, true);
+        for (keys, values) in [(&flat_k, &flat_v), (&segmented_k, &segmented_v)] {
+            let gather = PairedGather::new(keys, values).unwrap();
+            let (actual_k, actual_v) = gather.gather(&indices).unwrap();
+            assert_eq!(actual_k.shape(), vec![2, 2, 5, 256]);
+            assert_eq!(f32_value_bits(&actual_k), f32_value_bits(&expected_k));
+            assert_eq!(f32_value_bits(&actual_v), f32_value_bits(&expected_v));
+            assert!(gather.gather(&astype(&indices, dtype, None)).is_none());
+        }
+        assert!(PairedGather::new(&flat_k, &segmented_v).is_none());
+        let invalid = KvHistory::from_flat(astype(&k, MlxDtype::Float32, None));
+        assert!(PairedGather::new(&invalid, &flat_v).is_none());
     }
 
     /// The two tiles must feed the masked SDPA call identically, so the

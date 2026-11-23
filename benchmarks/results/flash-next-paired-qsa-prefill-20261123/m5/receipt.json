@@ -1,0 +1,32 @@
+{
+  "qualification": false,
+  "build": {
+    "binary_sha256": "99878503686b0a28c8c972f76d348d337ba70c3ca1ba04912c2c4030bb10ea9b",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+    "mlx": "0.32.4",
+    "patch_sha256": "128a82f796f8e8aa7221b56f9bf7358c7031c3a8e83896b6241ef883d53cc877",
+    "profile": "release-server",
+    "prompt_sha256": "a6eee0fc146a9ed23530a81fc4dd0cbb5416857e176b66a5f1eeddd436666dc6",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "source_base": "141858d8b9e2b71f729b07a775f50b607344d386"
+  },
+  "manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "cpu_idle_percent": [
+    98.68,
+    83.7
+  ],
+  "storage": {
+    "internal": true,
+    "solid_state": true,
+    "bus_protocol": "Apple Fabric"
+  },
+  "soc": "Apple M5 Max",
+  "memory_bytes": 137438953472,
+  "macos": "27.2.1",
+  "pressure_samples": 160,
+  "result_sha256": "0a41bdfaa3bbfe1d59e570013215c4c2fb2f7376257b3b5ff6197f5cc423d82e"
+}

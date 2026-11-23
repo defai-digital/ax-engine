@@ -1,0 +1,12 @@
+soc=Apple M4 Pro
+memory_bytes=68719476736
+macos=27.0
+99878503686b0a28c8c972f76d348d337ba70c3ca1ba04912c2c4030bb10ea9b  ax-flash-paired-qsa-test
+7890e84a96e3121c8c1c2f351e41e46ba4d92e7b7bc6275fc2b38c2773891032  mlx/libjaccl.dylib
+d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6  mlx/libmlx.dylib
+c6d7a3facb83568f6e4cb2cf4a8c736ee29302571a48343cb9a3a4d1cd3e3893  mlx/mlx.metallib
+
+running 1 test
+test model::shared::qwen4_exp_attention::tests::paired_gather_keeps_padding_order_and_segment_boundaries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2372 filtered out; finished in 0.39s

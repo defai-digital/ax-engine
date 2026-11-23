@@ -77,7 +77,6 @@ impl KvHistory {
         self.sealed.is_some() || self.tail.is_some()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn segments(&self) -> (Option<&MlxArray>, Option<&MlxArray>) {
         (self.sealed.as_ref(), self.tail.as_ref())
     }

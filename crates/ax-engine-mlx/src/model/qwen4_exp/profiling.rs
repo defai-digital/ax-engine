@@ -1445,6 +1445,68 @@ fn physical_split_profile_uses_all_production_cut_boundaries() {
 }
 
 #[test]
+#[ignore = "requires the pinned resident Flash Next pack"]
+fn flash_next_paired_gather_prefill_exactness_and_timing() {
+    use crate::model::shared::qwen4_exp_attention_gather::with_paired_gather;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = crate::model::ModelConfig::from_manifest(artifacts.manifest());
+    let tokens = profile_prompt_ids(artifacts.manifest().vocab_size);
+    assert_eq!(tokens.len(), 8192);
+    let plan = physical_split_prefill_plan(tokens.len());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    assert!(trunk.expert_stream.is_none());
+    let run = |paired| {
+        with_paired_gather(paired, || {
+            run_prefill_plan(
+                trunk,
+                &tokens,
+                cfg.compile_cache_identity,
+                &plan,
+                false,
+                None,
+            )
+        })
+    };
+    let (baseline, stock_dispatches) = run(false);
+    assert_eq!(stock_dispatches, 0);
+    let mut arms = Vec::new();
+    for (arm, enabled) in [true, true, false, false, true].into_iter().enumerate() {
+        let (actual, dispatches) = run(enabled);
+        assert_eq!(dispatches > 0, enabled);
+        assert_eq!(actual.final_logits.len(), baseline.final_logits.len());
+        assert!(
+            actual
+                .final_logits
+                .iter()
+                .zip(&baseline.final_logits)
+                .all(|(actual, expected)| actual.to_bits() == expected.to_bits())
+        );
+        assert!(actual.final_state == baseline.final_state);
+        if arm == 0 {
+            continue;
+        }
+        arms.push(serde_json::json!({
+            "paired": enabled,
+            "paired_dispatches": dispatches,
+            "seconds": actual.seconds,
+            "chunks": actual.chunks,
+            "peak_bytes": actual.peak_bytes,
+        }));
+    }
+    let evidence = serde_json::json!({
+        "scope": "Resident 8192-token physical split prefill; model forwards only",
+        "qualification": false,
+        "final_state_and_logits_exact": true,
+        "arms": arms,
+    });
+    let output = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT").unwrap();
+    std::fs::write(output, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+}
+
+#[test]
 #[ignore = "requires the pinned resident Flash Next pack; synchronized attribution only"]
 fn flash_next_physical_split_prefill_stage_profile() {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
