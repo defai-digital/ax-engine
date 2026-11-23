@@ -111,5 +111,12 @@
   "release_ready": false,
   "server_sha256": "ff2141ef85233553f1fe56ee863047c7bd3423f153efd3032a382e8c82faaf88",
   "source_base": "bde3b0319585e485d281d16214fcc68e3c6e15f0",
-  "source_patch_sha256": "a25d727883fd08b6dcdb22dac76f6756259daaf0bbd8f1abebe9659d377e7e1e"
+  "source_patch_sha256": "a25d727883fd08b6dcdb22dac76f6756259daaf0bbd8f1abebe9659d377e7e1e",
+  "supported_m4": {
+    "controls_passed": 4,
+    "hardware": "Mac mini M4 Pro 64 GiB",
+    "os": "27.0",
+    "same_candidate_source": true,
+    "scope": "Focused native loader and reader routing"
+  }
 }

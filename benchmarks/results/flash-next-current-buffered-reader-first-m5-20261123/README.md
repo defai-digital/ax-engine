@@ -29,6 +29,11 @@ reference became eligible before the final mapped arm. The original
 owner exited before admitting that arm and the three completed receipts
 remain sealed. The reverse pair and any default change remain open.
 
+The same candidate source passes four focused checks on Mac mini M4
+Pro 64 GiB with macOS 27.0 and the same MLX 0.32.4 library. These cover
+unaligned tensor values and ownership, short read and range rejection,
+reader eligibility, and mapped tensor selection.
+
 ```sh
 shasum -a 256 -c SHA256SUMS
 python3.12 -B replay.py | cmp comparison.json -

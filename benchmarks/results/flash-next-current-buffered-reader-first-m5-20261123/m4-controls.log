@@ -1,0 +1,19 @@
+engine-mlx-tests: OK
+mlx-sys-tests: OK
+mlx/libmlx.dylib: OK
+mlx/libjaccl.dylib: OK
+mlx/mlx.metallib: OK
+Mac mini M4 Pro 64 GiB. macOS 27.0. Pinned MLX libraries verified.
+
+running 2 tests
+test io::tests::aligned_loader_native_read_rejects_short_and_unrepresentable_ranges ... ok
+test io::tests::aligned_filtered_loader_preserves_unaligned_weights_and_owned_arrays ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out; finished in 0.05s
+
+
+running 2 tests
+test weights::qwen4_exp::tests::aligned_reader_requires_a_requested_resident_mxfp4_trunk ... ok
+test weights::qwen4_exp::tests::aligned_reader_keeps_the_mapped_resident_tensor_selection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2357 filtered out; finished in 0.05s

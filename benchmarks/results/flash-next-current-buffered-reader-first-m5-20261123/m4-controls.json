@@ -1,0 +1,20 @@
+{
+  "hardware": "Mac mini M4 Pro 64 GiB",
+  "input_sha256": {
+    "engine-mlx-tests": "9a85f1fac24aded7bf328714db1da54b83abfdf273048c5ced7a184875d25893",
+    "mlx-sys-tests": "df076fa280a9e989ecda54d4245dad3756b58f4927e8fbe752154c7c75542753",
+    "mlx/libjaccl.dylib": "7890e84a96e3121c8c1c2f351e41e46ba4d92e7b7bc6275fc2b38c2773891032",
+    "mlx/libmlx.dylib": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx/mlx.metallib": "c6d7a3facb83568f6e4cb2cf4a8c736ee29302571a48343cb9a3a4d1cd3e3893"
+  },
+  "m5_server_sha256": "ff2141ef85233553f1fe56ee863047c7bd3423f153efd3032a382e8c82faaf88",
+  "mlx": "0.32.4",
+  "mlx_metal": "0.32.4",
+  "native_exit": 0,
+  "os": "27.0",
+  "result_sha256": "ac3cfae74836836bfff89f3714f88cb9eed9779a22880de26f35494828db90ee",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "source_base": "bde3b0319585e485d281d16214fcc68e3c6e15f0",
+  "source_patch_sha256": "a25d727883fd08b6dcdb22dac76f6756259daaf0bbd8f1abebe9659d377e7e1e",
+  "test_executable_signature_verified": true
+}

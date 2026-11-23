@@ -3,6 +3,7 @@ from hashlib import sha256
 import json
 from math import isfinite
 from pathlib import Path
+import re
 from runpy import run_path
 from statistics import median
 import sys
@@ -176,6 +177,35 @@ def compare(capture, results_root):
             "missing_arm": "mapped-second", "release_ready": False}
 
 
+def verify_m4(root, m5):
+    record = read(root / "m4-controls.json")
+    raw = root / "m4-controls.log"
+    required = {
+        "io::tests::aligned_loader_native_read_rejects_short_and_unrepresentable_ranges",
+        "io::tests::aligned_filtered_loader_preserves_unaligned_weights_and_owned_arrays",
+        "weights::qwen4_exp::tests::aligned_reader_requires_a_requested_resident_mxfp4_trunk",
+        "weights::qwen4_exp::tests::aligned_reader_keeps_the_mapped_resident_tensor_selection",
+    }
+    names = {"engine-mlx-tests", "mlx-sys-tests", "mlx/libmlx.dylib", "mlx/libjaccl.dylib", "mlx/mlx.metallib"}
+    hashes = record["input_sha256"]
+    log = raw.read_text()
+    need(record["source_base"] == m5["source_base"]
+         and record["source_patch_sha256"] == m5["source_patch_sha256"]
+         and record["m5_server_sha256"] == m5["server_sha256"]
+         and record["rustc"].startswith("rustc 1.99.1 ")
+         and record["mlx"] == record["mlx_metal"] == "0.32.4"
+         and record["hardware"] == "Mac mini M4 Pro 64 GiB" and record["os"] == "27.0"
+         and record["native_exit"] == 0 and record["test_executable_signature_verified"] is True
+         and record["result_sha256"] == digest(raw)
+         and set(hashes) == names and all(re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values())
+         and all(f"{name}: OK" in log.splitlines() for name in names)
+         and set(re.findall(r"^test (\S+) \.\.\. ok$", log, re.MULTILINE)) == required
+         and len(re.findall(r"^test result: ok\. 2 passed; 0 failed; 0 ignored;", log, re.MULTILINE)) == 2,
+         "Supported-tier compatibility evidence changed")
+    return {"hardware": record["hardware"], "os": record["os"], "controls_passed": len(required),
+            "same_candidate_source": True, "scope": "Focused native loader and reader routing"}
+
+
 def replay():
     root = Path(__file__).resolve().parent
     files = {*INPUT_FILES, "capture.json", "inputs.sha256"}
@@ -192,7 +222,11 @@ def replay():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.extractfile(entry) as stream:
                     target.write_bytes(stream.read())
-        return compare(path, root.parent)
+        m5 = compare(path, root.parent)
+        build = read(path / "build.json")
+        need(read(root / "m4-controls.json")["input_sha256"]["mlx/libmlx.dylib"] == build["libmlx_sha256"],
+             "M4 and M5 used different MLX shared libraries")
+        return {**m5, "supported_m4": verify_m4(root, m5)}
 
 
 if __name__ == "__main__":
