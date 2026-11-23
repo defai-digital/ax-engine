@@ -1,0 +1,23 @@
+{
+  "complete": false,
+  "final_compressor_gib": 59.02,
+  "final_largest_other_rss_gib": 18.3,
+  "final_swap_used_mib": 32819.5,
+  "heartbeat_cases_completed": 3,
+  "last_case": {
+    "case": 4,
+    "tokens": 114
+  },
+  "macos": "27.2.1",
+  "ordinary_reference_started": false,
+  "preflight_background_gib": 4.33,
+  "preflight_sha256": "e786a7ba7ee297f5139f0e0c33fd7a020c967461c73c89655c9080ed21c04ecd",
+  "pressure_samples": {
+    "1": 98,
+    "2": 189,
+    "4": 1
+  },
+  "scope": "Four-case independent reference admission",
+  "signed_margin_gib": 6.44,
+  "stop_reason": "critical system memory pressure"
+}
