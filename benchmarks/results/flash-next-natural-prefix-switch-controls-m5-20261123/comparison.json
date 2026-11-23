@@ -1,0 +1,16 @@
+{
+  "both-off": {
+    "child_enabled": false,
+    "compared_token_ids": 1921,
+    "normal_pressure_samples": 206,
+    "parent_enabled": false,
+    "physical_reuse_hits": 0
+  },
+  "child-only": {
+    "child_enabled": true,
+    "compared_token_ids": 1921,
+    "normal_pressure_samples": 183,
+    "parent_enabled": false,
+    "physical_reuse_hits": 0
+  }
+}
