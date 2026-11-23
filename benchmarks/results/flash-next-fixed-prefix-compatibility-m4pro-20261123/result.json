@@ -1,0 +1,27 @@
+{
+  "cases": [
+    {
+      "name": "fastpath::tests::numerics_switch_table_covers_every_fastpath_env",
+      "passed": true
+    },
+    {
+      "name": "runner::tests::flash_next_fixed_prefix_requires_the_same_loaded_model",
+      "passed": true
+    },
+    {
+      "name": "runner::tests::prefix_cache_hash_collision_misses_without_reusing_snapshot",
+      "passed": true
+    },
+    {
+      "name": "runner::tests::host_pressure_reclaims_only_unborrowed_portable_prefix_snapshots",
+      "passed": true
+    },
+    {
+      "name": "runner::tests::portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder",
+      "passed": true
+    }
+  ],
+  "hardware": "Mac mini M4 Pro 64 GB",
+  "macos": "27.0",
+  "scope": "focused runtime software compatibility"
+}
