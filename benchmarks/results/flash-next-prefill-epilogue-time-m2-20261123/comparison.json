@@ -1,0 +1,78 @@
+{
+  "cases": [
+    {
+      "epilogue_only": 0.7601887416176054,
+      "gate_up_epilogue_down": 0.9777203975765992,
+      "layer": 0,
+      "route_pool": 512,
+      "rows": 1
+    },
+    {
+      "epilogue_only": 0.8044759141033081,
+      "gate_up_epilogue_down": 0.9874045126996391,
+      "layer": 0,
+      "route_pool": 512,
+      "rows": 511
+    },
+    {
+      "epilogue_only": 0.7323642495784148,
+      "gate_up_epilogue_down": 0.9804232014170566,
+      "layer": 0,
+      "route_pool": 512,
+      "rows": 512
+    },
+    {
+      "epilogue_only": 0.7267485242030697,
+      "gate_up_epilogue_down": 0.9784449890756667,
+      "layer": 0,
+      "route_pool": 64,
+      "rows": 512
+    },
+    {
+      "epilogue_only": 0.8922586420486365,
+      "gate_up_epilogue_down": 0.9260854481544271,
+      "layer": 32,
+      "route_pool": 512,
+      "rows": 1
+    },
+    {
+      "epilogue_only": 0.7432102788811199,
+      "gate_up_epilogue_down": 0.9815701512046304,
+      "layer": 32,
+      "route_pool": 512,
+      "rows": 511
+    },
+    {
+      "epilogue_only": 0.7463021244314182,
+      "gate_up_epilogue_down": 0.9836870213110581,
+      "layer": 32,
+      "route_pool": 512,
+      "rows": 512
+    },
+    {
+      "epilogue_only": 0.749984394312039,
+      "gate_up_epilogue_down": 0.9789309953945258,
+      "layer": 32,
+      "route_pool": 64,
+      "rows": 512
+    }
+  ],
+  "endpoint_cpu_idle_percent": [
+    96.45,
+    93.89
+  ],
+  "macos": "27.2.1",
+  "prefill_case_count": 6,
+  "prefill_compiled_over_eager_range": {
+    "epilogue_only": [
+      0.7267485242030697,
+      0.8044759141033081
+    ],
+    "gate_up_epilogue_down": [
+      0.9784449890756667,
+      0.9874045126996391
+    ]
+  },
+  "qualification": false,
+  "soc": "Apple M2 Ultra"
+}
