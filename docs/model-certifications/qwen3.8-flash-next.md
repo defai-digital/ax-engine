@@ -23,8 +23,8 @@ envelope. Target pack: **MXFP4 MTP**. Historical affine real-pack evidence is
 from **Apple M2 Ultra, 192 GB**. The 2026-10-05 direct-default release gates
 were measured on that larger host and stay bound to it. The M5 Max
 [release record for signed v7.9.0](../../benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)
-is a separate run and applies to that release and pack revision. Last reviewed:
-**2026-11-21**.
+is a separate run and applies to that release and pack revision. Last reviewed
+**2026-11-23**.
 
 In v8.1.0, the native server recognizes the published MXFP4 pack metadata on
 the standard host (hardware model `Mac17,6`). An ordinary launch defaults to
@@ -36,6 +36,17 @@ the standard block size. An unlimited or higher effective cap, required MTP,
 forced expert streaming or a custom KV block size uses the general block pool
 unless `--total-blocks` is set. Other hosts and packs use the general server
 defaults. See the [startup envelope controls](../../benchmarks/results/flash-next-mxfp4-startup-envelope-20261121/README.md).
+
+On the standard host, the ordinary resident launch automatically uses aligned
+buffered reads when the published MXFP4 layout is on the verified internal
+startup SSD. Other layouts and storage use mapped reads. Set
+`AX_MLX_FLASH_NEXT_ALIGNED_BUFFERED=0` to force mapped reads. In the
+[signed crossover](../../benchmarks/results/flash-next-automatic-buffered-reader-m5-20261123/README.md),
+HTTP startup took 28.1–30.1 seconds automatically and 162.4–168.5 seconds
+with the opt-out. The [ordinary offline alias](../../benchmarks/results/flash-next-delivered-alias-m5-20261123/README.md)
+confirmed automatic selection and reached HTTP in 30.2 seconds. These are
+startup measurements within the one-request 32K profile. Current release
+qualification and MTP gates remain open.
 
 **MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
 pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
