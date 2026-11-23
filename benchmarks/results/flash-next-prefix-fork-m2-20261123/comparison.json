@@ -1,0 +1,88 @@
+{
+  "build": {
+    "base_commit": "cb895592509cbeca223836e29c1791d6361dd098",
+    "binary_sha256": "56bd21e453d963f20423ee7e97ef83cbf20e241844ab6505b171fa2202f382f2",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "fixture_sha256": "1841fc9ad4e3699a49bc5045aa09fd76bd309e8bb15b3f8c9ef63f18c745900d",
+    "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "source_patch_sha256": "b2a11797a6db09e7c7a7de3126b9bcbe951d77b2693b49b1fa636047d7f570cc"
+  },
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "inventory_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "manifest": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "native_gdn_dispatches": 6984,
+  "normal_pressure_samples": 23,
+  "original_launcher_exit": 1,
+  "os": "27.2.1",
+  "probe": {
+    "abandoned_outputs": [
+      271,
+      248068,
+      271,
+      248069
+    ],
+    "peer_decode_state_sha256": "8d805be8b70870063c28b8dc24ccdfea5ab20cae7632bdc98653fbadcc31f17a",
+    "peer_outputs": [
+      5513,
+      7721,
+      26125,
+      32401,
+      5513,
+      220,
+      248068,
+      271,
+      248069,
+      271,
+      27775,
+      383,
+      279,
+      1414,
+      3766,
+      11,
+      1532,
+      369,
+      279,
+      6157,
+      25
+    ],
+    "physical_width": 512,
+    "prefix_tokens": 2048,
+    "qualification": false,
+    "replacement_decode_state_sha256": "7630b061636dc93c61e1a44d82adb289068e3afda2497c5247bd0e3e6ba38482",
+    "replacement_outputs": [
+      1403,
+      1403,
+      220,
+      248068,
+      271,
+      248069,
+      271,
+      2064,
+      7701,
+      421,
+      279,
+      1414,
+      488,
+      3766,
+      369,
+      264
+    ],
+    "seed_state_sha256": "6fa5cb355c98206fc120160319b8b3b356f58b065e7a75cf28eeba93863aa764",
+    "suffix_state_sha256": [
+      "e6bfdb3508bd467eef21ab22b8dc0d59db27e613c445c6a1c0b548c0ef552a28",
+      "ea465f16fb10bb3e1bb2005a886b6e38428eb0f6753f73f8188fa658ff875fd5"
+    ],
+    "suffix_tokens": 64,
+    "suffix_width": 1024
+  },
+  "qualification": false,
+  "recovered_post_inventory": true
+}
