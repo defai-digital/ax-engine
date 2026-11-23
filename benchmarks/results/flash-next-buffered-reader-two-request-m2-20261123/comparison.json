@@ -1,0 +1,28 @@
+{
+  "arms": {
+    "explicit": {
+      "exact_output_token_ids": 1921,
+      "normal_pressure_samples": 120,
+      "physical_restore_cases": [
+        "aligned",
+        "boundary",
+        "cancel"
+      ],
+      "reader": "AlignedBuffered"
+    },
+    "ordinary": {
+      "exact_output_token_ids": 1921,
+      "normal_pressure_samples": 125,
+      "physical_restore_cases": [
+        "aligned",
+        "boundary",
+        "cancel"
+      ],
+      "reader": "Mapped"
+    }
+  },
+  "patch_sha256": "149f8f1e77dfad368c0e359da47aef26cd264c0c9ae1bcaf0fa98df7b885e599",
+  "release_qualification": false,
+  "scope": "Two-request HTTP function on Mac Studio M2 Ultra 192 GB",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2"
+}
