@@ -1,0 +1,16 @@
+{
+  "hardware": "Mac mini M4 Pro 64 GB",
+  "macos": "27.0",
+  "passed": [
+    "runner::tests::flash_next_learned_fork_survives_full_prompt_eviction",
+    "runner::tests::flash_next_competing_fork_learners_publish_one_snapshot",
+    "runner::tests::flash_next_cancelled_fork_learner_releases_unpublished_checkpoint",
+    "fastpath::tests::numerics_switch_table_covers_every_fastpath_env",
+    "runner::tests::flash_next_fixed_prefix_requires_the_same_loaded_model",
+    "runner::tests::prefix_cache_hash_collision_misses_without_reusing_snapshot",
+    "runner::tests::host_pressure_reclaims_only_unborrowed_portable_prefix_snapshots",
+    "runner::tests::portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder"
+  ],
+  "qualification": false,
+  "source_commit": "5cc8a348eee99661c3c7d10c0057b7f1ec27bdcc"
+}
