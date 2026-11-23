@@ -1,0 +1,114 @@
+{
+  "arms": {
+    "default": {
+      "native": {
+        "baseline": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        },
+        "disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 7.0,
+          "verified_steps": 0.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        },
+        "same-prompt-after-stepwise-cancel": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        },
+        "stepwise-cancel": {
+          "accepted_steps": 0.0,
+          "engine_steps": 3.0,
+          "verified_steps": 0.0
+        }
+      },
+      "normal_pressure_samples": 44,
+      "openai": {
+        "baseline": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        },
+        "disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 5.0,
+          "verified_steps": 0.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "verified_steps": 0.0
+        }
+      },
+      "openai_accepted_before_disconnect": 0.0,
+      "openai_disconnect_visible_chunks": 3,
+      "openai_verified_before_disconnect": 0.0,
+      "peak_footprint_bytes": 75951887136
+    },
+    "required": {
+      "native": {
+        "baseline": {
+          "accepted_steps": 26.0,
+          "engine_steps": 38.0,
+          "verified_steps": 37.0
+        },
+        "disconnect": {
+          "accepted_steps": 4.0,
+          "engine_steps": 6.0,
+          "verified_steps": 5.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 26.0,
+          "engine_steps": 38.0,
+          "verified_steps": 37.0
+        },
+        "same-prompt-after-stepwise-cancel": {
+          "accepted_steps": 26.0,
+          "engine_steps": 38.0,
+          "verified_steps": 37.0
+        },
+        "stepwise-cancel": {
+          "accepted_steps": 1.0,
+          "engine_steps": 3.0,
+          "verified_steps": 2.0
+        }
+      },
+      "normal_pressure_samples": 44,
+      "openai": {
+        "baseline": {
+          "accepted_steps": 26.0,
+          "engine_steps": 38.0,
+          "verified_steps": 37.0
+        },
+        "disconnect": {
+          "accepted_steps": 3.0,
+          "engine_steps": 5.0,
+          "verified_steps": 4.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 26.0,
+          "engine_steps": 38.0,
+          "verified_steps": 37.0
+        }
+      },
+      "openai_accepted_before_disconnect": 1.0,
+      "openai_disconnect_visible_chunks": 3,
+      "openai_verified_before_disconnect": 2.0,
+      "peak_footprint_bytes": 77917557608
+    }
+  },
+  "hardware": "MacBook Pro M5 Max 128 GB",
+  "macos": "27.2.1",
+  "native_output_differences_across_policies": [],
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "qualification": false,
+  "reader": "AlignedBuffered",
+  "same_openai_complete_text_across_policies": true,
+  "server_sha256": "abd50e858dcccd941baee7e2336700e65ad635028c79e64070cacf6bae7cd681"
+}
