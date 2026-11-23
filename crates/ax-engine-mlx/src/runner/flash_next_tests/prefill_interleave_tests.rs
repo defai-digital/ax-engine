@@ -630,3 +630,160 @@ fn flash_next_prefix_fork_body() {
         })
     );
 }
+
+#[test]
+#[ignore = "requires the pinned resident Flash Next MXFP4 pack and prefix suffix fixture"]
+fn flash_next_serialized_prefix_matches_cold_across_suffix_boundaries() {
+    let (rows, dispatches) = crate::model::shared::qwen4_exp_gdn_metal::with_mode(
+        true,
+        flash_next_prefix_suffix_matrix_body,
+    );
+    assert!(
+        dispatches > 0,
+        "the probe must exercise native singleton GDN"
+    );
+    eprintln!(
+        "FLASH_NEXT_PREFIX_SUFFIX_MATRIX {}",
+        serde_json::json!({
+            "qualification": false,
+            "native_gdn_dispatches": dispatches,
+            "observations": rows,
+        })
+    );
+}
+
+fn flash_next_prefix_suffix_matrix_body() -> serde_json::Value {
+    use super::MlxPrefixSnapshot;
+
+    const PREFIX: usize = 2048;
+    const PREFIX_WIDTH: usize = 512;
+    const BASE_WIDTH: usize = 1024;
+    const SUFFIX_LENGTHS: [usize; 10] = [1, 16, 63, 64, 65, 512, 1024, 1025, 2047, 2048];
+    const DECODE_STEPS: usize = 4;
+
+    let pack = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PREFIX_SUFFIX_CASES").unwrap());
+    let (prefix, suffixes): (Vec<u32>, Vec<Vec<u32>>) =
+        serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+    assert_eq!(prefix.len(), PREFIX);
+    assert_eq!(
+        suffixes.iter().map(Vec::len).collect::<Vec<_>>(),
+        SUFFIX_LENGTHS
+    );
+
+    let artifacts = NativeModelArtifacts::from_dir(pack).unwrap();
+    assert!(artifacts.audited_qwen4_exp_mxfp4());
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    assert!(trunk.expert_stream.is_none());
+    let chunk_width = |len| {
+        crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+            BASE_WIDTH,
+            len,
+            &cfg.model_family,
+        )
+    };
+    assert_eq!(chunk_width(PREFIX), PREFIX_WIDTH);
+
+    let sampling = MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]);
+    let fresh = || MlxKVCache::new_contiguous(cfg.layer_count);
+    let hash_state = |cache: &MlxKVCache| ax_engine_core::sha256_hex(&cache.serialize_to_bytes());
+    let mut seed = fresh();
+    let seed_token = chunked_prefill(
+        &cfg,
+        &weights,
+        &prefix,
+        &mut seed,
+        PREFIX_WIDTH,
+        sampling,
+        &mut Xorshift64::new(42),
+    );
+    assert_eq!(seed.seq_len(), PREFIX);
+    let payload = seed.serialize_to_bytes();
+    let prefix_hash = ax_engine_core::sha256_hex(&payload);
+    let snapshot = MlxPrefixSnapshot::from_shared_payload(
+        payload.into(),
+        prefix,
+        PREFIX,
+        Some(seed_token),
+        None,
+    );
+    drop(seed);
+
+    let finish = |mut cache: MlxKVCache, suffix: &[u32], width| {
+        let mut rng = Xorshift64::new(42);
+        let first = chunked_prefill(
+            &cfg, &weights, suffix, &mut cache, width, sampling, &mut rng,
+        );
+        assert_eq!(cache.seq_len(), PREFIX + suffix.len());
+        let after_prefill = hash_state(&cache);
+        let mut ids = vec![first];
+        for _ in 0..DECODE_STEPS {
+            ids.push(decode_step(
+                &cfg,
+                &weights,
+                *ids.last().unwrap(),
+                &mut cache,
+                sampling,
+                &mut rng,
+            ));
+        }
+        assert_eq!(cache.seq_len(), PREFIX + suffix.len() + DECODE_STEPS);
+        (ids, after_prefill, hash_state(&cache))
+    };
+
+    let mut rows = Vec::with_capacity(suffixes.len());
+    for suffix in suffixes {
+        let width = chunk_width(suffix.len());
+        assert_eq!(
+            width,
+            if suffix.len() == PREFIX {
+                PREFIX_WIDTH
+            } else {
+                BASE_WIDTH
+            }
+        );
+
+        let mut cold = fresh();
+        chunked_prefill_cache_only(
+            &cfg,
+            &weights,
+            &snapshot.tokens,
+            &mut cold,
+            PREFIX_WIDTH,
+            CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+            CacheOnlyBarrier::AsyncSubmit,
+        );
+        assert_eq!(hash_state(&cold), prefix_hash);
+        let cold = finish(cold, &suffix, width);
+
+        let mut warm = snapshot.rehydrate_cache().unwrap();
+        warm.verify_restored_snapshot(cfg.layer_count, PREFIX, None)
+            .unwrap();
+        warm.qwen4_exp
+            .as_mut()
+            .unwrap()
+            .rebind_for_model(trunk, cfg.compile_cache_identity)
+            .unwrap();
+        assert_eq!(hash_state(&warm), prefix_hash);
+        let warm = finish(warm, &suffix, width);
+        assert_eq!(
+            cold,
+            warm,
+            "suffix length {} changed the cold trajectory",
+            suffix.len()
+        );
+        rows.push(serde_json::json!({
+            "suffix_tokens": suffix.len(),
+            "suffix_width": width,
+            "cold": {"output_ids": cold.0, "post_prefill_sha256": cold.1, "post_decode_sha256": cold.2},
+            "warm": {"output_ids": warm.0, "post_prefill_sha256": warm.1, "post_decode_sha256": warm.2},
+        }));
+    }
+    assert_eq!(
+        ax_engine_core::sha256_hex(&snapshot.kv_cache_payload),
+        prefix_hash
+    );
+    serde_json::json!({"prefix_tokens": PREFIX, "prefix_width": PREFIX_WIDTH, "prefix_sha256": prefix_hash, "rows": rows})
+}
