@@ -3123,6 +3123,72 @@ fn shared_decode_reports_every_selected_read_delta_without_full_routes() {
 }
 
 #[test]
+fn flash_next_mtp_cancel_keeps_counters_from_sparse_decode_steps() {
+    const VERIFIED: &str = "ax_mlx_flash_next_mtp_verified_steps";
+    const ACCEPTED: &str = "ax_mlx_flash_next_mtp_accepted_steps";
+    const REQUEST_SET: &str = "ax_mlx_step_request_set";
+    const UNRELATED: &str = "unrelated_large_route_entry";
+
+    #[derive(Debug)]
+    struct FlashNextMtpRunner;
+    impl ExecutionRunner for FlashNextMtpRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let item = &input.execution_batch.items[0];
+            let verified = if item.mode == ax_engine_core::ExecutionMode::Decode {
+                item.position_range.start - 7
+            } else {
+                0
+            };
+            let mut output = DeterministicRunner.run(input);
+            output.route_metadata.attention_route = Some("test_attention".into());
+            output.route_metadata.crossover_decisions.extend([
+                ("ax_mlx_decode_steps".into(), verified),
+                (VERIFIED.into(), verified),
+                (ACCEPTED.into(), verified / 2),
+                (REQUEST_SET.into(), 42),
+                (UNRELATED.into(), 999),
+            ]);
+            output
+        }
+    }
+
+    let mut session = shared_stream_test_session(64);
+    session.core = EngineCore::with_runtime_components(
+        KvManagerConfig::validated(CacheGroupId(0), 4, 64),
+        FlashNextMtpRunner,
+        DeterministicSampler,
+    );
+    let id = session
+        .submit_generate(native_probe_request(vec![7; 8], 16))
+        .expect("submit");
+    let mut sparse = None;
+    for _ in 0..10 {
+        let report = session.step_report().expect("step");
+        if let Some(route) = report.route
+            && route.attention_route.is_none()
+            && route.decision(VERIFIED).is_some_and(|count| count >= 3)
+        {
+            assert_eq!(route.decision(REQUEST_SET), Some(42));
+            assert_eq!(route.decision(UNRELATED), None);
+            sparse = Some((route.decision(VERIFIED), route.decision(ACCEPTED)));
+            break;
+        }
+    }
+    let (verified, accepted) = sparse.expect("sparse MTP report before cancellation");
+    let active = session.request_report(id).expect("active request");
+    assert_eq!(active.state, SessionRequestState::Runnable);
+    assert_eq!(active.route.decision(VERIFIED), verified);
+    assert_eq!(active.route.decision(ACCEPTED), accepted);
+    session.cancel_request(id).expect("cancel");
+    let cancelled = session.request_report(id).expect("terminal request");
+    assert_eq!(cancelled.state, SessionRequestState::Cancelled);
+    assert_eq!(cancelled.output_tokens, active.output_tokens);
+    assert_eq!(cancelled.route.decision(VERIFIED), verified);
+    assert_eq!(cancelled.route.decision(ACCEPTED), accepted);
+    assert_eq!(cancelled.route.decision(UNRELATED), Some(999));
+}
+
+#[test]
 fn resubmitting_a_recycled_request_id_drops_the_previous_route() {
     // `submit_generate_with_request_id` lets a caller reuse an id once the
     // previous request finished. Stored routes are keyed by id alone, so a

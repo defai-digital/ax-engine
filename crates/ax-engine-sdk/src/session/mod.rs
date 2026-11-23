@@ -45,6 +45,7 @@ use routes::{
     apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
     native_step_local_route, native_step_needs_route_capture, restrict_prefill_split_telemetry,
     route_has_decode_path_work, stream_prefill_split_route, strip_prefix_reuse_telemetry,
+    update_flash_next_mtp_counters,
 };
 pub use stream::{GenerateStream, GenerateStreamPerformance, GenerateStreamState};
 use stream::{
@@ -1056,6 +1057,14 @@ impl EngineSession {
             let mut report =
                 EngineStepReport::from_native_outcome_without_route(&outcome, metal_dispatch);
             report.route = native_step_local_route(&outcome);
+            // A stepwise cancel returns the last request report without
+            // running another forward. Advance its MTP counters in place.
+            if let [request_id] = selected_request_ids.as_slice()
+                && let Some(route) = report.route.as_ref()
+                && let Some(stored) = self.native_request_routes.get_mut(request_id)
+            {
+                update_flash_next_mtp_counters(stored, route);
+            }
             report
         };
         // Memory starvation can terminate a request without executing

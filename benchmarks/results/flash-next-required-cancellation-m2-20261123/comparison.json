@@ -1,0 +1,100 @@
+{
+  "arms": {
+    "disabled": {
+      "actions": {
+        "baseline": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "output_ids": 64,
+          "verified_steps": 0.0
+        },
+        "disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 7.0,
+          "output_ids": 5,
+          "verified_steps": 0.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "output_ids": 64,
+          "verified_steps": 0.0
+        },
+        "same-prompt-after-stepwise-cancel": {
+          "accepted_steps": 0.0,
+          "engine_steps": 64.0,
+          "output_ids": 64,
+          "verified_steps": 0.0
+        },
+        "stepwise-cancel": {
+          "accepted_steps": 0.0,
+          "engine_steps": 3.0,
+          "output_ids": 3,
+          "verified_steps": 0.0
+        }
+      },
+      "disconnect_progress_frames": 5,
+      "last_disconnect_snapshot_history_length": 0,
+      "last_disconnect_snapshot_output_length": 5,
+      "normal_pressure_samples": 37,
+      "peak_footprint_bytes": 85370625128
+    },
+    "required": {
+      "actions": {
+        "baseline": {
+          "accepted_steps": 22.0,
+          "engine_steps": 42.0,
+          "output_ids": 64,
+          "verified_steps": 41.0
+        },
+        "disconnect": {
+          "accepted_steps": 2.0,
+          "engine_steps": 7.0,
+          "output_ids": 6,
+          "verified_steps": 6.0
+        },
+        "same-prompt-after-disconnect": {
+          "accepted_steps": 22.0,
+          "engine_steps": 42.0,
+          "output_ids": 64,
+          "verified_steps": 41.0
+        },
+        "same-prompt-after-stepwise-cancel": {
+          "accepted_steps": 22.0,
+          "engine_steps": 42.0,
+          "output_ids": 64,
+          "verified_steps": 41.0
+        },
+        "stepwise-cancel": {
+          "accepted_steps": 1.0,
+          "engine_steps": 5.0,
+          "output_ids": 6,
+          "verified_steps": 4.0
+        }
+      },
+      "disconnect_progress_frames": 5,
+      "last_disconnect_snapshot_history_length": 0,
+      "last_disconnect_snapshot_output_length": 6,
+      "normal_pressure_samples": 39,
+      "peak_footprint_bytes": 86114046416
+    }
+  },
+  "before_fix": {
+    "reported_accepted_steps": 0,
+    "reported_verified_steps": 1,
+    "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+    "visible_decode_widths": [
+      1,
+      1,
+      1,
+      2
+    ]
+  },
+  "hardware": "Mac Studio M2 Ultra 192 GB",
+  "macos": "27.2.1",
+  "matching_completed_output_ids_across_arms": 64,
+  "matching_completed_output_ids_per_policy": 192,
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "qualification": false,
+  "server_sha256": "abd50e858dcccd941baee7e2336700e65ad635028c79e64070cacf6bae7cd681"
+}

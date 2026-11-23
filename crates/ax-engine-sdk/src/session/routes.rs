@@ -87,6 +87,23 @@ pub(super) fn native_step_needs_route_capture(
         || any_stored_route_lacks_decode_work
 }
 
+fn flash_next_mtp_counter(key: &str) -> bool {
+    matches!(
+        key,
+        "ax_mlx_flash_next_mtp_cursor_initialized"
+            | "ax_mlx_flash_next_mtp_cursor_restored"
+            | "ax_mlx_flash_next_mtp_resumed_without_cursor"
+            | "ax_mlx_flash_next_mtp_prefill_absorb_failures"
+            | "ax_mlx_flash_next_mtp_cursor_dropped"
+            | "ax_mlx_flash_next_mtp_cursor_paused_steps"
+            | "ax_mlx_flash_next_mtp_cursor_resumed"
+            | "ax_mlx_flash_next_mtp_cursor_pause_overflows"
+            | "ax_mlx_flash_next_mtp_verified_steps"
+            | "ax_mlx_flash_next_mtp_accepted_steps"
+            | "ax_mlx_flash_next_mtp_step_errors"
+    ) || key.starts_with("ax_mlx_flash_next_mtp_direct_fallback_")
+}
+
 /// Preserve step-local diagnostics when full route conversion is skipped.
 pub(super) fn native_step_local_route(
     outcome: &ax_engine_core::EngineStepOutcome,
@@ -97,11 +114,20 @@ pub(super) fn native_step_local_route(
         .iter()
         .any(|item| item.mode == ExecutionMode::Prefill);
     let mut route = GenerateRouteReport::default();
+    let mut request_set = None;
+    let mut has_flash_next_mtp = false;
     for (key, value) in &batch.route_metadata.crossover_decisions {
+        let key_text = key.as_str();
+        if key_text == "ax_mlx_step_request_set" {
+            request_set = Some((key, *value));
+        }
+        let mtp = *value != 0 && flash_next_mtp_counter(key_text);
+        has_flash_next_mtp |= mtp;
         if *value != 0
             && ((has_prefill && key.starts_with(PREFILL_SPLIT_END_ROUTE_PREFIX))
+                || mtp
                 || matches!(
-                    key.as_str(),
+                    key_text,
                     "ax_mlx_flash_next_selected_expert_gathers"
                         | "ax_mlx_flash_next_selected_expert_payload_kib"
                 ))
@@ -109,7 +135,27 @@ pub(super) fn native_step_local_route(
             route.crossover_decisions.insert(key.clone(), *value);
         }
     }
+    // The server differences cumulative counters by request set. Cancellation
+    // can end the request without another full route report.
+    if has_flash_next_mtp && let Some((key, value)) = request_set {
+        route.crossover_decisions.insert(key.clone(), value);
+    }
     (!route.crossover_decisions.is_empty()).then_some(route)
+}
+
+pub(super) fn update_flash_next_mtp_counters(
+    stored: &mut GenerateRouteReport,
+    step: &GenerateRouteReport,
+) {
+    for (key, value) in &step.crossover_decisions {
+        if flash_next_mtp_counter(key) {
+            if let Some(observed) = stored.crossover_decisions.get_mut(key) {
+                *observed = *value;
+            } else {
+                stored.crossover_decisions.insert(key.clone(), *value);
+            }
+        }
+    }
 }
 
 pub(super) fn stream_prefill_split_route(
