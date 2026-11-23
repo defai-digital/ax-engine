@@ -559,6 +559,14 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 },
             ),
             (
+                "ax_engine_mlx_flash_next_qsa_paired_gather_tiles_total",
+                "Experimental Flash Next QSA K/V tile pairs added to the MLX graph in engine steps.",
+                process.mlx_flash_next_qsa_paired_gather_tiles_total,
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_flash_next_qsa_paired_gather_tiles_total
+                },
+            ),
+            (
                 "ax_engine_mlx_prefill_wall_us_total",
                 "Total MLX prefill wall time observed in microseconds.",
                 process.mlx_prefill_wall_us_total,

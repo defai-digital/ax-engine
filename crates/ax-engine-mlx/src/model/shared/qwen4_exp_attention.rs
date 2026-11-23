@@ -3052,6 +3052,7 @@ mod tests {
 
     #[test]
     fn paired_gather_keeps_padding_order_and_segment_boundaries() {
+        use super::super::qwen4_exp_attention_gather::take_queued_tiles;
         use super::super::qwen4_exp_kv_history::with_kv_segments;
 
         let dtype = MlxDtype::Bfloat16;
@@ -3078,6 +3079,7 @@ mod tests {
             gather_selected_tile(&reshape(&k, &[12, 2, 256], None), &safe, 2, 5, 2, 256, true);
         let expected_v =
             gather_selected_tile(&reshape(&v, &[12, 2, 256], None), &safe, 2, 5, 2, 256, true);
+        take_queued_tiles();
         for (keys, values) in [(&flat_k, &flat_v), (&segmented_k, &segmented_v)] {
             let gather = PairedGather::new(keys, values).unwrap();
             let (actual_k, actual_v) = gather.gather(&indices).unwrap();
@@ -3086,6 +3088,8 @@ mod tests {
             assert_eq!(f32_value_bits(&actual_v), f32_value_bits(&expected_v));
             assert!(gather.gather(&astype(&indices, dtype, None)).is_none());
         }
+        assert_eq!(take_queued_tiles(), 2);
+        assert_eq!(take_queued_tiles(), 0);
         assert!(PairedGather::new(&flat_k, &segmented_v).is_none());
         let invalid = KvHistory::from_flat(astype(&k, MlxDtype::Float32, None));
         assert!(PairedGather::new(&invalid, &flat_v).is_none());

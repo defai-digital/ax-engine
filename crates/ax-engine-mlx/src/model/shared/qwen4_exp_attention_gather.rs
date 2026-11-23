@@ -1,5 +1,6 @@
 //! Experimental copy into the existing Flash Next selected-attention layout.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
 
 use mlx_sys::{KernelOutputSpec, LazyKernel, MlxArray, MlxDtype, try_eval, zeros};
@@ -79,8 +80,7 @@ impl<'a> PairedGather<'a> {
             return None;
         }
         let gathered = self.launch(selection)?;
-        #[cfg(test)]
-        DISPATCHES.with(|count| count.set(count.get() + 1));
+        QUEUED_TILES.with(|count| count.set(count.get().saturating_add(1)));
         Some(gathered)
     }
 
@@ -144,7 +144,7 @@ fn pipeline_ready() -> bool {
     })
 }
 
-pub(super) fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     #[cfg(test)]
     if let Some(enabled) = OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
@@ -152,24 +152,30 @@ pub(super) fn enabled() -> bool {
     crate::fastpath::flash_next_qsa_paired_gather_enabled()
 }
 
-#[cfg(test)]
 thread_local! {
-    static OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-    static DISPATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static QUEUED_TILES: Cell<u32> = const { Cell::new(0) };
+    #[cfg(test)]
+    static OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Count K/V tile pairs added to the lazy graph on the current thread.
+/// This measures route engagement, independent of GPU completion.
+pub(crate) fn take_queued_tiles() -> u32 {
+    QUEUED_TILES.with(|count| count.replace(0))
 }
 
 #[cfg(test)]
-pub(crate) fn with_paired_gather<T>(enabled: bool, run: impl FnOnce() -> T) -> (T, usize) {
-    struct Restore(Option<bool>, usize);
+pub(crate) fn with_paired_gather<T>(enabled: bool, run: impl FnOnce() -> T) -> (T, u32) {
+    struct Restore(Option<bool>, u32);
     impl Drop for Restore {
         fn drop(&mut self) {
             OVERRIDE.with(|slot| slot.set(self.0));
-            DISPATCHES.with(|count| count.set(self.1));
+            QUEUED_TILES.with(|count| count.set(self.1));
         }
     }
     let _restore = Restore(
         OVERRIDE.with(|slot| slot.replace(Some(enabled))),
-        DISPATCHES.with(|count| count.replace(0)),
+        take_queued_tiles(),
     );
-    (run(), DISPATCHES.with(std::cell::Cell::get))
+    (run(), take_queued_tiles())
 }

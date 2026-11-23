@@ -71,6 +71,7 @@ use crate::kv_block_pool::{
     fa_native_paged_attention_enabled,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheSerializeError, MlxKVCacheUsage};
+use crate::model::shared::qwen4_exp_attention_gather as paired_qsa_gather;
 use crate::model::{
     DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
@@ -5371,6 +5372,11 @@ impl ExecutionRunner for MlxRunner {
         // Selected reads execute synchronously on this worker. Drain warmup
         // work before attributing successful gathers to the current step.
         let _ = crate::expert_stream::take_selected_expert_read_stats();
+        let track_paired_qsa = self.weights.qwen4_exp.is_some() && paired_qsa_gather::enabled();
+        if track_paired_qsa {
+            // Exclude graph construction outside this step (including warmup).
+            paired_qsa_gather::take_queued_tiles();
+        }
         let step_id = input.execution_batch.step_id;
         let mut request_updates = Vec::new();
         let logits_handles = Vec::new();
@@ -6070,6 +6076,13 @@ impl ExecutionRunner for MlxRunner {
                 "ax_mlx_flash_next_selected_expert_payload_kib",
                 u32::try_from(selected_reads.payload_bytes / 1024).unwrap_or(u32::MAX),
             );
+            if track_paired_qsa {
+                let tiles = paired_qsa_gather::take_queued_tiles();
+                if tiles > 0 {
+                    route_decisions
+                        .upsert_route_decision("ax_mlx_flash_next_qsa_paired_gather_tiles", tiles);
+                }
+            }
             // Per-step delta of checkpoints refused for an untrimmed linear,
             // GDN, or QSA capture. A zero load stays off the route map.
             let checkpoint_unsupported = self

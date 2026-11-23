@@ -804,6 +804,7 @@ struct EngineStepStats {
     mtp_accept_rate_ewma_x1000: u64,
     mlx_flash_next_selected_expert_gathers_total: u64,
     mlx_flash_next_selected_expert_payload_kib_total: u64,
+    mlx_flash_next_qsa_paired_gather_tiles_total: u64,
     mlx_prefix_cache_hits_total: u64,
     mlx_prefix_cache_misses_total: u64,
     mlx_prefix_cache_reused_tokens_total: u64,
@@ -891,6 +892,8 @@ impl EngineStepStats {
                 .mlx_flash_next_selected_expert_gathers_total,
             mlx_flash_next_selected_expert_payload_kib_total: self
                 .mlx_flash_next_selected_expert_payload_kib_total,
+            mlx_flash_next_qsa_paired_gather_tiles_total: self
+                .mlx_flash_next_qsa_paired_gather_tiles_total,
             mlx_prefix_cache_hits_total: self.mlx_prefix_cache_hits_total,
             mlx_prefix_cache_misses_total: self.mlx_prefix_cache_misses_total,
             mlx_prefix_cache_reused_tokens_total: self.mlx_prefix_cache_reused_tokens_total,
@@ -967,6 +970,7 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mtp_accept_rate_ewma_x1000: u64,
     pub(crate) mlx_flash_next_selected_expert_gathers_total: u64,
     pub(crate) mlx_flash_next_selected_expert_payload_kib_total: u64,
+    pub(crate) mlx_flash_next_qsa_paired_gather_tiles_total: u64,
     pub(crate) mlx_prefix_cache_hits_total: u64,
     pub(crate) mlx_prefix_cache_misses_total: u64,
     pub(crate) mlx_prefix_cache_reused_tokens_total: u64,
@@ -1310,6 +1314,10 @@ impl ServerMetrics {
                     "ax_mlx_flash_next_selected_expert_payload_kib",
                 ),
                 (
+                    &mut entry.mlx_flash_next_qsa_paired_gather_tiles_total,
+                    "ax_mlx_flash_next_qsa_paired_gather_tiles",
+                ),
+                (
                     &mut entry.mlx_prefix_cache_hits_total,
                     "ax_mlx_prefix_cache_hits",
                 ),
@@ -1563,6 +1571,9 @@ impl ServerMetrics {
         process.mlx_flash_next_selected_expert_payload_kib_total = process
             .mlx_flash_next_selected_expert_payload_kib_total
             .saturating_add(entry.mlx_flash_next_selected_expert_payload_kib_total);
+        process.mlx_flash_next_qsa_paired_gather_tiles_total = process
+            .mlx_flash_next_qsa_paired_gather_tiles_total
+            .saturating_add(entry.mlx_flash_next_qsa_paired_gather_tiles_total);
         process.mlx_prefix_cache_hits_total = process
             .mlx_prefix_cache_hits_total
             .saturating_add(entry.mlx_prefix_cache_hits_total);
@@ -2121,14 +2132,15 @@ mod step_metrics_tests {
     }
 
     #[test]
-    fn selected_expert_counters_sum_per_step_deltas_and_keep_model_identity() {
+    fn flash_next_gather_counters_sum_per_step_deltas_and_keep_model_identity() {
         let metrics = ServerMetrics::default();
-        for (step, gathers, kib) in [(1, 48, 864000), (2, 48, 864000), (3, 0, 0)] {
+        for (step, gathers, kib, tiles) in [(1, 48, 864000, 3), (2, 48, 864000, 3), (3, 0, 0, 0)] {
             let mut report = step_report(step, 0);
             report.route = Some(ax_engine_sdk::GenerateRouteReport {
                 crossover_decisions: BTreeMap::from([
                     ("ax_mlx_flash_next_selected_expert_gathers".into(), gathers),
                     ("ax_mlx_flash_next_selected_expert_payload_kib".into(), kib),
+                    ("ax_mlx_flash_next_qsa_paired_gather_tiles".into(), tiles),
                 ]),
                 ..Default::default()
             });
@@ -2143,6 +2155,7 @@ mod step_metrics_tests {
                     name,
                     values.mlx_flash_next_selected_expert_gathers_total,
                     values.mlx_flash_next_selected_expert_payload_kib_total,
+                    values.mlx_flash_next_qsa_paired_gather_tiles_total,
                 )
             })
             .collect();
@@ -2150,8 +2163,8 @@ mod step_metrics_tests {
         assert_eq!(
             totals,
             vec![
-                ("flash".to_string(), 96, 1728000),
-                ("other".to_string(), 0, 0)
+                ("flash".to_string(), 96, 1728000, 6),
+                ("other".to_string(), 0, 0, 0)
             ]
         );
     }

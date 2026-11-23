@@ -130,6 +130,7 @@ pub(super) fn native_step_local_route(
                     key_text,
                     "ax_mlx_flash_next_selected_expert_gathers"
                         | "ax_mlx_flash_next_selected_expert_payload_kib"
+                        | "ax_mlx_flash_next_qsa_paired_gather_tiles"
                 ))
         {
             route.crossover_decisions.insert(key.clone(), *value);
@@ -567,6 +568,7 @@ mod tests {
             (key.clone(), 2048),
             (prefill_split_end_route_key(RequestId(8)), 0),
             ("ax_mlx_flash_next_selected_expert_gathers".into(), 4),
+            ("ax_mlx_flash_next_qsa_paired_gather_tiles".into(), 2),
             ("unrelated_counter".into(), 3),
         ];
         let step_id = StepId(13);
@@ -614,7 +616,8 @@ mod tests {
             Some(
                 [
                     (key, 2048),
-                    ("ax_mlx_flash_next_selected_expert_gathers".into(), 4)
+                    ("ax_mlx_flash_next_selected_expert_gathers".into(), 4),
+                    ("ax_mlx_flash_next_qsa_paired_gather_tiles".into(), 2),
                 ]
                 .into()
             ),
