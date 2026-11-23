@@ -35,6 +35,9 @@ pub(crate) struct MlxPrefixSnapshot {
     pub(crate) token_count: usize,
     pub(crate) bytes: u64,
     pub(crate) greedy_prefill_output_token: Option<u32>,
+    /// Model-config identity of the fixed 2,048-token direct prefill with a final singleton.
+    /// The identity prevents a shared RAM store from carrying this proof into a new model load.
+    pub(crate) flash_next_fixed_prefix_owner: Option<u64>,
     /// Optional Flash Next MTP draft-cursor sidecar, serialized by
     /// `MlxKVCache::serialize_qwen4_exp_draft_cursor`. `None` for every model
     /// family without a draft cursor, and for an unaligned cursor at store
@@ -76,6 +79,7 @@ impl MlxPrefixSnapshot {
             token_count,
             bytes,
             greedy_prefill_output_token,
+            flash_next_fixed_prefix_owner: None,
             mtp_cursor_payload,
         }
     }
@@ -104,6 +108,7 @@ impl MlxPrefixSnapshot {
             token_count,
             bytes,
             greedy_prefill_output_token,
+            flash_next_fixed_prefix_owner: None,
             mtp_cursor_payload,
         }
     }
@@ -407,6 +412,19 @@ impl MlxPrefixCache {
         self.lru.push_back((stored_key, touch_tick));
         self.compact_stale_lru_if_needed();
         Some(snapshot)
+    }
+
+    pub(crate) fn get_flash_next_fixed_prefix(
+        &mut self,
+        key: &MlxPrefixCacheKey,
+        tokens: &[u32],
+        owner: u64,
+    ) -> Option<Arc<MlxPrefixSnapshot>> {
+        let entry = self.entries.get(key)?;
+        if entry.snapshot.flash_next_fixed_prefix_owner != Some(owner) {
+            return None;
+        }
+        self.get(key, tokens)
     }
 
     /// Non-mutating exact membership check. Used by the iterative-chat probe
