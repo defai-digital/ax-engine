@@ -1,0 +1,38 @@
+{
+  "commit": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+  "explicit_skip_before_payload": true,
+  "native_receipt_sha256": "81c2b1a4f65ac59e98ecf59bba2088c63e3c4df66935a026f4cb2e4a5cbd296e",
+  "prefetch_seconds": {
+    "default": 0.396610833,
+    "disabled": 0.394702833,
+    "required": 0.405837417
+  },
+  "qualification": false,
+  "readiness_seconds": {
+    "default": 112.988,
+    "disabled": 89.437,
+    "required": 112.511
+  },
+  "supported_tier_checks": {
+    "m4-macos26": {
+      "focused_tests": 24,
+      "memory_gib": 16,
+      "os": "26.6.1",
+      "soc": "Apple M4",
+      "test_binary_sha256": "75a88760d34e2cb70a3a6c3610db0504dd5c4efb8dab9097dd8e116fe472e36d"
+    },
+    "m4-pro": {
+      "focused_tests": 24,
+      "memory_gib": 64,
+      "os": "27.0",
+      "soc": "Apple M4 Pro",
+      "test_binary_sha256": "75a88760d34e2cb70a3a6c3610db0504dd5c4efb8dab9097dd8e116fe472e36d"
+    }
+  },
+  "verified_http_cases": 21,
+  "verifier_steps": {
+    "default": 0,
+    "disabled": 0,
+    "required": 107
+  }
+}
