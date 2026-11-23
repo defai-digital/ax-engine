@@ -1,0 +1,53 @@
+{
+  "compared_token_ids_per_arm": 864,
+  "comparison_arms": {
+    "1": {
+      "cases": {
+        "aligned": {
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          }
+        },
+        "first": {
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          }
+        },
+        "replacement": {
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          }
+        }
+      },
+      "normal_pressure_samples": 301
+    },
+    "2": {
+      "cases": {
+        "aligned": {
+          "physical_reuse": {
+            "hits": 1.0,
+            "tokens": 2048.0
+          }
+        },
+        "first": {
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          }
+        },
+        "replacement": {
+          "physical_reuse": {
+            "hits": 0.0,
+            "tokens": 0.0
+          }
+        }
+      },
+      "normal_pressure_samples": 67
+    }
+  },
+  "qualification": false,
+  "server_sha256": "dfee052317e21a1a907e1faf01e64a067fbed051a2b7f57cb7fae8656890313e"
+}
