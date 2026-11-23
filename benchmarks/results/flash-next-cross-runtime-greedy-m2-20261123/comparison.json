@@ -1,0 +1,214 @@
+{
+  "native_m2_m5_shared_prefix": {
+    "512": 16,
+    "2048": 6,
+    "8192": 1
+  },
+  "normal_native_pressure_samples": 87,
+  "observations": [
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 2,
+        "ax_m2_id": 248068,
+        "ax_m2_rank": 3,
+        "index": 2,
+        "peer_id": 248046,
+        "peer_minus_ax_m2": 2.1875,
+        "top3": [
+          [
+            248046,
+            13.0625
+          ],
+          [
+            248045,
+            11.75
+          ],
+          [
+            248068,
+            10.875
+          ]
+        ]
+      },
+      "input_tokens": 512,
+      "peer": "omlx",
+      "peer_prefill_chunk": 1024,
+      "shared_with_ax_m2": 2,
+      "shared_with_ax_m5": 2
+    },
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 1,
+        "ax_m2_id": 104980,
+        "ax_m2_rank": 3,
+        "index": 6,
+        "peer_id": 2064,
+        "peer_minus_ax_m2": 0.125,
+        "top3": [
+          [
+            2064,
+            16.25
+          ],
+          [
+            40,
+            16.125
+          ],
+          [
+            104980,
+            16.125
+          ]
+        ]
+      },
+      "input_tokens": 2048,
+      "peer": "omlx",
+      "peer_prefill_chunk": 1024,
+      "shared_with_ax_m2": 6,
+      "shared_with_ax_m5": 16
+    },
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 1,
+        "ax_m2_id": 5525,
+        "ax_m2_rank": 2,
+        "index": 0,
+        "peer_id": 70330,
+        "peer_minus_ax_m2": 0.3125,
+        "top3": [
+          [
+            70330,
+            10.5625
+          ],
+          [
+            5525,
+            10.25
+          ],
+          [
+            149421,
+            9.9375
+          ]
+        ]
+      },
+      "input_tokens": 8192,
+      "peer": "omlx",
+      "peer_prefill_chunk": 1024,
+      "shared_with_ax_m2": 0,
+      "shared_with_ax_m5": 0
+    },
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 15,
+        "ax_m2_id": 1403,
+        "ax_m2_rank": 17,
+        "index": 1,
+        "peer_id": 248044,
+        "peer_minus_ax_m2": 1.9375,
+        "top3": [
+          [
+            248044,
+            6.0625
+          ],
+          [
+            5513,
+            5.46875
+          ],
+          [
+            248045,
+            5.40625
+          ]
+        ]
+      },
+      "input_tokens": 8192,
+      "peer": "omlx",
+      "peer_prefill_chunk": 2048,
+      "shared_with_ax_m2": 1,
+      "shared_with_ax_m5": 6
+    },
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 1,
+        "ax_m2_id": 248068,
+        "ax_m2_rank": 2,
+        "index": 2,
+        "peer_id": 248046,
+        "peer_minus_ax_m2": 0.125,
+        "top3": [
+          [
+            248046,
+            12.125
+          ],
+          [
+            248068,
+            12.0
+          ],
+          [
+            112523,
+            11.375
+          ]
+        ]
+      },
+      "input_tokens": 512,
+      "peer": "bounded",
+      "peer_prefill_chunk": 1024,
+      "shared_with_ax_m2": 2,
+      "shared_with_ax_m5": 2
+    },
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 1,
+        "ax_m2_id": 104980,
+        "ax_m2_rank": 2,
+        "index": 6,
+        "peer_id": 2064,
+        "peer_minus_ax_m2": 0.25,
+        "top3": [
+          [
+            2064,
+            16.375
+          ],
+          [
+            104980,
+            16.125
+          ],
+          [
+            40,
+            15.625
+          ]
+        ]
+      },
+      "input_tokens": 2048,
+      "peer": "bounded",
+      "peer_prefill_chunk": 1024,
+      "shared_with_ax_m2": 6,
+      "shared_with_ax_m5": 16
+    },
+    {
+      "first_split_from_ax_m2": {
+        "all_better_than_ax_m2": 13,
+        "ax_m2_id": 1403,
+        "ax_m2_rank": 14,
+        "index": 1,
+        "peer_id": 5513,
+        "peer_minus_ax_m2": 1.15625,
+        "top3": [
+          [
+            5513,
+            5.6875
+          ],
+          [
+            46044,
+            5.625
+          ],
+          [
+            248044,
+            5.5625
+          ]
+        ]
+      },
+      "input_tokens": 8192,
+      "peer": "bounded",
+      "peer_prefill_chunk": 1024,
+      "shared_with_ax_m2": 1,
+      "shared_with_ax_m5": 1
+    }
+  ],
+  "qualification": false
+}

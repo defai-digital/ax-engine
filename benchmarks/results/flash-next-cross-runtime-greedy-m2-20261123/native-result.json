@@ -1,0 +1,160 @@
+{
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "patch_sha256": "f3e31cf6420c5f9dade02f1748e32ce4ac11509232aca2c295d790b01989bffb",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "0638f980606eb2b9ef67dad43c54ed37d0ffb492f77e39f9966f35f9a46ac215",
+    "source_base": "72f53fecd1c7ce02456a6dc7055b3c571b277a6b"
+  },
+  "drained": {
+    "ax_engine_generation_active_streams": 0.0,
+    "ax_engine_generation_buffered_stream_events": 0.0,
+    "ax_engine_generation_commands_queued": 0.0,
+    "ax_engine_generation_jobs_pending": 0.0,
+    "ax_engine_jobs_in_flight": 0.0
+  },
+  "max_footprint_bytes": 92230147416,
+  "pressure_count": 87,
+  "rows": [
+    {
+      "id": "mixed-000",
+      "input_tokens": 512,
+      "m2_ids": [
+        5513,
+        220,
+        248068,
+        271,
+        248069,
+        271,
+        760,
+        1414,
+        3766,
+        7701,
+        310,
+        381,
+        264,
+        47739,
+        466,
+        328
+      ],
+      "m5_ids": [
+        5513,
+        220,
+        248068,
+        271,
+        248069,
+        271,
+        760,
+        1414,
+        3766,
+        7701,
+        310,
+        381,
+        264,
+        47739,
+        466,
+        328
+      ],
+      "prefill": [
+        512
+      ],
+      "prompt_sha256": "24d43f66c940cf61d4bdb8e38b39505fdd5f77a4ac1fb07a827d5bb53e8300c4"
+    },
+    {
+      "id": "mixed-001",
+      "input_tokens": 2048,
+      "m2_ids": [
+        5513,
+        271,
+        248068,
+        271,
+        248069,
+        271,
+        104980,
+        109120,
+        103916,
+        141267,
+        332,
+        98282,
+        109324,
+        104027,
+        332,
+        9616
+      ],
+      "m5_ids": [
+        5513,
+        271,
+        248068,
+        271,
+        248069,
+        271,
+        2064,
+        7701,
+        421,
+        279,
+        1414,
+        488,
+        3766,
+        369,
+        264,
+        2972
+      ],
+      "prefill": [
+        2048
+      ],
+      "prompt_sha256": "15ea8d0daaefe0a8c09aec5a5a4d555540b65bbea157a5e67b3468e574fb0ff1"
+    },
+    {
+      "id": "mixed-003",
+      "input_tokens": 8192,
+      "m2_ids": [
+        5525,
+        1403,
+        13292,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403,
+        1403
+      ],
+      "m5_ids": [
+        5525,
+        248044,
+        11,
+        198,
+        220,
+        328,
+        53125,
+        763,
+        328,
+        21365,
+        264,
+        1103,
+        314,
+        24959,
+        321,
+        264
+      ],
+      "prefill": [
+        2048,
+        4096,
+        6144,
+        8192
+      ],
+      "prompt_sha256": "fa7a9243b33c69858f8bbd3caf881061185d69c016c1f03ddd9f0be3a320b439"
+    }
+  ]
+}
