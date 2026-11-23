@@ -30,3 +30,22 @@ Replay with macOS and Python 3.12 or newer.
 shasum -a 256 -c SHA256SUMS
 python3.12 -B replay.py | cmp comparison.json -
 ```
+
+
+## Startup intervals
+
+The info-level run logs bound the intervals from memory planning to
+runner admission, then from admission to listening. The first interval
+includes both resident model loading and sidecar work. The HTTP ready
+measurement also includes work outside those logged intervals.
+
+| Mode | Change through runner admission | Change in HTTP ready |
+| --- | ---: | ---: |
+| Disabled | -60.002 s | -61.284 s |
+| Required | -8.852 s | -8.770 s |
+| Default | -8.047 s | -8.770 s |
+
+
+```sh
+python3.12 -B startup_timeline.py --comparison comparison.json --events startup-events.json --archive evidence.tar.xz | cmp startup-timeline.json -
+```

@@ -1,0 +1,57 @@
+{
+  "mapped": {
+    "disabled": {
+      "original_log_sha256": "0190aa4472a88e15a21868814be1a674b742cdd6d5c45d93aa0a8ea542c2913c",
+      "timestamps": {
+        "memory_plan": "2026-11-23T01:56:00.011008Z",
+        "runner_admission": "2026-11-23T01:58:28.843534Z",
+        "listener": "2026-11-23T01:58:34.699459Z"
+      }
+    },
+    "required": {
+      "original_log_sha256": "c82193356fc64b9c256c6ab47dad6515dc4f49c1f47f73ceef8aae78cd434cd9",
+      "timestamps": {
+        "memory_plan": "2026-11-23T01:58:49.773762Z",
+        "runner_admission": "2026-11-23T02:00:46.308585Z",
+        "listener": "2026-11-23T02:00:51.912409Z"
+      }
+    },
+    "default": {
+      "original_log_sha256": "26b14bd8a5516a9d005e3191265d72c972a341a986787aed49515f5caf69e13a",
+      "timestamps": {
+        "memory_plan": "2026-11-23T02:01:06.515109Z",
+        "runner_admission": "2026-11-23T02:03:01.543998Z",
+        "listener": "2026-11-23T02:03:07.003444Z"
+      }
+    }
+  },
+  "prefetch": {
+    "disabled": {
+      "original_log_sha256": "d77b81d9ca2a3b5108c10a47a368795e162191ac278283304d962d303d439751",
+      "timestamps": {
+        "memory_plan": "2026-11-23T02:22:49.316309Z",
+        "prefetch_complete": "2026-11-23T02:24:15.407084Z",
+        "runner_admission": "2026-11-23T02:24:18.147761Z",
+        "listener": "2026-11-23T02:24:23.581057Z"
+      }
+    },
+    "required": {
+      "original_log_sha256": "e6518c4553c4754a7d3385fcef6dbbfa7126aa9cfb11bcc1371a5fd0c12299b9",
+      "timestamps": {
+        "memory_plan": "2026-11-23T02:24:37.466315Z",
+        "prefetch_complete": "2026-11-23T02:26:22.337006Z",
+        "runner_admission": "2026-11-23T02:26:25.149037Z",
+        "listener": "2026-11-23T02:26:31.065149Z"
+      }
+    },
+    "default": {
+      "original_log_sha256": "2365955adb5a908b70230318982c5dff1e3d5bb539f3e0aac6f346b292a34e6b",
+      "timestamps": {
+        "memory_plan": "2026-11-23T02:26:45.194512Z",
+        "prefetch_complete": "2026-11-23T02:28:29.349746Z",
+        "runner_admission": "2026-11-23T02:28:32.176155Z",
+        "listener": "2026-11-23T02:28:37.570250Z"
+      }
+    }
+  }
+}

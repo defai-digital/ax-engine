@@ -1,0 +1,69 @@
+{
+  "scope": "info-level log intervals and the measured native readiness receipt",
+  "runtime_commit": "eb57f768a7b1807b3832609779b59b03dad59d33",
+  "arms": {
+    "mapped": {
+      "disabled": {
+        "http_ready_seconds": 156.16,
+        "memory_plan_to_runner_admission_seconds": 148.833,
+        "runner_admission_to_listener_seconds": 5.856,
+        "outside_logged_intervals_seconds": 1.472
+      },
+      "required": {
+        "http_ready_seconds": 122.857,
+        "memory_plan_to_runner_admission_seconds": 116.535,
+        "runner_admission_to_listener_seconds": 5.604,
+        "outside_logged_intervals_seconds": 0.718
+      },
+      "default": {
+        "http_ready_seconds": 121.892,
+        "memory_plan_to_runner_admission_seconds": 115.029,
+        "runner_admission_to_listener_seconds": 5.459,
+        "outside_logged_intervals_seconds": 1.404
+      }
+    },
+    "prefetch": {
+      "disabled": {
+        "http_ready_seconds": 94.876,
+        "memory_plan_to_runner_admission_seconds": 88.831,
+        "runner_admission_to_listener_seconds": 5.433,
+        "outside_logged_intervals_seconds": 0.611,
+        "memory_plan_to_prefetch_completion_seconds": 86.091
+      },
+      "required": {
+        "http_ready_seconds": 114.087,
+        "memory_plan_to_runner_admission_seconds": 107.683,
+        "runner_admission_to_listener_seconds": 5.916,
+        "outside_logged_intervals_seconds": 0.488,
+        "memory_plan_to_prefetch_completion_seconds": 104.871
+      },
+      "default": {
+        "http_ready_seconds": 113.122,
+        "memory_plan_to_runner_admission_seconds": 106.982,
+        "runner_admission_to_listener_seconds": 5.394,
+        "outside_logged_intervals_seconds": 0.746,
+        "memory_plan_to_prefetch_completion_seconds": 104.155
+      }
+    }
+  },
+  "prefetch_minus_mapped_seconds": {
+    "disabled": {
+      "http_ready_seconds": -61.284,
+      "memory_plan_to_runner_admission_seconds": -60.002,
+      "runner_admission_to_listener_seconds": -0.423,
+      "outside_logged_intervals_seconds": -0.861
+    },
+    "required": {
+      "http_ready_seconds": -8.77,
+      "memory_plan_to_runner_admission_seconds": -8.852,
+      "runner_admission_to_listener_seconds": 0.312,
+      "outside_logged_intervals_seconds": -0.23
+    },
+    "default": {
+      "http_ready_seconds": -8.77,
+      "memory_plan_to_runner_admission_seconds": -8.047,
+      "runner_admission_to_listener_seconds": -0.065,
+      "outside_logged_intervals_seconds": -0.658
+    }
+  }
+}
