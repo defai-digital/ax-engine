@@ -1,0 +1,10 @@
+{
+  "matched_cancelled_prefix_ids": 1,
+  "matched_full_output_ids": 576,
+  "normal_pressure_samples": 189,
+  "peak_footprint_bytes": 92270943600,
+  "qualification": false,
+  "replacement_preserves_long_turn": true,
+  "server_sha256": "610785262975f4470ba9a6f6c314b75543201c19ce990570f82f06e00d015801",
+  "short_precedes_long_second_slice": true
+}
