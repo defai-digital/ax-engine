@@ -673,10 +673,23 @@ fn flash_next_prefix_suffix_matrix_body() -> serde_json::Value {
 
     let artifacts = NativeModelArtifacts::from_dir(pack).unwrap();
     assert!(artifacts.audited_qwen4_exp_mxfp4());
-    let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let runner = MlxRunner::from_artifacts_with_session_budget(
+        &artifacts,
+        BASE_WIDTH,
+        true,
+        true,
+        None,
+        None,
+        32768,
+        Some(1),
+    )
+    .unwrap();
+    assert!(!runner.mtp_requested);
+    let cfg = &runner.cfg;
+    let weights = &runner.weights;
     let trunk = weights.qwen4_exp.as_ref().unwrap();
     assert!(trunk.expert_stream.is_none());
+    eprintln!("FLASH_NEXT_PREFIX_SUFFIX_RESIDENT_READY");
     let chunk_width = |len| {
         crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
             BASE_WIDTH,
@@ -691,8 +704,8 @@ fn flash_next_prefix_suffix_matrix_body() -> serde_json::Value {
     let hash_state = |cache: &MlxKVCache| ax_engine_core::sha256_hex(&cache.serialize_to_bytes());
     let mut seed = fresh();
     let seed_token = chunked_prefill(
-        &cfg,
-        &weights,
+        cfg,
+        weights,
         &prefix,
         &mut seed,
         PREFIX_WIDTH,
@@ -713,16 +726,14 @@ fn flash_next_prefix_suffix_matrix_body() -> serde_json::Value {
 
     let finish = |mut cache: MlxKVCache, suffix: &[u32], width| {
         let mut rng = Xorshift64::new(42);
-        let first = chunked_prefill(
-            &cfg, &weights, suffix, &mut cache, width, sampling, &mut rng,
-        );
+        let first = chunked_prefill(cfg, weights, suffix, &mut cache, width, sampling, &mut rng);
         assert_eq!(cache.seq_len(), PREFIX + suffix.len());
         let after_prefill = hash_state(&cache);
         let mut ids = vec![first];
         for _ in 0..DECODE_STEPS {
             ids.push(decode_step(
-                &cfg,
-                &weights,
+                cfg,
+                weights,
                 *ids.last().unwrap(),
                 &mut cache,
                 sampling,
@@ -747,8 +758,8 @@ fn flash_next_prefix_suffix_matrix_body() -> serde_json::Value {
 
         let mut cold = fresh();
         chunked_prefill_cache_only(
-            &cfg,
-            &weights,
+            cfg,
+            weights,
             &snapshot.tokens,
             &mut cold,
             PREFIX_WIDTH,
@@ -774,6 +785,7 @@ fn flash_next_prefix_suffix_matrix_body() -> serde_json::Value {
             "suffix length {} changed the cold trajectory",
             suffix.len()
         );
+        eprintln!("FLASH_NEXT_PREFIX_SUFFIX_ROW {}", suffix.len());
         rows.push(serde_json::json!({
             "suffix_tokens": suffix.len(),
             "suffix_width": width,
