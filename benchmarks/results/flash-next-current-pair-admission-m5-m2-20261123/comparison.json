@@ -1,0 +1,45 @@
+{
+  "candidate_commit": "56e2b1a79acb0230dc8e1160cd8031f22cb04959",
+  "hosts": {
+    "m2": {
+      "cpu_idle_percent": [
+        94.52,
+        94.8
+      ],
+      "hardware": {
+        "form_factor": "Mac Studio",
+        "memory_bytes": 206158430208,
+        "os": "27.2.1",
+        "soc": "Apple M2 Ultra"
+      },
+      "matching_output_ids": 288,
+      "normal_pressure_samples": 110,
+      "peak_footprint_bytes": 92228017544,
+      "queued_steps": 2,
+      "reader": "Mapped",
+      "shared_prefill_tokens": 512
+    },
+    "m5": {
+      "cpu_idle_percent": [
+        92.27,
+        97.35
+      ],
+      "hardware": {
+        "form_factor": "MacBook Pro",
+        "memory_bytes": 137438953472,
+        "os": "27.2.1",
+        "soc": "Apple M5 Max"
+      },
+      "matching_output_ids": 288,
+      "normal_pressure_samples": 143,
+      "peak_footprint_bytes": 81094644512,
+      "queued_steps": 2,
+      "reader": "Mapped",
+      "shared_prefill_tokens": 512
+    }
+  },
+  "old_control_server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "qualification": false,
+  "scope": "Explicit resident two-slot physical-prefill admission",
+  "server_sha256": "0638f980606eb2b9ef67dad43c54ed37d0ffb492f77e39f9966f35f9a46ac215"
+}
