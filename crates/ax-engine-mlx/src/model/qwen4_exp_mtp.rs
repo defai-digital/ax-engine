@@ -26,8 +26,8 @@ use super::shared::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::weights::qwen4_exp::{Qwen4ExpAttentionBranch, Qwen4ExpTargetSchedule, Qwen4ExpWeights};
 use crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights;
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argmax, astype, concatenate, multiply, reshape, rms_norm, slice, topk,
-    try_eval,
+    MlxArray, MlxDtype, add, argmax, astype, concatenate, multiply, put_along_axis, reshape,
+    rms_norm, slice, take_along_axis, topk, try_eval,
 };
 
 #[cfg(test)]
@@ -266,13 +266,7 @@ fn next_token(output: &Qwen4ExpOutput) -> Result<u32, String> {
     token_at_row(&output.logits, shape[0] - 1)
 }
 
-/// Argmax token and top-two margin of one logits row, in a single device
-/// barrier.
-///
-/// The argmax and the top-2 reduction cover the same row of the same Float32
-/// logits, so one `try_eval` materializes both. Values are identical to running
-/// [`token_at_row`] and [`top_two_margin`] separately; only the barrier count
-/// changes. The non-finite check is the same tripwire `top_two_margin` applies.
+/// Argmax token and top-two margin of one logits row.
 fn row_token_and_margin(logits: &MlxArray, row: i32) -> Result<(u32, f32), String> {
     let shape = logits.shape();
     if shape.len() != 2 || row < 0 || row >= shape[0] {
@@ -285,6 +279,22 @@ fn row_token_and_margin(logits: &MlxArray, row: i32) -> Result<(u32, f32), Strin
         // definition, matching `top_two_margin`.
         try_eval(&[&token])?;
         return Ok((token.data_u32()[0], 0.0));
+    }
+    if row_logits.dtype() == MlxDtype::Float32 {
+        let index = reshape(&token, &[1, 1], None);
+        let first = take_along_axis(&row_logits, &index, -1, None);
+        let excluded = reshape(&MlxArray::from_f32(f32::NEG_INFINITY), &[1, 1], None);
+        let remaining = put_along_axis(&row_logits, &index, &excluded, -1, None);
+        let runner_up = reshape(&argmax(&remaining, None), &[1, 1], None);
+        let second = take_along_axis(&remaining, &runner_up, -1, None);
+        if try_eval(&[&token, &first, &second]).is_ok() {
+            let first = first.data_f32()[0];
+            let second = second.data_f32()[0];
+            // Metal comparison and sort can order zero and subnormal values differently.
+            if first.is_normal() && second.is_normal() && first >= second {
+                return Ok((token.data_u32()[0], first - second));
+            }
+        }
     }
     let top = astype(&topk(&row_logits, 2, None), MlxDtype::Float32, None);
     try_eval(&[&token, &top])?;
@@ -314,6 +324,13 @@ fn row_token_and_selected_logit(logits: &MlxArray, row: i32) -> Result<u32, Stri
     }
     let row_logits = slice(logits, &[row, 0], &[row + 1, shape[1]], &[1, 1], None);
     let token = argmax(&row_logits, None);
+    if row_logits.dtype() == MlxDtype::Float32 {
+        let index = reshape(&token, &[1, 1], None);
+        let selected = take_along_axis(&row_logits, &index, -1, None);
+        if try_eval(&[&token, &selected]).is_ok() && selected.data_f32()[0].is_finite() {
+            return Ok(token.data_u32()[0]);
+        }
+    }
     let top = astype(&topk(&row_logits, 1, None), MlxDtype::Float32, None);
     try_eval(&[&token, &top])?;
     match top.data_f32().first() {
@@ -2138,8 +2155,8 @@ mod block_verifier_tests {
 
 #[cfg(test)]
 mod bonus_read_tests {
-    use super::{row_token_and_margin, row_token_and_selected_logit};
-    use mlx_sys::{MlxArray, MlxDtype, eval};
+    use super::{row_token_and_margin, row_token_and_selected_logit, token_at_row, top_two_margin};
+    use mlx_sys::{MlxArray, MlxDtype, eval, topk};
 
     fn logits_row(values: &[f32]) -> MlxArray {
         let array = MlxArray::from_raw_data(
@@ -2179,5 +2196,61 @@ mod bonus_read_tests {
         // Missing rows keep the historical error.
         assert!(row_token_and_selected_logit(&infinite, 4).is_err());
         assert!(row_token_and_margin(&infinite, 4).is_err());
+    }
+
+    #[test]
+    fn wide_f32_reads_preserve_token_margin_and_finiteness() {
+        let cases = [
+            ([5.0, 3.0, 5.0, 1.0], -11.0),
+            ([5.0, 2.0, 3.0, 4.0], -11.0),
+            ([-7.0, -2.0, -5.0, -3.0], -11.0),
+            ([-0.0, 0.0, -0.0, 0.0], f32::NEG_INFINITY),
+            (
+                [
+                    0.0,
+                    f32::from_bits(1),
+                    f32::from_bits(2),
+                    f32::from_bits(0x8000_0001),
+                ],
+                f32::NEG_INFINITY,
+            ),
+            ([0.5, f32::NAN, 3.0, -10.0], -11.0),
+            ([2.0, f32::INFINITY, 3.0, 1.0], -11.0),
+            (
+                [f32::from_bits(0x0080_0001), f32::MIN_POSITIVE, -1.0, -2.0],
+                -11.0,
+            ),
+            (
+                [f32::MAX, -f32::MAX, f32::NEG_INFINITY, f32::NEG_INFINITY],
+                f32::NEG_INFINITY,
+            ),
+            (
+                [5.0, f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY],
+                f32::NEG_INFINITY,
+            ),
+        ];
+        for (values, fill) in cases {
+            for (width, offset) in [(513, 509), (248_320, 0), (248_320, 511), (248_321, 248_317)] {
+                let mut row = vec![fill; width];
+                row[offset..offset + values.len()].copy_from_slice(&values);
+                let logits = logits_row(&row);
+                let oracle = logits_row(&row);
+                let expected = token_at_row(&oracle, 0).unwrap();
+                let margin =
+                    row_token_and_margin(&logits, 0).map(|(token, value)| (token, value.to_bits()));
+                assert_eq!(
+                    margin,
+                    top_two_margin(&oracle, 0).map(|value| (expected, value.to_bits()))
+                );
+                let top = topk(&oracle, 1, None);
+                eval(&[&top]);
+                let bonus = row_token_and_selected_logit(&logits, 0);
+                if top.data_f32()[0].is_finite() {
+                    assert_eq!(bonus.unwrap(), expected);
+                } else {
+                    assert!(bonus.is_err());
+                }
+            }
+        }
     }
 }
