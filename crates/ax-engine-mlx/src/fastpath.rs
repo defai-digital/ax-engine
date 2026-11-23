@@ -6294,6 +6294,19 @@ pub(crate) fn flash_next_qsa_tiled_outer_prefill_chunk() -> Option<usize> {
     })
 }
 
+/// Round a pinned MLX vector SDPA block override to its partition alignment
+/// for the prefill reservation. A zero result uses the stock bound.
+pub(crate) fn mlx_sdpa_partition_reservation_override() -> u64 {
+    static CACHED: OnceLock<u64> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("MLX_SDPA_BLOCKS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .and_then(|blocks| u64::try_from(blocks).ok())
+            .map_or(0, |blocks| blocks.next_multiple_of(32))
+    })
+}
+
 env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT` — gather routed experts in
     /// expert-id order for Flash Next prefill chunks of at least 64 tokens, as

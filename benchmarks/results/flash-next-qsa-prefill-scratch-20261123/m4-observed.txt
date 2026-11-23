@@ -1,0 +1,20 @@
+Apple M4 Pro
+68719476736
+27.0
+ax-qsa-scratch-test: OK
+MLX dylib SHA-256 d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6
+
+running 1 test
+test expert_stream::tests::prefill_scratch_prices_the_selection_and_moe_staging_of_a_sparse_chunk ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2373 filtered out; finished in 0.02s
+
+running 1 test
+test expert_stream::tests::indexed_attention_reserves_the_full_gathered_fallback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2373 filtered out; finished in 0.00s
+
+running 1 test
+test expert_stream::tests::qsa_gather_reserves_the_transpose_copy_and_larger_partition_override ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2373 filtered out; finished in 0.00s

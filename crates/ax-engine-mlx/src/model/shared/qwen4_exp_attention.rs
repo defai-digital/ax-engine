@@ -1243,9 +1243,8 @@ fn gather_selected_tile(
 
 /// Upper bound on the gathered K+V bytes of one sub-batch.
 ///
-/// The memory plan charges this same bound as one prefill transient
-/// (`expert_stream::qsa_prefill_bytes`), so a reader can compare the priced
-/// scratch against the kernel's own limit.
+/// The memory plan reserves for the full chunk because more than one of
+/// these sub-batches can be live during lazy evaluation.
 pub(crate) const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
 
 /// Width of the largest sub-batch whose *actual* padded gather fits `cap`.

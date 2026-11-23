@@ -767,8 +767,8 @@ pub(crate) fn estimate_auto_residency_costs(
 /// - MoE selected-expert staging: `chunk × top_k` routed rows through the
 ///   gathered input, the gate/up pair, and the down projection back at hidden
 ///   width;
-/// - QSA selection: one score workspace plus the batched gather of the selected
-///   K/V rows, capped by the attention kernel's own per-sub-batch bound;
+/// - QSA selection: one score workspace plus selected K/V, attention
+///   temporaries and index buffers across the physical prefill chunk;
 /// - hyper-connection read/write buffers.
 ///
 /// This is a bound on simultaneously live intermediates, not an allocator
@@ -778,6 +778,11 @@ pub(crate) fn estimate_prefill_scratch_bytes(
     manifest: &ax_engine_core::NativeModelManifest,
     prefill_chunk: usize,
 ) -> u64 {
+    let prefill_chunk = if manifest.model_family.eq_ignore_ascii_case("qwen4_exp") {
+        prefill_chunk.max(crate::fastpath::flash_next_qsa_tiled_outer_prefill_chunk().unwrap_or(0))
+    } else {
+        prefill_chunk
+    };
     let chunk = prefill_chunk as u64;
     let hidden = u64::from(manifest.hidden_size);
     chunk
@@ -840,26 +845,33 @@ fn moe_staging_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64)
         .saturating_mul(ACTIVATION_BYTES)
 }
 
-/// QSA prefill workspace: the indexer score graph plus the attention
-/// transients of one chunk. Zero for packs without the indexer geometry.
-///
-/// The attention term depends on which arm runs:
-/// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL=1` attends the selected rows in place
-/// and prices only the packed index rows and the query/output tiles; the
-/// gathered arm (default) prices the padded `chunk × selected` K/V tile,
-/// capped at [`crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_BYTES`].
+#[derive(Clone, Copy, Default)]
+struct QsaScratchOptions {
+    indexed: bool,
+    gather_then_transpose: bool,
+    sdpa_partition_override: u64,
+}
+
+/// QSA prefill workspace: the separate indexer score graph plus the known
+/// selected-attention transients of one chunk. The 1 GiB gather cap sizes
+/// individual sub-batches. Lazy evaluation can keep several sub-batches
+/// live, so the cap cannot bound their combined memory.
 fn qsa_prefill_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64) -> u64 {
     qsa_prefill_bytes_with(
         manifest,
         chunk,
-        crate::fastpath::flash_next_qsa_indexed_prefill_enabled(),
+        QsaScratchOptions {
+            indexed: crate::fastpath::flash_next_qsa_indexed_prefill_enabled(),
+            gather_then_transpose: !crate::fastpath::flash_next_qsa_fused_gather_enabled(),
+            sdpa_partition_override: crate::fastpath::mlx_sdpa_partition_reservation_override(),
+        },
     )
 }
 
 fn qsa_prefill_bytes_with(
     manifest: &ax_engine_core::NativeModelManifest,
     chunk: u64,
-    indexed: bool,
+    options: QsaScratchOptions,
 ) -> u64 {
     let config = &manifest.qwen4_exp;
     let (Some(head_dim), Some(ratio), Some(budget)) = (
@@ -877,27 +889,60 @@ fn qsa_prefill_bytes_with(
     let kept = u64::from(budget)
         .saturating_add(u64::from(ratio))
         .saturating_sub(1);
-    let gathered_for = |queries: u64| {
-        queries
-            .saturating_mul(kept)
-            .saturating_mul(u64::from(manifest.kv_head_count))
-            .saturating_mul(u64::from(manifest.attention_head_dim))
-            .saturating_mul(ACTIVATION_BYTES)
-            .min(crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_BYTES as u64)
-    };
-    let attention = if indexed {
-        // Chunks shorter than the batched-attention floor, and unsupported
-        // geometries, keep the gathered arm even with the switch on, so the
-        // plan still reserves room for one short gathered sub-batch.
-        let short_chunk = gathered_for(
-            u64::try_from(crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_MIN_QUERIES)
-                .unwrap_or(0),
-        );
-        indexed_attention_bytes(manifest, chunk, kept).max(short_chunk)
+    let gathered = gathered_qsa_attention_bytes(manifest, chunk, kept, options);
+    let attention = if options.indexed {
+        // Indexed attention can decline a whole chunk, including when
+        // the Metal pipeline is unavailable. Reserve its gathered fallback.
+        indexed_attention_bytes(manifest, chunk, kept).max(gathered)
     } else {
-        gathered_for(chunk)
+        gathered
     };
     QSA_SCORE_WORKSPACE_BYTES.saturating_add(attention)
+}
+
+fn gathered_qsa_attention_bytes(
+    manifest: &ax_engine_core::NativeModelManifest,
+    chunk: u64,
+    selected: u64,
+    options: QsaScratchOptions,
+) -> u64 {
+    let kv_heads = u64::from(manifest.kv_head_count);
+    let query_heads = u64::from(manifest.attention_head_count);
+    let dim = u64::from(manifest.attention_head_dim);
+    let selected_entries = chunk.saturating_mul(selected);
+    let kv_copies = if options.gather_then_transpose { 4 } else { 2 };
+    let kv = selected_entries
+        .saturating_mul(kv_heads)
+        .saturating_mul(dim)
+        .saturating_mul(ACTIVATION_BYTES * kv_copies);
+    // Reserve the raw and safe indices, both head-offset expressions and
+    // the boolean mask, including a contiguous broadcast over query heads.
+    let index_and_mask_bytes = (4 + 2 * kv_heads) * 4 + 1 + query_heads;
+    let metadata = selected_entries.saturating_mul(index_and_mask_bytes);
+    let head_rows = chunk.saturating_mul(query_heads);
+    let query_and_output = head_rows
+        .saturating_mul(dim)
+        .saturating_mul(ACTIVATION_BYTES * 2);
+    // Masked vector SDPA can hold per-partition partial outputs in the
+    // activation dtype and two FP32 statistics. Bound the MLX 0.32.4
+    // partition count for the selected width across supported Apple GPUs.
+    let partitions = match selected {
+        0..=1023 => 0,
+        1024..=8192 => 128,
+        8193..=16_383 => 256,
+        16_384..=65_535 => 512,
+        _ => 1024,
+    };
+    let partials = if partitions > 0 {
+        head_rows
+            .saturating_mul(partitions.max(options.sdpa_partition_override))
+            .saturating_mul(dim * ACTIVATION_BYTES + 2 * 4)
+    } else {
+        0
+    };
+    kv.saturating_add(metadata)
+        .saturating_add(query_and_output)
+        .saturating_add(partials)
 }
 
 /// Indexed-attention transients for one chunk: the packed per-query index rows
@@ -4171,16 +4216,23 @@ mod tests {
         let gdn = 2048u64 * 10_240 * 4 * 2;
         // MoE: 2048*10 routed rows, (640*2 + 2560*2) wide, 2 bytes.
         let moe = 20_480u64 * 6_400 * 2;
-        // QSA: the 256 MiB score workspace plus one sub-batch of gathered
-        // selected K/V. The shape product (2048*2051*2*256*2 = 4.0 GiB) stays
-        // capped by the attention kernel's own 1 GiB per-sub-batch bound.
-        let qsa = 256 * 1024 * 1024 + (1u64 << 30);
+        // QSA keeps the score reservation, both gathered arrays across the
+        // chunk, indices/mask, the query/output, and vector SDPA temporaries.
+        let selected = 2048u64 * 2051;
+        let qsa = 256 * 1024 * 1024
+            + selected * 2 * 256 * 2 * 2
+            + selected * (4 * 8 + 1 + 24)
+            + 2048 * 24 * 256 * 2 * 2
+            + 2048 * 24 * 128 * (256 * 2 + 2 * 4);
         // Hyper-connections: 2048 * 4 * 320 * 2 bytes.
         let hc = 2048u64 * 4 * 320 * 2;
 
         assert_eq!(gated_delta_chunk_bytes(&manifest, 2048), gdn);
         assert_eq!(moe_staging_bytes(&manifest, 2048), moe);
-        assert_eq!(qsa_prefill_bytes(&manifest, 2048), qsa);
+        assert_eq!(
+            qsa_prefill_bytes_with(&manifest, 2048, QsaScratchOptions::default()),
+            qsa
+        );
         assert_eq!(hyper_connection_chunk_bytes(&manifest, 2048), hc);
         assert_eq!(
             estimate_prefill_scratch_bytes(&manifest, 2048),
@@ -4193,40 +4245,27 @@ mod tests {
             estimate_prefill_scratch_bytes(&manifest, 2048) > 30 * base,
             "the scratch bound must reflect the packed prefill transients"
         );
-        // Doubling the chunk doubles every term, so the bound stays
-        // shape-derived rather than pinned to one chunk size.
+        // The score reserve is fixed. The other buffers grow with the chunk.
         assert_eq!(
             estimate_prefill_scratch_bytes(&manifest, 4096),
-            (base + gdn + moe + hc) * 2 + qsa
+            (base + gdn + moe + hc + qsa) * 2 - 256 * 1024 * 1024
         );
     }
 
     #[test]
-    fn indexed_attention_prices_no_selected_kv_tile() {
+    fn indexed_attention_reserves_the_full_gathered_fallback() {
         let manifest = flash_next_6bit_scratch_manifest();
-        let gathered = qsa_prefill_bytes_with(&manifest, 2048, false);
-        let indexed = qsa_prefill_bytes_with(&manifest, 2048, true);
-        // The gathered arm carries one 1 GiB sub-batch on top of the score
-        // workspace; the indexed arm must not, and stays at index rows plus
-        // query/output tiles.
-        assert_eq!(gathered, 256 * 1024 * 1024 + (1u64 << 30));
-        assert!(
-            indexed < gathered,
-            "indexed pricing {indexed} must undercut the gathered bound {gathered}"
+        let gathered = qsa_prefill_bytes_with(&manifest, 2048, QsaScratchOptions::default());
+        let indexed = qsa_prefill_bytes_with(
+            &manifest,
+            2048,
+            QsaScratchOptions {
+                indexed: true,
+                ..QsaScratchOptions::default()
+            },
         );
-        assert!(
-            indexed - QSA_SCORE_WORKSPACE_BYTES < (1u64 << 30) / 4,
-            "indexed attention must not price a selected K/V tile"
-        );
-        // It still covers the packed index rows at the full selected width.
-        let kept = 2048u64 + 4 - 1;
-        let indices = 2048 * kept * 4;
-        let tiles = 2048
-            * u64::from(manifest.attention_head_count)
-            * u64::from(manifest.attention_head_dim)
-            * ACTIVATION_BYTES
-            * 2;
-        assert!(indexed - QSA_SCORE_WORKSPACE_BYTES >= indices + tiles);
+        assert_eq!(indexed, gathered);
+        assert!(gathered > 8u64 << 30);
     }
 
     #[test]
@@ -4255,20 +4294,20 @@ mod tests {
     }
 
     #[test]
-    fn qsa_gather_term_is_a_cap_not_a_constant() {
-        // The small state fixture keeps far fewer than a gibibyte of selected
-        // K/V, so the bound must fall back to the shape product.
+    fn qsa_gather_term_uses_selected_shape_below_the_two_pass_threshold() {
+        // Short selected rows use vector SDPA without per-partition outputs.
         let manifest = flash_next_state_manifest();
         let chunk = 16u64;
         let kept = 64u64 + 8 - 1;
         // The gather runs over the attention K/V width (`attention_head_dim`,
         // not the indexer width) with the fixture's single KV head.
-        let kv_head_count = 1u64;
-        let gathered = chunk * kept * kv_head_count * 64 * 2;
-        assert!(gathered < 1u64 << 30);
+        let query_heads = u64::from(manifest.attention_head_count);
+        let gathered = chunk * kept * 64 * 2 * 2;
+        let metadata = chunk * kept * (4 * 6 + 1 + query_heads);
+        let query_and_output = chunk * query_heads * 64 * 2 * 2;
         assert_eq!(
-            qsa_prefill_bytes(&manifest, chunk),
-            256 * 1024 * 1024 + gathered
+            qsa_prefill_bytes_with(&manifest, chunk, QsaScratchOptions::default()),
+            256 * 1024 * 1024 + gathered + metadata + query_and_output
         );
         // A pack without the indexer geometry pays no selection workspace.
         let mut dense = flash_next_state_manifest();
@@ -4276,6 +4315,22 @@ mod tests {
         dense.qwen4_exp.indexer_compress_ratio = None;
         dense.qwen4_exp.indexer_budget = None;
         assert_eq!(qsa_prefill_bytes(&dense, chunk), 0);
+    }
+
+    #[test]
+    fn qsa_gather_reserves_the_transpose_copy_and_larger_partition_override() {
+        let manifest = flash_next_6bit_scratch_manifest();
+        let chunk = 512;
+        let baseline = qsa_prefill_bytes_with(&manifest, chunk, QsaScratchOptions::default());
+        let options = QsaScratchOptions {
+            gather_then_transpose: true,
+            sdpa_partition_override: 160,
+            ..QsaScratchOptions::default()
+        };
+        assert_eq!(
+            qsa_prefill_bytes_with(&manifest, chunk, options) - baseline,
+            chunk * 2051 * 2 * 256 * 2 * 2 + chunk * 24 * (160 - 128) * (256 * 2 + 2 * 4)
+        );
     }
 
     #[test]
@@ -4404,7 +4459,7 @@ mod tests {
     }
 
     #[test]
-    fn real_flash_next_packs_stay_resident_at_the_default_server_cohort() {
+    fn real_flash_next_auto_keeps_mxfp4_resident_and_streams_6bit_at_128_gib() {
         // The two pinned Flash Next packs on the qualification host. The test
         // skips (not fails) on machines without them, and never writes into
         // the model cache.
@@ -4420,10 +4475,9 @@ mod tests {
         let ceiling =
             HOST_RAM - ax_engine_core::memory_budget::memory_plan_os_reserve_bytes(HOST_RAM);
 
-        // 6-bit at the default cohort: the per-request state term does not fit
-        // 8 rows, but the pack's experts still do at fewer. The plan must stay
-        // resident and publish the count that fits, because the alternative --
-        // paging 91 GiB of experts from disk -- decodes at 0.17 tok/s.
+        // The full sparse scratch charge puts 6-bit over the ceiling even
+        // at a single slot. The separately validated forced-resident 6-bit
+        // profile remains an explicit operator choice.
         let Some(six_bit) =
             real_pack_plan(std::path::Path::new(SIX_BIT), HOST_RAM, POOL_TOKENS, None)
         else {
@@ -4432,50 +4486,13 @@ mod tests {
         };
         println!("{SIX_BIT} (default cohort): {}", six_bit.log_line());
         assert_eq!(six_bit.charged_live_sequences, Some(COHORT_LIVE_SEQUENCES));
-        assert!(
-            six_bit.working_set_bytes_for_live_sequences(COHORT_LIVE_SEQUENCES) > ceiling,
-            "the regression case must be a configured count that does not fit: {}",
-            six_bit.log_line()
-        );
-        assert!(
-            six_bit.decide().is_resident(),
-            "the 6-bit pack must stay resident at a reduced live-sequence count: {}",
-            six_bit.log_line()
-        );
-        let cap = six_bit
-            .live_sequence_cap
-            .expect("a reduced live-sequence count is published");
-        assert!(
-            (1..COHORT_LIVE_SEQUENCES).contains(&cap),
-            "the cap must admit at least one row and fewer than the cohort: {cap} in {}",
-            six_bit.log_line()
-        );
-        assert!(six_bit.live_sequences_reduced());
-        assert!(
-            six_bit.resident_working_set_bytes() <= ceiling,
-            "the admitted working set must fit the 115.20 GiB ceiling: {}",
-            six_bit.log_line()
-        );
-        // One row below the cap could not fit either, so the cap is the largest
-        // count the ceiling allows rather than an arbitrary reduction.
-        assert!(
-            six_bit.working_set_bytes_for_live_sequences(cap + 1) > ceiling,
-            "the cap must be the largest fitting count: {}",
-            six_bit.log_line()
-        );
-        // The line names both counts and the reduction, which is what an
-        // operator sees when the server silently serves fewer rows.
-        let line = six_bit.log_line();
-        assert!(
-            line.contains(&format!("live-sequences={COHORT_LIVE_SEQUENCES}")),
-            "{line}"
-        );
-        assert!(line.contains(&format!("live-sequence-cap={cap}")), "{line}");
-        assert!(line.contains("warning=live-sequences-capped"), "{line}");
+        assert!(six_bit.working_set_bytes_for_live_sequences(1) > ceiling);
+        assert!(matches!(
+            six_bit.decide(),
+            ax_engine_core::memory_budget::MemoryPlanDecision::Stream { .. }
+        ));
+        assert_eq!(six_bit.live_sequence_cap, None);
 
-        // The same pack at one explicitly configured row stays resident and
-        // publishes no cap: one row already fits, and a cap of one would only
-        // make the engine queue requests the configured bound already admits.
         let Some(single) = real_pack_plan(
             std::path::Path::new(SIX_BIT),
             HOST_RAM,
@@ -4485,14 +4502,12 @@ mod tests {
             return;
         };
         println!("{SIX_BIT} (1 live): {}", single.log_line());
-        assert!(single.decide().is_resident(), "{}", single.log_line());
+        assert_eq!(single.charged_live_sequences, Some(1));
+        assert!(matches!(
+            single.decide(),
+            ax_engine_core::memory_budget::MemoryPlanDecision::Stream { .. }
+        ));
         assert_eq!(single.live_sequence_cap, None);
-        assert!(!single.live_sequences_reduced());
-        assert!(
-            single.log_line().contains("live-sequence-cap=uncapped"),
-            "{}",
-            single.log_line()
-        );
 
         // MXFP4 has ~33 GiB of headroom: the full cohort must survive. This is
         // the case a blanket concurrency reduction would have broken.
@@ -4516,9 +4531,7 @@ mod tests {
             "{}",
             mxfp4.log_line()
         );
-        // Every case reports both sides of the wired limit, so an operator can
-        // see why a resident pack still runs below the 0.9 share (or at the
-        // full recommendation for the 6-bit single-stream case).
+        // Both placement decisions retain the wired limit and shortfall.
         for plan in [&six_bit, &mxfp4] {
             assert!(plan.wired_limit_bytes.is_some(), "{}", plan.log_line());
             assert!(

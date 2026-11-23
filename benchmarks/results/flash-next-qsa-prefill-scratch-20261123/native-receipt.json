@@ -1,0 +1,34 @@
+{
+  "mode": "stock-first",
+  "flags": {
+    "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "1",
+    "AX_ENGINE_PREFIX_REUSE_DISABLED": "1",
+    "AX_MLX_PREFIX_CACHE_MAX_BYTES": "0",
+    "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "0",
+    "RUST_LOG": "info,ax_engine_mlx::flash_next_startup=debug"
+  },
+  "model": {
+    "id": "qwen3.8-flash-next",
+    "context_length": 32768
+  },
+  "ready_seconds": 27.306791707997036,
+  "pressure_samples": 77,
+  "peak_rss_bytes": 74183114752,
+  "peak_footprint_bytes": 92035292432,
+  "build": {
+    "binary_sha256": "62797ad94983b8aa872f2dcc6fe343eac817916e3d0622145e2f383c96e65f9c",
+    "codesign_verified": true,
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "patch_sha256": "745e50d603d78411f92c3a3b5e46e9b642e21e4cf0ffc324b221d8632789f8f5",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "source_base": "f920ff7cfa25379dd1b055aaf13c74b9f1dd9915"
+  },
+  "pack_sha256": {
+    "model-manifest.json": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef"
+  },
+  "qualification": false,
+  "input_sha256": "38e247b5c0381a0794e64fc386cec6d1e3c97812da4be5de15d9873c996a3d35",
+  "requests_sha256": "5d01cf677356757c6b40e611234cd5017a0183a53e92fb6e49e2c95778637059"
+}

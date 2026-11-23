@@ -1,0 +1,164 @@
+{
+  "allocations": {
+    "1024": {
+      "all_tiles_observed_peak_bytes": 6027550732,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 6081915904,
+      "gather_only_peak_bytes": 4326588496,
+      "previous_gather_estimate_bytes": 1073741824,
+      "queries": 1024,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 3000991764,
+      "stock_peak_bytes": 6027550732
+    },
+    "128": {
+      "all_tiles_observed_peak_bytes": 755122216,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 760239488,
+      "gather_only_peak_bytes": 540835856,
+      "previous_gather_estimate_bytes": 268828672,
+      "queries": 128,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 754532372,
+      "stock_peak_bytes": 753467412
+    },
+    "2048": {
+      "all_tiles_observed_peak_bytes": 12034146304,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 12163831808,
+      "gather_only_peak_bytes": 8627748864,
+      "previous_gather_estimate_bytes": 1073741824,
+      "queries": 2048,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 2590490644,
+      "stock_peak_bytes": 12034146304
+    },
+    "256": {
+      "all_tiles_observed_peak_bytes": 1510080552,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 1520478976,
+      "gather_only_peak_bytes": 1081696300,
+      "previous_gather_estimate_bytes": 537657344,
+      "queries": 256,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 1503133716,
+      "stock_peak_bytes": 1510062135
+    },
+    "511": {
+      "all_tiles_observed_peak_bytes": 3014246460,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 3035018581,
+      "gather_only_peak_bytes": 2159108156,
+      "previous_gather_estimate_bytes": 1073214464,
+      "queries": 511,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 2039201812,
+      "stock_peak_bytes": 3014228043
+    },
+    "512": {
+      "all_tiles_observed_peak_bytes": 3020263490,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 3040957952,
+      "gather_only_peak_bytes": 2163327024,
+      "previous_gather_estimate_bytes": 1073741824,
+      "queries": 512,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 2039201812,
+      "stock_peak_bytes": 3020263490
+    },
+    "override": {
+      "all_tiles_observed_peak_bytes": 3224735810,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 3245430272,
+      "gather_only_peak_bytes": 2163327024,
+      "previous_gather_estimate_bytes": 1073741824,
+      "queries": 512,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 1608106004,
+      "stock_peak_bytes": 3224735810
+    },
+    "transpose": {
+      "all_tiles_observed_peak_bytes": 5162455070,
+      "bitwise_equal_within_cell": true,
+      "corrected_attention_estimate_bytes": 5191587328,
+      "gather_only_peak_bytes": 4305551372,
+      "previous_gather_estimate_bytes": 1073741824,
+      "queries": 512,
+      "separate_indexer_reserve_bytes": 268435456,
+      "serial_peak_bytes": 2571091976,
+      "stock_peak_bytes": 5162455070
+    }
+  },
+  "m2_native": {
+    "after_normal_pressure_samples": 77,
+    "after_peak_footprint_bytes": 92035292432,
+    "after_peak_rss_bytes": 74183114752,
+    "matched_output_ids": 256,
+    "observed": {
+      "after": {
+        "ceiling": "172.80GiB",
+        "decision": "resident",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "12.02GiB",
+        "working-set": "91.85GiB"
+      },
+      "before": {
+        "ceiling": "172.80GiB",
+        "decision": "resident",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "1.69GiB",
+        "working-set": "81.52GiB"
+      }
+    },
+    "one_slot_context_tokens": 32768
+  },
+  "predicted_128_gib_placement": {
+    "after": {
+      "Flash Next 6bit (1 live)": {
+        "ceiling": "115.20GiB",
+        "decision": "stream",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "12.02GiB",
+        "working-set": "125.48GiB"
+      },
+      "Flash Next 6bit (default cohort)": {
+        "ceiling": "115.20GiB",
+        "decision": "stream",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "12.02GiB",
+        "working-set": "126.50GiB"
+      },
+      "Flash Next MXFP4 (default cohort)": {
+        "ceiling": "115.20GiB",
+        "decision": "resident",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "12.02GiB",
+        "working-set": "94.09GiB"
+      }
+    },
+    "before": {
+      "Flash Next 6bit (1 live)": {
+        "ceiling": "115.20GiB",
+        "decision": "resident",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "1.69GiB",
+        "working-set": "115.15GiB"
+      },
+      "Flash Next 6bit (default cohort)": {
+        "ceiling": "115.20GiB",
+        "decision": "resident",
+        "live-sequence-cap": "1",
+        "prefill-scratch": "1.69GiB",
+        "working-set": "115.15GiB"
+      },
+      "Flash Next MXFP4 (default cohort)": {
+        "ceiling": "115.20GiB",
+        "decision": "resident",
+        "live-sequence-cap": "uncapped",
+        "prefill-scratch": "1.69GiB",
+        "working-set": "83.76GiB"
+      }
+    }
+  },
+  "qualification": false
+}

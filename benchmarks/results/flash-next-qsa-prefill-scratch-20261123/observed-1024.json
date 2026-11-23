@@ -1,0 +1,82 @@
+{
+  "queries": 1024,
+  "selected": 2051,
+  "head_dim": 256,
+  "transpose_gather": false,
+  "mlx_sdpa_blocks": 0,
+  "query_heads": 24,
+  "kv_heads": 2,
+  "history": 8192,
+  "one_tile_byte_cap": 1073741824,
+  "old_gather_charge_bytes": 1073741824,
+  "kv_pair_payload_bytes": 4301258752,
+  "modes": [
+    {
+      "sub_batch_queries": 255,
+      "mode": "lazy",
+      "peaks_bytes": [
+        6027550732,
+        6027550732,
+        6027550732
+      ],
+      "median_time_ms": 46.964958,
+      "output_sha256": "3a0a787efc146fde96406f6a97c4f14be2c378b69daaa14a3e569ea92e42f49f"
+    },
+    {
+      "sub_batch_queries": 64,
+      "mode": "lazy",
+      "peaks_bytes": [
+        5471666176,
+        5471649792,
+        5471649792
+      ],
+      "median_time_ms": 32.734041,
+      "output_sha256": "3a0a787efc146fde96406f6a97c4f14be2c378b69daaa14a3e569ea92e42f49f"
+    },
+    {
+      "sub_batch_queries": 128,
+      "mode": "lazy",
+      "peaks_bytes": [
+        6017007616,
+        6017007616,
+        6017007616
+      ],
+      "median_time_ms": 32.598625,
+      "output_sha256": "3a0a787efc146fde96406f6a97c4f14be2c378b69daaa14a3e569ea92e42f49f"
+    },
+    {
+      "sub_batch_queries": 192,
+      "mode": "lazy",
+      "peaks_bytes": [
+        6021152768,
+        6021152768,
+        6021152768
+      ],
+      "median_time_ms": 32.665125,
+      "output_sha256": "3a0a787efc146fde96406f6a97c4f14be2c378b69daaa14a3e569ea92e42f49f"
+    },
+    {
+      "sub_batch_queries": 255,
+      "mode": "serial-eval",
+      "peaks_bytes": [
+        1512554516,
+        2596765716,
+        3000991764
+      ],
+      "median_time_ms": 33.767291,
+      "output_sha256": "3a0a787efc146fde96406f6a97c4f14be2c378b69daaa14a3e569ea92e42f49f"
+    },
+    {
+      "sub_batch_queries": 255,
+      "mode": "gather-only",
+      "peaks_bytes": [
+        4326588496,
+        4326588496,
+        4326588496
+      ],
+      "median_time_ms": 6.822083,
+      "output_sha256": null
+    }
+  ],
+  "all_attention_outputs_exact": true
+}

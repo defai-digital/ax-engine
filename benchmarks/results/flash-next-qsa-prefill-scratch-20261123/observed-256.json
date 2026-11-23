@@ -1,0 +1,82 @@
+{
+  "queries": 256,
+  "selected": 2051,
+  "head_dim": 256,
+  "transpose_gather": false,
+  "mlx_sdpa_blocks": 0,
+  "query_heads": 24,
+  "kv_heads": 2,
+  "history": 8192,
+  "one_tile_byte_cap": 1073741824,
+  "old_gather_charge_bytes": 537657344,
+  "kv_pair_payload_bytes": 1075314688,
+  "modes": [
+    {
+      "sub_batch_queries": 255,
+      "mode": "lazy",
+      "peaks_bytes": [
+        1510062135,
+        1510062135,
+        1510062135
+      ],
+      "median_time_ms": 8.542,
+      "output_sha256": "b55d606cb4ff8ba699362e2efbd986ed3d41b58696b9eab331ac0891ad1ad980"
+    },
+    {
+      "sub_batch_queries": 64,
+      "mode": "lazy",
+      "peaks_bytes": [
+        1507000320,
+        1507000320,
+        1507000320
+      ],
+      "median_time_ms": 36.84125,
+      "output_sha256": "b55d606cb4ff8ba699362e2efbd986ed3d41b58696b9eab331ac0891ad1ad980"
+    },
+    {
+      "sub_batch_queries": 128,
+      "mode": "lazy",
+      "peaks_bytes": [
+        1510080552,
+        1510080552,
+        1510080552
+      ],
+      "median_time_ms": 8.419416,
+      "output_sha256": "b55d606cb4ff8ba699362e2efbd986ed3d41b58696b9eab331ac0891ad1ad980"
+    },
+    {
+      "sub_batch_queries": 192,
+      "mode": "lazy",
+      "peaks_bytes": [
+        1510080552,
+        1510080552,
+        1510080552
+      ],
+      "median_time_ms": 8.534334,
+      "output_sha256": "b55d606cb4ff8ba699362e2efbd986ed3d41b58696b9eab331ac0891ad1ad980"
+    },
+    {
+      "sub_batch_queries": 255,
+      "mode": "serial-eval",
+      "peaks_bytes": [
+        1503133716,
+        1503133716,
+        1503133716
+      ],
+      "median_time_ms": 8.828833,
+      "output_sha256": "b55d606cb4ff8ba699362e2efbd986ed3d41b58696b9eab331ac0891ad1ad980"
+    },
+    {
+      "sub_batch_queries": 255,
+      "mode": "gather-only",
+      "peaks_bytes": [
+        1081696300,
+        1081696300,
+        1081696300
+      ],
+      "median_time_ms": 1.953583,
+      "output_sha256": null
+    }
+  ],
+  "all_attention_outputs_exact": true
+}

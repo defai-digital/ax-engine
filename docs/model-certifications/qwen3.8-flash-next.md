@@ -120,13 +120,15 @@ tokens (TTFT 3.3 / 3.8 / 30.7 s) at about 103 GiB server RSS with no swap
 growth and 15–17% memory free. The then-current Auto planner streamed
 experts and reached 0.17 tok/s. [October 23 measurement](../../benchmarks/results/flash-next-6bit-m5-20261023/README.md).
 
-The priced Auto plan kept the pack resident on the same hardware by
-admitting one live sequence and queueing additional work. Use
-`--max-concurrent-requests 1` to request that limit explicitly and
-`--stream-experts off` to reproduce the earlier forced-resident placement.
-Check the placement and any priced admission cap in `GET /v1/memory`.
-The 6-bit pack has its own support evidence and still needs qualification.
-[Priced-placement measurement](../../benchmarks/results/reference-wave-m5max-20261024/README.md).
+An October 24 priced Auto measurement kept one live sequence resident
+and queued additional work. The current planner reserves selected-attention
+scratch across the full prefill chunk. At the default chunk budget the
+128 GiB plan projects streaming for the 6-bit pack. Use
+`--max-concurrent-requests 1 --stream-experts off` to reproduce the
+measured forced-resident profile. Check the effective placement in
+`GET /v1/memory`. The 6-bit pack retains its own open qualification.
+[October 24 measurement](../../benchmarks/results/reference-wave-m5max-20261024/README.md) ·
+[Prefill reservation comparison](../../benchmarks/results/flash-next-qsa-prefill-scratch-20261123/README.md).
 
 ## Published v7.9.0 on the standard host (2026-10-24)
 

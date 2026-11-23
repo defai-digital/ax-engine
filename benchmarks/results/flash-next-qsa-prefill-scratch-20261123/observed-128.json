@@ -1,0 +1,82 @@
+{
+  "queries": 128,
+  "selected": 2051,
+  "head_dim": 256,
+  "transpose_gather": false,
+  "mlx_sdpa_blocks": 0,
+  "query_heads": 24,
+  "kv_heads": 2,
+  "history": 8192,
+  "one_tile_byte_cap": 1073741824,
+  "old_gather_charge_bytes": 268828672,
+  "kv_pair_payload_bytes": 537657344,
+  "modes": [
+    {
+      "sub_batch_queries": 255,
+      "mode": "lazy",
+      "peaks_bytes": [
+        753467412,
+        753467412,
+        753467412
+      ],
+      "median_time_ms": 4.853291,
+      "output_sha256": "b61dfa250d447935e8c5573175361fd3da7f7d3e9180b7c34f0618e485e848ee"
+    },
+    {
+      "sub_batch_queries": 64,
+      "mode": "lazy",
+      "peaks_bytes": [
+        755122216,
+        755122216,
+        755122216
+      ],
+      "median_time_ms": 28.667625,
+      "output_sha256": "b61dfa250d447935e8c5573175361fd3da7f7d3e9180b7c34f0618e485e848ee"
+    },
+    {
+      "sub_batch_queries": 128,
+      "mode": "lazy",
+      "peaks_bytes": [
+        753467412,
+        753467412,
+        753467412
+      ],
+      "median_time_ms": 4.213792,
+      "output_sha256": "b61dfa250d447935e8c5573175361fd3da7f7d3e9180b7c34f0618e485e848ee"
+    },
+    {
+      "sub_batch_queries": 192,
+      "mode": "lazy",
+      "peaks_bytes": [
+        753467412,
+        753467412,
+        753467412
+      ],
+      "median_time_ms": 4.205833,
+      "output_sha256": "b61dfa250d447935e8c5573175361fd3da7f7d3e9180b7c34f0618e485e848ee"
+    },
+    {
+      "sub_batch_queries": 255,
+      "mode": "serial-eval",
+      "peaks_bytes": [
+        754532372,
+        754532372,
+        754532372
+      ],
+      "median_time_ms": 4.196541,
+      "output_sha256": "b61dfa250d447935e8c5573175361fd3da7f7d3e9180b7c34f0618e485e848ee"
+    },
+    {
+      "sub_batch_queries": 255,
+      "mode": "gather-only",
+      "peaks_bytes": [
+        540835856,
+        540835856,
+        540835856
+      ],
+      "median_time_ms": 1.099584,
+      "output_sha256": null
+    }
+  ],
+  "all_attention_outputs_exact": true
+}
