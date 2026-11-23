@@ -1,0 +1,548 @@
+{
+  "arms": {
+    "off-1": {
+      "aligned": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1183468,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 894,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1252598,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 801,
+            "stores": 1
+          }
+        ]
+      },
+      "boundary": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1223218,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1278,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1320000,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1185,
+            "stores": 1
+          }
+        ]
+      },
+      "first": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 481126,
+            "entries": 4,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 318,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 649367,
+            "entries": 5,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 225,
+            "stores": 1
+          }
+        ]
+      },
+      "outside": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1276793,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1470,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": []
+      },
+      "replacement": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1127300,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 702,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1170506,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 609,
+            "stores": 1
+          }
+        ]
+      },
+      "unseeded": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 776129,
+            "entries": 6,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 510,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1114338,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 417,
+            "stores": 2
+          }
+        ]
+      }
+    },
+    "off-2": {
+      "aligned": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1183468,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 894,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1252598,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 801,
+            "stores": 1
+          }
+        ]
+      },
+      "boundary": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1223218,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1278,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1320000,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1185,
+            "stores": 1
+          }
+        ]
+      },
+      "first": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 481126,
+            "entries": 4,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 318,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 649367,
+            "entries": 5,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 225,
+            "stores": 1
+          }
+        ]
+      },
+      "outside": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1276793,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1470,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": []
+      },
+      "replacement": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1127300,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 702,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1170506,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 609,
+            "stores": 1
+          }
+        ]
+      },
+      "unseeded": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 776129,
+            "entries": 6,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 510,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1114338,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 417,
+            "stores": 2
+          }
+        ]
+      }
+    },
+    "on-1": {
+      "aligned": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1183468,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 894,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1252598,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 2048,
+            "step_id": 801,
+            "stores": 1
+          }
+        ]
+      },
+      "boundary": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1223218,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1278,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1320000,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 2048,
+            "step_id": 1185,
+            "stores": 1
+          }
+        ]
+      },
+      "first": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 481126,
+            "entries": 4,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 318,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 649367,
+            "entries": 5,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 225,
+            "stores": 1
+          }
+        ]
+      },
+      "outside": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1276793,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1470,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": []
+      },
+      "replacement": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1127300,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 702,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1170506,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 609,
+            "stores": 2
+          }
+        ]
+      },
+      "unseeded": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 776129,
+            "entries": 6,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 510,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1114338,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 417,
+            "stores": 2
+          }
+        ]
+      }
+    },
+    "on-2": {
+      "aligned": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1183468,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 894,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1252598,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 2048,
+            "step_id": 801,
+            "stores": 1
+          }
+        ]
+      },
+      "boundary": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1223218,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1278,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1320000,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 2048,
+            "step_id": 1185,
+            "stores": 1
+          }
+        ]
+      },
+      "first": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 481126,
+            "entries": 4,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 318,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 649367,
+            "entries": 5,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 225,
+            "stores": 1
+          }
+        ]
+      },
+      "outside": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1276793,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 1470,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": []
+      },
+      "replacement": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 1127300,
+            "entries": 8,
+            "evictions": 1,
+            "reused_tokens": 0,
+            "step_id": 702,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1170506,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 609,
+            "stores": 2
+          }
+        ]
+      },
+      "unseeded": {
+        "peer_store_reports": [
+          {
+            "charged_kib": 776129,
+            "entries": 6,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 510,
+            "stores": 1
+          }
+        ],
+        "target_store_reports": [
+          {
+            "charged_kib": 1114338,
+            "entries": 8,
+            "evictions": 0,
+            "reused_tokens": 0,
+            "step_id": 417,
+            "stores": 2
+          }
+        ]
+      }
+    }
+  },
+  "build": "dfee052317e21a1a907e1faf01e64a067fbed051a2b7f57cb7fae8656890313e",
+  "scope": "Reported shared L1 values in request-owned SSE store reports",
+  "second_question_target_values": {
+    "off-1": [
+      {
+        "charged_kib": 1170506,
+        "entries": 8,
+        "evictions": 0,
+        "reused_tokens": 0,
+        "step_id": 609,
+        "stores": 1
+      }
+    ],
+    "off-2": [
+      {
+        "charged_kib": 1170506,
+        "entries": 8,
+        "evictions": 0,
+        "reused_tokens": 0,
+        "step_id": 609,
+        "stores": 1
+      }
+    ],
+    "on-1": [
+      {
+        "charged_kib": 1170506,
+        "entries": 8,
+        "evictions": 0,
+        "reused_tokens": 0,
+        "step_id": 609,
+        "stores": 2
+      }
+    ],
+    "on-2": [
+      {
+        "charged_kib": 1170506,
+        "entries": 8,
+        "evictions": 0,
+        "reused_tokens": 0,
+        "step_id": 609,
+        "stores": 2
+      }
+    ]
+  }
+}
