@@ -74,6 +74,8 @@ bash scripts/check-qa.sh
   scripts/test_probe_agent_turn_reuse.py \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
+  scripts/observe_serving_cpu.py \
+  scripts/test_observe_serving_cpu.py \
   scripts/audit_flash_next_mixed_serving.py \
   scripts/test_audit_flash_next_mixed_serving.py \
   scripts/tune_flash_next_serving.py \
@@ -332,6 +334,7 @@ bash scripts/check-qa.sh
   scripts/test_probe_hybrid_prefix_reuse.py \
   scripts/test_probe_agent_turn_reuse.py \
   scripts/test_bench_ax_serving.py \
+  scripts/test_observe_serving_cpu.py \
   scripts/test_audit_flash_next_mixed_serving.py \
   scripts/test_tune_flash_next_serving.py \
   scripts/test_compare_ax_serving_runs.py \
