@@ -1,0 +1,34 @@
+{
+  "build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "driver_sha256": "d0a7f0c45e532d230b77e38a75ef7bdd43fedf68d24258e9c271275c825be776",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "prior_server_sha256": "9957af9b5b02f3715e22faf060e64fd886489527aacc63dd2d2340b633efcca8",
+    "profile": "release-server",
+    "runtime_commit": "8cb06414cc4dc3bf5d3b2de24a3f6182435fa3ca",
+    "runtime_tree": "4826a57dc7eb5f9121225edae6981ad824c37e01",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "42bb17ca946d2b7c735a9fe463872930c8795647475f609f20e01b73c4ae43f5",
+    "stream_gauge_patch_sha256": "8bbd95bd28ed16f8681a5e419e58aeb331d0be529af62cc1717eae8a3147e953"
+  },
+  "closed_streams": 8,
+  "distinct_request_ids_including_solo": 27,
+  "idle_observations": {
+    "engine_steps_added": 0,
+    "observed_seconds": 29.54828287498094,
+    "samples": 59
+  },
+  "idle_seconds": 30.00809116603341,
+  "matching_completed_sse_replies": 16,
+  "normal_pressure_samples": 384,
+  "overload_responses": 8,
+  "peak_footprint_bytes": 81308586904,
+  "pressure_trace_sha256": "f2e4d562de51dfbe609e187d481da30cead13d29f5669ef0e5c8c9933056e548",
+  "qualification": false,
+  "rounds": 8,
+  "rounds_drained": 8,
+  "scope": "guarded two-slot OpenAI lifecycle"
+}
