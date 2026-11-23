@@ -1,0 +1,141 @@
+{
+  "cpu_idle_percent": {
+    "baseline": [
+      98.93,
+      91.74
+    ],
+    "candidate": [
+      95.48,
+      93.37
+    ]
+  },
+  "matched_output_tokens": 8002,
+  "order": [
+    "baseline",
+    "candidate"
+  ],
+  "panels": {
+    "agent-coding": {
+      "baseline": {
+        "decode_seconds": 68.04346699999999,
+        "decode_tokens": 2997,
+        "decode_tokens_per_second": 44.045374701439016,
+        "generated_tokens": 3000,
+        "median_total_seconds": 23.315975,
+        "median_ttft_seconds": 0.443788
+      },
+      "candidate": {
+        "decode_seconds": 66.665533,
+        "decode_tokens": 2997,
+        "decode_tokens_per_second": 44.95576447277486,
+        "generated_tokens": 3000,
+        "median_total_seconds": 22.550736,
+        "median_ttft_seconds": 0.442115
+      },
+      "decode_speedup": 1.0206693614824918,
+      "target_wall_us": {
+        "baseline": {
+          "bonus_wall_us": 31017440,
+          "correction_wall_us": 32199483,
+          "rejection_wall_us": 0
+        },
+        "candidate": {
+          "bonus_wall_us": 30339685,
+          "correction_wall_us": 31584706,
+          "rejection_wall_us": 0
+        }
+      }
+    },
+    "general-long": {
+      "baseline": {
+        "decode_seconds": 115.96606500000001,
+        "decode_tokens": 4994,
+        "decode_tokens_per_second": 43.06432230842703,
+        "generated_tokens": 5000,
+        "median_total_seconds": 20.288648000000002,
+        "median_ttft_seconds": 0.4358645
+      },
+      "candidate": {
+        "decode_seconds": 116.361563,
+        "decode_tokens": 4994,
+        "decode_tokens_per_second": 42.9179522107313,
+        "generated_tokens": 5000,
+        "median_total_seconds": 20.200958,
+        "median_ttft_seconds": 0.433309
+      },
+      "decode_speedup": 0.9966011285015139,
+      "target_wall_us": {
+        "baseline": {
+          "bonus_wall_us": 44242633,
+          "correction_wall_us": 62926758,
+          "rejection_wall_us": 0
+        },
+        "candidate": {
+          "bonus_wall_us": 44210358,
+          "correction_wall_us": 63126598,
+          "rejection_wall_us": 0
+        }
+      }
+    },
+    "short-answer": {
+      "baseline": {
+        "decode_seconds": 0.050288,
+        "decode_tokens": 1,
+        "decode_tokens_per_second": 19.885459751829462,
+        "generated_tokens": 2,
+        "median_total_seconds": 0.244472,
+        "median_ttft_seconds": 0.194028
+      },
+      "candidate": {
+        "decode_seconds": 0.052452,
+        "decode_tokens": 1,
+        "decode_tokens_per_second": 19.065049950430872,
+        "generated_tokens": 2,
+        "median_total_seconds": 0.257325,
+        "median_ttft_seconds": 0.204723
+      },
+      "decode_speedup": 0.9587432319072677,
+      "target_wall_us": {
+        "baseline": {
+          "bonus_wall_us": 21662,
+          "correction_wall_us": 22433,
+          "rejection_wall_us": 0
+        },
+        "candidate": {
+          "bonus_wall_us": 21753,
+          "correction_wall_us": 24599,
+          "rejection_wall_us": 0
+        }
+      }
+    }
+  },
+  "source_builds": {
+    "baseline": {
+      "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+      "cli_sha256": "e994cb17c98698be937ab7d4df48d6f5aab97ec7b86f99109b62f73f852d8552",
+      "codesign_verified": true,
+      "commit": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+      "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+      "mlx": "0.32.4",
+      "mlx_metal": "0.32.4",
+      "profile": "release-server",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "server_sha256": "935178edb7bfb90d61ec780c3350bf409dfa61c2fc1a4e2dd131af24b7ac6778",
+      "tree": "f4fc662735072661225e98e2b240b3907516adb2"
+    },
+    "candidate": {
+      "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+      "codesign_verified": true,
+      "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+      "mlx": "0.32.4",
+      "mlx_metal": "0.32.4",
+      "patch_sha256": "c3972ca265a4109a8815a4585fcfafffa8a3a2d36edb4f32a742d386c0422102",
+      "profile": "release-server",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "server_sha256": "0239fd26bc23e61e397edb9e166ce0d8238a99c394d7d2f218a3b94a867b3582",
+      "source_base": "26c0ccefe6f35072a576c368aaceb37c1aa10ae0",
+      "tree": "d1570aa4bd3f14cea98db3a2fb649820c2ba1a04"
+    }
+  },
+  "timing_eligible": true
+}
