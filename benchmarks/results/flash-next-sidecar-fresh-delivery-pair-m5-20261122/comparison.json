@@ -1,0 +1,145 @@
+{
+  "qualification": false,
+  "runtime_commit": "eb57f768a7b1807b3832609779b59b03dad59d33",
+  "phase": "complete",
+  "timing_eligible": true,
+  "prefetch_minus_mapped_ready_seconds": {
+    "disabled": -61.284,
+    "required": -8.77,
+    "default": -8.77
+  },
+  "arms": {
+    "mapped": {
+      "qualification": false,
+      "delivery": {
+        "gate": "delivery",
+        "passed": true,
+        "detail": "49 members, 132261877478 bytes verified from an empty cache",
+        "download_seconds": 987.007,
+        "failed_attempts": 0
+      },
+      "delivery_readiness": {
+        "gate": "readiness",
+        "passed": false,
+        "detail": "delivered required readiness 122.857s exceeds 120s; delivered default readiness 121.892s exceeds 120s",
+        "delivered": {
+          "disabled": 156.16,
+          "required": 122.857,
+          "default": 121.892
+        }
+      },
+      "timing_eligible": true,
+      "observed_host": {
+        "disabled": {
+          "cpu_idle_percent": [
+            90.47,
+            91.99
+          ],
+          "pressure": [
+            1,
+            1
+          ]
+        },
+        "required": {
+          "cpu_idle_percent": [
+            92.1,
+            91.56
+          ],
+          "pressure": [
+            1,
+            1
+          ]
+        },
+        "default": {
+          "cpu_idle_percent": [
+            92.61,
+            97.8
+          ],
+          "pressure": [
+            1,
+            1
+          ]
+        }
+      },
+      "verifier_steps": {
+        "disabled": 0,
+        "required": 107,
+        "default": 0
+      },
+      "prefetch_seconds": {
+        "disabled": 0,
+        "required": 0,
+        "default": 0
+      },
+      "raw_delivery_sha256": "d91e6a66ca8dde6e1ac459c2105aae0f1a5b6b48008cd84772bfd6fd742c2b02",
+      "raw_native_sha256": "a7fbc2533f40d9b057f95f63dfd9d5513ae93bc01ec5b15e0ce88d8961da59d3",
+      "verified_download_progress_events": 4983
+    },
+    "prefetch": {
+      "qualification": false,
+      "delivery": {
+        "gate": "delivery",
+        "passed": true,
+        "detail": "49 members, 132261877478 bytes verified from an empty cache",
+        "download_seconds": 974.658,
+        "failed_attempts": 0
+      },
+      "delivery_readiness": {
+        "gate": "readiness",
+        "passed": true,
+        "detail": "first load after delivery 94.876s; staged-pack worst 0s",
+        "delivered": {
+          "disabled": 94.876,
+          "required": 114.087,
+          "default": 113.122
+        }
+      },
+      "timing_eligible": true,
+      "observed_host": {
+        "disabled": {
+          "cpu_idle_percent": [
+            98.36,
+            99.4
+          ],
+          "pressure": [
+            1,
+            1
+          ]
+        },
+        "required": {
+          "cpu_idle_percent": [
+            97.81,
+            98.35
+          ],
+          "pressure": [
+            1,
+            1
+          ]
+        },
+        "default": {
+          "cpu_idle_percent": [
+            98.97,
+            96.93
+          ],
+          "pressure": [
+            1,
+            1
+          ]
+        }
+      },
+      "verifier_steps": {
+        "disabled": 0,
+        "required": 107,
+        "default": 0
+      },
+      "prefetch_seconds": {
+        "disabled": 0.40223225,
+        "required": 0.396992709,
+        "default": 0.40013475
+      },
+      "raw_delivery_sha256": "4f279222226675885655125deb6f81426ff3dba57c492207020ba6df6fe2ce6a",
+      "raw_native_sha256": "923b671e8a2f79253cdb522079bde2cd68ace9e1690201f9e3a9dd04147762a6",
+      "verified_download_progress_events": 4974
+    }
+  }
+}
