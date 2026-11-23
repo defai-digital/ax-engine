@@ -1,0 +1,15 @@
+{
+  "wrapper_status": 1,
+  "comparison_includes_timing_fields": true,
+  "codesign_verified": true,
+  "server_sha256": "dfee052317e21a1a907e1faf01e64a067fbed051a2b7f57cb7fae8656890313e",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+  "inventory_members": 49,
+  "final_pressure": 1,
+  "independent_reference_admission": {
+    "pressure": 1,
+    "eligible_for_attempt": false,
+    "reason": "background-rss-exceeds-signed-margin"
+  }
+}

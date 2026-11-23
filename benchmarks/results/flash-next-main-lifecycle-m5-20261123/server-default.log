@@ -1,0 +1,22 @@
+2026-11-23T12:55:13.722834Z  INFO resolved MLX numerics preset mlx_numerics="exact"
+2026-11-23T12:55:13.743344Z  INFO resolved the Flash Next M5 Max 128 GB serving profile context_tokens=65536 effective_sequence_cap=Some(1)
+2026-11-23T12:55:13.935642Z  INFO detected Apple Silicon Neural Accelerator policy snapshot target="ax_engine_mlx" silicon_generation=Some(5) macos_major=Some(27) macos_minor=Some(2) has_neural_accelerator=true macos_supports_na=true neural_accelerator_active=true
+2026-11-23T12:55:14.064026Z  INFO MLX skinny NAX verify kernels target="ax_engine_mlx" version_ok=false metallib_has_qmv_nax=Some(false) metallib_has_sdpa_split=Some(false) active=false native_sdpa_active=false
+2026-11-23T12:55:14.064090Z  INFO retained MLX default command-buffer caps for this host/family; explicit MLX_MAX_*_PER_BUFFER values remain authoritative target="ax_engine_mlx" model_family="qwen4_exp" neural_accelerator_active=true
+2026-11-23T12:55:14.099751Z  INFO wired GPU residency for this session wired_limit_bytes=103903852953 wired_limit_scale=0.9 wired_limit_source=Default recommended_working_set_bytes=115448725504 planned_working_set_bytes=Some(88843414520)
+2026-11-23T12:55:14.183265Z  INFO memory plan: resident-non-expert=15.70GiB expert=59.77GiB ngram-table=47.68GiB(not-resident) kv=1.50GiB hybrid-state=1.08GiB prefill-scratch=1.69GiB mlx-buffer-cache=2.00GiB runtime-reserve=1.00GiB host-ram=128.00GiB metal-recommended=107.52GiB metal-recommended-exceeded=false wired-limit=96.77GiB wired-shortfall=0B live-sequences=1 live-sequence-cap=uncapped os-reserve=12.80GiB ceiling-source=ram ceiling=115.20GiB working-set=82.74GiB decision=resident
+2026-11-23T12:57:28.334989Z  INFO warmed linear-attention Metal kernels at model load elapsed_ms=9
+2026-11-23T12:57:30.586289Z  INFO warmed the Flash Next QSA prefill block-key kernel at model load elapsed_ms=0
+2026-11-23T12:57:30.587716Z  INFO sized the prefix cache for this model (AX_MLX_PREFIX_CACHE_MAX_BYTES overrides) prefix_cache_max_mib=1812
+2026-11-23T12:57:30.587822Z  INFO resolved MLX prefix-cache value features prefix_semantic_cuts=false prefix_restore_value=false mlx_numerics="exact" numerics_tier=""
+2026-11-23T12:57:30.587866Z  INFO MTP admission at runner construction model_family=qwen4_exp mtp_depth=1 throughput_default=false certified_default_on=false route_safe=true disable_ngram=false mtp_requested=false linear_candidate=false linear_direct_fallback=false
+2026-11-23T12:57:30.591561Z  INFO sized the prefix cache for the serving context (AX_MLX_PREFIX_CACHE_MAX_BYTES overrides) context_tokens=65536 prefix_cache_max_mib=3292 previous_max_mib=1812
+ax-engine-server preview listening on [url] model_id=qwen3.8-flash-next:mxfp4 support_tier=MlxPreview
+2026-11-23T12:57:35.661642Z  INFO ax-engine-server preview listening bind_address=[loopback]:57816 grpc_bind_address=None model_id=qwen3.8-flash-next:mxfp4 support_tier=MlxPreview
+2026-11-23T12:57:36.171306Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=4 stop_sequences=1
+2026-11-23T12:57:37.269362Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=5 stop_sequences=1
+2026-11-23T12:57:38.276907Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=6 stop_sequences=1
+2026-11-23T12:57:38.547742Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=7 stop_sequences=1
+2026-11-23T12:57:38.840362Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=8 stop_sequences=2
+2026-11-23T12:57:39.860043Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=9 stop_sequences=1
+2026-11-23T12:57:40.853295Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=10 stop_sequences=1

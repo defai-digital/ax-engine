@@ -1,0 +1,46 @@
+{
+  "cpu_idle_percent": [
+    97.2,
+    97.17
+  ],
+  "final_pressure": 1,
+  "lifecycle_gate": {
+    "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+    "gate": "lifecycle",
+    "passed": true
+  },
+  "prior_lifecycle_sha256": "7924bbe552fe85e16d80f61b5f4db55ef860cd11526dc61625a7c209ed6a3ba1",
+  "release_ready": false,
+  "runs": {
+    "default": {
+      "final_verified_steps": 0.0,
+      "matching_actions": 7,
+      "ready_seconds": 142.775,
+      "resident": true,
+      "sidecar_prefetch": false,
+      "startup_intervals": {
+        "http_ready_seconds": 142.775,
+        "memory_plan_to_runner_admission_seconds": 136.405,
+        "outside_logged_intervals_seconds": 1.297,
+        "runner_admission_to_listener_seconds": 5.074
+      },
+      "within_staged_readiness_bound": false
+    },
+    "disabled": {
+      "final_verified_steps": 0.0,
+      "matching_actions": 7,
+      "ready_seconds": 126.782,
+      "resident": true,
+      "sidecar_prefetch": false,
+      "startup_intervals": {
+        "http_ready_seconds": 126.782,
+        "memory_plan_to_runner_admission_seconds": 119.922,
+        "outside_logged_intervals_seconds": 1.42,
+        "runner_admission_to_listener_seconds": 5.44
+      },
+      "within_staged_readiness_bound": false
+    }
+  },
+  "server_sha256": "dfee052317e21a1a907e1faf01e64a067fbed051a2b7f57cb7fae8656890313e",
+  "source": "5c43cf896048eda1cb3a1f8444a2d4670a78ba17"
+}
