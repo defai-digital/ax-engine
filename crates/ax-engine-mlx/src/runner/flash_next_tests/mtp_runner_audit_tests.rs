@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::qwen4_exp_mtp::runner_audit;
+use std::collections::BTreeMap;
 
 fn pinned_canonical_runner() -> MlxRunner {
     let root = std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap();
@@ -23,7 +24,12 @@ fn flash_next_runner_mtp_uses_same_state_greedy_decisions() {
     for (index, (length, budget)) in [(16, 64), (512, 64), (16, 2)].into_iter().enumerate() {
         let prompt: Vec<u32> = (1..=length).collect();
         let base = 6100 + index as u64 * 2;
-        let audit = audit_case(&mut runner, &prompt, context(base, prompt.len(), budget));
+        let audit = audit_case(
+            &mut runner,
+            &prompt,
+            context(base, prompt.len(), budget),
+            AuditPolicy::Diagnostic,
+        );
         let audited = audit.decisions.len();
         let accepted_in_run = audit.accepted;
         rejected += audit.rejected;
@@ -49,6 +55,12 @@ fn flash_next_runner_mtp_uses_same_state_greedy_decisions() {
     );
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuditPolicy {
+    Diagnostic,
+    Required,
+}
+
 struct CaseAudit {
     direct: Vec<u32>,
     mtp: Vec<u32>,
@@ -57,24 +69,33 @@ struct CaseAudit {
     accepted: usize,
     rejected: usize,
     output_decisions: usize,
+    direct_stop_reason: Option<StopReason>,
+    activation: BTreeMap<String, u32>,
 }
 
 fn audit_case(
     runner: &mut MlxRunner,
     prompt: &[u32],
     direct_ctx: RunnerRequestContext,
+    policy: AuditPolicy,
 ) -> CaseAudit {
     let budget = direct_ctx.max_output_tokens as usize;
     let mtp_ctx = RunnerRequestContext {
         request_id: RequestId(direct_ctx.request_id.0 + 1),
         ..direct_ctx
     };
+    if policy == AuditPolicy::Required {
+        runner.set_mtp_session_policy(MtpSessionPolicy::Disabled);
+    }
     runner.set_mtp_requested(false);
     let (direct, silent) = runner_audit::capture(|| generate(runner, prompt, 2048, direct_ctx));
     assert!(silent.is_empty());
     assert_eq!(direct.maximum("ax_mlx_flash_next_mtp_verified_steps"), 0);
     if !direct_ctx.ignore_eos {
         assert!(!runner.states.lock().contains_key(&direct_ctx.request_id));
+    }
+    if policy == AuditPolicy::Required {
+        runner.set_mtp_session_policy(MtpSessionPolicy::Required);
     }
     runner.set_mtp_requested(true);
     let (mtp, decisions) = runner_audit::capture(|| generate(runner, prompt, 2048, mtp_ctx));
@@ -83,15 +104,25 @@ fn audit_case(
         assert_eq!(direct.tokens.len(), budget);
     } else {
         for run in [&direct, &mtp] {
-            assert_eq!(run.stop_reason, Some(StopReason::EosToken));
-            assert!(run.tokens.len() < budget);
             let (last, preceding) = run.tokens.split_last().unwrap();
-            assert!(runner.terminal_token_ids.contains(last));
             assert!(
                 preceding
                     .iter()
                     .all(|id| !runner.terminal_token_ids.contains(id))
             );
+            match (run.stop_reason, policy) {
+                (Some(StopReason::EosToken), _) => {
+                    assert!(runner.terminal_token_ids.contains(last));
+                    assert!(run.tokens.len() <= budget);
+                    if policy == AuditPolicy::Diagnostic {
+                        assert!(run.tokens.len() < budget);
+                    }
+                }
+                (Some(StopReason::MaxOutputTokens), AuditPolicy::Required) => {
+                    assert_eq!(run.tokens.len(), budget);
+                }
+                (reason, _) => panic!("unexpected stop reason: {reason:?}"),
+            }
         }
         assert!(!runner.states.lock().contains_key(&mtp_ctx.request_id));
     }
@@ -121,6 +152,15 @@ fn audit_case(
         accepted_in_run,
         mtp.maximum("ax_mlx_flash_next_mtp_accepted_steps") as usize
     );
+    let mut activation = BTreeMap::<String, u32>::new();
+    if policy == AuditPolicy::Required {
+        for (key, value) in mtp.routes.iter().flatten() {
+            if key.starts_with("ax_mlx_flash_next_mtp_") {
+                let recorded = activation.entry(key.clone()).or_default();
+                *recorded = (*recorded).max(*value);
+            }
+        }
+    }
     CaseAudit {
         direct: direct.tokens,
         mtp: mtp.tokens,
@@ -129,6 +169,8 @@ fn audit_case(
         accepted: accepted_in_run,
         rejected: rejected_in_run,
         output_decisions,
+        direct_stop_reason: direct.stop_reason,
+        activation,
     }
 }
 
@@ -177,7 +219,7 @@ fn audit_workloads(inputs_env: &str, output_env: &str, ignore_eos: bool) {
             ignore_eos,
             ..context(8200 + index as u64 * 2, case.prompt.len(), case.budget)
         };
-        let audit = audit_case(&mut runner, &case.prompt, request);
+        let audit = audit_case(&mut runner, &case.prompt, request, AuditPolicy::Diagnostic);
         assert!(
             audit.output_decisions > 0,
             "{} did not exercise MTP",
@@ -219,4 +261,69 @@ fn audit_workloads(inputs_env: &str, output_env: &str, ignore_eos: bool) {
         .unwrap()
         .write_all(&serde_json::to_vec_pretty(&report).unwrap())
         .unwrap();
+}
+
+#[test]
+#[ignore = "requires the pinned resident Flash Next MXFP4 pack and the frozen QA cohort"]
+fn flash_next_runner_mtp_audits_required_qa_cohort() {
+    use std::io::{BufWriter, Write};
+
+    let inputs = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_QA_INPUTS").unwrap());
+    let cases: Vec<AuditWorkload> =
+        serde_json::from_slice(&std::fs::read(inputs).unwrap()).unwrap();
+    assert_eq!(cases.len(), 105);
+    let mut runner = pinned_canonical_runner();
+    let output = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_QA_OUTPUT").unwrap());
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .unwrap();
+    let mut output = BufWriter::new(file);
+    let mut accepted = 0;
+    let mut checked = 0;
+    let mut names = std::collections::BTreeSet::new();
+    for (index, case) in cases.iter().enumerate() {
+        assert!(!case.name.is_empty() && names.insert(&case.name));
+        assert!(case.budget > 0 && !case.prompt.is_empty());
+        assert!(case.prompt.len() + case.budget as usize <= 32768);
+        assert!(
+            case.prompt
+                .iter()
+                .all(|&token| (token as usize) < runner.cfg.vocab_size)
+        );
+        let request = RunnerRequestContext {
+            ignore_eos: false,
+            ..context(9200 + index as u64 * 2, case.prompt.len(), case.budget)
+        };
+        let audit = audit_case(&mut runner, &case.prompt, request, AuditPolicy::Required);
+        accepted += audit.accepted;
+        checked += audit.decisions.len();
+        let changed: Vec<_> = (0..audit.direct.len().max(audit.mtp.len()))
+            .filter(|&index| audit.direct.get(index) != audit.mtp.get(index))
+            .collect();
+        let row = serde_json::json!({
+            "kind": "case", "name": case.name, "input_tokens": case.prompt.len(), "budget": case.budget,
+            "direct_tokens": audit.direct, "mtp_tokens": audit.mtp,
+            "direct_stop_reason": audit.direct_stop_reason, "mtp_stop_reason": audit.stop_reason,
+            "verified_steps": audit.decisions.len(), "accepted": audit.accepted, "rejected": audit.rejected,
+            "output_positions_audited": audit.output_decisions, "changed_from_direct": changed,
+            "activation": audit.activation, "decisions": audit.decisions,
+        });
+        serde_json::to_writer(&mut output, &row).unwrap();
+        writeln!(output).unwrap();
+        output.flush().unwrap();
+    }
+    assert!(accepted > 0 && checked >= accepted);
+    writeln!(
+        output,
+        "{}",
+        serde_json::json!({
+            "kind": "complete", "schema": "ax-engine.flash-next.runner-required-qa-audit.v1",
+            "qualification": false, "cases": cases.len(), "accepted_drafts": accepted,
+            "verified_steps": checked, "prefill_quantum": 2048,
+        })
+    )
+    .unwrap();
+    output.flush().unwrap();
 }
