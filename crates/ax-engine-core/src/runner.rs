@@ -340,6 +340,11 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         None
     }
 
+    /// Opt in to one bounded short prefill turn in a resident physical pair.
+    fn prefer_short_prefill_in_resident_pair(&self) -> bool {
+        false
+    }
+
     fn begin_ncm(
         &self,
         _request_id: RequestId,

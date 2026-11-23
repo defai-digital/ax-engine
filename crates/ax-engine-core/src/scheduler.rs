@@ -491,13 +491,14 @@ impl Scheduler {
     }
 
     pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
-        self.plan_with_prefill_splits(input, &BTreeMap::new())
+        self.plan_with_prefill_splits(input, &BTreeMap::new(), None)
     }
 
     pub(crate) fn plan_with_prefill_splits(
         &self,
         input: &SchedulerInput,
         prefill_splits: &BTreeMap<RequestId, PrefillSplit>,
+        preferred_prefill: Option<RequestId>,
     ) -> SchedulePlan {
         let mut frozen_quantum_defers = self.frozen_quantum_defers();
         frozen_quantum_defers.retain(|request_id, _| {
@@ -622,6 +623,7 @@ impl Scheduler {
             (
                 execution_mode_priority(*mode),
                 std::cmp::Reverse(snapshot.route_deferred_steps),
+                Some(snapshot.request_id) != preferred_prefill,
                 snapshot.arrival_sequence,
                 snapshot.request_id,
             )
@@ -1329,13 +1331,13 @@ mod tests {
             },
         )]);
         let scheduler = Scheduler::new();
-        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits);
+        let blocked = scheduler.plan_with_prefill_splits(&input, &prefill_splits, None);
         assert!(blocked.execution_batch.is_none());
         assert_eq!(blocked.memory_blocked_requests, [RequestId(1)]);
 
         input.memory_pressure = None;
         let resumed = scheduler
-            .plan_with_prefill_splits(&input, &prefill_splits)
+            .plan_with_prefill_splits(&input, &prefill_splits, None)
             .execution_batch
             .unwrap();
         assert_eq!(

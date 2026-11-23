@@ -39,7 +39,9 @@ use crate::scheduler::{
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
 
-#[derive(Clone, Copy)]
+const RESIDENT_SHORT_PREFILL_FIRST: &str = "ax_scheduler_resident_short_prefill_first";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ResidentPairRole {
     Short,
     Long,
@@ -222,6 +224,8 @@ pub struct EngineCore {
     /// life of the request so a later step does not change that quantum.
     frozen_prefill_quantums: BTreeMap<RequestId, u32>,
     prefill_splits: BTreeMap<RequestId, PrefillSplit>,
+    /// A long request can yield its prefill turn to a short peer only once.
+    resident_short_prefill_yielded: Option<RequestId>,
     /// Committed prompt tokens to attach when a spilled or cancelled prefix
     /// resumes. The runner restores from this slice, not from a temp file.
     restore_prefix_tokens: BTreeMap<RequestId, Vec<u32>>,
@@ -301,6 +305,7 @@ impl EngineCore {
             cancel_checkpoint_attempts: 0,
             frozen_prefill_quantums: BTreeMap::new(),
             prefill_splits: BTreeMap::new(),
+            resident_short_prefill_yielded: None,
             restore_prefix_tokens: BTreeMap::new(),
         }
     }
@@ -721,6 +726,7 @@ impl EngineCore {
             "resolved schedule plan against KV state"
         );
         self.request_manager.apply_schedule_plan(&schedule_plan)?;
+        self.record_resident_short_prefill_turn(&schedule_plan);
 
         let (runner_output, sampled_tokens, runner_summary, runner_time_us) =
             match self.dispatch_runner(&mut schedule_plan) {
@@ -1515,7 +1521,103 @@ impl EngineCore {
                 );
             }
         }
-        self.scheduler.plan_with_prefill_splits(&input, &splits)
+        let priority = self.resident_short_prefill_priority(&input, split_geometry);
+        let mut plan = self.scheduler.plan_with_prefill_splits(
+            &input,
+            &splits,
+            priority.map(|(_, short)| short),
+        );
+        if let Some((long, short)) = priority
+            && plan.selected_requests == [short]
+            && plan.deferred_requests.contains(&long)
+            && let Some(batch) = &mut plan.execution_batch
+            && let [item] = batch.items.as_slice()
+            && item.mode == ExecutionMode::Prefill
+            && item.scheduled_token_count == item.position_range.end_exclusive
+            && self.request_manager.record(short).is_some_and(|record| {
+                record.prompt_tokens.len() == item.scheduled_token_count as usize
+            })
+        {
+            batch
+                .route_metadata
+                .crossover_decisions
+                .push((RESIDENT_SHORT_PREFILL_FIRST.into(), 1));
+        }
+        plan
+    }
+
+    fn resident_short_prefill_priority(
+        &self,
+        input: &SchedulerInput,
+        geometry: Option<PrefillSplitGeometry>,
+    ) -> Option<(RequestId, RequestId)> {
+        let geometry = geometry?;
+        if input.memory_pressure.is_some() || !self.runner.prefer_short_prefill_in_resident_pair() {
+            return None;
+        }
+        let mut runnable = input.request_snapshots.iter().filter(|snapshot| {
+            snapshot.state == RequestState::Runnable && !snapshot.cancel_requested
+        });
+        let first = runnable.next()?;
+        let second = runnable.next()?;
+        if runnable.next().is_some() || first.model_id != second.model_id {
+            return None;
+        }
+        let (long, short) = if first.prompt_len > second.prompt_len {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let cursor = long.processed_prompt_tokens;
+        if !matches!(
+            geometry,
+            PrefillSplitGeometry {
+                logical_tokens: 2048,
+                physical_tokens: 512
+            }
+        ) || short.processed_prompt_tokens != 0
+            || short.prompt_len == 0
+            || input.available_kv_blocks < short.prompt_len.div_ceil(input.block_size_tokens)
+            || long.arrival_sequence >= short.arrival_sequence
+            || cursor == 0
+            || !cursor.is_multiple_of(geometry.logical_tokens)
+            || long.prompt_len.saturating_sub(cursor) < geometry.logical_tokens
+            || self.resident_short_prefill_yielded == Some(long.request_id)
+        {
+            return None;
+        }
+        let long_role =
+            ResidentPairRole::for_request(self.request_manager.record(long.request_id)?);
+        let short_role =
+            ResidentPairRole::for_request(self.request_manager.record(short.request_id)?);
+        (long_role == ResidentPairRole::Long && short_role == ResidentPairRole::Short)
+            .then_some((long.request_id, short.request_id))
+    }
+
+    fn record_resident_short_prefill_turn(&mut self, plan: &SchedulePlan) {
+        let Some(batch) = &plan.execution_batch else {
+            return;
+        };
+        if !batch
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| key == RESIDENT_SHORT_PREFILL_FIRST && *value == 1)
+        {
+            return;
+        }
+        // The final plan still contains the short prefill after KV admission.
+        // A preempted long keeps its one-turn limit through recompute.
+        if let Some(long) = plan.deferred_requests.iter().copied().find(|request_id| {
+            self.request_manager
+                .record(*request_id)
+                .is_some_and(|record| {
+                    record.state == RequestState::Runnable
+                        && ResidentPairRole::for_request(record) == ResidentPairRole::Long
+                })
+        }) {
+            self.resident_short_prefill_yielded = Some(long);
+        }
     }
 
     fn admit_waiting_requests(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
@@ -2896,6 +2998,9 @@ impl EngineCore {
         self.spill_excluded.remove(&request_id);
         self.frozen_prefill_quantums.remove(&request_id);
         self.prefill_splits.remove(&request_id);
+        if self.resident_short_prefill_yielded == Some(request_id) {
+            self.resident_short_prefill_yielded = None;
+        }
         self.restore_prefix_tokens.remove(&request_id);
         self.cancel_checkpoint_ids.remove(&request_id);
         self.release_reservation(request_id);
@@ -4115,7 +4220,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct PhysicalPrefillRunner;
+    struct PhysicalPrefillRunner(bool);
 
     impl ExecutionRunner for PhysicalPrefillRunner {
         fn run(&self, input: RunnerInput) -> RunnerOutput {
@@ -4128,6 +4233,102 @@ mod tests {
                 physical_tokens: 512,
             })
         }
+
+        fn prefer_short_prefill_in_resident_pair(&self) -> bool {
+            self.0
+        }
+    }
+
+    #[test]
+    fn resident_short_prefill_gets_one_turn_before_an_active_long_prompt() {
+        let long = RequestId(1);
+        let short = RequestId(2);
+        for enabled in [false, true] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner(enabled),
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            engine
+                .submit(make_submission_with_prompt(1, 1, vec![7; 8192], 96))
+                .unwrap();
+            engine.step(2049, true).unwrap();
+            engine
+                .submit(make_submission_with_prompt(2, 2, vec![8; 512], 96))
+                .unwrap();
+
+            let step = engine.step(2049, true).unwrap();
+            let chosen = if enabled { short } else { long };
+            assert_eq!(step.schedule_plan.selected_requests, [chosen]);
+            let batch = step.schedule_plan.execution_batch.unwrap();
+            let width = if enabled { 512 } else { 2048 };
+            assert_eq!(batch.items[0].scheduled_token_count, width);
+            assert_eq!(
+                engine.resident_short_prefill_yielded,
+                enabled.then_some(long)
+            );
+            assert_eq!(
+                batch
+                    .route_metadata
+                    .crossover_decisions
+                    .contains(&(RESIDENT_SHORT_PREFILL_FIRST.to_string(), 1)),
+                enabled
+            );
+            if !enabled {
+                continue;
+            }
+
+            // Cancelling the short peer cannot offer its successor another
+            // prefill turn ahead of the same long request.
+            engine.cancel(short).unwrap();
+            engine
+                .submit(make_submission_with_prompt(3, 3, vec![9; 512], 96))
+                .unwrap();
+            assert_eq!(
+                engine
+                    .step(2049, true)
+                    .unwrap()
+                    .schedule_plan
+                    .selected_requests,
+                [long]
+            );
+            assert_eq!(
+                engine
+                    .request_manager
+                    .record(long)
+                    .unwrap()
+                    .processed_prompt_tokens,
+                4096
+            );
+
+            // Recompute resets the cursor but keeps the request's grant.
+            engine
+                .preempt_request(long, &mut PreemptionMetrics::default(), false)
+                .unwrap();
+            assert_eq!(engine.resident_short_prefill_yielded, Some(long));
+            for _ in 0..2 {
+                assert_eq!(
+                    engine
+                        .step(2049, true)
+                        .unwrap()
+                        .schedule_plan
+                        .selected_requests,
+                    [long]
+                );
+            }
+            engine.cancel(long).unwrap();
+            assert_eq!(
+                engine
+                    .step(2049, true)
+                    .unwrap()
+                    .schedule_plan
+                    .selected_requests,
+                [RequestId(3)]
+            );
+            assert!(engine.resident_short_prefill_yielded.is_none());
+        }
     }
 
     #[test]
@@ -4135,7 +4336,7 @@ mod tests {
         for first_prompt in [2048, 8192] {
             let mut engine = EngineCore::with_runtime_components(
                 KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
-                PhysicalPrefillRunner,
+                PhysicalPrefillRunner(false),
                 DeterministicSampler,
             );
             engine.set_prefix_reuse_enabled(false);
@@ -4166,7 +4367,7 @@ mod tests {
     fn physical_prefill_reserves_pair_capacity_during_recompute_and_memory_block() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner(false),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
@@ -4215,7 +4416,7 @@ mod tests {
         for (live_cap, admitted) in [(None, 2u64), (Some(1), 1), (Some(3), 2)] {
             let mut engine = EngineCore::with_runtime_components(
                 KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
-                PhysicalPrefillRunner,
+                PhysicalPrefillRunner(false),
                 DeterministicSampler,
             );
             engine.set_prefix_reuse_enabled(false);
@@ -4239,7 +4440,7 @@ mod tests {
         for (solo_prompt, solo_output) in [(8193, 96), (2048, 97)] {
             let mut engine = EngineCore::with_runtime_components(
                 KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
-                PhysicalPrefillRunner,
+                PhysicalPrefillRunner(false),
                 DeterministicSampler,
             );
             engine.set_prefix_reuse_enabled(false);
@@ -4315,7 +4516,7 @@ mod tests {
     fn physical_prefill_split_commits_the_same_cuts_after_the_decoder_cancels() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 512),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner(false),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
@@ -4380,7 +4581,7 @@ mod tests {
     fn preempting_and_cancelling_a_physical_prefill_split_releases_its_progress() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 16, 512),
-            PhysicalPrefillRunner,
+            PhysicalPrefillRunner(false),
             DeterministicSampler,
         );
         engine.set_prefix_reuse_enabled(false);
