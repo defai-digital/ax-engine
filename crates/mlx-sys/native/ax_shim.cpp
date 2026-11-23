@@ -4,16 +4,24 @@
 #include "ax_shim.h"
 #include "ax_shim_internal.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <variant>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <unistd.h>
+#include "mlx/allocator.h"
+#endif
 
 #include "mlx/fast.h"
 #include "mlx/io.h"
@@ -226,6 +234,70 @@ extern "C" mlx_array mlx_array_new_data(
         make_array(data, make_shape(shape, static_cast<size_t>(dim)), to_dtype(dtype)))};
   } AX_CATCH_NULL
 }
+
+#if defined(__APPLE__)
+extern "C" mlx_array ax_mlx_array_read_aligned_at(
+    int fd, uint64_t offset, uint8_t* scratch, size_t scratch_bytes,
+    const int* shape, int dim, mlx_dtype dtype) {
+  AX_TRY {
+    constexpr size_t page = 16 * 1024;
+    if (dim < 0 || !scratch || scratch_bytes != 4 * 1024 * 1024 ||
+        reinterpret_cast<uintptr_t>(scratch) % page != 0) {
+      throw std::runtime_error("invalid aligned tensor read geometry");
+    }
+    auto cpp_shape = make_shape(shape, static_cast<size_t>(dim));
+    const auto cpp_dtype = to_dtype(dtype);
+    const size_t count = ax_shape_nelem(cpp_shape);
+    const size_t itemsize = mx::size_of(cpp_dtype);
+    if (count > std::numeric_limits<size_t>::max() / itemsize) {
+      throw std::runtime_error("aligned tensor size overflows");
+    }
+    const size_t bytes = count * itemsize;
+    const auto max_offset = static_cast<uint64_t>(std::numeric_limits<off_t>::max());
+    if (offset > max_offset || bytes > max_offset - offset) {
+      throw std::runtime_error("aligned tensor range exceeds off_t");
+    }
+    auto storage = mx::allocator::malloc(bytes);
+    if (bytes != 0) {
+      auto* destination = static_cast<uint8_t*>(storage.buffer().raw_ptr());
+      if (!storage.is_owned() || !destination) {
+        throw std::runtime_error("aligned read requires owned MLX storage");
+      }
+      for (size_t copied = 0; copied < bytes;) {
+        const uint64_t position = offset + copied;
+        const size_t skip = position % page;
+        const uint64_t start = position - skip;
+        const size_t take = std::min(bytes - copied, scratch_bytes - skip);
+        const size_t needed = skip + take;
+        const size_t span = ((needed + page - 1) / page) * page;
+        size_t read = 0;
+        unsigned no_progress = 0;
+        while (read < needed) {
+          const auto n = pread(fd, scratch + read, span - read, static_cast<off_t>(start + read));
+          if (n < 0 && errno == EINTR) continue;
+          if (n <= 0) throw std::runtime_error("aligned tensor payload read failed or ended early");
+          const size_t available = read + static_cast<size_t>(n);
+          if (available >= needed) break;
+          // Retry a partial page from its aligned start for both file offset and buffer.
+          const size_t next = (available / page) * page;
+          no_progress = next == read ? no_progress + 1 : 0;
+          if (no_progress == 4) {
+            throw std::runtime_error("aligned tensor payload made no page progress");
+          }
+          read = next;
+        }
+        std::memcpy(destination + copied, scratch + skip, take);
+        copied += take;
+      }
+      if (cpp_dtype == mx::bool_) {
+        for (size_t i = 0; i < bytes; ++i) destination[i] = destination[i] != 0;
+      }
+    }
+    return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(
+        std::move(storage), std::move(cpp_shape), cpp_dtype)};
+  } AX_CATCH_NULL
+}
+#endif
 
 extern "C" mlx_array mlx_array_new_data_managed_payload(
     void* data, const int* shape, int dim, mlx_dtype dtype,

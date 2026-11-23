@@ -23,6 +23,8 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_MTP_DEPTH3_MISS_BACKOFF", shipped: "off", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_FLASH_NEXT_NGRAM_READ_THREADS", shipped: "unset", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_FLASH_NEXT_NGRAM_PREFETCH", shipped: "on", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_ALIGNED_NOCACHE", shipped: "off", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_ALIGNED_BUFFERED", shipped: "auto on pinned resident M5 Max profile", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_FLASH_NEXT_KV_SEGMENTS", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_METAL", shipped: "on", class: SwitchClass::ProvenExact("native_gdn_forward_matches_compiled_and_eager") },
     SwitchRow { env: "AX_FLASH_NEXT_ROPE_CACHE", shipped: "on", class: SwitchClass::NonNumeric("cache") },

@@ -67,6 +67,10 @@ pub use fast::{
 pub use io::{
     SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,
 };
+#[cfg(target_os = "macos")]
+pub use io::{
+    load_safetensors_filtered_aligned_buffered, load_safetensors_filtered_aligned_nocache,
+};
 pub use io_rows::{
     DEFAULT_MAX_GATHER_BYTES, MAX_HEADER_BYTES, RowTensorMeta, SafetensorsRowReader,
 };
