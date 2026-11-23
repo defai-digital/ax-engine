@@ -2044,9 +2044,13 @@ fn maintain_streams(
             }
         }
     }
-    for request_id in terminal {
-        active_streams.remove(&request_id);
-        complete_job(service_state);
+    if !terminal.is_empty() {
+        for request_id in terminal {
+            active_streams.remove(&request_id);
+            complete_job(service_state);
+        }
+        // Publish the removal before a surviving stream enters an engine burst.
+        update_stream_gauges(service_state, active_streams);
     }
     progressed
 }
@@ -3161,6 +3165,77 @@ mod tests {
         assert_eq!(pending_after_disconnect, 0);
         assert_eq!(active_after_disconnect, 0);
         assert_eq!(admission.active_jobs(), 0);
+    }
+
+    #[tokio::test]
+    async fn disconnected_stream_gauge_updates_before_the_survivor_step() {
+        let (service, _) = NativeGenerationService::spawn_with_factory(
+            || Ok(EngineSession::new_deterministic_native_for_tests()),
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .unwrap();
+        let (entered_tx, entered_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let release_rx = parking_lot::Mutex::new(release_rx);
+        let steps = AtomicUsize::new(0);
+        service.set_step_observer(move |_| {
+            let step = steps.fetch_add(1, Ordering::AcqRel);
+            if step < 3 {
+                let _ = entered_tx.send(step);
+                let _ = release_rx.lock().recv_timeout(Duration::from_secs(5));
+            }
+        });
+        let admission = Arc::new(crate::admission::AdmissionController::new(Some(2)));
+        let request = || GenerateRequest {
+            prefill_hints: Default::default(),
+            model_id: "qwen3".to_string(),
+            input_tokens: vec![1, 2, 3, 4],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 100,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        };
+        let first = service
+            .start_stream(41, request(), admission.try_admit().unwrap())
+            .await
+            .unwrap();
+        let first_step = entered_rx.recv_timeout(Duration::from_secs(2));
+        let next_service = Arc::clone(&service);
+        let next_permit = admission.try_admit().unwrap();
+        let second = tokio::spawn(async move {
+            next_service
+                .start_stream(42, request(), next_permit)
+                .await
+                .unwrap()
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while service.queued_commands() == 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let queued = service.queued_commands();
+        let _ = release_tx.send(());
+        let second = second.await.unwrap();
+        let shared_step = entered_rx.recv_timeout(Duration::from_secs(2));
+        let shared_gauge = service.active_streams();
+        // Signal disconnect while the transport still owns the receiver.
+        first.disconnect_flag().store(true, Ordering::Release);
+        let _ = release_tx.send(());
+        let survivor_step = entered_rx.recv_timeout(Duration::from_secs(2));
+        let survivor_gauge = service.active_streams();
+        let survivor_admissions = admission.active_jobs();
+        drop((first, second));
+        let _ = release_tx.send(());
+        service.shutdown().await.unwrap();
+
+        assert_eq!(first_step.unwrap(), 0);
+        assert_eq!(queued, 1);
+        assert_eq!(shared_step.unwrap(), 1);
+        assert_eq!(shared_gauge, 2);
+        assert_eq!(survivor_step.unwrap(), 2);
+        assert_eq!(survivor_admissions, 1);
+        assert_eq!(survivor_gauge, 1);
     }
 
     #[tokio::test]
