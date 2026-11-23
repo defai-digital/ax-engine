@@ -113,12 +113,29 @@ impl RequestManager {
         &mut self,
         max_live: Option<usize>,
     ) -> Result<Vec<RequestId>, RequestManagerError> {
+        self.admit_waiting_up_to_while(max_live, None)
+    }
+
+    /// Keep arrival order when an engine must defer the next waiter until
+    /// its per-sequence residency fits alongside an already admitted request.
+    pub(crate) fn admit_waiting_up_to_while(
+        &mut self,
+        max_live: Option<usize>,
+        eligible: Option<&mut dyn FnMut(&RequestRecord) -> bool>,
+    ) -> Result<Vec<RequestId>, RequestManagerError> {
         let mut request_ids =
             self.sorted_request_ids(|record| record.state == RequestState::Waiting);
 
         if let Some(max_live) = max_live {
             let room = max_live.saturating_sub(self.live_request_count());
             request_ids.truncate(room);
+        }
+        if let Some(eligible) = eligible {
+            let prefix = request_ids
+                .iter()
+                .take_while(|id| self.records.get(*id).is_some_and(&mut *eligible))
+                .count();
+            request_ids.truncate(prefix);
         }
 
         for request_id in &request_ids {

@@ -39,6 +39,41 @@ use crate::scheduler::{
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
 
+#[derive(Clone, Copy)]
+enum ResidentPairRole {
+    Short,
+    Long,
+    Solo,
+}
+
+impl ResidentPairRole {
+    fn for_request(record: &RequestRecord) -> Self {
+        // M5 resident two-slot coverage pairs a 512-token short prompt
+        // with up to 8,192 prompt tokens. Both used 96 output tokens.
+        if record.max_output_tokens > 96
+            || !record.multimodal_inputs.is_empty()
+            || !sampling_params_allow_deterministic_argmax_fast_path(&record.sampling_params)
+        {
+            return Self::Solo;
+        }
+        let prompt = record.prompt_tokens.len();
+        if prompt <= 512 {
+            Self::Short
+        } else if prompt <= 8192 {
+            Self::Long
+        } else {
+            Self::Solo
+        }
+    }
+
+    fn can_share_with(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Short, Self::Short | Self::Long) | (Self::Long, Self::Short)
+        )
+    }
+}
+
 fn validation_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -640,9 +675,7 @@ impl EngineCore {
         if pressure_sample.is_some_and(MemoryPressureSample::over_hard) {
             self.spill_one_victim()?;
         }
-        let admitted_requests = self
-            .request_manager
-            .admit_waiting_up_to(self.live_sequence_cap)?;
+        let admitted_requests = self.admit_waiting_requests()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -1483,6 +1516,40 @@ impl EngineCore {
             }
         }
         self.scheduler.plan_with_prefill_splits(&input, &splits)
+    }
+
+    fn admit_waiting_requests(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
+        if !matches!(
+            self.runner.prefill_split_geometry(),
+            Some(PrefillSplitGeometry {
+                logical_tokens: 2048,
+                physical_tokens: 512,
+            })
+        ) {
+            return self
+                .request_manager
+                .admit_waiting_up_to(self.live_sequence_cap);
+        }
+
+        let mut resident = self
+            .request_manager
+            .records_iter()
+            .find(|record| record.state != RequestState::Waiting && !record.state.is_terminal())
+            .map(ResidentPairRole::for_request);
+        // This physical profile is already configured for two live slots.
+        // The priced memory plan can impose a smaller cap or leave it unset.
+        let pair_cap = self.live_sequence_cap.unwrap_or(2).min(2);
+        self.request_manager.admit_waiting_up_to_while(
+            Some(pair_cap),
+            Some(&mut |request| {
+                let next = ResidentPairRole::for_request(request);
+                if let Some(resident) = resident {
+                    return resident.can_share_with(next);
+                }
+                resident = Some(next);
+                true
+            }),
+        )
     }
 
     fn new_prefill_split_geometry(&self, global_token_budget: u32) -> Option<PrefillSplitGeometry> {
@@ -4060,6 +4127,187 @@ mod tests {
                 logical_tokens: 2048,
                 physical_tokens: 512,
             })
+        }
+    }
+
+    #[test]
+    fn physical_prefill_keeps_the_second_long_prompt_waiting() {
+        for first_prompt in [2048, 8192] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner,
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            assert_eq!(engine.live_sequence_cap(), None);
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            for (id, prompt) in [(1, first_prompt), (2, 8192)] {
+                engine
+                    .submit(make_submission_with_prompt(id, id, vec![7; prompt], 96))
+                    .unwrap();
+            }
+            engine.step(2049, true).unwrap();
+            let first = engine.request_manager.record(RequestId(1)).unwrap();
+            let waiting = engine.request_manager.record(RequestId(2)).unwrap();
+            assert_eq!(first.processed_prompt_tokens, 2048);
+            assert_eq!(waiting.state, RequestState::Waiting);
+            assert_eq!(waiting.processed_prompt_tokens, 0);
+            assert_eq!(engine.kv_manager.block_count_for(RequestId(2)), 0);
+
+            engine.cancel(RequestId(1)).unwrap();
+            engine.step(2049, true).unwrap();
+            let promoted = engine.request_manager.record(RequestId(2)).unwrap();
+            assert_eq!(promoted.processed_prompt_tokens, 2048);
+            assert_eq!(engine.kv_manager.block_count_for(RequestId(1)), 0);
+        }
+    }
+
+    #[test]
+    fn physical_prefill_reserves_pair_capacity_during_recompute_and_memory_block() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+            PhysicalPrefillRunner,
+            DeterministicSampler,
+        );
+        engine.set_prefix_reuse_enabled(false);
+        engine.set_multi_prefill_fair(true, 2048, 1);
+        for id in 1..=2 {
+            engine
+                .submit(make_submission_with_prompt(id, id, vec![7; 8192], 96))
+                .unwrap();
+        }
+        engine.step(2049, true).unwrap();
+        let resident = RequestId(1);
+        let waiting = RequestId(2);
+        engine
+            .preempt_request(resident, &mut PreemptionMetrics::default(), false)
+            .unwrap();
+        assert_eq!(engine.kv_manager.block_count_for(resident), 0);
+        for state in [RequestState::Runnable, RequestState::BlockedOnMemory] {
+            assert_eq!(
+                engine.request_manager.record(resident).unwrap().state,
+                state
+            );
+            assert_eq!(engine.request_manager.live_request_count(), 1);
+            assert!(engine.admit_waiting_requests().unwrap().is_empty());
+            assert_eq!(
+                engine.request_manager.record(waiting).unwrap().state,
+                RequestState::Waiting
+            );
+            if state == RequestState::Runnable {
+                engine.request_manager.block_on_memory(resident).unwrap();
+            }
+        }
+        engine.cancel(resident).unwrap();
+        engine.step(2049, true).unwrap();
+        assert_eq!(
+            engine
+                .request_manager
+                .record(waiting)
+                .unwrap()
+                .processed_prompt_tokens,
+            2048,
+        );
+    }
+
+    #[test]
+    fn resident_mixed_pair_respects_the_physical_and_priced_caps() {
+        for (live_cap, admitted) in [(None, 2u64), (Some(1), 1), (Some(3), 2)] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner,
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            engine.set_live_sequence_cap(live_cap);
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            for id in 1..=3 {
+                engine
+                    .submit(make_submission_with_prompt(id, id, vec![7; 512], 96))
+                    .unwrap();
+            }
+            engine.step(2049, true).unwrap();
+            for id in 1..=3 {
+                let record = engine.request_manager.record(RequestId(id)).unwrap();
+                assert_eq!(record.state == RequestState::Waiting, id > admitted);
+            }
+        }
+    }
+
+    #[test]
+    fn resident_mixed_pair_does_not_starve_a_solo_context() {
+        for (solo_prompt, solo_output) in [(8193, 96), (2048, 97)] {
+            let mut engine = EngineCore::with_runtime_components(
+                KvManagerConfig::validated(CacheGroupId(2), 16, 2048),
+                PhysicalPrefillRunner,
+                DeterministicSampler,
+            );
+            engine.set_prefix_reuse_enabled(false);
+            engine.set_live_sequence_cap(Some(2));
+            engine.set_multi_prefill_fair(true, 2048, 1);
+            engine
+                .submit(make_submission_with_prompt(1, 1, vec![7; 512], 2))
+                .unwrap();
+            engine.step(2049, true).unwrap();
+            for (id, prompt, output) in [(2, solo_prompt, solo_output), (3, 512, 96)] {
+                engine
+                    .submit(make_submission_with_prompt(id, id, vec![7; prompt], output))
+                    .unwrap();
+            }
+            engine.step(2049, true).unwrap();
+            for id in [2, 3] {
+                let waiting = engine.request_manager.record(RequestId(id)).unwrap();
+                assert_eq!(waiting.state, RequestState::Waiting);
+                assert_eq!(engine.kv_manager.block_count_for(RequestId(id)), 0);
+            }
+
+            for _ in 0..2 {
+                engine.step(2049, true).unwrap();
+            }
+            assert_eq!(
+                engine.request_manager.snapshot(RequestId(1)).unwrap().state,
+                RequestState::Finished,
+            );
+            assert_eq!(
+                engine
+                    .request_manager
+                    .record(RequestId(2))
+                    .unwrap()
+                    .processed_prompt_tokens,
+                2048,
+            );
+            assert_eq!(
+                engine.request_manager.record(RequestId(3)).unwrap().state,
+                RequestState::Waiting,
+            );
+
+            engine.cancel(RequestId(2)).unwrap();
+            engine.step(2049, true).unwrap();
+            assert_eq!(
+                engine
+                    .request_manager
+                    .record(RequestId(3))
+                    .unwrap()
+                    .processed_prompt_tokens,
+                512,
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_admission_keeps_its_existing_live_cap() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 16, 2048));
+        engine.set_live_sequence_cap(Some(3));
+        for id in 1..=4 {
+            engine
+                .submit(make_submission_with_prompt(id, id, vec![7; 8192], 96))
+                .unwrap();
+        }
+        engine.step(2049, true).unwrap();
+        for id in 1..=4 {
+            let record = engine.request_manager.record(RequestId(id)).unwrap();
+            assert_eq!(record.state == RequestState::Waiting, id > 3);
         }
     }
 
