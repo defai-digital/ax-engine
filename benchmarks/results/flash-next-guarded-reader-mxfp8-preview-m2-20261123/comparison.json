@@ -1,0 +1,17 @@
+{
+  "matched_output_ids": 64,
+  "normal_pressure_samples": 326,
+  "pack": {
+    "derived_manifest_sha256": "3efdad4e086cd7c2f8aa05aa98ddda7e87f209b051d6b029c5f5fbc0ab540c36",
+    "publisher_bytes": 189240515155,
+    "publisher_members": 61
+  },
+  "qualification": false,
+  "reader": "Mapped",
+  "resident_shards": 27,
+  "resident_tensors": 1842,
+  "revision": "48b9aa5f002f29a9f8ab7cfe5c7185e342595b1b",
+  "scope": "Pinned MXFP8 resident Required preview",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "verified_steps": 34
+}
