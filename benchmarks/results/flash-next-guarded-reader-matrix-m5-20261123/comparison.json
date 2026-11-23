@@ -1,0 +1,76 @@
+{
+  "cells": {
+    "default": {
+      "2048": {
+        "decode_ratio_to_prior_native": 0.9971010928951898,
+        "decode_tokens_per_second": 45.791194317276734,
+        "ttft_ratio_to_prior_native": 1.1299554594466934,
+        "ttft_seconds": 1.837233
+      },
+      "512": {
+        "decode_ratio_to_prior_native": 1.0156322525793333,
+        "decode_tokens_per_second": 48.6377597524453,
+        "ttft_ratio_to_prior_native": 0.9660976253491594,
+        "ttft_seconds": 0.527099
+      },
+      "8192": {
+        "decode_ratio_to_prior_native": 0.9963694799688068,
+        "decode_tokens_per_second": 44.19400402200235,
+        "ttft_ratio_to_prior_native": 1.0497331076552687,
+        "ttft_seconds": 10.509825
+      }
+    },
+    "disabled": {
+      "2048": {
+        "decode_ratio_to_prior_native": 1.0277059870404623,
+        "decode_tokens_per_second": 45.87382963037613,
+        "ttft_ratio_to_prior_native": 1.1492462189221266,
+        "ttft_seconds": 1.888269
+      },
+      "512": {
+        "decode_ratio_to_prior_native": 1.0710392588455089,
+        "decode_tokens_per_second": 49.50280860226287,
+        "ttft_ratio_to_prior_native": 0.7333226573306866,
+        "ttft_seconds": 0.531194
+      },
+      "8192": {
+        "decode_ratio_to_prior_native": 1.052951460837589,
+        "decode_tokens_per_second": 44.79311751985799,
+        "ttft_ratio_to_prior_native": 1.0736208903598232,
+        "ttft_seconds": 10.368337
+      }
+    }
+  },
+  "matching_prior_native_arrays": 124,
+  "matrix_sha256": "3243fb0e4eb33f033417bf994464819ad5485927446a5e2e16745d4c52dda0d5",
+  "prior_native_differences": [],
+  "raw_repeats_sha256": "febc7867189c13e0e9567948c50be88eb10c5f079e219c743ea3fad2edcb9b1f",
+  "readiness": {
+    "delivered": {
+      "default": 30.213,
+      "disabled": 30.212,
+      "required": 114.947
+    },
+    "detail": "first load after delivery 30.212s; staged-pack worst 30.276s",
+    "gate": "readiness",
+    "passed": true
+  },
+  "release_ready": false,
+  "repeat_token_identity": {
+    "default": {
+      "compared": 31,
+      "identical": 31
+    },
+    "disabled": {
+      "compared": 31,
+      "identical": 31
+    }
+  },
+  "scope": "Guarded-reader M5 native generation matrix",
+  "server_sha256": "c1a7c3f9dfb81613fc370758a0eece5f6105683d53baab7ea4bc3a371cb81de2",
+  "timing_cpu_idle_percent": [
+    97.4,
+    95.94
+  ],
+  "timing_eligible": true
+}
