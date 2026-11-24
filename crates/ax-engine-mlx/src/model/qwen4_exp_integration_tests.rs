@@ -388,6 +388,83 @@ fn qwen4_exp_real_pack_production_pipeline_matches_dedicated() {
 }
 
 #[test]
+#[ignore = "requires the pinned resident Flash Next MXFP4 pack and Metal"]
+fn flash_next_grouped_eval_compile_failure_preserves_committed_prefix() {
+    use crate::model::shared::qwen4_exp_attention::with_grouped_eval_compile_failure;
+    use sha2::{Digest, Sha256};
+
+    assert!(crate::fastpath::flash_next_qsa_grouped_eval_enabled());
+    assert!(!crate::fastpath::flash_next_qsa_paired_gather_enabled());
+    assert!(!crate::fastpath::flash_next_qsa_indexed_prefill_enabled());
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR").unwrap());
+    let output_path = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    let (prefix, suffix) = tokens.split_at(2048);
+    assert_eq!(suffix.len(), 2047);
+    let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    assert!(weights.qwen4_exp.as_ref().unwrap().expert_stream.is_none());
+
+    let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
+    let _ = forward_cache_only(&cfg, &weights, prefix, &mut cache, 0);
+    cache.advance(prefix.len());
+    let checkpoint = cache.serialize_to_bytes();
+    let failure = with_grouped_eval_compile_failure(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            forward(&cfg, &weights, suffix, &mut cache, prefix.len())
+        }))
+    });
+    let payload = failure.expect_err("broken Metal kernel must fail");
+    let error = payload.downcast_ref::<String>().expect("forward error");
+    assert!(error.contains("grouped prefill attention"), "{error}");
+    assert!(error.contains("ax_grouped_qsa_missing_symbol"), "{error}");
+    let failed_position = cache.seq_len();
+    let failed_checkpoint = cache.serialize_to_bytes();
+    assert_eq!(failed_position, prefix.len());
+    assert_eq!(failed_checkpoint, checkpoint);
+
+    let mut control = cache.clone();
+    let expected = forward(&cfg, &weights, suffix, &mut control, prefix.len());
+    control.advance(suffix.len());
+    let recovered = forward(&cfg, &weights, suffix, &mut cache, prefix.len());
+    cache.advance(suffix.len());
+    mlx_sys::try_eval(&[&expected, &recovered]).unwrap();
+    let logit_bits = |array: &MlxArray| {
+        array
+            .data_f32()
+            .iter()
+            .flat_map(|value| value.to_bits().to_le_bytes())
+            .collect::<Vec<_>>()
+    };
+    let expected_bits = logit_bits(&expected);
+    let recovered_bits = logit_bits(&recovered);
+    assert_eq!(expected_bits, recovered_bits);
+    let expected_state = control.serialize_to_bytes();
+    let recovered_state = cache.serialize_to_bytes();
+    assert_eq!(expected_state, recovered_state);
+    std::fs::write(
+        output_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "qualification": false,
+            "failure": "second tile in the second evaluation pair",
+            "prefix_position_before": prefix.len(),
+            "prefix_position_after_failure": failed_position,
+            "position_after_retry": cache.seq_len(),
+            "prefix_sha256_before": format!("{:x}", Sha256::digest(&checkpoint)),
+            "prefix_sha256_after_failure": format!("{:x}", Sha256::digest(failed_checkpoint)),
+            "control_logits_sha256": format!("{:x}", Sha256::digest(expected_bits)),
+            "retry_logits_sha256": format!("{:x}", Sha256::digest(recovered_bits)),
+            "control_state_sha256": format!("{:x}", Sha256::digest(expected_state)),
+            "retry_state_sha256": format!("{:x}", Sha256::digest(recovered_state)),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 #[ignore = "requires an isolated real Flash Next pack; records same-pack residency controls"]
 fn qwen4_exp_real_pack_residency_fingerprint() {
     use sha2::{Digest, Sha256};

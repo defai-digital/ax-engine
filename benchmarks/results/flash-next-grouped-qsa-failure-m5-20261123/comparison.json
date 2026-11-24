@@ -1,0 +1,18 @@
+{
+  "control_logits_sha256": "0a9a1797eb833c3591063aacd0b4a99ae0d91e412c1bb395033f86fa63c508fe",
+  "control_state_sha256": "067eb5d384ec3e5f4e39b51390764bb226527b10cc3f664e873adb070d40db86",
+  "failure": "second tile in the second evaluation pair",
+  "fault_hook_test_only": true,
+  "macos": "27.2.1",
+  "normal_pressure_samples": 125,
+  "position_after_retry": 4095,
+  "prefix_position_after_failure": 2048,
+  "prefix_position_before": 2048,
+  "prefix_sha256_after_failure": "5c9e0e8aa6f5d5f1cfd3945c4c8d4c8b535fa4f8dde9944f738a3a7d108d2061",
+  "prefix_sha256_before": "5c9e0e8aa6f5d5f1cfd3945c4c8d4c8b535fa4f8dde9944f738a3a7d108d2061",
+  "qualification": false,
+  "retry_logits_sha256": "0a9a1797eb833c3591063aacd0b4a99ae0d91e412c1bb395033f86fa63c508fe",
+  "retry_state_sha256": "067eb5d384ec3e5f4e39b51390764bb226527b10cc3f664e873adb070d40db86",
+  "sampled_footprint_peak_bytes": 87189249248,
+  "source_base": "c427de7bdc5c36324d5129597a49a928780bd1a6"
+}

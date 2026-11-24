@@ -1449,7 +1449,11 @@ fn attend_selected_batched(
 }
 
 fn eval_attention_tiles(tiles: &[&MlxArray]) -> Result<()> {
-    mlx_sys::try_eval(tiles).map_err(|detail| {
+    #[cfg(not(test))]
+    let result = mlx_sys::try_eval(tiles);
+    #[cfg(test)]
+    let result = grouped_eval_failure::evaluate(tiles);
+    result.map_err(|detail| {
         QsaError::Evaluation {
             stage: "grouped prefill attention",
             context: format!("tiles={}", tiles.len()),
@@ -1458,6 +1462,13 @@ fn eval_attention_tiles(tiles: &[&MlxArray]) -> Result<()> {
         .into()
     })
 }
+
+#[cfg(test)]
+#[path = "qwen4_exp_grouped_eval_failure_tests.rs"]
+mod grouped_eval_failure;
+
+#[cfg(test)]
+pub(crate) use grouped_eval_failure::with_grouped_eval_compile_failure;
 
 /// Queries inspected to size a sub-batch before its exact padding is known.
 const BATCHED_ATTENTION_PROBE_QUERIES: usize = 512;
