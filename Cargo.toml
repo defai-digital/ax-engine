@@ -33,7 +33,7 @@ symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-url = "2.5"
+url = "2.5.9"
 wait-timeout = "0.2"
 webpki-roots = "0.26"
 
