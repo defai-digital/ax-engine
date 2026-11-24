@@ -1,0 +1,455 @@
+{
+  "arms": {
+    "2048-lazy": {
+      "all_pressure_normal": true,
+      "arm": "2048-lazy",
+      "cpu_idle_percent": [
+        96.29,
+        95.39
+      ],
+      "exit_code": -15,
+      "guard_triggered": true,
+      "passed": false,
+      "peak_physical_bytes": 107317600080,
+      "pressure_samples": 250,
+      "result": null,
+      "result_sha256": null,
+      "samples": {
+        "all_normal": true,
+        "count": 250,
+        "end_physical_bytes": 107317600080,
+        "max_before_last": 97529159432,
+        "max_physical_bytes": 107317600080,
+        "pressure_guard": false,
+        "swap_unchanged": true
+      },
+      "serial_eval": false,
+      "timeout": false,
+      "width": 2048
+    },
+    "2048-serial": {
+      "all_pressure_normal": true,
+      "arm": "2048-serial",
+      "cpu_idle_percent": [
+        96.1,
+        96.44
+      ],
+      "exit_code": 0,
+      "guard_triggered": false,
+      "passed": true,
+      "peak_physical_bytes": 101908063280,
+      "pressure_samples": 292,
+      "result": {
+        "chunks": [
+          [
+            0,
+            2047,
+            3.557727958
+          ],
+          [
+            2047,
+            1,
+            0.579598166
+          ],
+          [
+            2048,
+            2047,
+            4.475834792
+          ],
+          [
+            4095,
+            1,
+            0.641394583
+          ],
+          [
+            4096,
+            2047,
+            4.422859875
+          ],
+          [
+            6143,
+            1,
+            0.6073715
+          ],
+          [
+            6144,
+            2047,
+            4.515553584
+          ],
+          [
+            8191,
+            1,
+            0.608447542
+          ]
+        ],
+        "completed_tiles": 324,
+        "logit_count": 248320,
+        "logits_sha256": "af26d856e68fc659955fccbb5a0014abe58ce54d1031783e8afb6b74df9018b8",
+        "peak_bytes": 95944346900,
+        "qualification": false,
+        "seconds": 19.408800791,
+        "serial_eval": true,
+        "state_bytes": 342139249,
+        "state_sha256": "506a0b38fbb1de88850cc2ceb7041eae8535663f3f3413d691befacea69d3fbb",
+        "width": 2048
+      },
+      "result_sha256": "77c81ff3a2d496b524ef65648aa2df08f32e58729c21a0cd3b4cf0f3ad952f87",
+      "samples": {
+        "all_normal": true,
+        "count": 292,
+        "end_physical_bytes": 101908063280,
+        "max_before_last": 101544206472,
+        "max_physical_bytes": 101908063280,
+        "pressure_guard": false,
+        "swap_unchanged": true
+      },
+      "serial_eval": true,
+      "timeout": false,
+      "width": 2048
+    },
+    "512-lazy": {
+      "all_pressure_normal": true,
+      "arm": "512-lazy",
+      "cpu_idle_percent": [
+        84.31,
+        95.62
+      ],
+      "exit_code": 0,
+      "guard_triggered": false,
+      "passed": true,
+      "peak_physical_bytes": 97200549216,
+      "pressure_samples": 43,
+      "result": {
+        "chunks": [
+          [
+            0,
+            512,
+            1.682190375
+          ],
+          [
+            512,
+            512,
+            1.62026075
+          ],
+          [
+            1024,
+            512,
+            1.629477375
+          ],
+          [
+            1536,
+            511,
+            1.704346958
+          ],
+          [
+            2047,
+            1,
+            0.050853416
+          ],
+          [
+            2048,
+            512,
+            1.965747333
+          ],
+          [
+            2560,
+            512,
+            1.916146
+          ],
+          [
+            3072,
+            512,
+            1.922771709
+          ],
+          [
+            3584,
+            511,
+            1.91989425
+          ],
+          [
+            4095,
+            1,
+            0.085863208
+          ],
+          [
+            4096,
+            512,
+            2.27905325
+          ],
+          [
+            4608,
+            512,
+            2.078213125
+          ],
+          [
+            5120,
+            512,
+            2.008765166
+          ],
+          [
+            5632,
+            511,
+            1.898987875
+          ],
+          [
+            6143,
+            1,
+            0.111968208
+          ],
+          [
+            6144,
+            512,
+            1.699696666
+          ],
+          [
+            6656,
+            512,
+            1.8451335
+          ],
+          [
+            7168,
+            512,
+            1.8776114590000001
+          ],
+          [
+            7680,
+            511,
+            1.953084209
+          ],
+          [
+            8191,
+            1,
+            0.171775416
+          ]
+        ],
+        "completed_tiles": 0,
+        "logit_count": 248320,
+        "logits_sha256": "c462857344953d919db12f0953586190e6eae270f0f27c2cb3b790a54da7e4f3",
+        "peak_bytes": 86453527246,
+        "qualification": false,
+        "seconds": 30.421868959,
+        "serial_eval": false,
+        "state_bytes": 342139249,
+        "state_sha256": "70e726b76c6bbda710ae1bbfa806b78f93dfccbd012a368138a6bdaf742d74bd",
+        "width": 512
+      },
+      "result_sha256": "cd21556ea1ec26be0967d36e9e54652c827a28322f952ff4e8075db7a0f0ffd8",
+      "samples": {
+        "all_normal": true,
+        "count": 43,
+        "end_physical_bytes": 0,
+        "max_before_last": 97200549216,
+        "max_physical_bytes": 97200549216,
+        "pressure_guard": false,
+        "swap_unchanged": true
+      },
+      "serial_eval": false,
+      "timeout": false,
+      "width": 512
+    },
+    "512-serial": {
+      "all_pressure_normal": true,
+      "arm": "512-serial",
+      "cpu_idle_percent": [
+        94.29,
+        95.4
+      ],
+      "exit_code": 0,
+      "guard_triggered": false,
+      "passed": true,
+      "peak_physical_bytes": 96765308424,
+      "pressure_samples": 333,
+      "result": {
+        "chunks": [
+          [
+            0,
+            512,
+            1.174243917
+          ],
+          [
+            512,
+            512,
+            0.987175333
+          ],
+          [
+            1024,
+            512,
+            0.990664375
+          ],
+          [
+            1536,
+            511,
+            1.015382375
+          ],
+          [
+            2047,
+            1,
+            0.040006
+          ],
+          [
+            2048,
+            512,
+            1.300173584
+          ],
+          [
+            2560,
+            512,
+            1.6052665
+          ],
+          [
+            3072,
+            512,
+            1.7182744589999999
+          ],
+          [
+            3584,
+            511,
+            1.742278
+          ],
+          [
+            4095,
+            1,
+            0.291578916
+          ],
+          [
+            4096,
+            512,
+            1.2831017089999999
+          ],
+          [
+            4608,
+            512,
+            1.6673497080000002
+          ],
+          [
+            5120,
+            512,
+            1.797603458
+          ],
+          [
+            5632,
+            511,
+            1.7391606670000002
+          ],
+          [
+            6143,
+            1,
+            0.304445875
+          ],
+          [
+            6144,
+            512,
+            1.279436208
+          ],
+          [
+            6656,
+            512,
+            1.610899833
+          ],
+          [
+            7168,
+            512,
+            1.729800292
+          ],
+          [
+            7680,
+            511,
+            1.851169375
+          ],
+          [
+            8191,
+            1,
+            0.390840667
+          ]
+        ],
+        "completed_tiles": 432,
+        "logit_count": 248320,
+        "logits_sha256": "c462857344953d919db12f0953586190e6eae270f0f27c2cb3b790a54da7e4f3",
+        "peak_bytes": 86453527246,
+        "qualification": false,
+        "seconds": 24.518921667,
+        "serial_eval": true,
+        "state_bytes": 342139249,
+        "state_sha256": "70e726b76c6bbda710ae1bbfa806b78f93dfccbd012a368138a6bdaf742d74bd",
+        "width": 512
+      },
+      "result_sha256": "27c432f046f41f5e04797bf61aa1b46be85ed8f01e1d331dd9b5a5475140e1a3",
+      "samples": {
+        "all_normal": true,
+        "count": 333,
+        "end_physical_bytes": 96765308424,
+        "max_before_last": 96388016928,
+        "max_physical_bytes": 96765308424,
+        "pressure_guard": false,
+        "swap_unchanged": true
+      },
+      "serial_eval": true,
+      "timeout": false,
+      "width": 512
+    }
+  },
+  "comparisons": {
+    "2048": {
+      "differences": null,
+      "identical_state_and_logits": null
+    },
+    "512": {
+      "differences": {
+        "serial_minus_lazy_peak_mlx_bytes": 0,
+        "serial_minus_lazy_peak_physical_bytes": -435240792,
+        "serial_over_lazy_forward_time": 0.8059636868479222
+      },
+      "identical_state_and_logits": true
+    }
+  },
+  "initial_build": {
+    "binary_sha256": "cea87ab0f62bdef2caaf63d585d1e56a5e33c74f2459e82caa773e6050d05d27",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+    "mlx": "0.32.4",
+    "patch_sha256": "bf92577e16a82d2fd032baca7af5dc31edef4e8de8624dacfdfbdde6d3f96d0b",
+    "profile": "release-server",
+    "prompt_sha256": "a6eee0fc146a9ed23530a81fc4dd0cbb5416857e176b66a5f1eeddd436666dc6",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "source_base": "f920ff7cfa25379dd1b055aaf13c74b9f1dd9915"
+  },
+  "initial_combined_guard": {
+    "all_normal": true,
+    "count": 144,
+    "end_physical_bytes": 118896719480,
+    "max_before_last": 98628318504,
+    "max_physical_bytes": 118896719480,
+    "pressure_guard": false,
+    "swap_unchanged": true
+  },
+  "isolated_build": {
+    "binary_sha256": "3f96c7ceedd254e16145ffa84b509df7d06de220f2b2a6dfe10974043c232223",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+    "mlx": "0.32.4",
+    "patch_sha256": "21df98d633d60a42189941177fe6f1c442b7bb0ae2809e9bd895f54f6739e8f1",
+    "profile": "release-server",
+    "prompt_sha256": "a6eee0fc146a9ed23530a81fc4dd0cbb5416857e176b66a5f1eeddd436666dc6",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "source_base": "f920ff7cfa25379dd1b055aaf13c74b9f1dd9915"
+  },
+  "macos": "27.2.1",
+  "measurement_order": [
+    "512-lazy",
+    "512-serial",
+    "2048-serial",
+    "2048-lazy"
+  ],
+  "memory_bytes": 206158430208,
+  "physical_cap_bytes": 103079215104,
+  "qualification": false,
+  "soc": "Apple M2 Ultra",
+  "storage": {
+    "bus_protocol": "USB",
+    "internal": false,
+    "solid_state": true
+  }
+}
