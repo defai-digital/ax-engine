@@ -1,0 +1,160 @@
+{
+  "earliest_sampled_difference": "moe_router_logits",
+  "exact_replay_of_both_full_model_arms": true,
+  "layer": 0,
+  "positions": [
+    0,
+    457,
+    458,
+    459,
+    1333,
+    1334,
+    1335,
+    1900,
+    1901,
+    1902,
+    2046
+  ],
+  "pressure": {
+    "narrow-incoming-bridge": {
+      "normal_samples": 132,
+      "peak_footprint_bytes": 81732031120
+    },
+    "wide-tiling-incoming-bridge": {
+      "normal_samples": 39,
+      "peak_footprint_bytes": 92488831608
+    }
+  },
+  "qualification": false,
+  "stages": {
+    "attention_hc_read": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "attention_hc_write": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "embedding": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_beta": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_core_output": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_gated_output": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_key_input": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_log_decay": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_query_input": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "gdn_value_input": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "mlp_hc_read": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "mlp_hc_write": {
+      "different_positions": {
+        "1334": 0.0009765625,
+        "1901": 0.0009765625,
+        "458": 0.0009765625
+      },
+      "tested_rows": 11
+    },
+    "moe_compute": {
+      "different_positions": {
+        "1334": 0.00048828125,
+        "1901": 0.00048828125,
+        "458": 0.00048828125
+      },
+      "tested_rows": 11
+    },
+    "moe_delta": {
+      "different_positions": {
+        "1334": 0.00048828125,
+        "1901": 0.00048828125,
+        "458": 0.00048828125
+      },
+      "tested_rows": 11
+    },
+    "moe_down": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_indices": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_routed": {
+      "different_positions": {
+        "1334": 0.00048828125,
+        "1901": 0.00048828125,
+        "458": 0.00048828125
+      },
+      "tested_rows": 11
+    },
+    "moe_router_logits": {
+      "different_positions": {
+        "1334": 0.03125,
+        "1335": 0.03125,
+        "1901": 0.03125,
+        "458": 0.015625
+      },
+      "tested_rows": 11
+    },
+    "moe_shared_activation": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_down": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_gate": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_input": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_output": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_router": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_score": {
+      "different_positions": {},
+      "tested_rows": 11
+    },
+    "moe_shared_up": {
+      "different_positions": {},
+      "tested_rows": 11
+    }
+  }
+}
