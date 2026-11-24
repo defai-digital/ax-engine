@@ -626,6 +626,41 @@ pub(crate) use attention_capture::{
     take as take_attention_capture,
 };
 
+pub(crate) struct GeometryForward {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) state: Option<Qwen4ExpState>,
+    pub(crate) logits: Option<MlxArray>,
+}
+
+thread_local! {
+    static GEOMETRY_FORWARDS: RefCell<Option<Vec<GeometryForward>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn capture_geometry_forwards() {
+    GEOMETRY_FORWARDS.with_borrow_mut(|slot| assert!(slot.replace(Vec::new()).is_none()));
+}
+
+pub(crate) fn take_geometry_forwards() -> Vec<GeometryForward> {
+    GEOMETRY_FORWARDS.with_borrow_mut(|slot| slot.take().unwrap())
+}
+
+pub(crate) fn record_geometry_forward(start: usize, state: &Qwen4ExpState, logits: &MlxArray) {
+    GEOMETRY_FORWARDS.with_borrow_mut(|slot| {
+        if let Some(forwards) = slot {
+            let end = state.position();
+            let state = matches!(end, 2047 | 2048 | 8192 | 8193).then(|| state.clone());
+            let logits = matches!(end, 8192 | 8193).then(|| logits.clone());
+            forwards.push(GeometryForward {
+                start,
+                end,
+                state,
+                logits,
+            });
+        }
+    });
+}
+
 fn snapshot(state: Qwen4ExpState) -> Vec<u8> {
     let mut cache = crate::kv_cache::MlxKVCache::new_contiguous(state.layers.len());
     cache.advance(state.position());

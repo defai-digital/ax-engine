@@ -1361,6 +1361,8 @@ impl<'a> PreparedForward<'a> {
         #[cfg(test)]
         profiling::mark("lm_head", &[&logits]);
         next.position = end;
+        #[cfg(test)]
+        profiling::record_geometry_forward(end - tokens.len(), &next, &logits);
         Ok(ForwardAdvance::Complete(Qwen4ExpOutput {
             stream_hidden: hidden,
             hidden: mixed,

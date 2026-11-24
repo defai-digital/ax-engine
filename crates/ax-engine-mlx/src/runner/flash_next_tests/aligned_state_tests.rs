@@ -213,6 +213,145 @@ fn flash_next_real_runner_aligned_states_and_continuation() {
 }
 
 #[test]
+#[ignore = "requires the pinned Flash Next pack and output IDs from the signed HTTP control"]
+fn flash_next_real_runner_prefill_geometry_witnesses() {
+    use crate::model::qwen4_exp::profiling::{capture_geometry_forwards, take_geometry_forwards};
+    use ax_engine_core::{
+        CacheGroupId, DeterministicSampler, EngineCore, KvManagerConfig, ModelId,
+        RequestSubmission, SamplingParams, SequenceNo,
+    };
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
+    let prompt: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    let expected: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_EXPECTED_IDS").unwrap()).unwrap();
+    let width: usize = std::env::var("AX_FLASH_NEXT_GEOMETRY_WIDTH")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let output = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_ALIGNED_RESULT_DIR").unwrap());
+    assert!(matches!(width, 512 | 2048));
+    assert_eq!(prompt.len(), 8192);
+    assert_eq!(expected.len(), 64);
+    assert!(!crate::fastpath::flash_next_qsa_grouped_eval_enabled());
+    let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
+    let mut runner = MlxRunner::from_artifacts_with_session_budget(
+        &artifacts,
+        width,
+        false,
+        true,
+        None,
+        None,
+        32_768,
+        Some(1),
+    )
+    .unwrap();
+    runner.set_mtp_requested(false);
+    runner.set_mtp_session_policy(MtpSessionPolicy::Auto);
+    assert!(
+        runner
+            .weights
+            .qwen4_exp
+            .as_ref()
+            .unwrap()
+            .expert_stream
+            .is_none()
+    );
+    let vocabulary = runner.cfg.vocab_size;
+    let kv = KvManagerConfig::new(CacheGroupId(0), 16, 2048).unwrap();
+    let mut core = EngineCore::with_runtime_components(kv, runner, DeterministicSampler);
+    core.set_prefix_reuse_enabled(false);
+    let request = core
+        .submit(RequestSubmission {
+            request_id: RequestId(8192),
+            model_id: ModelId("qwen3.8-flash-next".into()),
+            input_tokens: prompt.clone(),
+            multimodal_inputs: Default::default(),
+            sampling_params: SamplingParams {
+                ignore_eos: true,
+                ..Default::default()
+            },
+            max_output_tokens: expected.len() as u32,
+            arrival_sequence: SequenceNo(0),
+            metadata: None,
+            prefill_hints: Default::default(),
+        })
+        .unwrap();
+
+    capture_geometry_forwards();
+    let mut snapshot = core.request_manager().snapshot(request).unwrap();
+    for _ in 0..128 {
+        core.step(2048, true).unwrap();
+        snapshot = core.request_manager().snapshot(request).unwrap();
+        if snapshot.state.is_terminal() {
+            break;
+        }
+    }
+    let forwards = take_geometry_forwards();
+    assert_eq!(snapshot.state, ax_engine_core::RequestState::Finished);
+    assert_eq!(
+        snapshot.generated_tokens, expected,
+        "scheduled native runner must reproduce HTTP IDs"
+    );
+    std::fs::create_dir(&output).unwrap();
+    let cuts: Vec<_> = forwards
+        .iter()
+        .take_while(|f| f.end <= prompt.len())
+        .map(|f| [f.start, f.end])
+        .collect();
+    assert_eq!(cuts.first().unwrap()[0], 0);
+    assert_eq!(*cuts.last().unwrap(), [8191, 8192]);
+    assert!(cuts.windows(2).all(|pair| pair[0][1] == pair[1][0]));
+    let widest = cuts.iter().map(|[start, end]| end - start).max().unwrap();
+    assert!((width - 1..=width).contains(&widest));
+
+    let mut witnesses = Vec::new();
+    for (position, expected_id) in [
+        (2047, None),
+        (2048, None),
+        (8192, Some(expected[0])),
+        (8193, Some(expected[1])),
+    ] {
+        let Some(record) = forwards.iter().find(|f| f.end == position) else {
+            assert_eq!(position, 2047);
+            continue;
+        };
+        let state = record.state.as_ref().unwrap();
+        assert_eq!(state.position(), position);
+        let layer_hashes: Vec<_> = (0..state.layer_count())
+            .map(|index| {
+                let mut layer = Vec::new();
+                state.write_layer(index, &mut layer, MlxKVCache::serialize_tensor);
+                // Cache ownership is process-local. Compare the encoded tensor
+                // and history payload, excluding the leading owner field.
+                format!("{:x}", Sha256::digest(&layer[size_of::<u64>()..]))
+            })
+            .collect();
+        let logits = expected_id.map(|id| {
+            let array = record.logits.as_ref().unwrap();
+            assert_eq!(array.shape(), [1, vocabulary as i32]);
+            let row = decision(&output, &format!("position-{position}"), array);
+            assert_eq!(row["token"], id);
+            row
+        });
+        witnesses.push(serde_json::json!({
+            "position": position, "layer_hashes": layer_hashes, "logits": logits,
+        }));
+    }
+    let evidence = serde_json::json!({
+        "qualification": false, "width": width, "cuts": cuts, "witnesses": witnesses,
+        "output_ids": snapshot.generated_tokens,
+        "stop_reason": format!("{:?}", snapshot.terminal_stop_reason),
+    });
+    write_blob(
+        &output,
+        "result.json",
+        &serde_json::to_vec_pretty(&evidence).unwrap(),
+    );
+}
+
+#[test]
 #[ignore = "requires synthetic Flash Next MTP artifacts"]
 fn flash_next_canonical_aligned_evidence_producer() {
     synthetic_evidence(false);
