@@ -281,25 +281,42 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
         .unwrap();
 
     let trace_gdn = crate::fastpath::env_flag("AX_FLASH_NEXT_GDN_GEOMETRY_REPLAY");
+    let measure_tiling = crate::fastpath::env_flag("AX_FLASH_NEXT_RECORD_GDN_TILING");
+    let tiled_wide = gdn_geometry::decay_tiling_enabled() && width == 2048;
+    assert!(!tiled_wide || measure_tiling);
     if trace_gdn {
         assert!(crate::flash_next_gdn::enabled());
         gdn_geometry::begin();
     }
     capture_geometry_forwards();
+    gdn_geometry::take_tiled_decay_count();
+    if measure_tiling {
+        mlx_sys::reset_peak_memory();
+    }
+    let started = std::time::Instant::now();
+    let mut first_token_ns = None;
     let mut snapshot = core.request_manager().snapshot(request).unwrap();
     for _ in 0..128 {
         core.step(2048, true).unwrap();
         snapshot = core.request_manager().snapshot(request).unwrap();
+        if first_token_ns.is_none() && !snapshot.generated_tokens.is_empty() {
+            first_token_ns = Some(started.elapsed().as_nanos() as u64);
+        }
         if snapshot.state.is_terminal() {
             break;
         }
     }
+    let elapsed_ns = started.elapsed().as_nanos() as u64;
+    let mlx_peak = measure_tiling.then(mlx_sys::device_peak_bytes).flatten();
     let forwards = take_geometry_forwards();
     assert_eq!(snapshot.state, ax_engine_core::RequestState::Finished);
-    assert_eq!(
-        snapshot.generated_tokens, expected,
-        "scheduled native runner must reproduce HTTP IDs"
-    );
+    assert_eq!(snapshot.generated_tokens.len(), expected.len());
+    if !tiled_wide {
+        assert_eq!(
+            snapshot.generated_tokens, expected,
+            "scheduled native runner must reproduce HTTP IDs"
+        );
+    }
     std::fs::create_dir(&output).unwrap();
     let cuts: Vec<_> = forwards
         .iter()
@@ -316,8 +333,8 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
     for (position, expected_id) in [
         (2047, None),
         (2048, None),
-        (8192, Some(expected[0])),
-        (8193, Some(expected[1])),
+        (8192, Some(snapshot.generated_tokens[0])),
+        (8193, Some(snapshot.generated_tokens[1])),
     ] {
         let Some(record) = forwards.iter().find(|f| f.end == position) else {
             assert_eq!(position, 2047);
@@ -355,6 +372,21 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
         "result.json",
         &serde_json::to_vec_pretty(&evidence).unwrap(),
     );
+    if measure_tiling {
+        let projections = gdn_geometry::take_tiled_decay_count();
+        assert_eq!(projections > 0, tiled_wide);
+        let measurement = serde_json::json!({
+            "tiled_decay_projections": projections,
+            "first_token_ns": first_token_ns.unwrap(),
+            "total_ns": elapsed_ns,
+            "mlx_peak_bytes": mlx_peak.unwrap(),
+        });
+        write_blob(
+            &output,
+            "tiling.json",
+            &serde_json::to_vec_pretty(&measurement).unwrap(),
+        );
+    }
     if trace_gdn {
         write_blob(
             &output,

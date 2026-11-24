@@ -1,0 +1,36 @@
+{
+  "candidate_ids_and_states_unchanged_by_profiling": true,
+  "earliest_sampled_difference": null,
+  "maximum_absolute_deltas_by_position": {
+    "attention_hc_read": {},
+    "attention_hc_write": {},
+    "embedding": {},
+    "gdn": {},
+    "gdn_beta": {},
+    "gdn_core_output": {},
+    "gdn_gated_output": {},
+    "gdn_key_input": {},
+    "gdn_log_decay": {},
+    "gdn_query_input": {},
+    "gdn_value_input": {},
+    "mlp_hc_read": {},
+    "mlp_hc_write": {}
+  },
+  "normal_pressure_samples": 36,
+  "positions": [
+    0,
+    1,
+    510,
+    511,
+    512,
+    513,
+    1023,
+    1024,
+    1535,
+    1536,
+    2046,
+    2047
+  ],
+  "qualification": false,
+  "sampled_footprint_peak_bytes": 92536427200
+}

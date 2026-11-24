@@ -867,12 +867,22 @@ pub(crate) fn qwen_prefill_maybe_tile_qmm_for(
     if !fastpath::should_qwen_prefill_tile_qmm_for(enabled, model_family, seq) {
         return qmm(x);
     }
+    qwen_projection_sequence_tiles(x, qmm)
+}
+
+/// Project in at most 512-token slices, retaining the last slice's width.
+pub(super) fn qwen_projection_sequence_tiles(
+    x: &MlxArray,
+    qmm: impl Fn(&MlxArray) -> MlxArray,
+) -> MlxArray {
+    let shape = x.shape();
+    let &[batch, seq, hidden] = shape.as_slice() else {
+        return qmm(x);
+    };
     let tile = fastpath::QWEN_PREFILL_QMM_TILE;
     if seq <= tile {
         return qmm(x);
     }
-    let batch = shape[0];
-    let hidden = shape[2];
     let mut parts: Vec<MlxArray> = Vec::new();
     let mut start = 0i32;
     while start < seq {

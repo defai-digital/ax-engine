@@ -2,7 +2,8 @@ use super::{DUMP_CHUNK_LEN, DUMP_LAYER, DUMP_OFFSET};
 use mlx_sys::{MlxArray, MlxDtype, astype, concatenate, contiguous, slice, try_eval};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::OnceLock;
 
 const PREFIX: usize = 2047;
 const SPLIT: [usize; 4] = [512, 512, 512, 511];
@@ -33,6 +34,20 @@ struct Capture {
 
 thread_local! {
     static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+    static TILED_DECAYS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn decay_tiling_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_FLASH_NEXT_TRIAL_TILE_GDN_DECAY"))
+}
+
+pub(crate) fn note_tiled_decay_projection() {
+    TILED_DECAYS.set(TILED_DECAYS.get() + 1);
+}
+
+pub(crate) fn take_tiled_decay_count() -> usize {
+    TILED_DECAYS.replace(0)
 }
 
 pub(crate) fn begin() {

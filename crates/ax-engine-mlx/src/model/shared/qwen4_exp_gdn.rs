@@ -122,6 +122,33 @@ fn qwen4_verifier_projection(
     qw_with_policy(input, weight, qkv_policy)
 }
 
+#[cfg(test)]
+fn trial_tiled_decay_projection(
+    input: &MlxArray,
+    weight: &QuantizedWeight,
+    policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
+) -> Option<MlxArray> {
+    use crate::model::qwen4_exp::profiling::gdn_geometry;
+    let shape = input.shape();
+    if !gdn_geometry::decay_tiling_enabled()
+        || shape[0] != 1
+        || shape[1] <= crate::fastpath::QWEN_PREFILL_QMM_TILE
+        || input.dtype() != MlxDtype::Bfloat16
+        || weight.mlx_quantization_mode() != mlx_sys::MlxQuantizationMode::Mxfp4
+        || weight.scales.is_none()
+        || policy != ProjectionBatchPolicy::Shared
+        || verifier_policy != ProjectionBatchPolicy::Shared
+    {
+        return None;
+    }
+    gdn_geometry::note_tiled_decay_projection();
+    Some(super::utils::qwen_projection_sequence_tiles(
+        input,
+        |tile| qwen4_verifier_projection(tile, weight, policy, verifier_policy),
+    ))
+}
+
 /// Key component for a compiled stretch whose body bakes in a dtype.
 ///
 /// A compiled body captures its dtype and MLX re-traces that body per input
@@ -578,8 +605,14 @@ impl Qwen4ExpGdn {
         };
         // Both gate projections are built once and handed to the native
         // kernel or to their compiled and eager stages unchanged.
+        let project_decay =
+            || qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy);
+        #[cfg(test)]
         let decay_projection =
-            qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy);
+            trial_tiled_decay_projection(input, &self.weights.decay, policy, verifier_policy)
+                .unwrap_or_else(project_decay);
+        #[cfg(not(test))]
+        let decay_projection = project_decay();
         let beta_projection =
             qwen4_verifier_projection(input, &self.weights.beta, policy, verifier_policy);
         // The native kernel produces decay and beta together; when it does not
