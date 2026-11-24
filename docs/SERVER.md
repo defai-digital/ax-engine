@@ -281,6 +281,9 @@ returns 404 when polish is off.
   "phys_footprint_bytes": 3221225472,
   "lifetime_max_phys_footprint_bytes": 4563402752,
   "sampled_at": "2026-10-24T12:00:00.000000000Z",
+  "models": [
+    {"id": "qwen3.8-flash-next", "expert_streaming_active": false}
+  ],
   "mlx": {
     "active_bytes": 1073741824,
     "cache_bytes": 268435456,
@@ -294,6 +297,7 @@ returns 404 when polish is off.
 | `phys_footprint_bytes` | macOS physical footprint of the server process, or `null` on a delegated build with no `mlx-sys` linkage. |
 | `lifetime_max_phys_footprint_bytes` | Lifetime peak footprint. Paired with the field above: both are `null` together, or both are integers with peak at least the current footprint. |
 | `sampled_at` | RFC 3339 UTC timestamp with nanosecond precision. |
+| `models` | Ready native MLX models, sorted by model ID. `expert_streaming_active` reports whether each loaded worker reads routed expert weights from SSD. The array is empty when no ready native model is loaded. Physical footprint and wired-limit estimates remain process-level observations. |
 | `mlx.active_bytes` / `cache_bytes` / `peak_bytes` | MLX allocator active bytes, cached-but-free bytes, and peak bytes. The `mlx` object is present only when the server was built with the native MLX feature; it is omitted on delegated builds. |
 
 ## Observability

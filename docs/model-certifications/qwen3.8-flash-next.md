@@ -125,8 +125,9 @@ and queued additional work. The current planner reserves selected-attention
 scratch across the full prefill chunk. At the default chunk budget the
 128 GiB plan projects streaming for the 6-bit pack. Use
 `--max-concurrent-requests 1 --stream-experts off` to reproduce the
-measured forced-resident profile. Check the effective placement in
-`GET /v1/memory`. The 6-bit pack retains its own open qualification.
+measured forced-resident profile. In `GET /v1/memory`, find the model's
+`models[].expert_streaming_active` value to confirm expert streaming is off.
+The 6-bit pack retains its own open qualification.
 [October 24 measurement](../../benchmarks/results/reference-wave-m5max-20261024/README.md) ·
 [Prefill reservation comparison](../../benchmarks/results/flash-next-qsa-prefill-scratch-20261123/README.md).
 

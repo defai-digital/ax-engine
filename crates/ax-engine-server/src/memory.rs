@@ -1,5 +1,5 @@
 //! `GET /v1/memory`: process physical footprint, the priced plan's wired-limit
-//! numbers, and, when the native MLX runtime is linked, MLX allocator gauges.
+//! numbers, and native MLX allocator and model residency diagnostics.
 //! No model is loaded.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,7 +24,22 @@ pub(crate) async fn memory_sample(
     if !state.env.api_polish {
         return Err(StatusCode::NOT_FOUND);
     }
-    Ok(Json(memory_report()))
+    let mut report = memory_report();
+    let models: Vec<_> = state
+        .snapshots()
+        .into_iter()
+        .filter(|model| {
+            model.runtime_report.selected_backend.is_mlx() && model.generation_service.is_ready()
+        })
+        .map(|model| {
+            json!({
+                "id": model.model_id.as_str(),
+                "expert_streaming_active": model.generation_service.expert_streaming_active(),
+            })
+        })
+        .collect();
+    report["models"] = json!(models);
+    Ok(Json(report))
 }
 
 pub(crate) fn memory_report() -> Value {

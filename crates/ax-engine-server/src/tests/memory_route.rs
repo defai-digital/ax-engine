@@ -4,8 +4,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use super::fixtures::{json_response, llama_cpp_state};
+use super::fixtures::{json_response, llama_cpp_server_state, llama_cpp_state};
 use crate::routes::build_router;
+use ax_engine_sdk::SelectedBackend;
 
 #[tokio::test]
 async fn get_v1_memory_reports_footprint_and_sampled_at() {
@@ -21,6 +22,7 @@ async fn get_v1_memory_reports_footprint_and_sampled_at() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["models"], serde_json::json!([]));
     let sampled_at = body["sampled_at"].as_str().expect("sampled_at");
     assert!(
         sampled_at.contains('T') && sampled_at.ends_with('Z'),
@@ -47,6 +49,34 @@ async fn get_v1_memory_reports_footprint_and_sampled_at() {
         assert!(body["mlx"].get("cache_bytes").is_some());
         assert!(body["mlx"].get("peak_bytes").is_some());
     }
+}
+
+#[tokio::test]
+async fn get_v1_memory_reports_ready_native_models_by_generation() {
+    let state = llama_cpp_state();
+    let sibling = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let mut native = sibling.snapshot();
+    native.model_id = Arc::new("flash-next".to_string());
+    native.runtime_report.selected_backend = SelectedBackend::Mlx;
+    state.publish_live(native, false);
+    let app = build_router(state.clone());
+    let sample = || {
+        Request::builder()
+            .uri("/v1/memory")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, body) = json_response(&app, sample()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["models"],
+        serde_json::json!([{"id": "flash-next", "expert_streaming_active": false}])
+    );
+
+    state.remove_live("flash-next").expect("remove sibling");
+    let (status, body) = json_response(&app, sample()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["models"], serde_json::json!([]));
 }
 
 #[tokio::test]

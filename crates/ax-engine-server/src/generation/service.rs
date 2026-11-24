@@ -1597,6 +1597,9 @@ fn run_worker_loop(
                 match factory() {
                     Ok(new_session) => {
                         session = new_session;
+                        state
+                            .expert_streaming_active
+                            .store(session.native_expert_streaming_active(), Ordering::Release);
                         ticks_since_recycle = 0;
                         idle.note_activity();
                         tracing::info!(
