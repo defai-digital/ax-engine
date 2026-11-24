@@ -1,0 +1,271 @@
+{
+  "decay_stages": {
+    "biased_projection": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "decay": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "log1p": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "log_decay": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "negative_abs_exp": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "projection": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "softplus": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    }
+  },
+  "exact_archived_full_model_repeats": true,
+  "inputs": {
+    "beta": {
+      "different_rows": 1,
+      "first_different_row": 1504,
+      "first_positions": [
+        1504
+      ],
+      "last_different_row": 1504
+    },
+    "decay": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "key": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "query": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "value": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    }
+  },
+  "layer": 2,
+  "live": {
+    "different_rows": 373,
+    "first_different_row": 1504,
+    "first_positions": [
+      1504,
+      1505,
+      1506,
+      1507,
+      1508,
+      1509,
+      1510,
+      1511,
+      1512,
+      1513,
+      1514,
+      1515,
+      1516,
+      1517,
+      1518,
+      1519
+    ],
+    "last_different_row": 1919,
+    "same_final_state": false
+  },
+  "pressure": {
+    "narrow-layer-two": {
+      "normal_samples": 111,
+      "peak_footprint_bytes": 81915695736
+    },
+    "wide-both-layer-two": {
+      "normal_samples": 48,
+      "peak_footprint_bytes": 92952629784
+    }
+  },
+  "prework": {
+    "attention_input": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "convolved_key": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "convolved_query": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "convolved_value": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "qkv_projection": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    }
+  },
+  "qualification": false,
+  "same_input_replay_vs_live": {
+    "narrow-layer-two": {
+      "split_fenced": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "split_lazy": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "whole": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      }
+    },
+    "wide-both-layer-two": {
+      "split_fenced": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "split_lazy": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "whole": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      }
+    }
+  },
+  "same_partition_cross_arm": {
+    "split_fenced": {
+      "different_rows": 373,
+      "first_different_row": 1504,
+      "first_positions": [
+        1504,
+        1505,
+        1506,
+        1507,
+        1508,
+        1509,
+        1510,
+        1511,
+        1512,
+        1513,
+        1514,
+        1515,
+        1516,
+        1517,
+        1518,
+        1519
+      ],
+      "last_different_row": 1919,
+      "same_final_state": false
+    },
+    "split_lazy": {
+      "different_rows": 373,
+      "first_different_row": 1504,
+      "first_positions": [
+        1504,
+        1505,
+        1506,
+        1507,
+        1508,
+        1509,
+        1510,
+        1511,
+        1512,
+        1513,
+        1514,
+        1515,
+        1516,
+        1517,
+        1518,
+        1519
+      ],
+      "last_different_row": 1919,
+      "same_final_state": false
+    },
+    "whole": {
+      "different_rows": 373,
+      "first_different_row": 1504,
+      "first_positions": [
+        1504,
+        1505,
+        1506,
+        1507,
+        1508,
+        1509,
+        1510,
+        1511,
+        1512,
+        1513,
+        1514,
+        1515,
+        1516,
+        1517,
+        1518,
+        1519
+      ],
+      "last_different_row": 1919,
+      "same_final_state": false
+    }
+  }
+}
