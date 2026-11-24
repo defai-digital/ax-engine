@@ -1,0 +1,248 @@
+{
+  "decay_stages": {
+    "biased_projection": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 7.62939453125e-06,
+            "head": 1,
+            "narrow_bits": 3229683088,
+            "wide_bits": 3229683104
+          },
+          {
+            "abs_delta": 0.001953125,
+            "head": 32,
+            "narrow_bits": 3233091584,
+            "wide_bits": 3233095680
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0078125,
+            "head": 8,
+            "narrow_bits": 3196059648,
+            "wide_bits": 3196321792
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040
+      ],
+      "different_rows": 2,
+      "first_different_row": 494,
+      "last_different_row": 1040
+    },
+    "decay": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 2.8312206268310547e-06,
+            "head": 1,
+            "narrow_bits": 1051889192,
+            "wide_bits": 1051889287
+          },
+          {
+            "abs_delta": 2.9921531677246094e-05,
+            "head": 32,
+            "narrow_bits": 1065093383,
+            "wide_bits": 1065093885
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0018576979637145996,
+            "head": 8,
+            "narrow_bits": 1058414699,
+            "wide_bits": 1058445866
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040
+      ],
+      "different_rows": 2,
+      "first_different_row": 494,
+      "last_different_row": 1040
+    },
+    "log1p": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 1.341104507446289e-07,
+            "head": 1,
+            "narrow_bits": 1016064464,
+            "wide_bits": 1016064392
+          },
+          {
+            "abs_delta": 6.783520802855492e-06,
+            "head": 32,
+            "narrow_bits": 996425255,
+            "wide_bits": 996396120
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0034130215644836426,
+            "head": 8,
+            "narrow_bits": 1058238660,
+            "wide_bits": 1058181399
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040
+      ],
+      "different_rows": 2,
+      "first_different_row": 494,
+      "last_different_row": 1040
+    },
+    "log_decay": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 8.106231689453125e-06,
+            "head": 1,
+            "narrow_bits": 3213285036,
+            "wide_bits": 3213284968
+          },
+          {
+            "abs_delta": 3.0401162803173065e-05,
+            "head": 32,
+            "narrow_bits": 3162487411,
+            "wide_bits": 3162454768
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0031627416610717773,
+            "head": 8,
+            "narrow_bits": 3205013619,
+            "wide_bits": 3204960557
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040
+      ],
+      "different_rows": 2,
+      "first_different_row": 494,
+      "last_different_row": 1040
+    },
+    "negative_abs_exp": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 1.3597309589385986e-07,
+            "head": 1,
+            "narrow_bits": 1016147795,
+            "wide_bits": 1016147722
+          },
+          {
+            "abs_delta": 6.807269528508186e-06,
+            "head": 32,
+            "narrow_bits": 996451333,
+            "wide_bits": 996422096
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0060607194900512695,
+            "head": 8,
+            "narrow_bits": 1061642109,
+            "wide_bits": 1061540427
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040
+      ],
+      "different_rows": 2,
+      "first_different_row": 494,
+      "last_different_row": 1040
+    },
+    "projection": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 7.62939453125e-06,
+            "head": 1,
+            "narrow_bits": 3134783488,
+            "wide_bits": 3134849024
+          },
+          {
+            "abs_delta": 0.001953125,
+            "head": 32,
+            "narrow_bits": 1053753344,
+            "wide_bits": 1053687808
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0078125,
+            "head": 8,
+            "narrow_bits": 1069219840,
+            "wide_bits": 1069154304
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040,
+        1544
+      ],
+      "different_rows": 3,
+      "first_different_row": 494,
+      "last_different_row": 1544
+    },
+    "softplus": {
+      "changed_heads": {
+        "1040": [
+          {
+            "abs_delta": 1.341104507446289e-07,
+            "head": 1,
+            "narrow_bits": 1016064464,
+            "wide_bits": 1016064392
+          },
+          {
+            "abs_delta": 6.783520802855492e-06,
+            "head": 32,
+            "narrow_bits": 996425255,
+            "wide_bits": 996396120
+          }
+        ],
+        "494": [
+          {
+            "abs_delta": 0.0034130215644836426,
+            "head": 8,
+            "narrow_bits": 1058238660,
+            "wide_bits": 1058181399
+          }
+        ]
+      },
+      "different_positions": [
+        494,
+        1040
+      ],
+      "different_rows": 2,
+      "first_different_row": 494,
+      "last_different_row": 1040
+    }
+  },
+  "different_projection_input_positions": [],
+  "earliest_stage_with_drift": "projection",
+  "macos": "27.2.1",
+  "matched_http_token_ids": 128,
+  "matched_recurrence_receipts": 2,
+  "normal_pressure_samples": 154,
+  "peak_sampled_footprint_bytes": {
+    "2048": 92893418056,
+    "512": 81888531064
+  },
+  "qualification": false,
+  "source_base": "7b0f47dbf6178a9db22cba0e38cbb9aec24cb35b"
+}

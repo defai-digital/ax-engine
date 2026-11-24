@@ -474,7 +474,12 @@ impl Qwen4ExpGdn {
                 let log_decay = negative(&multiply(exp_a_log, &softplus, None), None);
                 let decay = exp(&log_decay, None);
                 #[cfg(test)]
-                crate::model::qwen4_exp::profiling::dump("gdn_log_decay", &[&log_decay]);
+                {
+                    crate::model::qwen4_exp::profiling::dump("gdn_log_decay", &[&log_decay]);
+                    crate::model::qwen4_exp::profiling::gdn_geometry::record_decay_stages([
+                        projection, &a, &exponent, &l1, &softplus, &log_decay,
+                    ]);
+                }
                 decay
             }
         }
