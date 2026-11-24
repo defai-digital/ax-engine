@@ -1,0 +1,332 @@
+{
+  "all_state_and_logits_bitwise_equal": true,
+  "arms": [
+    {
+      "all_pressure_normal": true,
+      "arm": "00-width2048-group0",
+      "cpu_idle_percent": [
+        92.78,
+        96.7
+      ],
+      "evaluation_group": 0,
+      "exit_code": 0,
+      "guard_triggered": false,
+      "output": {
+        "chunks": [
+          [
+            0,
+            2047,
+            2.121984833
+          ],
+          [
+            2047,
+            1,
+            1.354812334
+          ],
+          [
+            2048,
+            2047,
+            3.404871875
+          ],
+          [
+            4095,
+            1,
+            0.580133167
+          ],
+          [
+            4096,
+            2047,
+            2.747800042
+          ],
+          [
+            6143,
+            1,
+            0.590238375
+          ],
+          [
+            6144,
+            2047,
+            2.688259042
+          ],
+          [
+            8191,
+            1,
+            0.545802
+          ]
+        ],
+        "completed_tiles": 0,
+        "evaluation_fences": 0,
+        "evaluation_group": 0,
+        "logit_count": 248320,
+        "logits_sha256": "e76629e262451d311fcf88ec71999a9be341695ca4c5f50c8c7023e03a1a5a39",
+        "peak_bytes": 88316411454,
+        "qualification": false,
+        "seconds": 14.033911958,
+        "state_bytes": 342139249,
+        "state_sha256": "909840d83775f8901529904a03896804e5ea6cd97658014d9e6e5751ad940ff1",
+        "width": 2048
+      },
+      "passed": true,
+      "peak_physical_bytes": 91478200976,
+      "pressure_samples": 115,
+      "result_sha256": "1baa7ad488e1bf33ff447b0515479a0e647eb9ba8351bb8b8e8de8e474446b49",
+      "timeout": false,
+      "width": 2048
+    },
+    {
+      "all_pressure_normal": true,
+      "arm": "01-width2048-group2",
+      "cpu_idle_percent": [
+        96.91,
+        84.6
+      ],
+      "evaluation_group": 2,
+      "exit_code": 0,
+      "guard_triggered": false,
+      "output": {
+        "chunks": [
+          [
+            0,
+            2047,
+            2.014773
+          ],
+          [
+            2047,
+            1,
+            1.496502583
+          ],
+          [
+            2048,
+            2047,
+            3.146200708
+          ],
+          [
+            4095,
+            1,
+            0.667022709
+          ],
+          [
+            4096,
+            2047,
+            2.5550355
+          ],
+          [
+            6143,
+            1,
+            0.542012375
+          ],
+          [
+            6144,
+            2047,
+            2.57693575
+          ],
+          [
+            8191,
+            1,
+            0.43882125
+          ]
+        ],
+        "completed_tiles": 324,
+        "evaluation_fences": 180,
+        "evaluation_group": 2,
+        "logit_count": 248320,
+        "logits_sha256": "e76629e262451d311fcf88ec71999a9be341695ca4c5f50c8c7023e03a1a5a39",
+        "peak_bytes": 79499144278,
+        "qualification": false,
+        "seconds": 13.437312583,
+        "state_bytes": 342139249,
+        "state_sha256": "909840d83775f8901529904a03896804e5ea6cd97658014d9e6e5751ad940ff1",
+        "width": 2048
+      },
+      "passed": true,
+      "peak_physical_bytes": 82483057392,
+      "pressure_samples": 112,
+      "result_sha256": "fb2f70bbda2fcf97148c0754524905bced2348feffe95faafa1555e84552d7c5",
+      "timeout": false,
+      "width": 2048
+    },
+    {
+      "all_pressure_normal": true,
+      "arm": "02-width2048-group2",
+      "cpu_idle_percent": [
+        70.84,
+        97.23
+      ],
+      "evaluation_group": 2,
+      "exit_code": 0,
+      "guard_triggered": false,
+      "output": {
+        "chunks": [
+          [
+            0,
+            2047,
+            2.022440042
+          ],
+          [
+            2047,
+            1,
+            1.425367417
+          ],
+          [
+            2048,
+            2047,
+            3.038083458
+          ],
+          [
+            4095,
+            1,
+            0.581365792
+          ],
+          [
+            4096,
+            2047,
+            2.590437625
+          ],
+          [
+            6143,
+            1,
+            0.4959025
+          ],
+          [
+            6144,
+            2047,
+            2.601129667
+          ],
+          [
+            8191,
+            1,
+            0.506007334
+          ]
+        ],
+        "completed_tiles": 324,
+        "evaluation_fences": 180,
+        "evaluation_group": 2,
+        "logit_count": 248320,
+        "logits_sha256": "e76629e262451d311fcf88ec71999a9be341695ca4c5f50c8c7023e03a1a5a39",
+        "peak_bytes": 79499144790,
+        "qualification": false,
+        "seconds": 13.260743042,
+        "state_bytes": 342139249,
+        "state_sha256": "909840d83775f8901529904a03896804e5ea6cd97658014d9e6e5751ad940ff1",
+        "width": 2048
+      },
+      "passed": true,
+      "peak_physical_bytes": 82835445232,
+      "pressure_samples": 121,
+      "result_sha256": "c2486e5e95437e0aac6ef95643b8674686041aa90493fb48cac3c05b686203e8",
+      "timeout": false,
+      "width": 2048
+    },
+    {
+      "all_pressure_normal": true,
+      "arm": "03-width2048-group0",
+      "cpu_idle_percent": [
+        98.23,
+        98.1
+      ],
+      "evaluation_group": 0,
+      "exit_code": 0,
+      "guard_triggered": false,
+      "output": {
+        "chunks": [
+          [
+            0,
+            2047,
+            1.977429042
+          ],
+          [
+            2047,
+            1,
+            0.914515375
+          ],
+          [
+            2048,
+            2047,
+            3.113541125
+          ],
+          [
+            4095,
+            1,
+            0.47635825
+          ],
+          [
+            4096,
+            2047,
+            2.733675583
+          ],
+          [
+            6143,
+            1,
+            0.581000625
+          ],
+          [
+            6144,
+            2047,
+            2.6032175
+          ],
+          [
+            8191,
+            1,
+            0.450005416
+          ]
+        ],
+        "completed_tiles": 0,
+        "evaluation_fences": 0,
+        "evaluation_group": 0,
+        "logit_count": 248320,
+        "logits_sha256": "e76629e262451d311fcf88ec71999a9be341695ca4c5f50c8c7023e03a1a5a39",
+        "peak_bytes": 88316411358,
+        "qualification": false,
+        "seconds": 12.849756125,
+        "state_bytes": 342139249,
+        "state_sha256": "909840d83775f8901529904a03896804e5ea6cd97658014d9e6e5751ad940ff1",
+        "width": 2048
+      },
+      "passed": true,
+      "peak_physical_bytes": 91830146616,
+      "pressure_samples": 119,
+      "result_sha256": "abed2c3151f046f1025097129e1828a9074c3d78bfd8a67e80ddf69a5a03245d",
+      "timeout": false,
+      "width": 2048
+    }
+  ],
+  "build": {
+    "binary_sha256": "3415fe75b79d81615fb1ba2ce10cf5577f0bbe67974f6a903ed284b5f6b8c05d",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "codesign_verified": true,
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "manifest_sha256": "62f61c17cf571afc24dfb3002afd7c3c9b038b0eb80cde182f143266954e61ef",
+    "mlx": "0.32.4",
+    "patch_sha256": "750ad4ef684e16046bcf85d7e25214ad9f4c681149e6ba6a4a0796c474c8c615",
+    "profile": "release-server",
+    "prompt_sha256": "a6eee0fc146a9ed23530a81fc4dd0cbb5416857e176b66a5f1eeddd436666dc6",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "source_base": "f920ff7cfa25379dd1b055aaf13c74b9f1dd9915"
+  },
+  "grouped_over_lazy_forward_median": 0.9930957167962742,
+  "hardware": {
+    "macos": "27.2.1",
+    "memory_bytes": 137438953472,
+    "soc": "Apple M5 Max",
+    "storage": {
+      "bus_protocol": "Apple Fabric",
+      "internal": true,
+      "solid_state": true
+    }
+  },
+  "paired_comparisons": [
+    {
+      "endpoints_90_percent_idle": false,
+      "grouped_minus_lazy_peak_mlx_bytes": -8817267176,
+      "grouped_minus_lazy_peak_physical_bytes": -8995143584,
+      "grouped_over_lazy_forward": 0.9574887332352182
+    },
+    {
+      "endpoints_90_percent_idle": false,
+      "grouped_minus_lazy_peak_mlx_bytes": -8817266568,
+      "grouped_minus_lazy_peak_physical_bytes": -8994701384,
+      "grouped_over_lazy_forward": 1.0319840246773555
+    }
+  ],
+  "qualification": false
+}
