@@ -1,0 +1,27 @@
+{
+  "final_compressor_gib": 79.1,
+  "final_largest_other_rss_gib": 4.7,
+  "final_swap_used_mib": 25412.19,
+  "heartbeat_cases_completed": 0,
+  "last_progress": {
+    "case": 1,
+    "tokens": 0
+  },
+  "macos": "27.2.1",
+  "ordinary_reference_started": false,
+  "preflight_sha256": "e786a7ba7ee297f5139f0e0c33fd7a020c967461c73c89655c9080ed21c04ecd",
+  "pressure_samples": {
+    "1": 8,
+    "2": 1,
+    "4": 1
+  },
+  "runner_cpu_idle_percent": 91.26,
+  "scope": "Four-case independent reference admission on M5 Max 128 GiB",
+  "signed_margin_gib": 6.44,
+  "startup_compressor_gib": 7.02,
+  "startup_cpu_idle_percent": 90.71,
+  "startup_largest_other_rss_gib": 6.19,
+  "stop_reason": "critical system memory pressure",
+  "weights_materialize_seconds": 24.113,
+  "weights_materialized": 2326
+}

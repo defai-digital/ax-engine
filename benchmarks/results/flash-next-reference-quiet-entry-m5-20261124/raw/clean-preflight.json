@@ -1,0 +1,33 @@
+{
+  "source_sha256": "b1c8f8e41923e9e2076b824b4e055bf458a1fce39761ff5a964658f541ce1897",
+  "signed_reference_sha256": "2eeeb8ab3b5f329726550b675ec61d57edeab6558a582582d75287983d4a19b7",
+  "versions": {
+    "mlx": "0.32.2",
+    "mlx-metal": "0.32.2",
+    "mlx-vlm": "0.7.0rc0",
+    "transformers": "5.18.0.dev0",
+    "tokenizers": "0.23.2"
+  },
+  "language_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+  "macos": "27.2.1",
+  "capacity": {
+    "utc": "2026-11-24T05:26:48+00:00",
+    "pressure": 1,
+    "swap": "total = 2048.00M  used = 1415.56M  free = 632.44M  (encrypted)",
+    "compressor_bytes": 7538425856,
+    "vm_page_counters": {
+      "pageins": 6484488382,
+      "pageouts": 54221,
+      "swapins": 124191649,
+      "swapouts": 131765503
+    },
+    "largest_other_process_rss_bytes": 6643843072,
+    "reason": "can-attempt",
+    "eligible_for_attempt": true,
+    "physical_bytes": 137438953472,
+    "signed_peak_mlx_bytes": 130521001170,
+    "observed_signed_margin_bytes": 6917952302,
+    "largest_background_rss_bytes": 6643843072,
+    "cpu_idle_percent": 90.71
+  }
+}

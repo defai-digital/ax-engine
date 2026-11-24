@@ -1,0 +1,13 @@
+{
+  "source_sha256": "b1c8f8e41923e9e2076b824b4e055bf458a1fce39761ff5a964658f541ce1897",
+  "signed_reference_sha256": "2eeeb8ab3b5f329726550b675ec61d57edeab6558a582582d75287983d4a19b7",
+  "versions": {
+    "mlx": "0.32.2",
+    "mlx-metal": "0.32.2",
+    "mlx-vlm": "0.7.0rc0",
+    "transformers": "5.18.0.dev0",
+    "tokenizers": "0.23.2"
+  },
+  "language_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+  "macos": "27.2.1"
+}
