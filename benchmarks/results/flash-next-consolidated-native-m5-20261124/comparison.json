@@ -1,0 +1,138 @@
+{
+  "disclosure": "The memory, readiness and long-lookup bounds were set after observing the single measurements named above and are therefore descriptive guard rails, not independently pre-registered limits. The reference-relative, quality and identity bounds were frozen before any reference or product-default data were collected.",
+  "evidence_sha256": {
+    "delivery": "ea2c0188a4935f95699f77c94bde0024ca73927759da2631aa07655ff3a21cf6",
+    "delivery_controls": "6cfc04e358a395c6b64fdf8db23844a61f42cbb7d377814d4a03f5ef23d91826",
+    "lifecycle": "5616e08b36b6b720328a43d0fab57e7e06cceb332dbfaf42092f106c01d9cedc",
+    "matrix": "b9873ccbc0e776c316a77c533f0b0ee81a6a8553eb9a8d65fff3c1739fa40033",
+    "matrix_raw": "c10fd96f38f230b3a499cec4abffe1f414bee8067b3cdfbbe1387f45bd16f523",
+    "qa": "2bb002adcbcec8e74ab450763820309bae097b82c04b8bcbd9e087b0735b9509",
+    "qa_default_rows": "62135ada3638d411f593eaded9f159673a65311fdce7fa88efcd78e1e283c674",
+    "qa_disabled_rows": "06d56c400cebcc3e43c184f9afa7c0fa1705b8cd95a2a9fde5c5f6bc8afa9dfa",
+    "reference": "868bdf9cd3937b3b49323e75fe38979a206ba16e8d529efa54c016820322673d"
+  },
+  "gates": [
+    {
+      "detail": "49 members, 132261877478 bytes verified from an empty cache",
+      "download_seconds": 1099.559,
+      "failed_attempts": 0,
+      "gate": "delivery",
+      "passed": true
+    },
+    {
+      "detail": "lifecycle: before and after must record CPU idle between 90.0% and 100%; reference: before and after must record CPU idle between 90.0% and 100%",
+      "gate": "integrity",
+      "passed": false
+    },
+    {
+      "ax_failures": {
+        "default": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "disabled": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ]
+      },
+      "ax_only_failures": {
+        "default": null,
+        "disabled": null
+      },
+      "detail": "reference QA is incomplete",
+      "gate": "quality",
+      "passed": false,
+      "reference_failures": null
+    },
+    {
+      "detail": "7 actions in each of ['disabled', 'default'] with drained counters",
+      "gate": "lifecycle",
+      "passed": true
+    },
+    {
+      "detail": "peak server RSS {disabled: 60.6, default: 66.4} GiB within 96 GiB",
+      "gate": "memory",
+      "passed": true,
+      "peaks_gib": {
+        "default": 66.38,
+        "disabled": 60.555
+      }
+    },
+    {
+      "delivered": {
+        "default": 30.113,
+        "disabled": 32.209,
+        "required": 83.458
+      },
+      "detail": "first load after delivery 32.209s; staged-pack worst 31.136s",
+      "gate": "readiness",
+      "passed": true
+    },
+    {
+      "detail": "29774-token lookup took {'disabled': 47.338, 'default': 46.462} s (limit 400 s)",
+      "gate": "long_lookup",
+      "passed": true,
+      "seconds": {
+        "default": 46.462,
+        "disabled": 47.338
+      }
+    },
+    {
+      "cells": {},
+      "detail": "reference matrix is incomplete; reference: expected two warmups and three measurements at each of (512, 2048, 8192); reference: expected a SHA-256 for every fixed-workload prompt; 512/disabled: missing timing; 512/default: missing timing; 2048/disabled: missing timing; 2048/default: missing timing; 8192/disabled: missing timing; 8192/default: missing timing",
+      "gate": "reference_relative",
+      "passed": false
+    },
+    {
+      "default_verified_steps": {
+        "lifecycle": 0.0,
+        "matrix": 0.0,
+        "qa": 0.0
+      },
+      "detail": "default mode never activated the drafter in any harness; required MTP stays an explicit opt-in and MTP-S/P/D remain not_assessed",
+      "gate": "mtp_policy",
+      "passed": true
+    }
+  ],
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  },
+  "native_build": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "cli_sha256": "0b9b4e3b84d27b7e4cfa7f10d723ab711f914f5f17a7ced5d14b075eb10f28f5",
+    "codesign_verified": true,
+    "commit": "3fc0a02cd75ec05226f87a1a9e47a00ac1389d31",
+    "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "profile": "release-server",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "server_sha256": "24eeca1e3ce4a1015c3a9c4581ac6931ad6df023195abd2d72c29975e4bb3efd",
+    "tree": "63b342cc954e2f9bdf230d21c6224beb72b675cc"
+  },
+  "native_checks": {
+    "delivery_progress_counters": 5640,
+    "native_http_cases": 21,
+    "signed_native_matrix_process_matches": {
+      "default": 2,
+      "disabled": 2
+    },
+    "signed_native_qa_matches": {
+      "default": 105,
+      "disabled": 105
+    }
+  },
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "reference_input": "archived-partial",
+  "release_ready": false,
+  "release_scope": "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in (--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed.",
+  "schema": "ax-engine.flash-next.release-verdict.v1",
+  "thresholds_sha256": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b"
+}
