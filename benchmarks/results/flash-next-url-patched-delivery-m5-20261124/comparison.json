@@ -1,0 +1,29 @@
+{
+  "bytes_verified": 132261877478,
+  "context_tokens": {
+    "default": 32768,
+    "disabled": 32768,
+    "required": 16384
+  },
+  "control_entry_cpu_idle_percent": 90.34,
+  "delivered_readiness_within_limits": true,
+  "delivery_gate_passed": true,
+  "download_seconds": 1020.286,
+  "members_verified": 49,
+  "progress_rows": 5078,
+  "readiness_seconds": {
+    "default": 33.101,
+    "disabled": 32.231,
+    "required": 106.479
+  },
+  "release_ready": false,
+  "server_sha256": "d79b31a147cf811c9ac87039853286bb95d23ffbb46f55e16f723c40d8698d35",
+  "source": "1e8ea48455909b65172d435d9d230cb2a5f93d34",
+  "stable_response_controls": 21,
+  "url_version": "2.5.9",
+  "verified_steps": {
+    "default": 0,
+    "disabled": 0,
+    "required": 107
+  }
+}
