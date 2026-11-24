@@ -27,6 +27,13 @@ at 76.29 GiB for the narrow control and 86.57 GiB for the wide trial.
 This diagnostic retains the production 512-row decision from the
 crossover.
 
+
+Five [supported-tier component tests](m4-component-tests.txt) passed on
+Mac mini M4 Pro 64 GB, macOS 27.0, with the same signed test binary and
+MLX 0.32.4 libraries. The checks cover QSA gather order and padding,
+selected attention, sub-batch sizing and GDN decay arithmetic.
+System memory pressure was normal at both endpoints.
+
 ```sh
 shasum -a 256 -c SHA256SUMS
 python3.12 -E -s -B replay.py | cmp comparison.json -

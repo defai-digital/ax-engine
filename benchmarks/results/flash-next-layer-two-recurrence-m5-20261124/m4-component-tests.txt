@@ -1,0 +1,33 @@
+Mac mini M4 Pro 64 GiB. macOS 27.0. MLX and MLX Metal 0.32.4.
+ax-flash-prefill-geometry-test: OK
+
+running 1 test
+test model::shared::qwen4_exp_attention::tests::paired_gather_keeps_padding_order_and_segment_boundaries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2375 filtered out; finished in 0.02s
+
+
+running 1 test
+test model::shared::qwen4_exp_attention::tests::fused_gather_tile_matches_the_transpose_copy_across_selected_widths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2375 filtered out; finished in 0.06s
+
+
+running 1 test
+test model::shared::qwen4_exp_attention::tests::fused_gather_attention_output_matches_across_selected_widths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2375 filtered out; finished in 0.03s
+
+
+running 1 test
+test model::shared::qwen4_exp_attention::tests::sub_batch_width_bounds_the_actual_padded_gather ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2375 filtered out; finished in 0.00s
+
+
+running 1 test
+test model::shared::qwen4_exp_gdn::tests::gdn_decay_stages_match_the_original_chain_on_adversarial_inputs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2375 filtered out; finished in 0.14s
+
+System memory pressure normal at both endpoints.
