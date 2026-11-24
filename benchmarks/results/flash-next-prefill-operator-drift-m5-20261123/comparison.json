@@ -1,0 +1,853 @@
+{
+  "earliest_recorded_stage_with_drift": "gdn_core_output",
+  "normal_pressure_samples": 153,
+  "operator_summaries": [
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "embedding"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "attention_hc_read"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_query_input"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_key_input"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_value_input"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_log_decay"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2046
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_beta"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 8.731149137020111e-10,
+          "position": 510
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 5.238689482212067e-10,
+          "position": 511
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 5.820766091346741e-11,
+          "position": 512
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 7.275957614183426e-12,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 3.203749656677246e-06,
+          "position": 1535
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 1.367880031466484e-06,
+          "position": 1536
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 2.4707987904548645e-06,
+          "position": 2046
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 3.904104232788086e-06,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_core_output"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 7.62939453125e-06,
+          "position": 1535
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 7.62939453125e-06,
+          "position": 1536
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 6.103515625e-05,
+          "position": 2046
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 3.0517578125e-05,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn_gated_output"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0009765625,
+          "position": 1535
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 3.814697265625e-06,
+          "position": 1536
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0009765625,
+          "position": 2046
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0009765625,
+          "position": 2047
+        }
+      ],
+      "stage": "gdn"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.000244140625,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.000244140625,
+          "position": 2046
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.000244140625,
+          "position": 2047
+        }
+      ],
+      "stage": "attention_hc_write"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0078125,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.015625,
+          "position": 2046
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0078125,
+          "position": 2047
+        }
+      ],
+      "stage": "mlp_hc_read"
+    },
+    {
+      "rows": [
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 0
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 510
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 511
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 512
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 513
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1023
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1024
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0009765625,
+          "position": 1535
+        },
+        {
+          "exact_bits": true,
+          "max_abs_delta": 0.0,
+          "position": 1536
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.0009765625,
+          "position": 2046
+        },
+        {
+          "exact_bits": false,
+          "max_abs_delta": 0.001953125,
+          "position": 2047
+        }
+      ],
+      "stage": "mlp_hc_write"
+    }
+  ],
+  "qualification": false,
+  "verified_http_token_ids": 128
+}
