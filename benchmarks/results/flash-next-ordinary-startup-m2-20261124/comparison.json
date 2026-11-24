@@ -1,0 +1,47 @@
+{
+  "cases": [
+    {
+      "first_signed_token_difference_index": null,
+      "generated_ids": 10,
+      "id": "instruction_sort_numbers",
+      "matched_original_m2": true,
+      "matches_signed": true
+    },
+    {
+      "first_signed_token_difference_index": null,
+      "generated_ids": 2,
+      "id": "math_average_scores",
+      "matched_original_m2": true,
+      "matches_signed": true
+    },
+    {
+      "first_signed_token_difference_index": null,
+      "generated_ids": 4,
+      "id": "instruction_repeat_token",
+      "matched_original_m2": true,
+      "matches_signed": true
+    },
+    {
+      "first_signed_token_difference_index": 4,
+      "generated_ids": 103,
+      "id": "reasoning_cause_effect",
+      "matched_original_m2": true,
+      "matches_signed": false
+    }
+  ],
+  "diagnostic_macos": "27.2.1",
+  "diagnostic_only": true,
+  "matching_original_m2_cases": 4,
+  "matching_signed_cases": 3,
+  "mlx_active_after_lazy_load_bytes": 4104,
+  "mlx_active_first_token_bytes": 126254079570,
+  "mlx_active_weights_ready_bytes": 126123027552,
+  "mlx_peak_first_token_bytes": 126373604294,
+  "mlx_peak_four_cases_bytes": 126418178214,
+  "mlx_peak_weights_ready_bytes": 126123027552,
+  "normal_pressure_samples": 97,
+  "process_peak_rss_bytes": 112423059456,
+  "signed_reference_macos": "27.0.1",
+  "weight_batches": 73,
+  "weights_materialized": 2326
+}

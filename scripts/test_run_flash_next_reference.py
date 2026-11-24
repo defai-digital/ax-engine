@@ -8,8 +8,9 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 SCRIPT = Path(__file__).with_name("run_flash_next_reference.py")
 sys.path.insert(0, str(SCRIPT.parent))
@@ -90,6 +91,96 @@ class ReferenceRunnerTests(unittest.TestCase):
         self.assertEqual(contract["reference"]["versions"]["mlx-vlm"], "0.7.0rc0")
         self.assertIn("non-primary", contract["reference"]["role"])
         self.assertEqual(contract["lengths"], [512, 2048, 8192])
+        self.assertNotIn("memory_trace", contract)
+
+    def test_diagnostic_is_bounded_to_qa_and_cannot_claim_qualification(self):
+        command = [sys.executable, str(SCRIPT), "--dry-run", "--diagnostic"]
+        contract = json.loads(subprocess.check_output(command, text=True))
+        self.assertEqual((contract["phases"], contract["qa_items"]), (["qa"], 4))
+        self.assertTrue(contract["diagnostic_only"])
+        self.assertFalse(contract["release_ready"])
+        self.assertEqual(contract["memory_trace"], mod.DIAGNOSTIC_TRACE)
+        for options in (["--phases", "matrix"], ["--lengths", "512"],
+                        ["--limit-items", "5"], ["--limit-items", "0"]):
+            with self.subTest(options=options):
+                result = subprocess.run(command + options, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("diagnostic", result.stderr)
+
+    def test_ordinary_mode_still_rejects_m2(self):
+        args = [str(SCRIPT), "--model-dir", "model", "--inventory", "inventory.json",
+                "--output", "result"]
+        with (patch.object(sys, "argv", args),
+              patch.object(mod.platform, "system", return_value="Darwin"),
+              patch.object(mod.subprocess, "check_output", side_effect=["206158430208", "Apple M2 Ultra"]),
+              patch.object(mod.importlib.metadata, "version") as version,
+              patch("sys.stderr"),
+              self.assertRaises(SystemExit) as rejected):
+            mod.main()
+        self.assertEqual(rejected.exception.code, 2)
+        version.assert_not_called()
+
+    def test_diagnostic_admits_only_the_known_m2_studio(self):
+        args = [str(SCRIPT), "--model-dir", "model", "--inventory", "inventory.json",
+                "--output", "result", "--diagnostic"]
+        with (patch.object(sys, "argv", args), patch.object(mod.platform, "system", return_value="Darwin"),
+              patch.object(mod.subprocess, "check_output") as sysctl,
+              patch.object(mod.importlib.metadata, "version", side_effect=RuntimeError("runtime check")) as version,
+              patch("sys.stderr")):
+            sysctl.side_effect = ["206158430208", "Apple M2 Ultra", "unrecognized"]
+            with self.assertRaises(SystemExit):
+                mod.main()
+            version.assert_not_called()
+            sysctl.side_effect = ["206158430208", "Apple M2 Ultra", "Mac14,14"]
+            with self.assertRaisesRegex(RuntimeError, "runtime check"):
+                mod.main()
+            version.assert_called_once()
+
+    def test_materialization_observer_keeps_original_batches(self):
+        model = SimpleNamespace(parameters=lambda: [(str(i), i) for i in range(5)])
+        runtime = Mock()
+        observer = Mock()
+        with patch.dict(sys.modules, {"mlx.utils": SimpleNamespace(tree_flatten=lambda arrays: arrays)}):
+            self.assertEqual(mod.materialize(model, runtime, batch=2, observe=observer), 5)
+        self.assertEqual([call.args for call in runtime.eval.call_args_list], [(0, 1), (2, 3), (4,)])
+        self.assertEqual([call.kwargs["arrays_materialized"] for call in observer.call_args_list], [2, 4, 5])
+
+    def test_first_token_observer_keeps_original_mlx_operations(self):
+        def run(observer):
+            runtime = Mock()
+            model = MagicMock()
+            runtime.argmax.return_value.item.return_value = 17
+            stream = mod.token_stream(model, runtime, [1, 2, 3, 4], chunk=2, observe=observer)
+            first = next(stream)
+            stream.close()
+            return first, [call[0] for call in runtime.mock_calls]
+
+        observer = Mock()
+        self.assertEqual(run(observer), run(None))
+        self.assertEqual([call.args[0] for call in observer.call_args_list],
+                         ["prefill-chunk-complete", "prefill-chunk-complete",
+                          "first-token-start", "first-token-ready"])
+        self.assertEqual([call.kwargs["prefill_tokens"] for call in observer.call_args_list[:2]], [2, 3])
+
+    def test_pressure_stop_retains_the_checkpoint_and_separate_counters(self):
+        runtime = Mock()
+        runtime.get_active_memory.return_value = 40
+        runtime.get_cache_memory.return_value = 7
+        runtime.get_peak_memory.return_value = 65
+        with TemporaryDirectory() as folder:
+            trace = Path(folder) / mod.DIAGNOSTIC_TRACE
+            with (patch.object(mod, "diagnostic_pressure", return_value=4),
+                  self.assertRaisesRegex(RuntimeError, "diagnostic stopped at weights-ready")):
+                mod.record_startup_memory(trace, runtime, "weights-ready", arrays_materialized=2326)
+            row = json.loads(trace.read_text())
+        self.assertEqual(row["phase"], "weights-ready")
+        self.assertEqual(row["arrays_materialized"], 2326)
+        self.assertEqual((row["mlx_active_bytes"], row["mlx_cache_bytes"], row["mlx_peak_bytes"]),
+                         (40, 7, 65))
+        self.assertEqual(row["system_pressure_level"], 4)
+        self.assertIn("stop_reason", row)
+        self.assertEqual([call[0] for call in runtime.mock_calls],
+                         ["get_active_memory", "get_cache_memory", "get_peak_memory"])
 
     def test_live_run_requires_inputs_and_the_ax_matrix_for_the_matrix_phase(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)

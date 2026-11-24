@@ -139,12 +139,14 @@ def is_target_hardware(hardware: dict[str, Any]) -> bool:
             and is_target_host(str(hardware.get("soc", "")), int(hardware.get("memory_bytes", 0) or 0)))
 
 
-def storage_info(root: Path) -> dict[str, Any]:
+def storage_info(root: Path, *, require_internal: bool = True) -> dict[str, Any]:
     device = subprocess.check_output(["df", "-P", str(root)], text=True).splitlines()[-1].split()[0]
     info = plistlib.loads(subprocess.check_output(["diskutil", "info", "-plist", device]))
-    if info.get("Internal") is not True or info.get("SolidState") is not True:
+    internal = info.get("Internal") is True
+    solid_state = info.get("SolidState") is True
+    if not solid_state or (require_internal and not internal):
         raise ValueError("functional controls require model files on the internal SSD")
-    return {"internal": True, "solid_state": True, "bus_protocol": info.get("BusProtocol")}
+    return {"internal": internal, "solid_state": solid_state, "bus_protocol": info.get("BusProtocol")}
 
 
 def cpu_idle_percent() -> float:

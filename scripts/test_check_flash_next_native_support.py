@@ -264,6 +264,14 @@ class NativeSupportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "internal SSD"):
                     mod.storage_info(Path("model"))
 
+    def test_external_ssd_is_reported_when_explicitly_allowed(self):
+        info = mod.plistlib.dumps({"Internal": False, "SolidState": True, "BusProtocol": "USB"})
+        with patch.object(mod.subprocess, "check_output",
+                          side_effect=["Filesystem Size Used Available Capacity Mounted\n/dev/disk3 1 1 0 100 /\n",
+                                       info]):
+            self.assertEqual(mod.storage_info(Path("model"), require_internal=False),
+                             {"internal": False, "solid_state": True, "bus_protocol": "USB"})
+
     def test_form_factor_is_named_only_for_known_standard_models(self):
         for model, expected in (("Mac17,6", "MacBook Pro"),
                                 ("Mac14,14", "unrecognized (Mac14,14)"),

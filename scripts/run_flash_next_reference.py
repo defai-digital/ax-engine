@@ -20,10 +20,12 @@ reference, never an AX-versus-mlx-lm result.
 
 Run it with the pinned reference environment's Python. Dry-run is weight-free.
 This records reference observations for one pack/SKU; it is not qualification.
+The diagnostic runs up to four QA cases and records startup memory separately.
 """
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import hashlib
 import importlib.metadata
 import json
@@ -59,6 +61,40 @@ WARMUPS = matrix.WARMUPS
 MEASURED = matrix.MEASURED
 PHASES = ("qa", "matrix")
 RUNTIME_DISTRIBUTIONS = ("mlx", "mlx-metal", "mlx-vlm")
+DIAGNOSTIC_CASES = 4
+DIAGNOSTIC_TRACE = "startup-memory.jsonl"
+DIAGNOSTIC_STUDIO_MODEL = "Mac14,14"
+
+
+def diagnostic_pressure() -> int:
+    return int(subprocess.check_output(
+        ["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], text=True
+    ).strip())
+
+
+def record_startup_memory(
+    path: Path, mx: Any, phase: str, **progress: Any,
+) -> None:
+    """Sample on existing execution boundaries without forcing MLX evaluation."""
+    phase_time_ns = time.monotonic_ns()
+    pressure = diagnostic_pressure()
+    sample = {
+        "phase": phase,
+        "monotonic_ns": phase_time_ns,
+        "mlx_active_bytes": mx.get_active_memory(),
+        "mlx_cache_bytes": mx.get_cache_memory(),
+        "mlx_peak_bytes": mx.get_peak_memory(),
+        "process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        "system_pressure_level": pressure,
+        **progress,
+    }
+    if pressure != 1:
+        sample["stop_reason"] = "system memory pressure is not normal"
+    # Close after each checkpoint so a stopped run retains its last observation.
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(sample, allow_nan=False) + "\n")
+    if pressure != 1:
+        raise RuntimeError(f"diagnostic stopped at {phase}: {sample['stop_reason']} ({pressure})")
 
 
 def collect(stream: Iterable[int], budget: int, eos: set[int],
@@ -88,7 +124,10 @@ def timing_record(start: float, times: list[float], end: float) -> dict[str, Any
     return record
 
 
-def token_stream(model: Any, mx: Any, ids: list[int], chunk: int = PREFILL_CHUNK) -> Iterator[int]:
+def token_stream(
+    model: Any, mx: Any, ids: list[int], chunk: int = PREFILL_CHUNK,
+    *, observe: Callable[..., None] | None = None,
+) -> Iterator[int]:
     """Greedy decode with chunked prefill; after the first token one step stays in flight."""
     cache = model.make_cache()
     for offset in range(0, len(ids) - 1, chunk):
@@ -96,14 +135,21 @@ def token_stream(model: Any, mx: Any, ids: list[int], chunk: int = PREFILL_CHUNK
         logits = model(mx.array([part], dtype=mx.uint32), cache=cache).logits
         mx.eval(logits)
         del logits
+        if observe is not None:
+            observe("prefill-chunk-complete", prefill_tokens=offset + len(part))
 
     def step(token: Any) -> Any:
         logits = model(token, cache=cache).logits[:, -1, :]
         return mx.argmax(logits.astype(mx.float32), axis=-1)
 
+    if observe is not None:
+        observe("first-token-start")
     current = step(mx.array([[ids[-1]]], dtype=mx.uint32))
     mx.async_eval(current)
-    yield int(current.item())
+    first = int(current.item())
+    if observe is not None:
+        observe("first-token-ready")
+    yield first
     upcoming = step(current[None])
     mx.async_eval(upcoming)
     try:
@@ -116,10 +162,13 @@ def token_stream(model: Any, mx: Any, ids: list[int], chunk: int = PREFILL_CHUNK
         mx.synchronize()
 
 
-def generate(model: Any, mx: Any, ids: list[int], budget: int, stop_on_eos: bool = True) -> dict[str, Any]:
+def generate(
+    model: Any, mx: Any, ids: list[int], budget: int, stop_on_eos: bool = True,
+    *, observe: Callable[..., None] | None = None,
+) -> dict[str, Any]:
     """Greedy generation; `stop_on_eos=False` is the fixed-token benchmark mode (AX `ignore_eos`)."""
     start = time.monotonic()
-    generated, terminal, times = collect(token_stream(model, mx, ids), budget,
+    generated, terminal, times = collect(token_stream(model, mx, ids, observe=observe), budget,
                                          EOS_IDS if stop_on_eos else set())
     record = {"generated_ids": generated, "terminal_eos_id": terminal,
               "normal_stop": terminal is not None,
@@ -128,7 +177,9 @@ def generate(model: Any, mx: Any, ids: list[int], budget: int, stop_on_eos: bool
     return record
 
 
-def materialize(model: Any, mx: Any, batch: int = 32) -> int:
+def materialize(
+    model: Any, mx: Any, batch: int = 32, *, observe: Callable[..., None] | None = None,
+) -> int:
     """Read the lazily loaded weights into memory in bounded batches before any timing.
 
     A lazy load defers every file read to the first forward pass, so a cold page
@@ -140,7 +191,10 @@ def materialize(model: Any, mx: Any, batch: int = 32) -> int:
 
     arrays = [array for _, array in tree_flatten(model.parameters())]
     for start in range(0, len(arrays), batch):
-        mx.eval(*arrays[start: start + batch])
+        group = arrays[start: start + batch]
+        mx.eval(*group)
+        if observe is not None:
+            observe("weights-batch-complete", arrays_materialized=start + len(group))
     return len(arrays)
 
 
@@ -197,10 +251,22 @@ def main() -> int:
     parser.add_argument("--ax-matrix", type=Path,
                         help="optional AX generate-matrix result.json whose prompt hashes must match")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--phases", nargs="+", choices=PHASES, default=list(PHASES))
+    parser.add_argument("--phases", nargs="+", choices=PHASES)
     parser.add_argument("--limit-items", type=int, help="smoke runs: first N QA items")
     parser.add_argument("--lengths", type=int, nargs="+", help="smoke runs: input lengths to measure")
+    parser.add_argument("--diagnostic", action="store_true",
+                        help="trace startup memory for up to four QA cases, including on M2 Ultra")
     args = parser.parse_args()
+    if args.diagnostic:
+        if args.phases not in (None, ["qa"]) or args.lengths or args.ax_matrix:
+            parser.error("diagnostic mode runs only the bounded QA probe")
+        args.phases = ["qa"]
+        if args.limit_items is None:
+            args.limit_items = DIAGNOSTIC_CASES
+        if not 1 <= args.limit_items <= DIAGNOSTIC_CASES:
+            parser.error(f"diagnostic QA limit must be between 1 and {DIAGNOSTIC_CASES}")
+    elif args.phases is None:
+        args.phases = list(PHASES)
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
                 "reference": {"runtime": "mlx-vlm", "commit": MLX_VLM_COMMIT, "versions": PINNED,
@@ -214,6 +280,10 @@ def main() -> int:
                 "timing": "in process; TTFT = prefill + first token; decode = tokens after the first",
                 "qualification": False, "release_ready": False,
                 "scope": "reference observations; no AX-versus-mlx-lm claim; MTP-S/P/D not assessed"}
+    if args.diagnostic:
+        contract.update({"diagnostic_only": True, "qa_items": args.limit_items,
+                         "lengths": [], "memory_trace": DIAGNOSTIC_TRACE,
+                         "scope": "startup memory diagnostic; timings include observation overhead"})
     if args.dry_run:
         print(json.dumps(contract, indent=2))
         return 0
@@ -223,7 +293,12 @@ def main() -> int:
         parser.error("live run requires macOS on the Flash Next standard host")
     memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
-    if not native.is_target_host(chip, memory):
+    diagnostic_m2 = (
+        args.diagnostic and chip == "Apple M2 Ultra" and memory == 192 * 2**30
+        and subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip()
+        == DIAGNOSTIC_STUDIO_MODEL
+    )
+    if not (native.is_target_host(chip, memory) or diagnostic_m2):
         parser.error(f"live run requires the Flash Next standard host ({native.TARGET_DESCRIPTION})")
     if "qa" in args.phases:
         items = qa.load_items(qa.FROZEN / "full-qa-items.json")
@@ -243,7 +318,7 @@ def main() -> int:
     if language_sha != LANGUAGE_SHA256:
         raise ValueError("MLX-VLM qwen4_exp language module differs from the audited file")
     inventory = json.loads(args.inventory.read_text())
-    storage = native.storage_info(args.model_dir)
+    storage = native.storage_info(args.model_dir, require_internal=not diagnostic_m2)
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     runtime_before = runtime_hashes()
     args.output.mkdir(parents=True, exist_ok=False)
@@ -251,7 +326,8 @@ def main() -> int:
     record: dict[str, Any] = {**contract, "completed": False, "phase": "loading", "versions": versions,
                               "host_quiet": host_quiet,
                               "language_sha256": language_sha, "inventory_sha256": native.sha256(args.inventory),
-                              "hardware": {"form_factor": native.form_factor(), "soc": chip,
+                              "hardware": {"form_factor": "Mac Studio" if diagnostic_m2 else native.form_factor(),
+                                           "soc": chip,
                                            "memory_bytes": memory, "os": platform.mac_ver()[0],
                                            "storage": {"declared": inventory["storage"], **storage}}}
 
@@ -264,6 +340,9 @@ def main() -> int:
         print(json.dumps({"phase": record["phase"]}), flush=True)
 
     save("loading")
+    observe = partial(record_startup_memory, args.output / DIAGNOSTIC_TRACE, mx) if args.diagnostic else None
+    if observe is not None:
+        observe("runtime-initialized")
     mx.set_memory_limit(MEMORY_LIMIT)
     mx.set_cache_limit(CACHE_LIMIT)
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, local_files_only=True,
@@ -274,10 +353,16 @@ def main() -> int:
         if args.ax_matrix:
             ax_hashes = json.loads(args.ax_matrix.read_text())["runs"]["disabled"]["prompt_id_hashes"]
             verify_prompt_hashes(ax_hashes, window_ids)
+    if observe is not None:
+        observe("lazy-load-start")
     model = load_model(args.model_dir, lazy=True, strict=True).language_model
+    if observe is not None:
+        observe("lazy-load-complete")
     loading_started = time.monotonic()
-    record["weights_materialized"] = materialize(model, mx)
+    record["weights_materialized"] = materialize(model, mx, observe=observe)
     record["weights_materialize_seconds"] = round(time.monotonic() - loading_started, 3)
+    if observe is not None:
+        observe("weights-ready", arrays_materialized=record["weights_materialized"])
     if "qa" in args.phases:
         rows: list[dict[str, Any]] = []
         record["qa"] = {"rows": rows}
@@ -285,7 +370,13 @@ def main() -> int:
         for item, prompt in list(zip(items, prepared, strict=True))[: args.limit_items]:
             if tokenizer.encode(prompt["rendered"], add_special_tokens=False) != prompt["input_ids"]:
                 raise ValueError(f"tokenizer disagrees with the frozen input IDs: {item['id']}")
-            result = generate(model, mx, prompt["input_ids"], qa.budget_for(item))
+            case_observer = None
+            if observe is not None:
+                case_observer = partial(observe, case_id=item["id"], prompt_tokens=len(prompt["input_ids"]))
+                case_observer("prefill-start")
+            result = generate(model, mx, prompt["input_ids"], qa.budget_for(item), observe=case_observer)
+            if case_observer is not None:
+                case_observer("case-complete", generated_tokens=result["generated_tokens"])
             text = tokenizer.decode(result["generated_ids"], skip_special_tokens=True)
             rows.append({"id": item["id"], "prompt_tokens": len(prompt["input_ids"]), "text": text,
                          "peak_mlx_memory_bytes": mx.get_peak_memory(), **result})
