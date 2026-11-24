@@ -41,6 +41,36 @@ pub(crate) enum Qwen4ExpExpertWeights {
 /// unsorted gather; outputs are restored to token order before the weighted sum.
 const PREFILL_EXPERT_SORT_MIN_TOKENS: i32 = 64;
 
+#[cfg(test)]
+fn trial_tiled_router_projection(
+    input: &MlxArray,
+    weight: &QuantizedWeight,
+    policy: ProjectionBatchPolicy,
+) -> Option<MlxArray> {
+    use crate::model::qwen4_exp::profiling::gdn_geometry;
+
+    if !gdn_geometry::router_tiling_enabled() || policy != ProjectionBatchPolicy::Shared {
+        return None;
+    }
+    let shape = input.shape();
+    if shape[0] != 1
+        || shape[1] <= crate::fastpath::QWEN_PREFILL_QMM_TILE
+        || input.dtype() != MlxDtype::Bfloat16
+        || weight.mlx_quantization_mode() != mlx_sys::MlxQuantizationMode::Affine
+        || weight.bits != 8
+        || weight.group_size != 32
+        || weight.scales.is_none()
+        || weight.biases.is_none()
+    {
+        return None;
+    }
+    gdn_geometry::note_tiled_router_projection();
+    Some(super::utils::qwen_projection_sequence_tiles(
+        input,
+        |tile| qw_with_policy(tile, weight, policy),
+    ))
+}
+
 pub(crate) struct Qwen4ExpMoeWeights {
     pub router: QuantizedWeight,
     pub experts: Qwen4ExpExpertWeights,
@@ -522,7 +552,12 @@ impl Qwen4ExpMoe {
 
     fn route(&self, input: &MlxArray, policy: ProjectionBatchPolicy) -> (MlxArray, MlxArray) {
         let w = &self.weights;
-        let logits = qw_with_policy(input, &w.router, policy);
+        let project_router = || qw_with_policy(input, &w.router, policy);
+        #[cfg(test)]
+        let logits =
+            trial_tiled_router_projection(input, &w.router, policy).unwrap_or_else(project_router);
+        #[cfg(not(test))]
+        let logits = project_router();
         let probabilities = softmax(&astype(&logits, MlxDtype::Float32, None), -1, None);
         let (indices, routing) =
             top_k_by_argpartition(&probabilities, self.experts, self.top_k, false);

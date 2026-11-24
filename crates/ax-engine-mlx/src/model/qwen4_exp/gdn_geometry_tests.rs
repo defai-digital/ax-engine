@@ -44,6 +44,7 @@ struct Capture {
 thread_local! {
     static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
     static TILED_DECAYS: Cell<usize> = const { Cell::new(0) };
+    static TILED_ROUTERS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn decay_tiling_enabled() -> bool {
@@ -57,6 +58,19 @@ pub(crate) fn note_tiled_decay_projection() {
 
 pub(crate) fn take_tiled_decay_count() -> usize {
     TILED_DECAYS.replace(0)
+}
+
+pub(crate) fn router_tiling_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_FLASH_NEXT_TRIAL_TILE_MOE_ROUTER"))
+}
+
+pub(crate) fn note_tiled_router_projection() {
+    TILED_ROUTERS.set(TILED_ROUTERS.get() + 1);
+}
+
+pub(crate) fn take_tiled_router_count() -> usize {
+    TILED_ROUTERS.replace(0)
 }
 
 pub(crate) fn begin(layer: usize) {

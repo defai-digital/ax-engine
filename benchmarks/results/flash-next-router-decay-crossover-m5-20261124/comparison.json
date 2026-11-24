@@ -1,0 +1,311 @@
+{
+  "combined_layer_one_vs_narrow": {
+    "input_rows": {
+      "beta": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "decay": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "key": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "query": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "value": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      }
+    },
+    "output": {
+      "different_rows": 0,
+      "first_different_row": null,
+      "first_positions": [],
+      "last_different_row": null
+    },
+    "prework_rows": {
+      "attention_input": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "convolved_key": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "convolved_query": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "convolved_value": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      },
+      "qkv_projection": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null
+      }
+    },
+    "same_final_state": true
+  },
+  "combined_layer_zero_different_positions": {
+    "mlp_hc_read": [],
+    "mlp_hc_write": [],
+    "moe_indices": [],
+    "moe_routed": [],
+    "moe_router_logits": []
+  },
+  "combined_vs_wide_stock": {
+    "different_token_count": 62,
+    "first_different_token": 1,
+    "witnesses": {
+      "2047": {
+        "changed_layer_count": 48,
+        "first_changed_layer": 0,
+        "first_layer_matches": false,
+        "same_decision_logits": true
+      },
+      "2048": {
+        "changed_layer_count": 48,
+        "first_changed_layer": 0,
+        "first_layer_matches": false,
+        "same_decision_logits": true
+      },
+      "8192": {
+        "changed_layer_count": 48,
+        "first_changed_layer": 0,
+        "first_layer_matches": false,
+        "same_decision_logits": false
+      },
+      "8193": {
+        "changed_layer_count": 48,
+        "first_changed_layer": 0,
+        "first_layer_matches": false,
+        "same_decision_logits": false
+      }
+    }
+  },
+  "exact_archived_stock_and_decay_controls": true,
+  "measurements": {
+    "narrow-both": {
+      "first_token_ns": 9505155083,
+      "mlx_peak_bytes": 79590548022,
+      "normal_samples": 126,
+      "peak_footprint_bytes": 81821602376,
+      "tiled_decay_projections": 0,
+      "tiled_router_projections": 0,
+      "total_ns": 11415399500
+    },
+    "narrow-stock": {
+      "first_token_ns": 8997919875,
+      "mlx_peak_bytes": 79590580790,
+      "normal_samples": 122,
+      "peak_footprint_bytes": 81688711752,
+      "tiled_decay_projections": 0,
+      "tiled_router_projections": 0,
+      "total_ns": 10804771708
+    },
+    "wide-both": {
+      "first_token_ns": 9995569292,
+      "mlx_peak_bytes": 90213136730,
+      "normal_samples": 39,
+      "peak_footprint_bytes": 92405912232,
+      "tiled_decay_projections": 144,
+      "tiled_router_projections": 192,
+      "total_ns": 11855069959
+    },
+    "wide-both-trace": {
+      "first_token_ns": 9592704791,
+      "mlx_peak_bytes": 90447758138,
+      "normal_samples": 37,
+      "peak_footprint_bytes": 92763837048,
+      "tiled_decay_projections": 144,
+      "tiled_router_projections": 192,
+      "total_ns": 11394503833
+    },
+    "wide-decay": {
+      "first_token_ns": 9604533458,
+      "mlx_peak_bytes": 90213139770,
+      "normal_samples": 39,
+      "peak_footprint_bytes": 92730528328,
+      "tiled_decay_projections": 144,
+      "tiled_router_projections": 0,
+      "total_ns": 11385924417
+    },
+    "wide-router": {
+      "first_token_ns": 9934097917,
+      "mlx_peak_bytes": 90213137978,
+      "normal_samples": 39,
+      "peak_footprint_bytes": 92398703224,
+      "tiled_decay_projections": 0,
+      "tiled_router_projections": 192,
+      "total_ns": 11801366959
+    },
+    "wide-stock-first": {
+      "first_token_ns": 9994652166,
+      "mlx_peak_bytes": 90213140250,
+      "normal_samples": 42,
+      "peak_footprint_bytes": 92323009096,
+      "tiled_decay_projections": 0,
+      "tiled_router_projections": 0,
+      "total_ns": 11881372375
+    },
+    "wide-stock-last": {
+      "first_token_ns": 9686309791,
+      "mlx_peak_bytes": 90213138266,
+      "normal_samples": 37,
+      "peak_footprint_bytes": 92371145312,
+      "tiled_decay_projections": 0,
+      "tiled_router_projections": 0,
+      "total_ns": 11457181166
+    }
+  },
+  "qualification": false,
+  "source_base": "995abcb2eee4904d1c1b7b8655a63e618986b9ba",
+  "wider_vs_narrow": {
+    "wide-both": {
+      "different_token_count": 62,
+      "first_different_token": 2,
+      "witnesses": {
+        "2047": {
+          "changed_layer_count": 46,
+          "first_changed_layer": 2,
+          "first_layer_matches": true,
+          "same_decision_logits": true
+        },
+        "2048": {
+          "changed_layer_count": 46,
+          "first_changed_layer": 2,
+          "first_layer_matches": true,
+          "same_decision_logits": true
+        },
+        "8192": {
+          "changed_layer_count": 46,
+          "first_changed_layer": 2,
+          "first_layer_matches": true,
+          "same_decision_logits": false
+        },
+        "8193": {
+          "changed_layer_count": 46,
+          "first_changed_layer": 2,
+          "first_layer_matches": true,
+          "same_decision_logits": false
+        }
+      }
+    },
+    "wide-decay": {
+      "different_token_count": 60,
+      "first_different_token": 2,
+      "witnesses": {
+        "2047": {
+          "changed_layer_count": 47,
+          "first_changed_layer": 1,
+          "first_layer_matches": true,
+          "same_decision_logits": true
+        },
+        "2048": {
+          "changed_layer_count": 47,
+          "first_changed_layer": 1,
+          "first_layer_matches": true,
+          "same_decision_logits": true
+        },
+        "8192": {
+          "changed_layer_count": 47,
+          "first_changed_layer": 1,
+          "first_layer_matches": true,
+          "same_decision_logits": false
+        },
+        "8193": {
+          "changed_layer_count": 47,
+          "first_changed_layer": 1,
+          "first_layer_matches": true,
+          "same_decision_logits": false
+        }
+      }
+    },
+    "wide-router": {
+      "different_token_count": 61,
+      "first_different_token": 2,
+      "witnesses": {
+        "2047": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": true
+        },
+        "2048": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": true
+        },
+        "8192": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": false
+        },
+        "8193": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": false
+        }
+      }
+    },
+    "wide-stock-first": {
+      "different_token_count": 61,
+      "first_different_token": 1,
+      "witnesses": {
+        "2047": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": true
+        },
+        "2048": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": true
+        },
+        "8192": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": false
+        },
+        "8193": {
+          "changed_layer_count": 48,
+          "first_changed_layer": 0,
+          "first_layer_matches": false,
+          "same_decision_logits": false
+        }
+      }
+    }
+  }
+}

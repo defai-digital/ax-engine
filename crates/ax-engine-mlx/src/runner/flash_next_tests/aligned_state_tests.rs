@@ -282,7 +282,9 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
 
     let trace_gdn = crate::fastpath::env_flag("AX_FLASH_NEXT_GDN_GEOMETRY_REPLAY");
     let measure_tiling = crate::fastpath::env_flag("AX_FLASH_NEXT_RECORD_GDN_TILING");
-    let tiled_wide = gdn_geometry::decay_tiling_enabled() && width == 2048;
+    let tile_decay = gdn_geometry::decay_tiling_enabled() && width == 2048;
+    let tile_router = gdn_geometry::router_tiling_enabled() && width == 2048;
+    let tiled_wide = tile_decay || tile_router;
     assert!(!tiled_wide || measure_tiling);
     if trace_gdn {
         assert!(crate::flash_next_gdn::enabled());
@@ -292,6 +294,7 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
     }
     capture_geometry_forwards();
     gdn_geometry::take_tiled_decay_count();
+    gdn_geometry::take_tiled_router_count();
     if measure_tiling {
         mlx_sys::reset_peak_memory();
     }
@@ -375,10 +378,13 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
         &serde_json::to_vec_pretty(&evidence).unwrap(),
     );
     if measure_tiling {
-        let projections = gdn_geometry::take_tiled_decay_count();
-        assert_eq!(projections > 0, tiled_wide);
+        let decay_projections = gdn_geometry::take_tiled_decay_count();
+        let router_projections = gdn_geometry::take_tiled_router_count();
+        assert_eq!(decay_projections > 0, tile_decay);
+        assert_eq!(router_projections > 0, tile_router);
         let measurement = serde_json::json!({
-            "tiled_decay_projections": projections,
+            "tiled_decay_projections": decay_projections,
+            "tiled_router_projections": router_projections,
             "first_token_ns": first_token_ns.unwrap(),
             "total_ns": elapsed_ns,
             "mlx_peak_bytes": mlx_peak.unwrap(),
