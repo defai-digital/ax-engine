@@ -1,0 +1,313 @@
+{
+  "arms": {
+    "paired-first": {
+      "peak_footprint_bytes": 81174942424,
+      "peak_rss_bytes": 69579276288,
+      "pressure_samples": 121,
+      "ready_seconds": 31.297297917015385
+    },
+    "paired-second": {
+      "peak_footprint_bytes": 81238348576,
+      "peak_rss_bytes": 58323271680,
+      "pressure_samples": 266,
+      "ready_seconds": 32.287863500008825
+    },
+    "stock-first": {
+      "peak_footprint_bytes": 81063957352,
+      "peak_rss_bytes": 66809856000,
+      "pressure_samples": 96,
+      "ready_seconds": 32.30845820799004
+    },
+    "stock-second": {
+      "peak_footprint_bytes": 81176875808,
+      "peak_rss_bytes": 58784645120,
+      "pressure_samples": 267,
+      "ready_seconds": 33.24852299998747
+    }
+  },
+  "binary_sha256": "2b8d08dfe450a49e1cef79f7414769f986005060efdd4b74966d7d2a1438f6e5",
+  "orders": {
+    "first": {
+      "long-holdout": {
+        "decode_tokens_per_second": [
+          45.272898564992836,
+          44.10486035561119
+        ],
+        "eligible_endpoints": true,
+        "idle_endpoints": [
+          [
+            98.36,
+            97.95
+          ],
+          [
+            90.36,
+            90.77
+          ]
+        ],
+        "paired_over_stock_ttft": 0.9861883368222903,
+        "paired_tiles": [
+          0,
+          432
+        ],
+        "prefill_forward_us": [
+          9777108,
+          9641779
+        ],
+        "request_window_idle": [
+          93.7742609734249,
+          82.27638190954774
+        ],
+        "ttft_seconds": [
+          9.812866,
+          9.677334
+        ]
+      },
+      "long-replay": {
+        "decode_tokens_per_second": [
+          46.04697668707352,
+          45.199880327935894
+        ],
+        "eligible_endpoints": false,
+        "idle_endpoints": [
+          [
+            97.17,
+            98.57
+          ],
+          [
+            90.52,
+            87.9
+          ]
+        ],
+        "paired_over_stock_ttft": 1.0010224447197944,
+        "paired_tiles": [
+          0,
+          432
+        ],
+        "prefill_forward_us": [
+          9586889,
+          9596107
+        ],
+        "request_window_idle": [
+          93.08214321887978,
+          79.56211761136674
+        ],
+        "ttft_seconds": [
+          9.62008,
+          9.629916
+        ]
+      },
+      "medium": {
+        "decode_tokens_per_second": [
+          46.47597745251151,
+          45.70675705480168
+        ],
+        "eligible_endpoints": false,
+        "idle_endpoints": [
+          [
+            99.24,
+            97.43
+          ],
+          [
+            92.69,
+            89.14
+          ]
+        ],
+        "paired_over_stock_ttft": 0.9701211853137236,
+        "paired_tiles": [
+          0,
+          0
+        ],
+        "prefill_forward_us": [
+          2794495,
+          2709644
+        ],
+        "request_window_idle": [
+          91.14583333333333,
+          87.22192078133477
+        ],
+        "ttft_seconds": [
+          2.821464,
+          2.737162
+        ]
+      },
+      "short": {
+        "decode_tokens_per_second": [
+          50.069023725564534,
+          49.990716009883876
+        ],
+        "eligible_endpoints": true,
+        "idle_endpoints": [
+          [
+            97.33,
+            98.5
+          ],
+          [
+            93.1,
+            93.57
+          ]
+        ],
+        "paired_over_stock_ttft": 1.335496403351214,
+        "paired_tiles": [
+          0,
+          0
+        ],
+        "prefill_forward_us": [
+          1127718,
+          1515544
+        ],
+        "request_window_idle": [
+          92.58146521839612,
+          89.7609561752988
+        ],
+        "ttft_seconds": [
+          1.154686,
+          1.542079
+        ]
+      }
+    },
+    "second": {
+      "long-holdout": {
+        "decode_tokens_per_second": [
+          44.217911482759924,
+          43.187897517175756
+        ],
+        "eligible_endpoints": false,
+        "idle_endpoints": [
+          [
+            90.85,
+            87.51
+          ],
+          [
+            90.87,
+            78.2
+          ]
+        ],
+        "paired_over_stock_ttft": 0.9728742911579211,
+        "paired_tiles": [
+          0,
+          432
+        ],
+        "prefill_forward_us": [
+          10045219,
+          9762728
+        ],
+        "request_window_idle": [
+          76.3613380007779,
+          69.67979315831344
+        ],
+        "ttft_seconds": [
+          10.093045,
+          9.819264
+        ]
+      },
+      "long-replay": {
+        "decode_tokens_per_second": [
+          44.097358568221765,
+          44.13745946184527
+        ],
+        "eligible_endpoints": false,
+        "idle_endpoints": [
+          [
+            91.86,
+            89.28
+          ],
+          [
+            94.19,
+            87.87
+          ]
+        ],
+        "paired_over_stock_ttft": 0.9623235142629661,
+        "paired_tiles": [
+          0,
+          432
+        ],
+        "prefill_forward_us": [
+          9839485,
+          9464859
+        ],
+        "request_window_idle": [
+          78.41133491311217,
+          83.98102815177478
+        ],
+        "ttft_seconds": [
+          9.874594,
+          9.502554
+        ]
+      },
+      "medium": {
+        "decode_tokens_per_second": [
+          45.95410570757287,
+          45.63924279425178
+        ],
+        "eligible_endpoints": false,
+        "idle_endpoints": [
+          [
+            92.3,
+            89.84
+          ],
+          [
+            90.38,
+            87.62
+          ]
+        ],
+        "paired_over_stock_ttft": 0.9673006016619409,
+        "paired_tiles": [
+          0,
+          0
+        ],
+        "prefill_forward_us": [
+          2707212,
+          2613290
+        ],
+        "request_window_idle": [
+          81.00922409115573,
+          82.3700221238938
+        ],
+        "ttft_seconds": [
+          2.74739,
+          2.657552
+        ]
+      },
+      "short": {
+        "decode_tokens_per_second": [
+          50.05187916999684,
+          50.299561834928014
+        ],
+        "eligible_endpoints": false,
+        "idle_endpoints": [
+          [
+            92.75,
+            86.33
+          ],
+          [
+            92.72,
+            81.95
+          ]
+        ],
+        "paired_over_stock_ttft": 1.251183599629175,
+        "paired_tiles": [
+          0,
+          0
+        ],
+        "prefill_forward_us": [
+          1306194,
+          1641805
+        ],
+        "request_window_idle": [
+          90.37548554164869,
+          86.88493203139957
+        ],
+        "ttft_seconds": [
+          1.332165,
+          1.666783
+        ]
+      }
+    }
+  },
+  "paired_output_ids": 512,
+  "paired_tiles": {
+    "long-holdout": 432,
+    "long-replay": 432
+  },
+  "qualification": false
+}
