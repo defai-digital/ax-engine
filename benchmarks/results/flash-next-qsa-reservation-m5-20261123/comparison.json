@@ -1,0 +1,48 @@
+{
+  "context_tokens": 32768,
+  "control": {
+    "build": {
+      "binary_sha256": "2b8d08dfe450a49e1cef79f7414769f986005060efdd4b74966d7d2a1438f6e5",
+      "codesign_verified": true,
+      "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+      "mlx": "0.32.4",
+      "patch_sha256": "35ee518eed4e7b90efbd0b7b047fce6b722752a4bf82ebf6765e216839088d79",
+      "profile": "release-server",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "source_base": "a3a7ba67db2159ef3f9eccf5d5e198e597317219"
+    },
+    "peak_footprint_bytes": 81063957352,
+    "pressure_samples": 96,
+    "ready_seconds": 32.30845820799004
+  },
+  "corrected": {
+    "build": {
+      "binary_sha256": "62797ad94983b8aa872f2dcc6fe343eac817916e3d0622145e2f383c96e65f9c",
+      "codesign_verified": true,
+      "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+      "mlx": "0.32.4",
+      "patch_sha256": "745e50d603d78411f92c3a3b5e46e9b642e21e4cf0ffc324b221d8632789f8f5",
+      "profile": "release-server",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "source_base": "f920ff7cfa25379dd1b055aaf13c74b9f1dd9915"
+    },
+    "peak_footprint_bytes": 81094972216,
+    "pressure_samples": 163,
+    "ready_seconds": 34.274592000001576
+  },
+  "expert_placement": "resident",
+  "live_sequences": 1,
+  "matched_output_ids": 256,
+  "qualification": false,
+  "reader": "AlignedBuffered",
+  "reserved_changes": {
+    "prefill-scratch": [
+      "1.69GiB",
+      "12.02GiB"
+    ],
+    "working-set": [
+      "81.52GiB",
+      "91.85GiB"
+    ]
+  }
+}
