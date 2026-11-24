@@ -14,3 +14,7 @@ repeat in place, the same six of nine release gates pass.
 
 `python3.12 -E -s -B replay.py` regenerates `comparison.json` using
 the consolidated native archive and the frozen release evaluator.
+Use `--lifecycle-result` to supply a fresh lifecycle receipt from this
+signed build and `--ordinary-capture` to supply the verified complete
+reference directory. The replay checks lifecycle action identity before
+evaluating the combined evidence.

@@ -1,5 +1,6 @@
 """Recheck the current signed native lifecycle under its repeated host conditions."""
 
+from argparse import ArgumentParser
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -15,14 +16,14 @@ REPO = NATIVE.parents[2]
 MODES = ("disabled", "default")
 
 
-def replay():
+def replay(lifecycle_result=HERE / "result.json", capture=None):
     refresh = run_path(str(NATIVE / "replay.py"))
     board = run_path(str(BENCH / "flash-next-guarded-reader-board-m5-20261123/replay.py"))
     controls = run_path(str(BENCH / "flash-next-guarded-reader-lifecycle-m5-20261123/replay.py"))
     board["verify_evaluator_inputs"]()
-    reference, scope = board["reference_input"](None)
+    reference, scope = board["reference_input"](capture)
     need = refresh["need"]
-    repeated_raw = (HERE / "result.json").read_bytes()
+    repeated_raw = lifecycle_result.read_bytes()
     repeated = json.loads(repeated_raw)
     with TemporaryDirectory(prefix="ax-flash-consolidated-lifecycle-") as directory:
         work = Path(directory)
@@ -65,4 +66,11 @@ def replay():
 
 
 if __name__ == "__main__":
-    print(json.dumps(replay(), indent=2, sort_keys=True, allow_nan=False))
+    parser = ArgumentParser(description=__doc__)
+    parser.add_argument("--lifecycle-result", type=Path, default=HERE / "result.json",
+                        help="lifecycle result from another run of the same signed build")
+    parser.add_argument("--ordinary-capture", type=Path,
+                        help="verified capture of the completed ordinary reference")
+    args = parser.parse_args()
+    print(json.dumps(replay(args.lifecycle_result, args.ordinary_capture),
+                     indent=2, sort_keys=True, allow_nan=False))
