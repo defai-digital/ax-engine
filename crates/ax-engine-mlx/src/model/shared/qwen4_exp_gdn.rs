@@ -614,12 +614,17 @@ impl Qwen4ExpGdn {
         {
             crate::model::qwen4_exp::profiling::dump("gdn_beta", &[&beta]);
             crate::model::qwen4_exp::profiling::dump("gdn_initial_state", &[&recurrent]);
+            crate::model::qwen4_exp::profiling::gdn_geometry::record_inputs([
+                &q, &k, &v, &decay, &beta, &recurrent,
+            ]);
         }
         let prefill = if crate::flash_next_gdn::enabled() {
             crate::flash_next_gdn::try_mlx_prefill(&q, &k, &v, &decay, &beta, &recurrent)
         } else {
             None
         };
+        #[cfg(test)]
+        let used_mlx_prefill = prefill.is_some();
         let (output, recurrent) = if let Some(prefill) = prefill {
             prefill
         } else {
@@ -646,6 +651,11 @@ impl Qwen4ExpGdn {
         {
             crate::model::qwen4_exp::profiling::dump("gdn_core_output", &[&output]);
             crate::model::qwen4_exp::profiling::dump("gdn_final_state", &[&recurrent]);
+            crate::model::qwen4_exp::profiling::gdn_geometry::record_outputs(
+                &output,
+                &recurrent,
+                used_mlx_prefill,
+            );
         }
         let activation = self.activation;
         let eps = self.eps;

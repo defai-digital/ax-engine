@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[path = "gdn_geometry_tests.rs"]
+pub(crate) mod gdn_geometry;
+
 /// Stages dumped when `AX_FLASH_NEXT_DUMP_POSITIONS` is set and no stage
 /// allow-list is provided. Full-sequence dumps of every stage at 2k tokens
 /// are too large for the records-attribution campaign.

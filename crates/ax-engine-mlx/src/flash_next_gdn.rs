@@ -1,4 +1,4 @@
-//! Dedicated Flash Next recurrence probes and default-off MLX prefill dispatch.
+//! Dedicated Flash Next recurrence probes and MLX prefill dispatch.
 //! Inputs already carry Flash Next normalization, query scaling and FP32 gates.
 //! Public for diagnostic binaries; not a stable external API.
 

@@ -215,6 +215,7 @@ fn flash_next_real_runner_aligned_states_and_continuation() {
 #[test]
 #[ignore = "requires the pinned Flash Next pack and output IDs from the signed HTTP control"]
 fn flash_next_real_runner_prefill_geometry_witnesses() {
+    use crate::model::qwen4_exp::profiling::gdn_geometry;
     use crate::model::qwen4_exp::profiling::{capture_geometry_forwards, take_geometry_forwards};
     use ax_engine_core::{
         CacheGroupId, DeterministicSampler, EngineCore, KvManagerConfig, ModelId,
@@ -279,6 +280,11 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
         })
         .unwrap();
 
+    let trace_gdn = crate::fastpath::env_flag("AX_FLASH_NEXT_GDN_GEOMETRY_REPLAY");
+    if trace_gdn {
+        assert!(crate::flash_next_gdn::enabled());
+        gdn_geometry::begin();
+    }
     capture_geometry_forwards();
     let mut snapshot = core.request_manager().snapshot(request).unwrap();
     for _ in 0..128 {
@@ -349,6 +355,13 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
         "result.json",
         &serde_json::to_vec_pretty(&evidence).unwrap(),
     );
+    if trace_gdn {
+        write_blob(
+            &output,
+            "recurrence.json",
+            &serde_json::to_vec_pretty(&gdn_geometry::finish()).unwrap(),
+        );
+    }
 }
 
 #[test]
