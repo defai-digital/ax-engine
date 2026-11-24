@@ -70,7 +70,10 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 3. [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation)
 4. [Benchmarks: MTP Matrix](BENCHMARKS.md#mtp-matrix)
 
-Prefer the **6-bit** `download-mtp` lane for practical AX usage. Keep **4-bit**
+The primary Qwen 3.8 27B and Flash Next packs are pinned MXFP4 MTP snapshots.
+Serve them with `qwen3.8-27b:axq` and `qwen3.8-flash-next:axq`. They are not
+`download-mtp` targets. For Qwen 3.6 and Gemma assistant packs that still use
+the preparer, the practical lane is 6-bit `download-mtp`. Keep **4-bit**
 rows as labeled comparison evidence for peer engines that publish 4-bit results.
 DFlash2 is a separate greedy block drafter and is not one of those MTP rows.
 See [DFlash2](mtp/README.md#dflash2).
@@ -97,7 +100,7 @@ history, or out of scope for a claim.
 
 ### Setup and models
 
-- [Getting Started](GETTING-STARTED.md) — brew-first install, Python SDK, source builds, first commands
+- [Getting Started](GETTING-STARTED.md) — macOS app install, then CLI, Python SDK, source builds, and first commands
 - [Supported Models](SUPPORTED-MODELS.md) — direct support, aliases, `download-mtp`, unsupported requests
 - [Model Support Policy](MODEL-SUPPORT-POLICY.md) — promotion, six-month activity rule, EOL
 - [FAQ](FAQ.md) — hardware, model stack, runtime paths, limitations

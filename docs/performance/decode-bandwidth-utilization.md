@@ -1,8 +1,12 @@
 # Decode bandwidth utilization: Mac mini M4 Pro vs MacBook Pro M5 Max
 
-Why the same pack decodes 2.5x faster on the M5 Max campaign laptop than on
-the Mac mini M4 Pro qualification SKU, and why that gap is the hardware, not
-the runtime.
+Historical record for the retired affine 6-bit pack. At the time, Mac mini
+M4 Pro 64 GB was that pack's qualification host. The current MXFP4 selector
+and new 27B qualification use MacBook Pro M5 Max 128 GB. These bandwidth
+ratios do not transfer to MXFP4.
+
+Why that 6-bit pack decoded about 2.5x faster on the M5 Max campaign laptop
+than on the Mac mini M4 Pro, and why that gap was the hardware.
 
 Pack: `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` @
 `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Dense weights streamed per
@@ -20,7 +24,7 @@ in CI (`--check`).
 
 | Host | Chip | GPU | Published memory bandwidth | Source |
 | --- | --- | --- | ---: | --- |
-| Mac mini M4 Pro 64 GB (Mac16,11), qualification SKU | Apple M4 Pro | 20-core | 273 GB/s | [Apple support 121555](https://support.apple.com/en-us/121555) |
+| Mac mini M4 Pro 64 GB (Mac16,11), historical 6-bit qualification host | Apple M4 Pro | 20-core | 273 GB/s | [Apple support 121555](https://support.apple.com/en-us/121555) |
 | MacBook Pro M5 Max 128 GB (Mac17,6), campaign host | Apple M5 Max | 40-core | 614 GB/s | [Apple MacBook Pro specs](https://www.apple.com/macbook-pro/specs/) |
 
 Bandwidth ratio 614 / 273 = **2.25x**. GPU core ratio 40 / 20 = 2x, and the

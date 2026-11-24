@@ -6,8 +6,9 @@
 
 > Dated campaign record on one Apple M5 Max 128 GB host (Mac17,6, macOS 27.0).
 > This is a clean campaign snapshot, not a universal
-> engine ranking, not SKU certification (the 27B qualification SKU is the
-> Mac mini M4 Pro 64 GB), and not a product-claim page. Canonical status
+> engine ranking, not SKU certification (this 2026-09 27B record used Mac mini
+> M4 Pro 64 GB; current primary qualification is MacBook Pro M5 Max 128 GB),
+> and not a product-claim page. Canonical status
 > sentences live in [Qwen 3.8 27B AXQ](../model-certifications/qwen3.8-27b-axq.md).
 
 Checked-in artifacts:

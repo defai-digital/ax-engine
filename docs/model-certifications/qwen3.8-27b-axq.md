@@ -42,7 +42,10 @@ certification record. See [DFlash2](../mtp/README.md#dflash2).
 
 The following record is preserved for evidence interpretation. Its selector
 bindings, defaults and findings describe the retired 6-bit pack, not the
-current MXFP4 selector or future MXFP8 support.
+current MXFP4 selector or MXFP8 Candidate. The names in that record
+(`qwen3.8-27b:axq-6bit`, `qwen3.8-27b:axq-4bit`, and the old 6-bit binding of
+`qwen3.8-27b:axq`) do not resolve. Current `qwen3.8-27b:axq` selects the MXFP4
+MTP pack above. Named 27B 4-bit and 6-bit targets fail before download.
 
 # Qwen 3.8 27B AXQ Certification
 

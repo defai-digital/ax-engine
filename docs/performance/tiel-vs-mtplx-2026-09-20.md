@@ -98,8 +98,10 @@ Their larger gains in some cells are not generalized to coding workloads.
   campaign's fastest decode cell. It is not the default pack and is not
   completion throughput.
 - Do not label decode as generation speed, and do not present native-API tok/s
-  as AX Code session speed. AX Engine's own first-run default remains
-  `qwen3.8-27b:axq` on the M4 Pro qualification SKU.
+  as AX Code session speed. AX Engine's first-run default remains
+  `qwen3.8-27b:axq` (pinned MXFP4 MTP). The September 2026 6-bit qualification
+  host was Mac mini M4 Pro 64 GB. New 27B qualification uses MacBook Pro M5
+  Max 128 GB.
 
 ## Decode and first-token latency
 

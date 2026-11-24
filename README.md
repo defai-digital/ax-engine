@@ -44,7 +44,7 @@ MiniCPM-V, and others) are documented under
 
 Product SKUs:
 
-- **Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)** — optimized on M5-class Macs (32 GB+ recommended). The existing qualification record was measured on a Mac mini M4 Pro 64 GB, a supported M4-tier configuration; MXFP4 SKU qualification pending
+- **Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)** — optimized on M5-class Macs (32 GB+ recommended). The 2026-11-18 product-health gate passed on MacBook Pro M5 Max 128 GB. The earlier published qualification record is the retired 6-bit pack on a Mac mini M4 Pro 64 GB, a supported M4-tier configuration. MXFP4 SKU qualification and MTP Tier 2 remain pending
 - **Qwen 3.8 Flash Next MXFP4 MTP** (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending.
   `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned
   MXFP4 MTP pack. Launching this pack on the standard host defaults to one
@@ -502,10 +502,12 @@ For methods, dated tables, charts, and immutable raw artifacts, read
 [Performance Results](docs/PERFORMANCE-RESULTS.md) and
 [Benchmarks](docs/BENCHMARKS.md). The archive begins below.
 
-Two lanes. **Do not mix them.** Dense Qwen 3.8 27B AXQ is AX Engine's first-run
-pack: 20.84 GB of weights per token, already at the DRAM ceiling in direct AR.
-Tiel / Cyber-Tiel are AX Code's managed MoE coding packs. Their tok/s are not
-interchangeable with the 27B table.
+Two lanes. **Do not mix them.** The current first-run pack is MXFP4 MTP
+(`qwen3.8-27b:axq`, about 17.4 GB on disk). The historical retired 6-bit dense
+pack streamed 20.84 GB of weights per token and already sat at the DRAM
+ceiling in direct AR. Its MTP speed is the archive below, not a measurement
+of the MXFP4 pack. Tiel / Cyber-Tiel are AX Code's managed MoE coding packs.
+Their tok/s are not interchangeable with the 27B table.
 
 | Lane | Pack | Host | AX Engine | Direct AR (mlx-lm) | MTPLX |
 | --- | --- | --- | ---: | ---: | ---: |

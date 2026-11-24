@@ -64,14 +64,15 @@ unless you upgrade memory.
 
 ### Full local server (multi-model / larger models)
 
-| Machine | Minimum spec | Suggested spec |
+| Machine | Supported floor | Suggested spec |
 | --- | --- | --- |
-| Mac Mini | M4 Pro, 32 GB | M4 Pro, 64 GB |
-| MacBook Pro 14" / 16" | M2 Max, 32 GB | M3 Max, 96 GB |
-| Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
+| Mac mini | M4, 16 GB, one compact model | M4 Pro, 64 GB for Qwen 3.8 27B |
+| MacBook Pro | M3 with 32 GB for one mid-size model | M5 Max, 128 GB |
+| Mac Studio | M3 Ultra as a larger-memory host | Ultra-class, 192 GB+ |
 
 Use **32 GB+** for multi-model serving, longer contexts, and larger packs
-(Gemma 26B/31B, Qwen 3.6 27B/35B, coder stacks). M1 hosts remain outside the
+(Gemma 26B/31B, Qwen 3.6 27B/35B, coder stacks). M2 runs as best-effort and
+is not a tuning or qualification host. M1 hosts remain outside the
 repo-owned MLX runtime contract.
 
 For a typical multi-role local stack, start with one of these higher-memory
@@ -79,9 +80,9 @@ configurations:
 
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
-| Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| MacBook Pro M5 Max | 128 GB RAM | Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B, `qwen3.8-flash-next:axq`). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending. Start with `--max-concurrent-requests 1`. See the [certification record](model-certifications/qwen3.8-flash-next.md) for dated operating evidence. |
-| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Larger-memory host for the same Flash Next pack. The 2026-10-05 direct-default release gates were measured here and stay bound to this host. |
+| Mac mini M4 Pro | 64 GB RAM | Supported-tier host for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`). The historical 6-bit qualification record was measured here. |
+| MacBook Pro M5 Max | 128 GB RAM | Primary host for Qwen 3.8 27B AXQ, and the Flash Next standard. Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B, `qwen3.8-flash-next:axq`). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending. Start with `--max-concurrent-requests 1`. See the [certification record](model-certifications/qwen3.8-flash-next.md) for dated operating evidence. |
+| Mac Studio (Ultra-class, M3 Ultra or newer; M2 Ultra is best-effort) | 192 GB+ RAM | Larger-memory host for the same Flash Next pack. The 2026-10-05 direct-default release gates were measured on an Ultra-class 192 GB+ host and stay bound to that host. |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -164,9 +165,8 @@ port (`18080`). Full map (Engine, AX Serving, delegated peers):
 
 ## Where is the serving roadmap?
 
-AX Engine v7 is the current serving-oriented runtime line. The active serving
-roadmap and evidence gates live in
-[Roadmap](ROADMAP.md).
+The current release line is 8.x (workspace **8.1.0**). Serving gates that
+started in v7 continue in [Roadmap](ROADMAP.md).
 
 ## Why does the repo-owned MLX runtime require recent Apple Silicon?
 
@@ -175,8 +175,9 @@ best-effort code path. AX fails closed on **M1** Apple Silicon. Runtime host
 checks accept **Apple M2 or newer** on macOS 26 (Tahoe)+. **M5 and later** are
 the primary target, M3–M4 are supported and M2 is best-effort (it runs but is
 not tuned or qualified); published throughput
-and multi-model claims are still scoped to **higher-memory** hosts (**32 GB+**,
-often M2 Max / M4 Pro class). **16 GB** machines (for example base Mac mini M4)
+and multi-model claims are still scoped to **higher-memory** hosts (**32 GB+**).
+Primary measurements use M5-class Macs. Mac mini M4 Pro 64 GB remains the
+supported 27B check. **16 GB** machines (for example base Mac mini M4)
 are intentional for **compact single-model** use — see [What hardware does AX
 Engine support?](#what-hardware-does-ax-engine-support).
 `AX_ALLOW_UNSUPPORTED_HOST=1` is only for internal development or CI bring-up;
@@ -273,7 +274,7 @@ production support. Those packs can convert and serve through
 `--stream-experts` (default `auto`), including 2-bit SSD expert streaming, but
 local decode is still too slow to recommend or certify.
 
-AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve path.
+Since v7.0.0, AX Engine has served the production-size Qwen 3.8 27B catalog.
 Start with the pinned `qwen3.8-27b:axq` MXFP4 MTP pack. Its checkpoint path is
 Tier 1; MTP Tier 2 performance certification remains pending. Published MTP
 throughput from the retired 6-bit campaign is **31.05 tok/s** decode on Mac

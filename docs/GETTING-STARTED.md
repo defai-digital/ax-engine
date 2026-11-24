@@ -7,14 +7,15 @@ admission is pending. Historical receipts apply to their recorded format.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
 AX Engine is a Mac-first inference runtime **optimized first for Qwen 3.8 27B
-AXQ** (`qwen3.8-27b:axq`), with a local server, SDK bindings, and benchmark
-tooling. Product-path MTP on that pack is **31.05 tok/s** decode on the
-recommended Mac mini M4 Pro 64 GB (2.43× mlx-lm 12.78, which already sits at
-the DRAM ceiling) and **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max
-128 GB. Other Certified families stay supported; they are not the first-run
-path. It is not only an MLX experiment: the repo-owned MLX runtime is one path,
-and delegated compatibility paths let users keep the same AX surface for
-broader model coverage.
+AXQ** (`qwen3.8-27b:axq`, the pinned MXFP4 MTP pack), with a local server,
+SDK bindings, and benchmark tooling. M5 and later are the primary hardware
+target. Mac mini M4 Pro 64 GB remains a supported check host. The **31.05
+tok/s** and **76.90 tok/s** MTP figures are the retired affine 6-bit campaign
+from 2026-09. They do not measure the current MXFP4 pack. MTP stays explicit
+opt-in, and MTP Tier 2 is pending. Other Certified families stay supported;
+they are not the first-run path. The repo-owned MLX runtime is the product
+path, and delegated compatibility paths keep the same AX surface for broader
+model coverage.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -484,24 +485,30 @@ For the current crate layering and dependency-boundary guidance, see
 
 ## Requirements
 
-- macOS 26 (Tahoe) or later
-- Apple Silicon: **M5 or later** recommended (primary target); M3–M4
-  supported; M2 best-effort (runs, not tuned or qualified)
+- macOS 26 (Tahoe) or later for runtime admission. Prebuilt app, Homebrew,
+  wheel, and standalone binaries require **macOS 26.2 or later**
+- Apple Silicon: **M5 or later** is the primary target; M3–M4 are supported;
+  M2 is best-effort (it runs, and it is not tuned or qualified)
   - **Light host (16 GB):** base Mac mini M4 and similar — one compact Qwen
     3.5 9B pack (4-bit preferred; 6-bit works with less free RAM), short
     context only
   - **Full local server (32 GB+):** multi-model serving, longer contexts, and
-    larger packs (27B/35B class); **64 GB** recommended for a comfortable stack
-- Rust 1.88+ for source builds
-- `mlx` for source-built MLX runtime binaries
+    larger packs (27B/35B class). **Mac mini M4 Pro 64 GB** is the supported
+    27B check. **MacBook Pro M5 Max 128 GB** is the primary 27B host and the
+    Flash Next qualification standard
+- Rust pinned by `rust-toolchain.toml` (**1.99.1**) for source builds.
+  `Cargo.toml` records 1.88 as the minimum language version. Use the pin so
+  another Rust install earlier on `PATH` does not replace it
+- `mlx` for source-built MLX runtime binaries, at the version in `mlx.version`
+  (currently 0.32.4)
 - a running `mlx_lm.server` for `mlx_lm_delegated`
 - a llama.cpp server or CLI target for `llama_cpp`
 
-Validated machines include **Mac mini M4 16 GB** (compact single-model smoke),
-Mac Studio (M2 Max / M2 Ultra and later), MacBook Pro with M2 Max or newer,
-Mac Mini M4 Pro 32 GB+, and Mac Studio / Mac Pro with M4 Ultra or M5 Ultra.
-Published multi-model and large-pack performance evidence is still gathered on
-**32 GB+** hosts.
+Published performance is measured on M5-class Macs. Correctness coverage
+includes M3–M4, and M2 results are signal only. A base Mac mini M4 with 16 GB
+is a light single-model host. Multi-model and large-pack evidence still comes
+from **32 GB+** hosts. Flash Next qualification stays on MacBook Pro M5 Max
+128 GB.
 
 Runtime surfaces fail closed when a backend is unavailable instead of silently
 pretending support exists.

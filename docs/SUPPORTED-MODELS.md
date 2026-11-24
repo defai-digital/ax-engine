@@ -73,8 +73,8 @@ resolved session*, not how well a family is supported.
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M4 Pro)** | Supported-tier host for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`). New primary-tier qualification runs on MacBook Pro M5 Max 128 GB. |
-| **128 GB (MacBook Pro M5 Max)** | Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending. `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 pack; `qwen3.8-flash-next:axq-6bit` selects the affine 6-bit MTP pack. Flash Next MXFP8 is an opt-in native preview with M5 functional evidence. |
-| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Larger-memory host for the same Flash Next pack. The 2026-10-05 direct-default release gates were measured here and stay bound to this host. Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **128 GB (MacBook Pro M5 Max)** | Primary host for new Qwen 3.8 27B AXQ qualification, and the Flash Next standard. Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target. The signed v7.9.0 release passed the direct-default gates on this standard. AX certification record: Candidate. Model MTP remains an experimental opt-in; MTP Tier 2 is pending. `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 pack; `qwen3.8-flash-next:axq-6bit` selects the affine 6-bit MTP pack. Flash Next MXFP8 is an opt-in native preview with M5 functional evidence. |
+| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M3 Ultra or newer; M2 Ultra is best-effort)** | Larger-memory host for the same Flash Next pack. The 2026-10-05 direct-default release gates were measured on an Ultra-class 192 GB+ host and stay bound to that host. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -123,8 +123,8 @@ Qwen 3.8 caveat:
   2.4T is **not** a production support candidate: no certification and no
   published throughput claim. Do not present Super-class Qwen 3.8 as a
   Qwen 3.5 / 3.6 substitute.
-- AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve
-  path. Start with `qwen3.8-27b:axq` (the pinned AXQ MXFP4 MTP pack). This is
+- Since v7.0.0, AX Engine has served the production-size Qwen 3.8 27B catalog.
+  Start with `qwen3.8-27b:axq` (the pinned AXQ MXFP4 MTP pack). This is
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU.
@@ -528,7 +528,9 @@ For Qwen3.6, `download-mtp` wraps the standard download plus `convert-mtplx`
 provenance flow. For Gemma 4, it downloads the target and assistant and runs
 the Gemma assistant-MTP packager. The 4-bit Gemma 4 12B target is the simple
 Quick Start path and a peer-comparison benchmark lane; the recommended
-practical AX Engine MTP benchmark lane remains the six 6-bit targets.
+practical AX Engine MTP benchmark lane for those families remains the 6-bit
+targets in the table above. Qwen 3.8 27B and Flash Next are pinned MXFP4
+snapshots and are not in this table.
 Qwen3-Coder-Next remains a direct-decode
 target; it is not a `download-mtp` target because its MLX base artifact does
 not ship its own MTP head.

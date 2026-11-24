@@ -51,7 +51,7 @@ denominator.
 | Session | Engine / peers | Host | When |
 | --- | --- | --- | --- |
 | Qwen 3.6 35B-A3B AXQ 6-bit MTP (peer rerun) | AX **7.8.0** `77242419` · MTPLX **2.12.2** · OMLX **0.7.2** · mlx-lm **0.32.2** | Apple **M5 Max** 128 GB | [2026-10-22](../benchmarks/results/mtp-axq-peer/2026-10-22-apple-m5-max-128gb-qwen36-35b-6bit/) · **250.6** decode / **2364** prefill (`flappy`) · [analysis](mtp/qwen36-35b-6bit-peer-m5-2026-10-22.md) |
-| Qwen 3.8 27B AXQ 6-bit MTP (Engine default) | AX **7.4.0** `ad999f3f` · MTPLX **2.11.3** · OMLX **0.6.4** · mlx-lm **0.31.3** | Mac mini **M4 Pro 64 GB** | [2026-09-17](../benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/) · **31.05** decode / **120.3** prefill |
+| Qwen 3.8 27B AXQ 6-bit MTP (historical selector) | AX **7.4.0** `ad999f3f` · MTPLX **2.11.3** · OMLX **0.6.4** · mlx-lm **0.31.3** | Mac mini **M4 Pro 64 GB** | [2026-09-17](../benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/) · **31.05** decode / **120.3** prefill |
 | Qwen 3.8 27B AXQ 6-bit MTP (campaign host) | AX **7.4.0** product-path MTP · MTPLX **2.11.2** · OMLX **0.6.4** · mlx-lm **0.31.3** | Apple **M5 Max** 128 GB | [2026-09-15](../benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/) · **76.90** decode / **795.3** prefill |
 | Tiel / Cyber-Tiel resident native API | AX candidate on `574d2d19` + Python mode fix · MTPLX **2.11.3** | M5 Max 128 GiB / M4 Pro 64 GiB / M2 Ultra 192 GiB / M3 Ultra 512 GiB | [2026-09-20](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md) |
 | Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
@@ -87,10 +87,12 @@ The rows in this session measure MTP. DFlash2, when its checkpoint is
 present, is a separate greedy block drafter and is not in these tables. See
 [DFlash2](mtp/README.md#dflash2).
 
-#### Qwen 3.8 27B AXQ (Engine default)
+#### Qwen 3.8 27B AXQ (historical 6-bit selector)
 
-Product-path MTP on `qwen3.8-27b:axq`. Direct AR already saturates DRAM
-(mlx-lm 12.78 tok/s on M4 Pro, 27.90 on M5 Max). Headline rows:
+These rows measure the retired affine 6-bit pack, which `qwen3.8-27b:axq`
+selected in September 2026. That alias now selects the pinned MXFP4 MTP pack.
+The 6-bit numbers do not qualify MXFP4. Direct AR on the retired pack already
+saturated DRAM (mlx-lm 12.78 tok/s on M4 Pro, 27.90 on M5 Max). Headline rows:
 
 | Host | AX Engine decode / prefill | mlx-lm direct | MTPLX | OMLX |
 | --- | ---: | ---: | ---: | ---: |
@@ -150,21 +152,24 @@ separately in [Getting a Model](GETTING-STARTED.md#getting-a-model).
 | --- | --- | --- |
 | `gemma-4-12b-4bit` | `mlx-community/gemma-4-12B-it-4bit` | Quick-start Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-4bit` |
 | `qwen3.6-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | Qwen fused sidecar from `Qwen/Qwen3.6-27B` |
-| `qwen3.8-27b-axq-6bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | Serve-ready AutomatosX AXQ 6-bit MTP pack; no extra `download-mtp` conversion |
+| `qwen3.8-27b-axq-6bit` (retired) | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | Historical serve-ready 6-bit pack. Current `qwen3.8-27b:axq` downloads MXFP4 and rejects this repo |
 | `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused sidecar from `Qwen/Qwen3.6-35B-A3B` |
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
 | `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
 | `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
 
-The practical AX Engine benchmark lane is the 6-bit `download-mtp` set. The
+The current Qwen 3.8 27B and Flash Next packs are pinned MXFP4 snapshots, not
+rows in this preparer table. For the Qwen 3.6 and Gemma assistant packs that
+still use `download-mtp`, the practical lane is 6-bit. The
 `gemma-4-12b-4bit` target is kept as the Quick Start path, and Qwen 4-bit
 packages are comparison artifacts for peer MTP engines rather than normal
 `download-mtp` targets.
 
 #### Download and serve an MTP package
 
-Install via Homebrew (primary), prepare a target, then run the serve command
-printed by the CLI.
+Install the CLI with Homebrew, prepare a target, then run the serve command
+printed by the CLI. The macOS app is the end-user install; it does not replace
+this benchmark preparer.
 
 ```bash
 brew install defai-digital/tap/ax-engine
@@ -192,7 +197,7 @@ See [Supported Models](SUPPORTED-MODELS.md#mtp-downloads) and the
 | --- | --- | --- |
 | `qwen3.6-27b-4bit` | prepared Qwen fused sidecar | Qwen fused sidecar MTP |
 | `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
-| `qwen3.8-27b-axq-6bit` | `ax-engine download qwen3.8-27b:axq` | Same-package AXQ 6-bit MTP vs direct |
+| `qwen3.8-27b-axq-6bit` (retired) | historical repo `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`; `ax-engine download qwen3.8-27b:axq` now fetches MXFP4 and rejects this repo | Same-package AXQ 6-bit MTP vs direct, historical only |
 | `qwen3.6-35b-a3b-4bit` | prepared Qwen fused sidecar | Qwen fused sidecar MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |

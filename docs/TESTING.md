@@ -57,7 +57,13 @@ Live-model QA when artifacts are mounted uses `scripts/check-qa-model.sh`
 (default `QA_MODEL_ID=qwen3_5_9b_q4`). That is a Qwen 3.5 hybrid proxy, not
 the hero pack.
 
-## Primary qualification (Mac mini M4 Pro, 64 GB)
+## Primary qualification (MacBook Pro M5 Max, 128 GB)
+
+New 27B qualification runs on MacBook Pro M5 Max, 128 GB. The commands below
+are the live contract. The 2026-09-18 receipts later in this section are the
+retired 6-bit publication on Mac mini M4 Pro 64 GB. The 2026-11-18 MXFP4
+product-health receipt is on the M5 Max host. See the
+[certification record](model-certifications/qwen3.8-27b-axq.md).
 
 Print the contract (no weights):
 
@@ -105,6 +111,9 @@ MTP certification. The report marks MTP-S, MTP-P and MTP-D as `not_assessed`:
 cross-route identity proves neither same-state verifier safety nor speed nor
 default-promotion readiness. Separate MTP-S evidence is still required for
 shipping MTP. See the [three-gate requirements](model-certifications/qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means).
+
+The following 2026-09-18 receipts belong to the retired affine 6-bit pack on
+Mac mini M4 Pro 64 GB. They are not the MXFP4 product-health record.
 
 The [2026-09-18 product qualification](../benchmarks/results/qualification/2026-09-18-qwen38-27b-product-default/)
 extends that sample with all 79 QA items in both streaming forms on the actual

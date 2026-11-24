@@ -54,26 +54,35 @@ certified/default target.
 The primary pack and other AXQ selectors use explicit aliases:
 
 ```text
-qwen3.8-27b:axq          # primary 27B AXQ 6-bit MTP (default serve target)
-qwen3.8-27b:axq-6bit     # same checkpoint, explicit precision
-qwen3.8-27b:axq-4bit     # compact 4-bit sibling
-qwen3.6-27b:axq          # secondary AXQ 6-bit candidate
-qwen3.6-27b:axq-6bit     # same checkpoint, explicit precision
-qwen3.6-27b:axq-4bit     # smaller AXQ candidate
-qwen3.6-35b:axq          # pinned 35B-A3B AXQ 6-bit
-gemma4-12b:axq           # pinned Gemma 4 12B AXQ 6-bit
-holo3-35b:axq            # pinned Holo3 AXQ 6-bit (Tier 1 certified)
-ornith-35b:axq           # pinned Ornith 1.0 AXQ 6-bit
-ornith-1.5-35b:axq       # pinned Ornith 1.5 35B-A3B AXQ 6-bit MTP (development)
-muse-glimmer-30b:axq     # pinned Muse-Glimmer 30B AXQ 6-bit (development)
+qwen3.8-27b:axq              # primary 27B AXQ MXFP4 MTP (default serve target)
+qwen3.8-27b:axq-mxfp4        # same MXFP4 MTP pack
+qwen3.8-27b:mxfp4            # same MXFP4 MTP pack
+qwen3.8-27b:mxfp8            # explicit 27B MXFP8 MTP Candidate
+qwen3.8-flash-next:axq       # Flash Next MXFP4 MTP
+qwen3.8-flash-next:mxfp4     # same Flash Next MXFP4 MTP pack
+qwen3.8-flash-next:axq-6bit  # Flash Next affine 6-bit/group64 MTP
+qwen3.6-27b:axq              # secondary AXQ 6-bit candidate
+qwen3.6-27b:axq-6bit         # same 3.6 checkpoint, explicit precision
+qwen3.6-27b:axq-4bit         # smaller 3.6 AXQ candidate
+qwen3.6-35b:axq              # pinned 35B-A3B AXQ 6-bit
+gemma4-12b:axq               # pinned Gemma 4 12B AXQ 6-bit
+holo3-35b:axq                # pinned Holo3 AXQ 6-bit (Tier 1 certified)
+ornith-35b:axq               # pinned Ornith 1.0 AXQ 6-bit
+ornith-1.5-35b:axq           # pinned Ornith 1.5 35B-A3B AXQ 6-bit MTP (development)
+muse-glimmer-30b:axq         # pinned Muse-Glimmer 30B AXQ 6-bit (development)
 ```
 
-`:axq` is the AXQ selector. Bare `qwen3.6-27b` / `gemma4-12b` stay
-mlx-community, and `ax-qwen3.6-27b` / `ax-qwen3.6-35b` / `ax-gemma4-12b`
-stay AutomatosX OptiQ/QAT. Do not retarget those defaults at AXQ. Primary
-pack record:
+`qwen3.8-27b:axq` selects the pinned MXFP4 MTP pack. The retired names
+`qwen3.8-27b:axq-6bit`, `qwen3.8-27b:axq-4bit`, and
+`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` fail before download. Flash Next
+affine 6-bit is the explicit `qwen3.8-flash-next:axq-6bit` alias, not the
+generic `:axq` selector. `:axq` on Qwen 3.6, Gemma, Holo3, and Ornith still
+selects those families' pinned affine packs. Bare `qwen3.6-27b` / `gemma4-12b`
+stay mlx-community, and `ax-qwen3.6-27b` / `ax-qwen3.6-35b` / `ax-gemma4-12b`
+stay AutomatosX OptiQ/QAT. Primary pack record:
 [Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md). Secondary 3.6
-record: [Qwen 3.6 27B AXQ](model-certifications/qwen3.6-27b-axq.md).
+record: [Qwen 3.6 27B AXQ](model-certifications/qwen3.6-27b-axq.md). Format
+scope: [Qwen 3.8 format policy](QWEN38-FORMAT-POLICY.md).
 
 Use `download` when you want model acquisition as a separate step. Managed
 aliases cover the curated [AutomatosX catalog](https://huggingface.co/AutomatosX)

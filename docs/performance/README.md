@@ -7,7 +7,7 @@ decide which result table, method, or investigation note applies to a claim.
 
 | Need | Read |
 | --- | --- |
-| Headline dense 27B peer: Qwen 3.8 27B AXQ vs MTPLX and OMLX | [Root README: Qwen performance](../../README.md#qwen-performance) |
+| Historical dense 27B peer: retired Qwen 3.8 27B AXQ 6-bit vs MTPLX and OMLX | [Root README: Qwen performance](../../README.md#qwen-performance) |
 | Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) · [README Tiel section](../../README.md#tiel-performance) |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
 | Current MLX runtime admission | [MLX 0.32.4 admission](mlx-0.32.4-admission-2026-10-16.md) |
@@ -15,7 +15,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Opt-in MLX GDN prefill experiment | [Kernel comparison and limits](mlx-gdn-prefill-2026-10-03.md) |
 | Flash Next prefill and decode against the pinned MLX-VLM reference | [Findings, changes, kill switches and measurements](flash-next-prefill-decode-2026-10-05.md) |
 | Qwen 3.8 27B MXFP4 on pre-M3 GPUs: fp16 activations, dense-GEMM prefill, exact-MTP lm_head window | [Host-adaptive policies; M2 Ultra, M4 Pro and M5 Max measurements](qwen38-27b-pre-m3-prefill-2026-10-10.md) |
-| Why Mac mini M4 Pro and M5 Max decode differ (bandwidth utilization, MTP status) | [Decode bandwidth utilization](decode-bandwidth-utilization.md) |
+| Why Mac mini M4 Pro and M5 Max decode differed on the retired 6-bit 27B pack | [Decode bandwidth utilization](decode-bandwidth-utilization.md) |
 | Root README headline numbers | [README Performance](../../README.md#performance) |
 | AX vs peer MLX single-client serving (2026-08-06) | [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 | Interpretation and claim context | [Performance](../PERFORMANCE.md) |
@@ -33,7 +33,7 @@ provenance, and enough metadata to rerun or reject the claim.
 
 | Area | Public claim | Status |
 | --- | --- | --- |
-| MTP matrix | Recommend 6-bit `download-mtp` targets for practical use; keep labeled 4-bit rows for peer-aligned comparison | Current design |
+| MTP matrix | Qwen 3.8 27B and Flash Next use pinned MXFP4 snapshots. Qwen 3.6 and Gemma assistant packs that still use `download-mtp` keep the 6-bit lane; labeled 4-bit rows stay for peer-aligned comparison | Current design |
 | MTP+n-gram | Removed from the MTP matrix; historical only | Out of scope |
 | N-gram acceleration | Up to ~3.1× `mlx_lm` decode on high-hit rows without a second draft model | Workload-dependent |
 

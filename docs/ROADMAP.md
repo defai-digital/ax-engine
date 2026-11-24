@@ -6,8 +6,8 @@ Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
 admission is pending. Historical receipts apply to their recorded format.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
-AX Engine v7 is the current serving-oriented runtime line. It carries forward
-the earlier serving baseline work, including:
+The current release line is **8.1.0**. It carries forward the v7 serving
+baseline, including:
 
 - disk-backed L2 prefix cache
 - MLA warm-extend correctness (default-on snapshot restore; kill switch
@@ -34,13 +34,13 @@ The next optimization tracks are:
 | Speculative decoding software tuning | Adaptive n-gram length, dynamic draft windows, acceptance-rate prediction, fallback thresholds, prompt-pattern-aware speculation, and better cache sharing between draft and verify paths |
 | Kernel fusion and quantization path | Fused RMSNorm/matmul, attention projection fusion, fused dequant/matmul, group-wise quantization kernels, Apple AMX/Metal mixed paths, and prepacked weight layouts |
 
-## v7 Serving Hardening Gates
+## Serving Hardening Gates
 
 A major version is a product claim, not a counter. The v7.0.0 release review
 on 2026-08-15 kept exact-SHA CI as a publication gate and explicitly descoped
 the remaining items below from binary publication. They remain claim-promotion
-gates: v7.0.0 does not promote the documented experimental, candidate, or
-non-production surfaces until their evidence lands.
+gates on the 8.x line: publishing a binary does not promote the documented
+experimental, candidate, or non-production surfaces until their evidence lands.
 
 | Area | Status | Gate |
 |---|---|---|
