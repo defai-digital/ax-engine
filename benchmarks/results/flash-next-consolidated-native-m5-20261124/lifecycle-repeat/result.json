@@ -1,0 +1,411 @@
+{
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "modes": [
+    "disabled",
+    "default"
+  ],
+  "actions": [
+    "baseline",
+    "sse",
+    "budget_1",
+    "budget_2",
+    "stop",
+    "disconnect",
+    "recovery"
+  ],
+  "counters": [
+    "ax_engine_jobs_in_flight",
+    "ax_engine_generation_jobs_pending",
+    "ax_engine_generation_commands_queued",
+    "ax_engine_generation_active_streams",
+    "ax_engine_generation_buffered_stream_events"
+  ],
+  "total_blocks": 2048,
+  "expert_stream": "auto",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "API lifecycle; MTP-S/P/D, quality and performance not assessed",
+  "ordinary_launch": true,
+  "server_sha256": "24eeca1e3ce4a1015c3a9c4581ac6931ad6df023195abd2d72c29975e4bb3efd",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "soc": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.2.1"
+  },
+  "host_quiet": {
+    "cpu_idle_percent": 90.63,
+    "min_idle_percent": 90.0,
+    "waited_seconds": 188.8
+  },
+  "host_idle_after": 88.34,
+  "lifecycle_passed": true,
+  "runs": [
+    {
+      "mode": "disabled",
+      "ready_seconds": 31.256,
+      "actions": [
+        {
+          "mode": "disabled",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 301105,
+              "decode_tokens": 36,
+              "decode_time_us": 749270
+            }
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 271196,
+              "decode_tokens": 36,
+              "decode_time_us": 739211
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 246075
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 263133,
+              "decode_tokens": 1,
+              "decode_time_us": 1717
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 261620,
+              "decode_tokens": 36,
+              "decode_time_us": 755871
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 272632,
+              "decode_tokens": 36,
+              "decode_time_us": 752444
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "final_verified_steps": 0.0,
+      "exit_code_after_stop": 0,
+      "model": {
+        "id": "qwen3.8-flash-next:mxfp4",
+        "context_length": 32768
+      }
+    },
+    {
+      "mode": "default",
+      "ready_seconds": 30.17,
+      "actions": [
+        {
+          "mode": "default",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 306719,
+              "decode_tokens": 36,
+              "decode_time_us": 762603
+            }
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 265084,
+              "decode_tokens": 36,
+              "decode_time_us": 752710
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 244905
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 274048,
+              "decode_tokens": 1,
+              "decode_time_us": 1860
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 272038,
+              "decode_tokens": 36,
+              "decode_time_us": 765776
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "default",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67,
+            "ax_engine": {
+              "metrics_version": 1,
+              "prefill_tokens": 30,
+              "prefill_time_us": 279484,
+              "decode_tokens": 36,
+              "decode_time_us": 764375
+            }
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "final_verified_steps": 0.0,
+      "exit_code_after_stop": 0,
+      "model": {
+        "id": "qwen3.8-flash-next",
+        "context_length": 32768
+      }
+    }
+  ]
+}

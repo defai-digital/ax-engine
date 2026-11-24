@@ -39,7 +39,9 @@ endpoint recorded 82.31% CPU idle against the 90% floor. The
 has three QA rows and no timing matrix. Its
 [quiet-entry retry](../flash-next-reference-quiet-entry-m5-20261124/README.md)
 stopped during the first QA item. The direct-default certification
-record remains Candidate.
+record remains Candidate. The [lifecycle repeat](lifecycle-repeat/README.md)
+reproduced every action and recorded 90.63% CPU idle before and 88.34%
+after. The repeated endpoint still falls short of the 90% floor.
 
 The verifier regenerates the board from the raw results using the
 frozen evaluator. The archive binds the delivery stream, 210 QA rows,
