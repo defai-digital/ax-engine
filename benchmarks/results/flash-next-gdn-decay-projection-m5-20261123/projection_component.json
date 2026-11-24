@@ -1,0 +1,93 @@
+{
+  "input_row_sha256": {
+    "493": "a029de67fa918dfba75ba0a8d562a83b0ecdc1ff1cbd1e0bde4f39fab55625ee",
+    "494": "77abffe97ab572fab931d47b31463e6869e416894b1a47c2d907ded7100ee0ae",
+    "495": "fb5867e62ba0187943179a627751d21666028a0d32a7e2735aa51b5151247e11",
+    "1039": "8eee471a23260af54b807822c77ca3af5bea1a5cb37e3ce018031d2fdcd09efb",
+    "1040": "567e6768f80adba96f80b9b2cc4653fb24a910bf59d9bce4ca2999caf5a73c91",
+    "1041": "2b8c17d0635297b0675ab0bc6ad129834d6c6ae5ff63f52c0ed3dce12bfdc917"
+  },
+  "layout_comparisons": {
+    "canonical_tiles": {
+      "output_row_sha256": {
+        "493": "eef25981a633f6d09070c3edb5058ed461b75ea0356cb89e78ea6f7199e55986",
+        "494": "e6470abb0bc707f34384097a5a30a67ac9eef31b83f4cf7ed8e3ae21fdfb1c16",
+        "495": "dc8ab94782a9c9853727f45e2e8416df863dc5d55fa4795c172deb93075d2405",
+        "1039": "c01b6fd547b24a23308f7a28bf5e5418267d030a5857be1bf933670ba97eaea0",
+        "1040": "80fee6bbb96ff10117902c1b6e57f887a1b02e7b29fc47536eca9b13ffcb88da",
+        "1041": "f42ea9264f77d72ffc9acc0a4070456a0ed969b5822ce3e49ec3dcd18e78376a"
+      },
+      "positions_different_from_2048": [
+        494,
+        1040
+      ],
+      "positions_different_from_512": []
+    },
+    "padded_2048": {
+      "output_row_sha256": {
+        "493": "eef25981a633f6d09070c3edb5058ed461b75ea0356cb89e78ea6f7199e55986",
+        "494": "452f1a0de75d7a3257d4a7ec907d914a1b34c626cbd33a11fec3983bbb18dcff",
+        "495": "dc8ab94782a9c9853727f45e2e8416df863dc5d55fa4795c172deb93075d2405",
+        "1039": "c01b6fd547b24a23308f7a28bf5e5418267d030a5857be1bf933670ba97eaea0",
+        "1040": "d12a2eca538b4702d358dde1b7763effd0604a953ee8ce83eed142cd9fc020bc",
+        "1041": "f42ea9264f77d72ffc9acc0a4070456a0ed969b5822ce3e49ec3dcd18e78376a"
+      },
+      "positions_different_from_2048": [],
+      "positions_different_from_512": [
+        494,
+        1040
+      ]
+    },
+    "whole_2047": {
+      "output_row_sha256": {
+        "493": "eef25981a633f6d09070c3edb5058ed461b75ea0356cb89e78ea6f7199e55986",
+        "494": "452f1a0de75d7a3257d4a7ec907d914a1b34c626cbd33a11fec3983bbb18dcff",
+        "495": "dc8ab94782a9c9853727f45e2e8416df863dc5d55fa4795c172deb93075d2405",
+        "1039": "c01b6fd547b24a23308f7a28bf5e5418267d030a5857be1bf933670ba97eaea0",
+        "1040": "d12a2eca538b4702d358dde1b7763effd0604a953ee8ce83eed142cd9fc020bc",
+        "1041": "f42ea9264f77d72ffc9acc0a4070456a0ed969b5822ce3e49ec3dcd18e78376a"
+      },
+      "positions_different_from_2048": [],
+      "positions_different_from_512": [
+        494,
+        1040
+      ]
+    }
+  },
+  "mlx": "0.32.4",
+  "output_dtype": "BF16",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "partition": [
+    512,
+    512,
+    512,
+    511
+  ],
+  "shard_sha256": "56ce0dc32dd9b0befd235961a2c565686ba501d0689c5e9e56e48070e7761e60",
+  "tensors": {
+    "scales": {
+      "dtype": "U8",
+      "sha256": "3b5459ad1858325b7614067bcdd6a2ebce98dde79cf0cc900f09311c2b04614e",
+      "shape": [
+        48,
+        80
+      ]
+    },
+    "weight": {
+      "dtype": "U32",
+      "sha256": "e3a9748adbd20a803c0e94bcdb7dbd12c0b10980c855f0541d1622666f265278",
+      "shape": [
+        48,
+        320
+      ]
+    }
+  },
+  "verified_positions": [
+    493,
+    494,
+    495,
+    1039,
+    1040,
+    1041
+  ]
+}

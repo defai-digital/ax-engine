@@ -20,9 +20,18 @@ projection delta is 0.0078125 and its final decay delta is approximately
 softplus and exponential stages propagate the projection differences.
 
 All 154 pressure samples are normal. Peak sampled footprints are
-76.26 and 86.51 GiB, within the 96 GiB guard. This is a layer-zero
-attribution check. A shape-stable projection needs its own component
-and full-model checks before the wider profile can be reconsidered.
+76.26 and 86.51 GiB, within the 96 GiB guard.
+
+An isolated M5 projection reuses the exact MXFP4 weight and scales and
+the six retained BF16 input rows. Rows outside the six witnesses are
+zero-filled. A single 2,047-row projection and a padded 2,048-row
+projection both reproduce the wider arm's bits. Tiling just the
+projection as `512,512,512,511` reproduces the canonical arm's bits
+at all six positions. The component establishes a candidate projection
+layout. Model-wide parity and latency still need independent evidence.
 
 `python3 -B replay.py` verifies all stage and input witnesses against
-the sealed run and regenerates `comparison.json`.
+the sealed run, checks the component's witness hashes and regenerates
+`comparison.json`. With the pinned pack and MLX installed, extract the
+evidence archive and run
+`python3 -B projection_component.py SNAPSHOT OBSERVED INVENTORY`.

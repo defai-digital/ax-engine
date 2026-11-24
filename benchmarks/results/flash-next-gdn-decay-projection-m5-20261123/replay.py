@@ -68,6 +68,32 @@ def changed_heads(left, right):
     ]
 
 
+def verify_component(archive, component, inputs, heads, read):
+    inventory = read(archive, "mxfp4-inventory.json")
+    assert component["pack_revision"] == inventory["revision"]
+    assert component["mlx"] == "0.32.4" and component["output_dtype"] == "BF16"
+    assert component["verified_positions"] == POSITIONS
+    assert component["partition"] == [512, 512, 512, 511]
+    assert any(
+        member["publisher_sha256"] == member["sha256"] == component["shard_sha256"]
+        for member in inventory["members"]
+    )
+    component_inputs = {int(pos): digest for pos, digest in component["input_row_sha256"].items()}
+    assert component_inputs == inputs[0] == inputs[1]
+    layouts = component["layout_comparisons"]
+    assert set(layouts) == {"canonical_tiles", "whole_2047", "padded_2048"}
+    for name, layout in layouts.items():
+        canonical = name == "canonical_tiles"
+        expected = heads[0 if canonical else 1]["projection"]
+        row_hashes = {
+            str(row): sha256(struct.pack(f"<{len(bits)}I", *bits)).hexdigest()
+            for row, bits in expected.items()
+        }
+        assert layout["output_row_sha256"] == row_hashes
+        assert layout["positions_different_from_512"] == ([] if canonical else [494, 1040])
+        assert layout["positions_different_from_2048"] == ([494, 1040] if canonical else [])
+
+
 def replay(archive, earlier, helper):
     read, member = helper["read"], helper["member"]
     assert sha256((RECURRENCE / "evidence.tar.xz").read_bytes()).hexdigest() == (
@@ -90,6 +116,9 @@ def replay(archive, earlier, helper):
         heads.append({name: row_bits(helper, value) for name, value in stages.items()})
         cuts = read(archive, f"{root}/result.json")["cuts"]
         projection_inputs.append(projection_input(archive, helper, width, cuts))
+
+    component = json.loads((HERE / "projection_component.json").read_text())
+    verify_component(archive, component, projection_inputs, heads, read)
 
     stages = {}
     for name in STAGES:
