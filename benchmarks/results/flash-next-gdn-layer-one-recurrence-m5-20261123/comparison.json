@@ -1,0 +1,430 @@
+{
+  "decay_stages": {
+    "biased_projection": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "decay": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "log1p": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "log_decay": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "negative_abs_exp": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "projection": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "softplus": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    }
+  },
+  "exact_full_model_arm_repeats": true,
+  "fixed_partition_cross_arm_replays": {
+    "split_fenced": {
+      "different_rows": 1589,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        462,
+        463,
+        464,
+        465,
+        466,
+        467,
+        468,
+        469,
+        470,
+        471,
+        472,
+        473
+      ],
+      "last_different_row": 2046,
+      "same_final_state": false
+    },
+    "split_lazy": {
+      "different_rows": 1589,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        462,
+        463,
+        464,
+        465,
+        466,
+        467,
+        468,
+        469,
+        470,
+        471,
+        472,
+        473
+      ],
+      "last_different_row": 2046,
+      "same_final_state": false
+    },
+    "whole": {
+      "different_rows": 1589,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        462,
+        463,
+        464,
+        465,
+        466,
+        467,
+        468,
+        469,
+        470,
+        471,
+        472,
+        473
+      ],
+      "last_different_row": 2046,
+      "same_final_state": false
+    }
+  },
+  "layer": 1,
+  "live_recurrence": {
+    "different_rows": 1589,
+    "first_different_row": 458,
+    "first_positions": [
+      458,
+      459,
+      460,
+      461,
+      462,
+      463,
+      464,
+      465,
+      466,
+      467,
+      468,
+      469,
+      470,
+      471,
+      472,
+      473
+    ],
+    "last_different_row": 2046,
+    "same_final_state": false
+  },
+  "matched_prior_operator_rows": {
+    "narrow-layer-one-recurrence": 161,
+    "wide-tiling-layer-one-recurrence": 161
+  },
+  "pressure": {
+    "narrow-layer-one-recurrence": {
+      "normal_samples": 114,
+      "peak_footprint_bytes": 81572745848
+    },
+    "wide-tiling-layer-one-recurrence": {
+      "normal_samples": 39,
+      "peak_footprint_bytes": 92741751392
+    }
+  },
+  "prework": {
+    "attention_input": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "convolved_key": {
+      "different_rows": 12,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        1334,
+        1335,
+        1336,
+        1337,
+        1901,
+        1902,
+        1903,
+        1904
+      ],
+      "last_different_row": 1904
+    },
+    "convolved_query": {
+      "different_rows": 12,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        1334,
+        1335,
+        1336,
+        1337,
+        1901,
+        1902,
+        1903,
+        1904
+      ],
+      "last_different_row": 1904
+    },
+    "convolved_value": {
+      "different_rows": 12,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        1334,
+        1335,
+        1336,
+        1337,
+        1901,
+        1902,
+        1903,
+        1904
+      ],
+      "last_different_row": 1904
+    },
+    "qkv_projection": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    }
+  },
+  "qualification": false,
+  "recurrence_inputs": {
+    "beta": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "decay": {
+      "different_rows": 3,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        1334,
+        1901
+      ],
+      "last_different_row": 1901
+    },
+    "key": {
+      "different_rows": 12,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        1334,
+        1335,
+        1336,
+        1337,
+        1901,
+        1902,
+        1903,
+        1904
+      ],
+      "last_different_row": 1904
+    },
+    "query": {
+      "different_rows": 12,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        1334,
+        1335,
+        1336,
+        1337,
+        1901,
+        1902,
+        1903,
+        1904
+      ],
+      "last_different_row": 1904
+    },
+    "value": {
+      "different_rows": 12,
+      "first_different_row": 458,
+      "first_positions": [
+        458,
+        459,
+        460,
+        461,
+        1334,
+        1335,
+        1336,
+        1337,
+        1901,
+        1902,
+        1903,
+        1904
+      ],
+      "last_different_row": 1904
+    }
+  },
+  "same_input_replays_vs_live": {
+    "narrow-layer-one-recurrence": {
+      "split_fenced": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "split_lazy": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "whole": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      }
+    },
+    "wide-tiling-layer-one-recurrence": {
+      "split_fenced": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "split_lazy": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "whole": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      }
+    }
+  },
+  "same_input_splits_vs_whole": {
+    "narrow-layer-one-recurrence": {
+      "split_fenced": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "split_lazy": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      }
+    },
+    "wide-tiling-layer-one-recurrence": {
+      "split_fenced": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      },
+      "split_lazy": {
+        "different_rows": 0,
+        "first_different_row": null,
+        "first_positions": [],
+        "last_different_row": null,
+        "same_final_state": true
+      }
+    }
+  },
+  "source_base": "46280d6cc531e3fb7a5fcb86dffa33912bdd54b0"
+}

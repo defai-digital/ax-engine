@@ -286,7 +286,9 @@ fn flash_next_real_runner_prefill_geometry_witnesses() {
     assert!(!tiled_wide || measure_tiling);
     if trace_gdn {
         assert!(crate::flash_next_gdn::enabled());
-        gdn_geometry::begin();
+        let layer = std::env::var("AX_FLASH_NEXT_GDN_GEOMETRY_LAYER")
+            .map_or(0, |value| value.parse().unwrap());
+        gdn_geometry::begin(layer);
     }
     capture_geometry_forwards();
     gdn_geometry::take_tiled_decay_count();

@@ -540,6 +540,9 @@ impl Qwen4ExpGdn {
         let split = split_linear_attention_qkv(cfg, &convolved);
         #[cfg(test)]
         {
+            crate::model::qwen4_exp::profiling::gdn_geometry::record_prework([
+                input, &qkv, &split.q, &split.k, &split.v,
+            ]);
             crate::model::qwen4_exp::profiling::dump("gdn_query_input", &[&split.q]);
             crate::model::qwen4_exp::profiling::dump("gdn_key_input", &[&split.k]);
             crate::model::qwen4_exp::profiling::dump("gdn_value_input", &[&split.v]);

@@ -8,6 +8,13 @@ use std::sync::OnceLock;
 const PREFIX: usize = 2047;
 const SPLIT: [usize; 4] = [512, 512, 512, 511];
 const INPUT_NAMES: [&str; 5] = ["query", "key", "value", "decay", "beta"];
+const PREWORK_NAMES: [&str; 5] = [
+    "attention_input",
+    "qkv_projection",
+    "convolved_query",
+    "convolved_key",
+    "convolved_value",
+];
 const DECAY_NAMES: [&str; 6] = [
     "projection",
     "biased_projection",
@@ -28,8 +35,10 @@ struct Chunk {
 
 #[derive(Default)]
 struct Capture {
+    layer: usize,
     chunks: Vec<Chunk>,
     decay: Vec<(usize, [MlxArray; DECAY_NAMES.len()])>,
+    prework: Vec<(usize, [MlxArray; PREWORK_NAMES.len()])>,
 }
 
 thread_local! {
@@ -50,66 +59,86 @@ pub(crate) fn take_tiled_decay_count() -> usize {
     TILED_DECAYS.replace(0)
 }
 
-pub(crate) fn begin() {
-    CAPTURE.with_borrow_mut(|capture| assert!(capture.replace(Capture::default()).is_none()));
+pub(crate) fn begin(layer: usize) {
+    CAPTURE.with_borrow_mut(|capture| {
+        assert!(
+            capture
+                .replace(Capture {
+                    layer,
+                    ..Default::default()
+                })
+                .is_none()
+        );
+    });
 }
 
-fn in_prefix() -> bool {
-    DUMP_LAYER.get() == 0
-        && DUMP_CHUNK_LEN.get() > 0
-        && DUMP_OFFSET.get() + DUMP_CHUNK_LEN.get() <= PREFIX
+fn capture_chunk(record: impl FnOnce(&mut Capture)) {
+    let len = DUMP_CHUNK_LEN.get();
+    if len > 0 && DUMP_OFFSET.get() + len <= PREFIX {
+        CAPTURE.with_borrow_mut(|capture| {
+            if let Some(capture) = capture
+                .as_mut()
+                .filter(|capture| capture.layer == DUMP_LAYER.get())
+            {
+                record(capture);
+            }
+        });
+    }
+}
+
+pub(crate) fn record_prework(stages: [&MlxArray; PREWORK_NAMES.len()]) {
+    capture_chunk(|capture| {
+        if capture.layer > 0 {
+            capture
+                .prework
+                .push((DUMP_OFFSET.get(), stages.map(Clone::clone)));
+        }
+    });
 }
 
 pub(crate) fn record_decay_stages(stages: [&MlxArray; DECAY_NAMES.len()]) {
-    if in_prefix() {
-        CAPTURE.with_borrow_mut(|capture| {
-            if let Some(capture) = capture {
-                capture
-                    .decay
-                    .push((DUMP_OFFSET.get(), stages.map(Clone::clone)));
-            }
-        });
-    }
+    capture_chunk(|capture| {
+        capture
+            .decay
+            .push((DUMP_OFFSET.get(), stages.map(Clone::clone)));
+    });
 }
 
 pub(crate) fn record_inputs([q, k, v, decay, beta, initial]: [&MlxArray; 6]) {
-    if in_prefix() {
-        CAPTURE.with_borrow_mut(|capture| {
-            if let Some(capture) = capture {
-                capture.chunks.push(Chunk {
-                    start: DUMP_OFFSET.get(),
-                    len: DUMP_CHUNK_LEN.get(),
-                    inputs: [q, k, v, decay, beta].map(Clone::clone),
-                    initial: initial.clone(),
-                    result: None,
-                });
-            }
+    capture_chunk(|capture| {
+        capture.chunks.push(Chunk {
+            start: DUMP_OFFSET.get(),
+            len: DUMP_CHUNK_LEN.get(),
+            inputs: [q, k, v, decay, beta].map(Clone::clone),
+            initial: initial.clone(),
+            result: None,
         });
-    }
+    });
 }
 
 pub(crate) fn record_outputs(output: &MlxArray, state: &MlxArray, used_mlx_prefill: bool) {
-    if in_prefix() {
-        CAPTURE.with_borrow_mut(|capture| {
-            if let Some(capture) = capture {
-                assert!(used_mlx_prefill);
-                let chunk = capture.chunks.last_mut().unwrap();
-                assert_eq!(chunk.start, DUMP_OFFSET.get());
-                assert!(
-                    chunk
-                        .result
-                        .replace((output.clone(), state.clone()))
-                        .is_none()
-                );
-            }
-        });
-    }
+    capture_chunk(|capture| {
+        assert!(used_mlx_prefill);
+        let chunk = capture.chunks.last_mut().unwrap();
+        assert_eq!(chunk.start, DUMP_OFFSET.get());
+        assert!(
+            chunk
+                .result
+                .replace((output.clone(), state.clone()))
+                .is_none()
+        );
+    });
 }
 
 pub(crate) fn finish() -> Value {
     // Materialize the captured handles only after the production forward and
     // the output-ID control have completed.
-    let Capture { chunks, decay } = CAPTURE.with_borrow_mut(|capture| capture.take().unwrap());
+    let Capture {
+        layer,
+        chunks,
+        decay,
+        prework,
+    } = CAPTURE.with_borrow_mut(|capture| capture.take().unwrap());
     assert_eq!(decay.len(), chunks.len());
     let partition: Vec<usize> = chunks.iter().map(|chunk| chunk.len).collect();
     assert!(partition == [PREFIX] || partition == SPLIT);
@@ -157,9 +186,9 @@ pub(crate) fn finish() -> Value {
             .collect(),
     );
     let initial = contiguous(&chunks[0].initial, None);
-    json!({
+    let mut evidence = json!({
         "recurrence": "mlx_gated_delta_update",
-        "layer": 0,
+        "layer": layer,
         "partition": partition,
         "input_rows": input_rows,
         "decay_stages": decay_stages,
@@ -170,7 +199,27 @@ pub(crate) fn finish() -> Value {
             "split_lazy": replay(&inputs, &initial, &SPLIT, false),
             "split_fenced": replay(&inputs, &initial, &SPLIT, true),
         },
-    })
+    });
+    if layer > 0 {
+        assert_eq!(prework.len(), chunks.len());
+        assert!(
+            prework
+                .iter()
+                .zip(&chunks)
+                .all(|((start, _), chunk)| *start == chunk.start)
+        );
+        let rows: serde_json::Map<String, Value> = PREWORK_NAMES
+            .iter()
+            .enumerate()
+            .map(|(index, &name)| {
+                let values = join_rows(prework.iter().map(|(_, stages)| &stages[index]).collect());
+                let values = contiguous(&astype(&values, MlxDtype::Float32, None), None);
+                (name.to_owned(), row_hashes(&values))
+            })
+            .collect();
+        evidence["prework_rows"] = Value::Object(rows);
+    }
+    evidence
 }
 
 fn decay_witnesses(array: &MlxArray) -> Value {
