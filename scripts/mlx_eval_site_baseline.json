@@ -79,7 +79,7 @@
     "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention.rs": {
-    "try_eval": 1
+    "try_eval": 2
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention_gather.rs": {
     "try_eval": 1

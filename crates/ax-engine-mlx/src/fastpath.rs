@@ -6185,6 +6185,14 @@ env_flag!(
     "AX_MLX_FLASH_NEXT_QSA_PAIRED_GATHER"
 );
 
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_GROUPED_EVAL` bounds live Flash Next
+    /// selected-attention temporaries by evaluating up to two unchanged
+    /// SDPA tiles at a time in wide BF16 prefills. Default OFF.
+    flash_next_qsa_grouped_eval_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_GROUPED_EVAL"
+);
+
 /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
 /// chunks by reading each query's selected K/V rows straight out of the
 /// sealed/tail history in a custom Metal kernel, instead of gathering a
@@ -7803,6 +7811,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) exact_lm_head_window: bool,
     pub(crate) dual_qmm_swiglu_metal: bool,
     pub(crate) qsa_batched_attention: bool,
+    pub(crate) qsa_grouped_eval: bool,
     pub(crate) qsa_fused_gather: bool,
     pub(crate) invariant_qmv_bf16_q4: bool,
     pub(crate) prefill_expert_sort: bool,
@@ -7956,6 +7965,7 @@ impl Default for NumericsTierSwitches {
             exact_lm_head_window: true,
             dual_qmm_swiglu_metal: false,
             qsa_batched_attention: true,
+            qsa_grouped_eval: false,
             qsa_fused_gather: true,
             invariant_qmv_bf16_q4: true,
             prefill_expert_sort: true,
@@ -8118,6 +8128,7 @@ impl NumericsTierSwitches {
             exact_lm_head_window: exact_lm_head_window_invariant_enabled(),
             dual_qmm_swiglu_metal: qwen_prefill_dual_qmm_swiglu_metal_enabled(),
             qsa_batched_attention: flash_next_qsa_batched_attention_enabled(),
+            qsa_grouped_eval: model_family == "qwen4_exp" && flash_next_qsa_grouped_eval_enabled(),
             qsa_fused_gather: flash_next_qsa_fused_gather_enabled(),
             invariant_qmv_bf16_q4: invariant_qmv_bf16_q4_enabled(),
             prefill_expert_sort: flash_next_prefill_expert_sort_enabled(),
@@ -8444,6 +8455,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if !switches.qsa_batched_attention {
         tokens.push("qsa_batched=0".to_string());
+    }
+    if switches.qsa_grouped_eval {
+        tokens.push("qsa_grouped_eval".to_string());
     }
     if switches.gd_streaming {
         tokens.push("gd_streaming".to_string());

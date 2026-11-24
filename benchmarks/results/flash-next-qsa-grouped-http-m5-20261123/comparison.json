@@ -1,0 +1,233 @@
+{
+  "long_512_vs_2048_differing_output_indices": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63
+  ],
+  "long_512_vs_2048_output_ids_match": false,
+  "m4_exact_component": [
+    {
+      "history": 8192,
+      "peak_bytes_by_group": {
+        "0": 3020263490,
+        "1": 1504165908,
+        "2": 3002056744,
+        "4": 3013922882
+      },
+      "queries": 512
+    },
+    {
+      "history": 8192,
+      "peak_bytes_by_group": {
+        "0": 12034162688,
+        "1": 1523040276,
+        "2": 3020914728,
+        "4": 6008274944
+      },
+      "queries": 2048
+    },
+    {
+      "history": 32768,
+      "peak_bytes_by_group": {
+        "0": 3020197954,
+        "1": 1504165908,
+        "2": 3002040360,
+        "4": 3013906498
+      },
+      "queries": 512
+    },
+    {
+      "history": 32768,
+      "peak_bytes_by_group": {
+        "0": 12034162688,
+        "1": 1523040276,
+        "2": 3020914728,
+        "4": 6008274944
+      },
+      "queries": 2048
+    }
+  ],
+  "m4_macos": "27.0",
+  "m5_macos": "27.2.1",
+  "matched_output_ids_excluding_recovery": 448,
+  "orders": [
+    {
+      "chunk": 2048,
+      "grouped": "grouped-first",
+      "grouped_peak_mlx_bytes": 80886199815,
+      "grouped_sampled_footprint_bytes": 83032003336,
+      "samples": 216,
+      "stock": "stock-first",
+      "stock_peak_mlx_bytes": 89315717294,
+      "stock_sampled_footprint_bytes": 92151567208,
+      "workloads": {
+        "long": {
+          "grouped_forwards": 36,
+          "grouped_idle_percent": 90.17467248908297,
+          "grouped_tiles": 324,
+          "grouped_ttft_seconds": 8.84709,
+          "output_ids_sha256": "d59f7c40907bdcb481ec0d9ce9ae23cb04c402e89e118e0cac0dbd51b0cbc887",
+          "stock_idle_percent": 81.06638202704076,
+          "stock_ttft_seconds": 9.576577
+        },
+        "maximum": {
+          "grouped_forwards": 144,
+          "grouped_idle_percent": 91.9037512532389,
+          "grouped_tiles": 1296,
+          "grouped_ttft_seconds": 41.302319,
+          "output_ids_sha256": "2fa452b5f2bf0342c752f45be586061700e13a0cf8f12f4532d367273cc29e5c",
+          "stock_idle_percent": 80.67383723785669,
+          "stock_ttft_seconds": 43.967502
+        },
+        "recovery": {
+          "grouped_forwards": 36,
+          "grouped_idle_percent": 88.62023796528763,
+          "grouped_tiles": 324,
+          "grouped_ttft_seconds": 8.761575,
+          "output_ids_sha256": "d59f7c40907bdcb481ec0d9ce9ae23cb04c402e89e118e0cac0dbd51b0cbc887",
+          "stock_idle_percent": 71.20173745173746,
+          "stock_ttft_seconds": 9.939782
+        },
+        "short": {
+          "grouped_forwards": 0,
+          "grouped_idle_percent": 90.68825910931174,
+          "grouped_tiles": 0,
+          "grouped_ttft_seconds": 0.539384,
+          "output_ids_sha256": "367828eeba5566ffb8ea6f18ffea2e54ca7a8e54169f444be227d9d1d4cfff81",
+          "stock_idle_percent": 43.97308367466355,
+          "stock_ttft_seconds": 0.541224
+        }
+      }
+    },
+    {
+      "chunk": 2048,
+      "grouped": "grouped-second",
+      "grouped_peak_mlx_bytes": 80886198155,
+      "grouped_sampled_footprint_bytes": 83046503104,
+      "samples": 214,
+      "stock": "stock-second",
+      "stock_peak_mlx_bytes": 89315716910,
+      "stock_sampled_footprint_bytes": 92363199240,
+      "workloads": {
+        "long": {
+          "grouped_forwards": 36,
+          "grouped_idle_percent": 93.80031765156909,
+          "grouped_tiles": 324,
+          "grouped_ttft_seconds": 8.760319,
+          "output_ids_sha256": "d59f7c40907bdcb481ec0d9ce9ae23cb04c402e89e118e0cac0dbd51b0cbc887",
+          "stock_idle_percent": 88.01855191960834,
+          "stock_ttft_seconds": 9.367047
+        },
+        "maximum": {
+          "grouped_forwards": 144,
+          "grouped_idle_percent": 91.9142326879286,
+          "grouped_tiles": 1296,
+          "grouped_ttft_seconds": 40.911245,
+          "output_ids_sha256": "2fa452b5f2bf0342c752f45be586061700e13a0cf8f12f4532d367273cc29e5c",
+          "stock_idle_percent": 83.5562347188264,
+          "stock_ttft_seconds": 44.167358
+        },
+        "recovery": {
+          "grouped_forwards": 36,
+          "grouped_idle_percent": 92.52186427543452,
+          "grouped_tiles": 324,
+          "grouped_ttft_seconds": 8.651675,
+          "output_ids_sha256": "d59f7c40907bdcb481ec0d9ce9ae23cb04c402e89e118e0cac0dbd51b0cbc887",
+          "stock_idle_percent": 91.72082210598616,
+          "stock_ttft_seconds": 9.106878
+        },
+        "short": {
+          "grouped_forwards": 0,
+          "grouped_idle_percent": 83.0423940149626,
+          "grouped_tiles": 0,
+          "grouped_ttft_seconds": 0.473743,
+          "output_ids_sha256": "367828eeba5566ffb8ea6f18ffea2e54ca7a8e54169f444be227d9d1d4cfff81",
+          "stock_idle_percent": 85.85050753614273,
+          "stock_ttft_seconds": 0.508529
+        }
+      }
+    },
+    {
+      "chunk": 512,
+      "grouped": "grouped-fallback",
+      "grouped_peak_mlx_bytes": 78857020798,
+      "grouped_sampled_footprint_bytes": 81086649192,
+      "samples": 231,
+      "stock": "stock-fallback",
+      "stock_peak_mlx_bytes": 78856988030,
+      "stock_sampled_footprint_bytes": 81220653784,
+      "workloads": {
+        "long": {
+          "grouped_forwards": 0,
+          "grouped_idle_percent": 78.75573088815439,
+          "grouped_tiles": 0,
+          "grouped_ttft_seconds": 9.053327,
+          "output_ids_sha256": "191524f657af5c8cb28b073f71886c5f778ae2462803b7ae573616d4dbf2c6db",
+          "stock_idle_percent": 91.94497936726272,
+          "stock_ttft_seconds": 8.764715
+        }
+      }
+    }
+  ],
+  "qualification": false,
+  "runtime_patch_sha256": "8df89cc030bd8d35c28b6a06faf0a84e20935096aaae29e5fd22b268ad006424",
+  "source_base": "f7344aa08cf4862ccf59de0cb2d9c6a95934b1e9"
+}

@@ -1045,6 +1045,12 @@ fn attend_selected(
                     keys: &k_b,
                     values: &v_b,
                     paired: paired.as_ref(),
+                    group_eval: identity_batch
+                        && paired.is_none()
+                        && queries.dtype() == MlxDtype::Bfloat16
+                        && matches!((q_heads, cfg.kv_heads, dim, seq), (24, 2, 256, 2047 | 2048))
+                        && crate::fastpath::flash_next_qsa_grouped_eval_enabled()
+                        && fused_gather_enabled(),
                 },
                 selection,
                 b as usize,
@@ -1267,6 +1273,7 @@ struct BatchedKv<'a> {
     keys: &'a MlxArray,
     values: &'a MlxArray,
     paired: Option<&'a PairedGather<'a>>,
+    group_eval: bool,
 }
 
 /// Attend a chunk of selected queries as padded sub-batches.
@@ -1301,6 +1308,7 @@ fn attend_selected_batched(
         2
     };
     let mut outputs = Vec::new();
+    let mut pending = None;
     let mut start = 0usize;
     // Bytes one gathered row of one query costs: K plus V at kv-head width.
     let per_token = kv_heads as usize * dim as usize * element_bytes * 2;
@@ -1414,11 +1422,41 @@ fn attend_selected_batched(
         );
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_da_sdpa", &[&attended]);
+        // Settle up to two SDPA outputs together so their gathered inputs
+        // and Metal scratch can retire before queuing more tiles.
+        if kv.group_eval && (start != 0 || end != seq) {
+            if let Some(previous) = pending.take() {
+                eval_attention_tiles(&[&previous, &attended])?;
+            } else if end == seq {
+                eval_attention_tiles(&[&attended])?;
+            } else {
+                pending = Some(attended.clone());
+            }
+        }
         // [width, q_heads, 1, dim] -> [1, q_heads, width, dim]
         outputs.push(transpose(&attended, &[2, 1, 0, 3], None));
         start = end;
     }
+    if kv.group_eval && outputs.len() > 1 {
+        tracing::debug!(
+            queries = seq,
+            history = tokens,
+            tiles = outputs.len(),
+            "evaluated grouped QSA prefill"
+        );
+    }
     Ok(concat_owned(&outputs, 2))
+}
+
+fn eval_attention_tiles(tiles: &[&MlxArray]) -> Result<()> {
+    mlx_sys::try_eval(tiles).map_err(|detail| {
+        QsaError::Evaluation {
+            stage: "grouped prefill attention",
+            context: format!("tiles={}", tiles.len()),
+            detail,
+        }
+        .into()
+    })
 }
 
 /// Queries inspected to size a sub-batch before its exact padding is known.
