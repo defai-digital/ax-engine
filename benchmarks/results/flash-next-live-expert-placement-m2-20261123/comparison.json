@@ -1,0 +1,20 @@
+{
+  "arms": {
+    "auto": {
+      "expert_streaming_active": false,
+      "normal_pressure_samples": 25,
+      "resident_tensor_count": 1942,
+      "sampled_peak_footprint_bytes": 85587778952
+    },
+    "on": {
+      "expert_streaming_active": true,
+      "normal_pressure_samples": 7,
+      "resident_tensor_count": 1654,
+      "sampled_peak_footprint_bytes": 9629802560
+    }
+  },
+  "original_wrapper_exit": 1,
+  "pack_members_revalidated": 49,
+  "qualification": false,
+  "resident_tensors_removed": 288
+}
