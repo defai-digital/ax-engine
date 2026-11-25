@@ -1,10 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 168" role="img" aria-label="AX Engine">
-  <rect width="1200" height="168" rx="20" fill="#F4F2EC"/>
-  <rect x="0.5" y="0.5" width="1199" height="167" rx="19.5" fill="none" stroke="#E4E0D6"/>
-  <g transform="translate(436.5 36) scale(0.105495)">
-    <rect x="0" y="0" width="137" height="910" fill="#37B67C"/>
-    <rect x="236" y="390" width="415" height="131" fill="#1C1E22"/>
-    <rect x="753" y="2" width="132" height="906" fill="#1C1E22"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 176" role="img" aria-label="AX Engine">
+  <rect width="1200" height="176" rx="20" fill="#F4F2EC"/>
+  <rect x="0.5" y="0.5" width="1199" height="175" rx="19.5" fill="none" stroke="#E4E0D6"/>
+  <g transform="translate(372 40)" fill="none">
+    <path fill="#109090" d="M6 92 L52 6 L98 92 L76 92 L52 46 L28 92 Z"/>
+    <path fill="#303838" d="M118 10 L146 10 L214 86 L186 86 Z"/>
+    <path fill="#303838" d="M186 10 L214 10 L146 86 L118 86 Z"/>
   </g>
-  <text x="552" y="86" fill="#1C1E22" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="42" font-weight="600" letter-spacing="-0.8" dominant-baseline="middle">AX Engine</text>
+  <text x="620" y="78" fill="#5C6565" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" letter-spacing="2.4">AUTOMATOSX</text>
+  <text x="620" y="114" fill="#1C1E22" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="40" font-weight="600" letter-spacing="-0.6">AX Engine</text>
 </svg>
