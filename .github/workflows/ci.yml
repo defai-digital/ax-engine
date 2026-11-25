@@ -14,7 +14,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Let a running default-branch check finish even if another commit arrives.
+  cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
 
 permissions:
   contents: read
@@ -439,19 +440,13 @@ jobs:
       - scripts
       - python-package
       - sdk-clients
+      - native-macos-app
       - model-smoke
-    if: always()
+    if: ${{ !cancelled() }}
 
     steps:
-      - name: Fail if any CI gate failed, cancelled, or skipped
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
-        run: |
-          echo "One or more CI gates failed, were cancelled, or were skipped."
-          exit 1
-
       - name: Report CI gate status
         run: |
-          echo "All CI gates passed."
           {
             echo "## CI Summary"
             echo
@@ -462,5 +457,12 @@ jobs:
             echo "| Scripts & Bench Smoke | ${{ needs.scripts.result }} |"
             echo "| Python Package | ${{ needs.python-package.result }} |"
             echo "| SDK Clients | ${{ needs.sdk-clients.result }} |"
+            echo "| Native macOS App | ${{ needs.native-macos-app.result }} |"
             echo "| Model Smoke | ${{ needs.model-smoke.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if any CI gate failed, cancelled, or skipped
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "One or more CI gates failed, were cancelled, or were skipped." >&2
+          exit 1
