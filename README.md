@@ -1,5 +1,9 @@
 # AX Engine
 
+[![CI](https://img.shields.io/github/actions/workflow/status/defai-digital/ax-engine/ci.yml?branch=main&label=CI)](https://github.com/defai-digital/ax-engine/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ax-engine?label=PyPI)](https://pypi.org/project/ax-engine/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **Using NVIDIA GPUs on Linux?** Use the CUDA edition,
 [AX Engine for SGLang (`ax-engine-sglang`)](https://github.com/defai-digital/ax-engine-sglang#quick-start).
 For fleet routing and orchestration, use
