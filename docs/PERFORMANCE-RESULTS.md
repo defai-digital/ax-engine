@@ -22,18 +22,15 @@ workload recorded with it.
 
 ## Qwen 3.8 MXFP4 evidence
 
-The [M5 peer matrix](../benchmarks/results/qwen38-m5-peer-20261125/README.md)
-uses the same pinned packs and requests across AX Engine and seven peers.
-It records visible output throughput and first-text latency over six
-streamed completions with one request active at a time. A zero means the
-lane could not finish the workload. Each zero has an accompanying reason.
+The [M5 greedy-mode comparison](../benchmarks/results/qwen38-m5-modes-20261125/README.md)
+shows direct greedy and DFlash2 results by engine version. Decode measures
+visible tokens after the first text chunk. Effective prefill estimates
+input-token throughput from the difference in first-text latency between
+short and long prompts. See the [tables and charts](../README.md#performance).
 
-![Qwen 3.8 MXFP4 single-request HTTP throughput on M5 Max](assets/perf-qwen38-mxfp4-m5-peers.svg)
-
-| Pack | AX Engine direct | Fastest completed peer |
-| --- | ---: | --- |
-| Qwen 3.8 27B MXFP4 | 33.18 tok/s | Splash with DFlash2, 93.79 tok/s |
-| Qwen 3.8 Flash Next MXFP4 | 35.90 tok/s | oMLX, 46.57 tok/s |
+The [original single-request peer matrix](../benchmarks/results/qwen38-m5-peer-20261125/README.md)
+retains end-to-end serving throughput, first-text latency and loader outcomes
+for its distinct set of engine configurations.
 
 | Measurement | Result and scope |
 | --- | --- |

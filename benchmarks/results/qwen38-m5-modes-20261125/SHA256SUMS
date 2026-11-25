@@ -1,0 +1,7 @@
+bd3f22154e078d595b0b44f6526c65f53967950685372fc4bdc29df3a5cc792b  benchmarks/results/qwen38-m5-modes-20261125/README.md
+d5c501240c74359abd1c5d5398b96b6ebe5bc255281a906245bd8f15b1d2b5cd  benchmarks/results/qwen38-m5-modes-20261125/provenance.json
+402b34d9c4e3ba89d972cf2b00576fa7395fc183153e9f57c4ab4964a703513b  benchmarks/results/qwen38-m5-modes-20261125/results.jsonl
+1ed5a5b9e0aa0c0133f7f83dc8f3913b455c9dcf8914260596b38c0fe0c2aa5d  benchmarks/results/qwen38-m5-modes-20261125/run.py
+034081b93403571d1325ad6dd76216d91adf4b0394b466dcc32fb7837eed0666  benchmarks/results/qwen38-m5-modes-20261125/render_charts.py
+9a0823bbfa5cf85db818bb9705e7add9b95fa5924c95140131085af4cc318326  docs/assets/perf-qwen38-27b-m5-modes.svg
+575c8621c1a140178065cc0b3a9298c33afd123e111f3db6cf9e91e6c9907082  docs/assets/perf-qwen38-flash-next-m5-modes.svg

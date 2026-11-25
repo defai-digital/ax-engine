@@ -1,0 +1,21 @@
+{
+  "host": "MacBook Pro M5 Max 128 GB",
+  "macos": "27.2.1",
+  "mlx": "0.32.4",
+  "tokenizers": "0.23.3",
+  "engine_versions": {
+    "ax-engine": "8.1.0",
+    "omlx": "0.8.2",
+    "splash": "1.7.0",
+    "mlx-lm": "0.32.0",
+    "mtplx": "2.12.3",
+    "tensorfold": "1.3.4",
+    "ds4": "19b3f501"
+  },
+  "build_and_pack_provenance": "../qwen38-m5-peer-20261125/provenance.json",
+  "dense_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+  "dense_draft_weight_sha256": "67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c",
+  "dense_pack_revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
+  "flash_pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "corpus_sha256": "1d4099b3888dcb136d5e0832770a9807c61ce1982a62212fc0fe1dd8d8f1afa7"
+}
