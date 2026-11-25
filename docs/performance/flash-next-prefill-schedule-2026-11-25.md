@@ -139,8 +139,11 @@ none of their forwards crosses one of those row counts differently.
 
 The paired serving runs use the
 [campaign runner](../../benchmarks/results/qwen38-m5-modes-20261125/README.md#replay).
-The scan by length sends completions with `max_tokens` 1 and `temperature`
-0 to a server started with `--mlx-mtp-policy disabled
+The scan by length is now
+[`scripts/check_first_text_by_length.py`](../../scripts/check_first_text_by_length.py),
+with a [baseline for this host](../../benchmarks/results/flash-next-first-text-by-length-m5-20261125/README.md)
+that the previous commit fails at every length. It sends completions with
+`max_tokens` 1 and `temperature` 0 to a server started with `--mlx-mtp-policy disabled
 --disable-ngram-acceleration --max-concurrent-requests 1`, three warmups
 first, then three prompts per length that differ in their first line. The
 AX Engine columns above are from runs of each binary on its own: started
