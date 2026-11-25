@@ -1,5 +1,10 @@
 # AX Engine
 
+**Using NVIDIA GPUs on Linux?** Use the CUDA edition,
+[AX Engine for SGLang (`ax-engine-sglang`)](https://github.com/defai-digital/ax-engine-sglang#quick-start).
+For fleet routing and orchestration, use
+[AX Serving](https://github.com/defai-digital/ax-serving).
+
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
 for Qwen 3.8 27B AXQ**. The Qwen 3.8 27B and Flash Next product scope is
 **MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
@@ -17,11 +22,6 @@ The default pack is `qwen3.8-27b:axq`
 @ `b2c5354f779e430d0c1733143db848a72b71c16e`). Additional Qwen, Gemma, GLM, and
 other certified families stay supported; they are not the first-run or
 qualification center. Super-class Qwen 3.8 (2.4T) is experimental only.
-
-NVIDIA/CUDA fleet serving lives in
-[AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
-local Apple Silicon runtime and no longer ships the former vLLM or TensorRT
-provider bridges, runtime package, container, or CUDA qualification scripts.
 
 Browse AutomatosX serve-ready chat / coding / embedding snapshots in the
 [AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
@@ -558,8 +558,7 @@ curl http://127.0.0.1:31418/v1/runtime
 
 Auth, streaming, embeddings, Ollama-shaped routes:
 [Server](docs/SERVER.md) · [API Compatibility](docs/API-COMPATIBILITY.md) ·
-[OpenClaw](docs/OPENCLAW.md). Fleet / NVIDIA serving:
-[AX Serving](docs/AX-SERVING.md).
+[OpenClaw](docs/OPENCLAW.md). Fleet orchestration: [AX Serving](docs/AX-SERVING.md).
 
 ## Documentation
 
@@ -574,7 +573,8 @@ Auth, streaming, embeddings, Ollama-shaped routes:
 | Serving peer (newest) | [Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
-| Fleet / NVIDIA (AX Serving) | [AX Serving](docs/AX-SERVING.md) |
+| Linux CUDA inference | [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start) |
+| Fleet routing and orchestration | [AX Serving](docs/AX-SERVING.md) |
 | Architecture | [Architecture](docs/ARCHITECTURE.md) |
 | Scheduler / KV internals | [Scheduler](docs/SCHEDULER.md) · [KV Cache](docs/KV-CACHE.md) · [Serving Invariants](docs/SERVING-INVARIANTS.md) |
 
@@ -597,7 +597,6 @@ Crate layout and conventions: [AGENTS.md](AGENTS.md) ·
 - Qwen3.5 long-prompt prefill can trail upstream MLX references on longer prompts
 - Raw HuggingFace / mlx-community snapshots load directly: `model-manifest.json` is auto-generated from `config.json` + safetensors headers on first load and weight sanitization is auto-detected, so `mlx_lm.convert` is not required
 - N-gram acceleration is workload-dependent, not a raw kernel speedup
-- NVIDIA/CUDA serving requires the separate AX Serving product
 
 Details: [FAQ limitations](docs/FAQ.md#what-are-the-current-limitations).
 
