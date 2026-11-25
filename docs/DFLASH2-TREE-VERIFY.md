@@ -1,6 +1,26 @@
 # DFlash2 tree verify on Apple silicon: step 0 measurements
 
-Status: measurement only, no tree verify in the engine yet. Branch `track-l-lattice-tree`.
+The row-cost and block-size tables are historical measurements from branch
+`track-l-lattice-tree`. The current engine has an experimental tree
+verifier and separate packed-cohort controls.
+
+## Current Qwen 3.8 27B MXFP4 controls
+
+`AX_MLX_DFLASH2_COHORT_MAX_ROWS=4` caps each lane of a packed DFlash2
+verifier forward at four rows, including the anchor. A global
+`AX_MLX_DFLASH2_WINDOW` pin takes precedence. A solo request uses its
+usual verifier policy. Leave `--disable-ngram-acceleration` absent when
+testing DFlash2. That flag prevents the drafter from attaching. Check
+`ax_mlx_dflash2_cohort_lanes` before comparing throughput.
+
+`AX_MLX_DFLASH2_PROFILE_REPLAY=1` with `AX_MLX_DFLASH2_ROUND_TRACE=1`
+materializes the convolution and recurrent state after partial-prefix
+replay and reports graph build and evaluation time separately. Use a
+separate run for throughput measurements because the diagnostic adds a
+GPU synchronization point.
+[M5 serving and replay controls](../benchmarks/results/qwen-cross-engine-mlx-20261125/README.md#qwen-38-27b-dflash2).
+
+## Historical experiments
 
 The SGLang version of this work (automatosx `track_l`, Qwen3.8-27B on one NVIDIA B200) verifies a
 16-node DFlash2 lattice tree instead of the 8-token chain, losslessly (the target checks every

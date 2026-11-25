@@ -1,0 +1,13 @@
+{
+  "ad_hoc_codesign_verified": true,
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+  "libmlx_sha256": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "mlx": "0.32.4",
+  "profile": "release-server",
+  "runtime_patch_sha256": "daecfaec7ef23c50e57f8a6d6ae4b39522d707d6a688b5fbf0a9f7795cf69739",
+  "runtime_source": "4347f2ff9cce16d431a2e3d978602f1a286e39db",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "server_sha256": "66e72da6ba17b0edcff8beb5bdb215ee4c58c3cab9966572dfeec729063bb03d",
+  "serving_client_sha256": "b1df8ea0fb044b7e29b92b74f3f548f5d30aff64d49cf6bf53809bcc0049bd2d"
+}

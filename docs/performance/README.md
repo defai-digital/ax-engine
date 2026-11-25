@@ -7,8 +7,8 @@ decide which result table, method, or investigation note applies to a claim.
 
 | Need | Read |
 | --- | --- |
-| Historical dense 27B peer: retired Qwen 3.8 27B AXQ 6-bit vs MTPLX and OMLX | [Root README: Qwen performance](../../README.md#qwen-performance) |
-| Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) · [README Tiel section](../../README.md#tiel-performance) |
+| Historical dense 27B peer: retired Qwen 3.8 27B AXQ 6-bit vs MTPLX and OMLX | [Historical dense 27B evidence](../PERFORMANCE-RESULTS.md#qwen-38-27b-axq-historical-6-bit-selector) |
+| Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
 | Current MLX runtime admission | [MLX 0.32.4 admission](mlx-0.32.4-admission-2026-10-16.md) |
 | M5+ NAX verify kernels with MLX 914732419 (0.32.5): QMM and SDPA hand-offs, DFlash2 window cost | [Measurements, knobs and build recipe](mlx-nax-914732419-2026-11-02.md) |

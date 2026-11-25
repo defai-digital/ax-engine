@@ -42,6 +42,13 @@ differences between routes. The pack's MTP performance and
 default-promotion gates remain open.
 [MTP timing controls](../../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-mtp-performance/README.md).
 
+The M5 four-request DFlash2 comparison measured 85.07–88.05 output
+tok/s with the existing verifier and 82.15–85.00 tok/s with a four-row
+cap. Stream gaps fell in both orders. Exact output agreement varied
+across processes and the M4 Pro check showed a throughput loss with the
+cap. The default verifier policy is unchanged.
+[Serving and replay controls](../../benchmarks/results/qwen-cross-engine-mlx-20261125/README.md#qwen-38-27b-dflash2).
+
 Broader quality, memory and release gates remain open. The current
 pack still needs MTP-S/P/D evidence, and MTP execution remains explicit
 opt-in with `--mlx-mtp-policy required`.

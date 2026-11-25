@@ -27,6 +27,7 @@ workload recorded with it.
 | [Flash Next startup crossover](../benchmarks/results/flash-next-automatic-buffered-reader-m5-20261123/README.md) | One resident request, 32K combined budget and MTP off on M5 Max 128 GB. Mapped reads reached HTTP in 162–168 s. Automatic buffered reads reached HTTP in 28–30 s. The pack was already on the internal SSD. |
 | [Flash Next two-request serving](../benchmarks/results/flash-next-resident-slot-crossover-m5-20261123/README.md) | All 84,480 output token IDs match the solo oracle. Throughput changed direction across orders and stream gaps grew in both. The standard remains one active request. |
 | [Flash Next Optuna pilot](../benchmarks/results/flash-next-optuna-pilot-m5-20261122/README.md) | Optuna and the fixed grid retained the baseline scheduling policy across the archived settings. |
+| [Qwen MXFP4 verifier and replay controls](../benchmarks/results/qwen-cross-engine-mlx-20261125/README.md) | M5 direct and speculative serving, 27B packed-cohort throughput and exact-output checks, and Flash Next canonical, two-draft and three-draft comparisons. |
 | [27B MTP timing controls](../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-mtp-performance/README.md) | The fixed-budget decode measurements and the short-answer regression inform the opt-in path. MTP performance qualification remains open. |
 
 The [Flash Next record](model-certifications/qwen3.8-flash-next.md#current-mxfp4-evidence)
@@ -34,9 +35,8 @@ tracks readiness after delivery, the current qualification gaps and the M2 Ultra
 MLX-VLM startup diagnostic. See the [27B record](model-certifications/qwen3.8-27b-axq.md)
 for product health and multi-model operation.
 
-## On this page
+## Historical results
 
-- [Qwen 3.8 MXFP4 evidence](#qwen-38-mxfp4-evidence)
 - [Session Mode: Multi-Model Serving (S1)](#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer)
 - [Session Mode: Single-client serving (AX vs peer MLX)](#session-mode-single-client-serving-ax-vs-peer-mlx)
 - [Session Mode: MTP Generation](#session-mode-mtp-generation)
@@ -115,8 +115,8 @@ saturated DRAM (mlx-lm 12.78 tok/s on M4 Pro, 27.90 on M5 Max). Headline rows:
 
 20-run medians, `flappy` contract. M5 Max peer table is pre-correction; a
 same-host A/B after the SwiGLU/target-head fixes stayed within 0.3% decode.
-Root README: [Qwen performance](../README.md#qwen-performance). Do not mix
-these dense-27B decode numbers with Tiel completion tok/s.
+The [27B certification record](model-certifications/qwen3.8-27b-axq.md#historical-retired-affine-pack-record)
+retains the retired pack's release evidence.
 
 #### Tiel and Cyber-Tiel resident peer comparison (2026-09-20)
 

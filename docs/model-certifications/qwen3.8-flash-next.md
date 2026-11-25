@@ -74,6 +74,12 @@ matched the solo output oracle. Throughput changed direction across the two
 test orders, and short-stream gaps increased in both. The product profile
 retains one active request.
 
+The optional `AX_FLASH_NEXT_MTP_BLOCK_DRAFTS=2` cap affects only
+`AX_FLASH_NEXT_MTP_VERIFIER=block`. Both measured block widths produced
+identical output tokens on three 64-token prompts on M5 Max. The
+canonical verifier was faster on those prompts and matched two of the
+three block outputs. [Verifier comparison](../../benchmarks/results/qwen-cross-engine-mlx-20261125/README.md).
+
 **MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
 pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
 loaded, so Auto now prices only the ~69.5 GiB the loader makes resident
