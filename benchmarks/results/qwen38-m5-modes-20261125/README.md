@@ -73,6 +73,30 @@ median) holds for this 64-token workload; on 256-token outputs AX Engine
 measures about 9% behind. The Flash Next decode difference (0.5%) is
 smaller than the difference between sessions and is a tie.
 
+### Flash Next rows after the prefill-schedule change
+
+The two Flash Next † rows were measured once more, later the same day,
+after AX Engine stopped ending a prefill forward to capture a prefix that
+no request restores
+([what changed](../../../docs/performance/flash-next-prefill-schedule-2026-11-25.md)).
+AX Engine was built from commit `c3ce06f75` with default settings; its row
+carries that version in the README table. The method is that of the paired
+rerun: three AX Engine runs, each followed by an oMLX run, 30 seconds
+between arms. The six per-run records are the rows of
+[paired-rerun.jsonl](paired-rerun.jsonl) with `"rerun": 2`; the earlier
+Flash Next runs stay in the same file without that field.
+
+- Decode: 59.29, 59.64 and 59.77 against 59.35, 59.34 and 59.42 tok/s. A
+  tie, as before.
+- First text at 127 and 128 input tokens: 0.21 and 0.24 s (0.34 and 0.24
+  before) against 0.38 and 0.35 s for oMLX. At 1,492: 0.83 s (0.91
+  before) against 0.71 s.
+- AX Engine's effective prefill is 2,300 (2,217 before) against 3,902.
+  Both of its probes got faster, the short one by more.
+- The 27B rows were not rerun: the change does not touch that model. One
+  27B DFlash2 pair in the same session measured 111.42 against 109.29
+  tok/s.
+
 ## Replay
 
 Stage the binaries and packs using the

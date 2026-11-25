@@ -35,5 +35,19 @@
     "aggregation": "medians of the per-run decode and effective prefill; the published prefill list holds all six probe pairs",
     "per_run_records": "paired-rerun.jsonl",
     "original_single_runs": "results-original.jsonl (AX Engine 8.1.0 at 4347f2ff9)"
+  },
+  "flash_rerun": {
+    "date": "2026-11-25",
+    "ax_engine_source": "c3ce06f75 (branch perf/prefill-boundary-capture-20261125), release-server profile, default settings",
+    "ax_engine_binary_sha256_prefix": "37fb140b9a5e9a86",
+    "arms": [
+      "flash/ax-engine/direct",
+      "flash/omlx/direct"
+    ],
+    "runs_per_arm": 3,
+    "order": "each AX Engine run is followed by oMLX's run; 30 s between arms",
+    "aggregation": "as in paired_rerun",
+    "per_run_records": "paired-rerun.jsonl (rows with \"rerun\": 2)",
+    "replaces": "the Flash Next rows of paired_rerun, whose per-run records are kept"
   }
 }
