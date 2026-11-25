@@ -1804,6 +1804,8 @@ impl MlxRunner {
             0
         };
         let rollback_started = Instant::now();
+        let mut replay_graph_us = 0;
+        let mut replay_eval_us = 0;
         let mut cache_eval_failed = false;
         let adopted = if keep == verify_len {
             if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
@@ -1827,7 +1829,23 @@ impl MlxRunner {
             // The verifier produced every linear layer's inputs: rebuild the
             // gated-delta state of the emitted prefix, then trim the K/V.
             let replayed = self.dflash2_replay_prefix(&state.cache, &mut verify_cache, keep);
-            if replayed && !crate::fastpath::mtp_lazy_adopt_state_enabled() {
+            if trace_enabled {
+                replay_graph_us = elapsed_us(rollback_started);
+            }
+            if replayed && trace_enabled && crate::fastpath::dflash2_profile_replay_enabled() {
+                let refs: Vec<_> = (0..self.weights.layers.len())
+                    .flat_map(|layer| {
+                        let (conv, recurrent) = verify_cache.linear_state(layer);
+                        conv.into_iter().chain(recurrent)
+                    })
+                    .collect();
+                let eval_started = Instant::now();
+                cache_eval_failed = try_linear_cache_eval(&refs).is_err();
+                replay_eval_us = elapsed_us(eval_started);
+            }
+            if cache_eval_failed {
+                false
+            } else if replayed && !crate::fastpath::mtp_lazy_adopt_state_enabled() {
                 let refs = verify_cache.collect_eval_refs();
                 if try_linear_cache_eval(&refs).is_err() {
                     cache_eval_failed = true;
@@ -1974,7 +1992,8 @@ impl MlxRunner {
             eprintln!(
                 "dflash2_round gap_us={gap_us} draft_us={draft_wall_us} clone_us={clone_wall_us} \
                  vbuild_us={verify_build_us} eval_us={eval_wall_us} commit_us={commit_us} \
-                 rollback_us={rollback_wall_us} keep={keep} window={window} predrafted={} \
+                 rollback_us={rollback_wall_us} replay_graph_us={replay_graph_us} \
+                 replay_eval_us={replay_eval_us} keep={keep} window={window} predrafted={} \
                  predraft_next={} request_id={} generated={} cohort_lanes={cohort_lanes} \
                  proposed={} accepted={committed_drafts} emitted={} recomputed={} \
                  tape_layers={tape_layers} mlx_peak_bytes={}",
@@ -2017,6 +2036,14 @@ impl MlxRunner {
             let windows = cohort_windows(&stats, block, cohort_round_cost);
             for ((_, plan), window) in lanes.iter_mut().zip(windows) {
                 plan.window = window;
+            }
+        }
+        if crate::fastpath::dflash2_window_override().is_none()
+            && let Some(rows) = crate::fastpath::dflash2_cohort_max_rows()
+        {
+            let cap = pinned_window(rows, block);
+            for (_, plan) in lanes.iter_mut() {
+                plan.window = plan.window.min(cap);
             }
         }
         let draft_started = Instant::now();

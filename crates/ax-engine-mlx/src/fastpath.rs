@@ -2099,6 +2099,24 @@ pub(crate) fn dflash2_window_override() -> Option<usize> {
     })
 }
 
+/// Caps verifier rows per lane only when multiple requests share a DFlash2
+/// forward. An explicit global verifier window takes precedence.
+pub(crate) fn dflash2_cohort_max_rows() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_COHORT_MAX_ROWS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|rows| *rows >= 3)
+    })
+}
+
+env_flag!(
+    /// Materialize partial-prefix linear state separately in DFlash2 round traces.
+    dflash2_profile_replay_enabled,
+    "AX_MLX_DFLASH2_PROFILE_REPLAY"
+);
+
 /// `AX_MLX_DFLASH2_BLOCK`: experimental. Draft and verify this many rows per
 /// round (anchor plus drafts, 4 to 32) instead of the block size the drafter
 /// checkpoint records (8). The drafter was trained at the recorded size; longer

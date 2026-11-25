@@ -16,6 +16,7 @@
 //! separately projected token embedding. This hypothesis is never authority
 //! for committed tokens; the primary graph verifies every proposal.
 
+use std::sync::OnceLock;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -691,7 +692,11 @@ pub(crate) const FLASH_NEXT_BLOCK_DRAFTS: usize = 3;
 /// How many drafts this round may propose. Canonical and length-2 schedules
 /// stay at one. A block round needs room for at least two drafts plus the
 /// unconsumed bonus (`remaining - 1 >= 2`).
-pub(crate) fn block_draft_limit(schedule: &Qwen4ExpTargetSchedule, remaining: usize) -> usize {
+pub(crate) fn block_draft_limit(
+    schedule: &Qwen4ExpTargetSchedule,
+    remaining: usize,
+    cap: usize,
+) -> usize {
     if !matches!(schedule, Qwen4ExpTargetSchedule::LegacyBlock) {
         return 1;
     }
@@ -699,7 +704,22 @@ pub(crate) fn block_draft_limit(schedule: &Qwen4ExpTargetSchedule, remaining: us
     if room < 2 {
         return 1;
     }
-    room.min(FLASH_NEXT_BLOCK_DRAFTS)
+    room.min(cap)
+}
+
+fn block_draft_cap() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        if std::env::var("AX_FLASH_NEXT_MTP_BLOCK_DRAFTS")
+            .ok()
+            .as_deref()
+            == Some("2")
+        {
+            2
+        } else {
+            FLASH_NEXT_BLOCK_DRAFTS
+        }
+    })
 }
 
 /// Longest draft prefix whose verifier row matches and neither side is terminal.
@@ -953,7 +973,7 @@ impl Qwen4ExpDraftCursor {
             return Err("invalid Flash Next MTP budget or draft/trunk alignment".into());
         }
         let hidden = self.stream_hidden.clone().ok_or("missing MTP stream row")?;
-        let draft_limit = block_draft_limit(&trunk.target_schedule, remaining);
+        let draft_limit = block_draft_limit(&trunk.target_schedule, remaining, block_draft_cap());
         if draft_limit >= 2
             && let Some(step) = self.try_advance_block(
                 trunk,
@@ -2093,14 +2113,23 @@ mod block_verifier_tests {
         let canonical = Qwen4ExpTargetSchedule::CanonicalSingleton;
         let batched = Qwen4ExpTargetSchedule::LegacyBatched;
         let block = Qwen4ExpTargetSchedule::LegacyBlock;
-        assert_eq!(block_draft_limit(&canonical, 256), 1);
-        assert_eq!(block_draft_limit(&batched, 256), 1);
-        assert_eq!(block_draft_limit(&block, 1), 1);
-        assert_eq!(block_draft_limit(&block, 2), 1);
-        assert_eq!(block_draft_limit(&block, 3), 2);
-        assert_eq!(block_draft_limit(&block, 4), 3);
-        assert_eq!(block_draft_limit(&block, 256), FLASH_NEXT_BLOCK_DRAFTS);
+        assert_eq!(
+            block_draft_limit(&canonical, 256, FLASH_NEXT_BLOCK_DRAFTS),
+            1
+        );
+        assert_eq!(block_draft_limit(&batched, 256, FLASH_NEXT_BLOCK_DRAFTS), 1);
+        assert_eq!(block_draft_limit(&block, 1, FLASH_NEXT_BLOCK_DRAFTS), 1);
+        assert_eq!(block_draft_limit(&block, 2, FLASH_NEXT_BLOCK_DRAFTS), 1);
+        assert_eq!(block_draft_limit(&block, 3, FLASH_NEXT_BLOCK_DRAFTS), 2);
+        assert_eq!(block_draft_limit(&block, 4, FLASH_NEXT_BLOCK_DRAFTS), 3);
+        assert_eq!(
+            block_draft_limit(&block, 256, FLASH_NEXT_BLOCK_DRAFTS),
+            FLASH_NEXT_BLOCK_DRAFTS
+        );
         assert_eq!(FLASH_NEXT_BLOCK_DRAFTS, 3);
+        assert_eq!(block_draft_limit(&canonical, 256, 2), 1);
+        assert_eq!(block_draft_limit(&block, 2, 2), 1);
+        assert_eq!(block_draft_limit(&block, 256, 2), 2);
     }
 
     #[test]
