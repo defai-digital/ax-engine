@@ -1,6 +1,6 @@
 # Qwen 3.8 27B AXQ Certification
 
-Last reviewed: **2026-11-18**. Status: **Candidate**.
+Last reviewed: **2026-11-24**. Status: **Candidate**.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -30,6 +30,17 @@ controls on MacBook Pro M5 Max 128 GB. All 69 accepted drafts matched
 their target verifier decisions across 38 cycles, including rejection
 and continuation, EOS, and the seven-token budget. See the
 [same-state receipt](../../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-mtp-s-controls/).
+
+The pinned MXFP4 model is on the add-mode allowlist. A functional check on
+M5 Max 128 GB completed a 256-token chat stream while an embedding model
+was added and unloaded. See [multi-model serving](../SERVER.md#multi-model-serving).
+
+Fixed-budget MTP diagnostics showed higher decode throughput on two
+512-token workloads. The two-token short-answer control was slower with
+MTP, and the fixed-budget runs showed timing variance and output
+differences between routes. The pack's MTP performance and
+default-promotion gates remain open.
+[MTP timing controls](../../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-mtp-performance/README.md).
 
 Broader quality, memory and release gates remain open. The current
 pack still needs MTP-S/P/D evidence, and MTP execution remains explicit

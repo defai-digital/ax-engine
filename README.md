@@ -49,6 +49,9 @@ Product SKUs:
   `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned
   MXFP4 MTP pack. Launching this pack on the standard host defaults to one
   engine job and a 32,768-token context budget, including output tokens.
+  A signed v8.1.0 candidate reached HTTP readiness in **28–30 seconds**
+  with automatic buffered reads on the eligible internal SSD.
+  [Flash Next operating profile](docs/model-certifications/qwen3.8-flash-next.md#current-mxfp4-evidence).
 - **Mac Studio, Ultra-class Apple Silicon with 192 GB+ RAM** (M3 Ultra or newer; M2 Ultra is best-effort) — larger-memory host for the same Flash Next pack.
   The 2026-10-05 direct-default release gates were measured here and stay bound to this host.
 
@@ -84,8 +87,9 @@ still depend on memory capacity and workload; see the
 - **Evidence tied to the pack** — historical 6-bit benchmark results remain
   published below and do not describe the replacement default. MXFP4 and
   MXFP8 need their own runtime, quality, memory and MTP evidence.
-- **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
-  Qwen3-Coder-Next, Gemma 4, and embedding models resident (`load_mode=add`),
+- **Multi-model in one process** — keep allowlisted Qwen 3.5/3.6,
+  Qwen 3.8 27B MXFP4, Qwen3-Coder-Next, Gemma 4 and embedding models
+  resident (`load_mode=add`),
   route by request `model` (chat + embeddings together), with fair Metal turn
   arbitration, memory preflight, and optional idle eviction. Exact-prompt
   **prefix reuse** is the S1 differentiator: official dual-model campaign
@@ -484,11 +488,9 @@ matching serving evidence—see
 
 ## Performance
 
-> **Current status (reviewed 2026-11-20).** The dated tables below are an
-> archive of their recorded benchmark environments. They do not describe
-> current HEAD, the current MLX 0.32.4 pin, or qualification of a replacement
-> pack. Do not use them as a product ranking or transfer them across formats,
-> revisions, hosts, or releases.
+> **Current status (reviewed 2026-11-24).** The table below links current
+> evidence for the pinned packs. The historical results that follow apply
+> to their recorded formats, builds, hosts and workloads.
 
 Current product evidence is deliberately narrower:
 
@@ -496,6 +498,7 @@ Current product evidence is deliberately narrower:
 | --- | --- | --- |
 | [Qwen 3.8 27B MXFP4 product-health receipt](benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-product-health/) | Candidate pack; default, direct, and required-MTP functional controls on M5 Max 128 GB | MTP-S/P/D, broad quality, memory, and release gates |
 | [Qwen 3.8 27B MXFP8 catalog receipt](benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp8-catalog/) | Catalog Candidate and bounded native functional controls | SKU qualification, performance, and MTP-S/P/D |
+| [Flash Next startup crossover](benchmarks/results/flash-next-automatic-buffered-reader-m5-20261123/README.md) | HTTP readiness fell from 162–168 s with mapped reads to 28–30 s with automatic buffered reads on M5 Max 128 GB | Broader storage and concurrency claims |
 | [Flash Next certification record](docs/model-certifications/qwen3.8-flash-next.md) | Candidate on the M5 Max 128 GB single-stream resident standard; direct-default gates passed on signed v7.9.0 | Current-release and MTP gates; no current peer-performance claim |
 
 For methods, dated tables, charts, and immutable raw artifacts, read

@@ -9,9 +9,8 @@ workload recorded with it.
 > **Historical evidence, not a current ranking.** Most tables on this page
 > record 2026-08 through 2026-10 environments and may use retired pack
 > formats, superseded binaries, or older MLX releases. The current runtime pin
-> is MLX 0.32.4. For current Qwen 3.8 status, use the certification records and
-> their 2026-11-18 receipts; no archived table qualifies another pack or
-> release.
+> is MLX 0.32.4. The Qwen 3.8 certification records below track scope and
+> qualification for each pack and build.
 
 | Need | Read |
 | --- | --- |
@@ -21,8 +20,23 @@ workload recorded with it.
 | Current qualification status and archive entry point | [Root README: Performance](../README.md#performance) |
 | Serving peer detail (AX vs peer MLX server) | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 
+## Qwen 3.8 MXFP4 evidence
+
+| Measurement | Result and scope |
+| --- | --- |
+| [Flash Next startup crossover](../benchmarks/results/flash-next-automatic-buffered-reader-m5-20261123/README.md) | One resident request, 32K combined budget and MTP off on M5 Max 128 GB. Mapped reads reached HTTP in 162–168 s. Automatic buffered reads reached HTTP in 28–30 s. The pack was already on the internal SSD. |
+| [Flash Next two-request serving](../benchmarks/results/flash-next-resident-slot-crossover-m5-20261123/README.md) | All 84,480 output token IDs match the solo oracle. Throughput changed direction across orders and stream gaps grew in both. The standard remains one active request. |
+| [Flash Next Optuna pilot](../benchmarks/results/flash-next-optuna-pilot-m5-20261122/README.md) | Optuna and the fixed grid retained the baseline scheduling policy across the archived settings. |
+| [27B MTP timing controls](../benchmarks/results/qualification/2026-11-18-qwen38-27b-mxfp4-mtp-performance/README.md) | The fixed-budget decode measurements and the short-answer regression inform the opt-in path. MTP performance qualification remains open. |
+
+The [Flash Next record](model-certifications/qwen3.8-flash-next.md#current-mxfp4-evidence)
+tracks readiness after delivery, the current qualification gaps and the M2 Ultra
+MLX-VLM startup diagnostic. See the [27B record](model-certifications/qwen3.8-27b-axq.md)
+for product health and multi-model operation.
+
 ## On this page
 
+- [Qwen 3.8 MXFP4 evidence](#qwen-38-mxfp4-evidence)
 - [Session Mode: Multi-Model Serving (S1)](#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer)
 - [Session Mode: Single-client serving (AX vs peer MLX)](#session-mode-single-client-serving-ax-vs-peer-mlx)
 - [Session Mode: MTP Generation](#session-mode-mtp-generation)

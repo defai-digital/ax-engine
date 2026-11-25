@@ -1277,13 +1277,13 @@ resolve through the same registry; omit `model` to hit the default.
 
 ### Load and unload
 
-`POST /v1/model/load` closes native admission before changing the process-local
-model registry. It rejects a change while non-terminal stepwise work exists and
-waits for generation, streaming, and embedding permits to reach zero. A
-disconnected load client does not cancel cleanup. Requests arriving during the
-drain receive HTTP 503 or gRPC `UNAVAILABLE` and can retry after loading.
-Invalid load and unload bodies fail **before** admission drains, so they do not
-stall unrelated traffic.
+`POST /v1/model/load` with `load_mode=add` keeps the current generations
+serving while it builds and publishes a new model. A replacement rejects
+non-terminal stepwise work on the outgoing generation and drains only that
+generation before the swap. Requests arriving at the draining model receive
+HTTP 503 or gRPC `UNAVAILABLE` and can retry after loading. A disconnected
+load client leaves the server task responsible for cleanup. The server
+validates load and unload bodies before draining admission.
 
 | Field | Values | Notes |
 | --- | --- | --- |
@@ -1324,6 +1324,9 @@ native manifest must also declare MXFP4 feed-forward weights, and its AXQuant
 metadata must identify Qwen 3.8 27B with an MTP sidecar present.
 Post-load warmup runs on idle workers so already-admitted generation stays
 with its streaming or stepwise request owner.
+On MacBook Pro M5 Max 128 GB, a functional check added and unloaded
+Qwen3-Embedding 0.6B MXFP4 while the resident 27B remained the default.
+The 27B stream delivered all 256 planned tokens and its terminal response.
 
 The embedding targets make chat + embeddings co-residency a first-class
 setup: keep a chat model as the default and add an embedding model (or the

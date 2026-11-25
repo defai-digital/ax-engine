@@ -553,11 +553,24 @@ ax-engine download ax-embeddinggemma-300m   # embedding sibling for /v1/embeddin
 [its certification gates](model-certifications/qwen3.6-27b-axq.md) are still
 open and its 8-hour soak is 3.6 evidence, not 3.8.
 
-To keep a second allowlisted model resident while that server runs, use
-`POST /v1/model/load` with `load_mode=add` (Qwen 3.5 9B, Qwen 3.6 27B/35B,
-Qwen3-Coder-Next, Gemma 4 12B/26B/31B, and the EmbeddingGemma 300M /
-Qwen3-Embedding 0.6B/4B/8B embedding models — chat + embeddings from one
-process). Details: [Multi-model serving](SERVER.md#multi-model-serving).
+To keep a second allowlisted model resident, use `POST /v1/model/load` with
+`load_mode=add` and `make_default=false`. The pinned Qwen 3.8 27B MXFP4
+pack can remain the chat default while Qwen3-Embedding 0.6B serves embeddings
+from the same process. [Supported models and example](SERVER.md#multi-model-serving).
+
+Use the pinned MXFP4 alias for the Flash Next Candidate on a MacBook Pro
+M5 Max 128 GB.
+
+```sh
+ax-engine serve qwen3.8-flash-next:axq
+```
+
+The current source defaults to one resident active request, a 32,768-token
+combined prompt and output budget, and direct decoding. On the verified
+internal startup SSD, the loader automatically selects aligned buffered reads
+for the published MXFP4 layout. The signed benchmark measures HTTP readiness
+from process start after the pack is available locally.
+[Flash Next profile and evidence](model-certifications/qwen3.8-flash-next.md#current-mxfp4-evidence).
 
 ### Path B — Python API
 

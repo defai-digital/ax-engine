@@ -26,9 +26,11 @@ from **Apple M2 Ultra, 192 GB**. The 2026-10-05 direct-default release gates
 were measured on that larger host and stay bound to it. The M5 Max
 [release record for signed v7.9.0](../../benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)
 is a separate run and applies to that release and pack revision. Last reviewed
-**2026-11-23**.
+**2026-11-24**.
 
-In v8.1.0, the native server recognizes the published MXFP4 pack metadata on
+## Current MXFP4 evidence
+
+The v8.1.0 source tree recognizes the published MXFP4 pack metadata on
 the standard host (hardware model `Mac17,6`). An ordinary launch defaults to
 one active engine job for Flash Next and a 32,768-token budget shared by
 prompt and output. Explicit concurrency and KV settings take precedence,
@@ -47,8 +49,30 @@ startup SSD. Other layouts and storage use mapped reads. Set
 HTTP startup took 28.1–30.1 seconds automatically and 162.4–168.5 seconds
 with the opt-out. The [ordinary offline alias](../../benchmarks/results/flash-next-delivered-alias-m5-20261123/README.md)
 confirmed automatic selection and reached HTTP in 30.2 seconds. These are
-startup measurements within the one-request 32K profile. Current release
-qualification and MTP gates remain open.
+startup measurements within the one-request 32K profile. The later signed
+build `1e8ea4845` verified 49 files after download into an empty cache,
+passed all 21 HTTP controls, and reached default readiness in 33.1 seconds
+after delivery. [Patched delivery evidence](../../benchmarks/results/flash-next-url-patched-delivery-m5-20261124/README.md).
+Replay the delivery archive from commit `929e1f135` to use the exact
+recorded validation scripts.
+
+The [consolidated M5 board for build `3fc0a02cd`](../../benchmarks/results/flash-next-consolidated-native-m5-20261124/README.md)
+passed six of nine direct-default gates. The independent ordinary MLX-VLM
+reference still needs the full 105-item QA cohort and 15 timing cells on the
+standard host. The native lifecycle repeat also fell below the 90% idle floor.
+The current release and MTP gates remain open.
+
+The [M2 Ultra startup diagnostic](../../benchmarks/results/flash-next-ordinary-startup-m2-20261124/README.md)
+ran four short QA cases on the pinned ordinary MLX-VLM reference. MLX had
+117.46 GiB active after weight materialization and reached a 117.69 GiB
+cumulative peak by the first token. All four cases passed grading and
+matched the uninstrumented runner on the same M2. Formal qualification
+uses the M5 Max standard.
+
+The [two-request M5 crossover](../../benchmarks/results/flash-next-resident-slot-crossover-m5-20261123/README.md)
+matched the solo output oracle. Throughput changed direction across the two
+test orders, and short-stream gaps increased in both. The product profile
+retains one active request.
 
 **MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
 pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
