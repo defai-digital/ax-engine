@@ -177,6 +177,19 @@ pub(crate) fn flash_next_eager_dispatch_layers() -> usize {
     })
 }
 
+/// Flash Next concatenates the projections of one layer that read the same
+/// input (GDN qkv, gate, decay and beta; MoE router and shared-expert gate;
+/// MoE shared gate and up; attention q, k and v) along the output axis at
+/// load, so a one-row decode step launches one quantized matmul per group.
+/// Each output row of MLX's one-row quantized matmul is independent of the
+/// other rows, so every member receives the bits of its own call.
+/// **Default: on.** The fused copies add resident weight memory;
+/// `AX_FLASH_NEXT_FUSE_PROJECTIONS=0` skips building them.
+pub(crate) fn flash_next_fuse_projections_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_FUSE_PROJECTIONS"))
+}
+
 /// Flash Next keeps the QSA K/V history as a sealed prefix plus a short tail
 /// so a decode step copies only the tail. Kill switch:
 /// `AX_FLASH_NEXT_KV_SEGMENTS=0`.

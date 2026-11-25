@@ -281,20 +281,32 @@ pub fn gpu_device_architecture() -> Result<String, String> {
 /// environment are treated as an explicit user override and left untouched.
 /// Returns `(mb_applied, ops_applied)`.
 pub fn set_metal_buffer_caps_env(max_mb: u32, max_ops: u32) -> (bool, bool) {
-    let mut applied = (false, false);
-    if std::env::var_os("MLX_MAX_MB_PER_BUFFER").is_none() {
+    let mut applied = (set_metal_buffer_byte_cap_env(max_mb), false);
+    if std::env::var_os("MLX_MAX_OPS_PER_BUFFER").is_none() {
         // SAFETY: called during single-threaded model/runner initialization,
         // before decode worker threads that could read the environment
         // concurrently are spawned.
-        unsafe { std::env::set_var("MLX_MAX_MB_PER_BUFFER", max_mb.to_string()) };
-        applied.0 = true;
-    }
-    if std::env::var_os("MLX_MAX_OPS_PER_BUFFER").is_none() {
-        // SAFETY: as above.
         unsafe { std::env::set_var("MLX_MAX_OPS_PER_BUFFER", max_ops.to_string()) };
         applied.1 = true;
     }
     applied
+}
+
+/// The byte half of [`set_metal_buffer_caps_env`]: raises only
+/// `MLX_MAX_MB_PER_BUFFER` and leaves the op-count cap at MLX's default, for
+/// a model whose step reads enough weight bytes to split on the byte cap but
+/// whose prefill is slower with long command buffers. Same timing rule and
+/// same precedence for a value already in the environment. Returns whether
+/// the value was applied.
+pub fn set_metal_buffer_byte_cap_env(max_mb: u32) -> bool {
+    if std::env::var_os("MLX_MAX_MB_PER_BUFFER").is_some() {
+        return false;
+    }
+    // SAFETY: called during single-threaded model/runner initialization,
+    // before decode worker threads that could read the environment
+    // concurrently are spawned.
+    unsafe { std::env::set_var("MLX_MAX_MB_PER_BUFFER", max_mb.to_string()) };
+    true
 }
 
 #[cfg(test)]

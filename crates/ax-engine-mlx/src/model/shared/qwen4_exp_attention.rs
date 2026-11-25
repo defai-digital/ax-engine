@@ -21,6 +21,7 @@ use thiserror::Error;
 
 use super::qwen4_exp_attention_gather::{self, PairedGather};
 use super::qwen4_exp_fused::{self, Stretch};
+use super::qwen4_exp_gdn::{FusedProjections, projection_policy};
 use super::qwen4_exp_kv_history::{KvHistory, gather_selected};
 use super::qwen4_exp_residual::{
     Qwen4ExpResidualError, sigmoid_projection_dtype, validate_projection,
@@ -411,6 +412,9 @@ pub(crate) struct Qwen4ExpAttention {
     q_norm_f32: MlxArray,
     k_norm_f32: MlxArray,
     indexer: QsaIndexer,
+    /// The q, k and v projections as one fused weight for one-row decode; all
+    /// three read the layer input.
+    fused_qkv: Option<FusedProjections>,
 }
 
 impl Qwen4ExpAttention {
@@ -457,8 +461,11 @@ impl Qwen4ExpAttention {
         validate_gain("k_norm", &weights.k_norm, config.head_dim)?;
         let q_norm_f32 = astype(&weights.q_norm, MlxDtype::Float32, None);
         let k_norm_f32 = astype(&weights.k_norm, MlxDtype::Float32, None);
+        let fused_qkv =
+            FusedProjections::build(&[&weights.q_proj, &weights.k_proj, &weights.v_proj]);
         Ok(Self {
             config,
+            fused_qkv,
             q_proj: weights.q_proj,
             k_proj: weights.k_proj,
             v_proj: weights.v_proj,
@@ -562,27 +569,23 @@ impl Qwen4ExpAttention {
             crate::model::qwen4_exp::profiling::mark("qsa_indexer", &[selection.gather_indices()]);
         }
 
-        let query_policy =
-            if self.q_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
-                verifier_policy
-            } else {
-                policy
-            };
-        let q_packed = qw_with_policy(hidden, &self.q_proj, query_policy);
-        let key_policy =
-            if self.k_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
-                verifier_policy
-            } else {
-                policy
-            };
-        let k_raw = qw_with_policy(hidden, &self.k_proj, key_policy);
-        let v_policy = if self.v_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4
-        {
-            verifier_policy
-        } else {
-            policy
+        let query_policy = projection_policy(&self.q_proj, policy, verifier_policy);
+        let key_policy = projection_policy(&self.k_proj, policy, verifier_policy);
+        let v_policy = projection_policy(&self.v_proj, policy, verifier_policy);
+        // One-row decode projects q, k and v with one fused quantized matmul.
+        let fused: Option<[MlxArray; 3]> = FusedProjections::project(
+            self.fused_qkv.as_ref(),
+            hidden,
+            &[query_policy, key_policy, v_policy],
+        );
+        let (q_packed, k_raw, v_raw) = match fused {
+            Some([q, k, v]) => (q, k, v),
+            None => (
+                qw_with_policy(hidden, &self.q_proj, query_policy),
+                qw_with_policy(hidden, &self.k_proj, key_policy),
+                qw_with_policy(hidden, &self.v_proj, v_policy),
+            ),
         };
-        let v_raw = qw_with_policy(hidden, &self.v_proj, v_policy);
         #[cfg(test)]
         for (stage, array) in [
             ("qsa_projected_query_gate", &q_packed),
