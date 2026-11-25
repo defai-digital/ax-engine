@@ -123,6 +123,7 @@ mod mtp_routing;
 mod mtp_step_trace;
 mod mtp_tuning;
 mod pipeline;
+mod prefill_schedule;
 mod prefix_cache;
 mod restore_value;
 mod runner_telemetry;
@@ -8380,13 +8381,21 @@ impl MlxRunner {
                     // floored onto exactly these rungs. Capturing only in the
                     // completing item left multi-turn agent prompts without
                     // the rung the next turn needed (2026-10-31 probe).
-                    let rung_head = if !semantic_capture
-                        && self.cfg.linear_attention.is_some()
-                        && !self.flash_next_exact_prefix_only()
-                        && !flash_next_mtp_prefill
-                        && crate::fastpath::linear_prefix_grid_rung_enabled()
-                        && self.prefix_cache.lock().enabled()
-                    {
+                    let exact_prefix_only = self.flash_next_exact_prefix_only();
+                    let capture =
+                        prefill_schedule::capture_policy(prefill_schedule::CaptureInputs {
+                            semantic_capture,
+                            linear_attention: self.cfg.linear_attention.is_some(),
+                            exact_prefix_only,
+                            mtp_prefill: flash_next_mtp_prefill,
+                            grid_rung_enabled: crate::fastpath::linear_prefix_grid_rung_enabled(),
+                            // Asked only where the answer can matter, as before.
+                            prefix_cache_enabled: !semantic_capture
+                                && self.cfg.linear_attention.is_some()
+                                && !exact_prefix_only
+                                && self.prefix_cache.lock().enabled(),
+                        });
+                    let rung_head = if capture.grid_rung {
                         let head = Self::linear_grid_rung_head_len(
                             block_size_tokens as usize,
                             self.prefill_chunk,
@@ -8432,10 +8441,7 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
-                    let prefill_tokens = if !semantic_capture
-                        && self.cfg.linear_attention.is_some()
-                        && !self.flash_next_exact_prefix_only()
-                        && self.prefix_cache.lock().enabled()
+                    let prefill_tokens = if capture.block_boundary
                         && let Some(head) = Self::linear_boundary_capture_head_len(
                             block_size_tokens as usize,
                             state.cache.seq_len(),
@@ -10227,35 +10233,39 @@ impl MlxRunner {
     }
 
     /// Prefill chunk for `remaining` prompt tokens after `prior` cached ones:
-    /// the family's long-prompt scaling of `base`, except that Flash Next
-    /// keeps `base` while the prompt fits the index-score workspace at that
-    /// chunk (`AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK`). Each of its
-    /// forwards streams every routed expert stack once, so fewer, wider
-    /// forwards are cheaper. Measured on Neural Accelerator hosts only; other
-    /// hosts keep the clamp.
+    /// the family's long-prompt scaling of `base`, unless
+    /// [`prefill_schedule::long_prompt_chunk`] keeps `base` for Flash Next
+    /// (`AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK`).
     fn prefill_chunk_for_remaining(&self, base: usize, prior: usize, remaining: usize) -> usize {
-        // Sequences one forward may batch: the score workspace holds a row
-        // for each of them.
-        let sequences = self.configured_live_sequences.unwrap_or(1).max(1) as usize;
         let scaled = crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
             base,
             remaining,
             &self.cfg.model_family,
         );
-        if scaled < base
-            && crate::fastpath::flash_next_long_prompt_wide_chunk_enabled()
-            && crate::hardware::neural_accelerator_active()
-            && self.weights.qwen4_exp.as_ref().is_some_and(|weights| {
-                weights.expert_stream.is_none()
-                    && prior.saturating_add(remaining)
-                        <= weights.monolithic_score_context_limit(base.saturating_mul(sequences))
-            })
-            && self.prefill_split_geometry().is_none()
-        {
-            base
-        } else {
-            scaled
+        if scaled >= base {
+            return scaled;
         }
+        // Sequences one forward may batch: the score workspace holds a row
+        // for each of them.
+        let sequences = self.configured_live_sequences.unwrap_or(1).max(1) as usize;
+        prefill_schedule::long_prompt_chunk(
+            base,
+            scaled,
+            prior,
+            remaining,
+            prefill_schedule::WideChunkInputs {
+                enabled: crate::fastpath::flash_next_long_prompt_wide_chunk_enabled(),
+                neural_accelerator: crate::hardware::neural_accelerator_active(),
+                trunk: self.weights.qwen4_exp.as_ref().map(|weights| {
+                    prefill_schedule::FlashNextTrunk {
+                        expert_stream: weights.expert_stream.is_some(),
+                        score_context_limit: weights
+                            .monolithic_score_context_limit(base.saturating_mul(sequences)),
+                    }
+                }),
+                split_prefill: self.prefill_split_geometry().is_some(),
+            },
+        )
     }
 
     /// Flash Next without MTP reuses a stored prefix only as a whole prompt
