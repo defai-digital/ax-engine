@@ -119,11 +119,17 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         for job_id in job_ids:
             self.assertIn(f"needs.{job_id}.result", aggregate)
 
-    def test_new_pushes_do_not_cancel_running_default_branch_ci(self) -> None:
+    def test_default_branch_ci_runs_have_separate_concurrency_groups(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
         self.assertIn(
-            "cancel-in-progress: ${{ github.ref != "
-            "format('refs/heads/{0}', github.event.repository.default_branch) }}",
-            CI_WORKFLOW.read_text(),
+            "group: ${{ github.workflow }}-${{ github.ref }}-"
+            "${{ github.ref_name == github.event.repository.default_branch && github.run_id || 'latest' }}",
+            workflow,
+        )
+        self.assertIn(
+            "cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}",
+            workflow,
         )
 
     def test_runtime_validation_uses_macos_26_or_later(self) -> None:
