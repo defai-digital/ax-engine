@@ -262,6 +262,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_DECODE_METAL", shipped: "on", class: SwitchClass::Token("gd_decode_metal=0") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX", shipped: "off", class: SwitchClass::Token("qwen_gdn_mlx") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX", shipped: "on", class: SwitchClass::Token("gdn_prefill_mlx=0") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ", shipped: "auto", class: SwitchClass::Token("gdn_prefill_mlx_min=64") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT", shipped: "on", class: SwitchClass::Token("qsa_decode_select=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_DIRECT_COALESCING", shipped: "off", class: SwitchClass::Token("two_resident_direct_rows") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_PREFILL_SPLIT", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
@@ -279,6 +280,9 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES", shipped: "off", class: SwitchClass::ProvenExact("qsa_tiled_score_bits_match_monolithic") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK", shipped: "unset", class: SwitchClass::Token("chunk=8192") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT", shipped: "on", class: SwitchClass::Token("expert_sort=0") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_HC_PREFILL_KERNELS", shipped: "on", class: SwitchClass::ProvenExact("kernels_match_the_mlx_ops_bit_for_bit_at_prefill_rows") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_MOE_PREFILL_SUM", shipped: "on", class: SwitchClass::ProvenExact("routed_sum_matches_the_mlx_ops_bit_for_bit_at_prefill_rows") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD", shipped: "on", class: SwitchClass::Token("moe_prefill_pad=0") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING", shipped: "off", class: SwitchClass::Token("gd_streaming") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_TILE_512", shipped: "off", class: SwitchClass::Token("gd_tile_512") },
     SwitchRow { env: "AX_MLX_QWEN_PREFILL_SINGLE_2048", shipped: "off", class: SwitchClass::Token("single_2048") },
@@ -781,6 +785,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
             switches.flash_gdn_prefill_mlx = false;
             true
         }
+        "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ" => {
+            switches.flash_gdn_prefill_mlx_min_seq = Some(64);
+            true
+        }
         "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT" => {
             switches.qsa_device_select = false;
             true
@@ -823,6 +831,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK" => {
             switches.tiled_prefill_chunk = Some(8192);
+            true
+        }
+        "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD" => {
+            switches.moe_prefill_pad = false;
             true
         }
         "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT" => {

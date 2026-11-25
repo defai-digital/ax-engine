@@ -16,6 +16,8 @@ pub(crate) mod qwen4_exp_kv_history;
 pub(crate) mod qwen4_exp_moe;
 pub(crate) mod qwen4_exp_native_gdn;
 pub(crate) mod qwen4_exp_native_hc_gemv;
+pub(crate) mod qwen4_exp_native_hc_prefill;
+pub(crate) mod qwen4_exp_native_moe_sum;
 pub(crate) mod qwen4_exp_ple;
 pub(crate) mod qwen4_exp_residual;
 pub(super) mod rope;

@@ -6182,6 +6182,40 @@ pub(crate) fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
     (128..=2048).contains(&seq)
 }
 
+/// Shortest Flash Next prefill chunk that runs MLX's `gated_delta_update`
+/// kernel instead of the sequential AX recurrence
+/// (`AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ`, 32 to 128; MLX's kernel
+/// starts at 32 rows). Unset, [`flash_next_gdn_prefill_mlx_default_min_seq`]
+/// picks it for the host.
+pub(crate) fn flash_next_gdn_prefill_mlx_min_seq() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_positive_usize_env("AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ")
+            .and_then(|value| i32::try_from(value).ok())
+            .filter(|value| (32..=128).contains(value))
+            .unwrap_or_else(|| {
+                flash_next_gdn_prefill_mlx_default_min_seq(
+                    crate::hardware::neural_accelerator_active(),
+                )
+            })
+    })
+}
+
+/// Pure default behind [`flash_next_gdn_prefill_mlx_min_seq`].
+///
+/// 32 on Neural Accelerator hosts: on the MacBook Pro M5 Max 128 GB a Flash
+/// Next prefill forward costs 111 ms at 32 rows and 184 ms at 127 rows with
+/// MLX's kernel, against 175 ms and 450 ms with the sequential recurrence.
+/// Other hosts keep 128, the floor the M2 Ultra probe set.
+pub(crate) fn flash_next_gdn_prefill_mlx_default_min_seq(neural_accelerator: bool) -> i32 {
+    if neural_accelerator { 32 } else { 128 }
+}
+
+/// Whether a Flash Next prefill chunk of `seq` rows runs MLX's recurrence.
+pub(crate) fn flash_next_gdn_prefill_mlx_seq_eligible(seq: i32) -> bool {
+    (flash_next_gdn_prefill_mlx_min_seq()..=2048).contains(&seq)
+}
+
 env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX` — dedicated Flash Next prefill
     /// through MLX 0.32.3 with existing FP32 normalization and gates.
@@ -6452,6 +6486,59 @@ env_flag_default_on!(
     flash_next_prefill_expert_sort_enabled,
     "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT"
 );
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD` — pad a sorted Flash Next prefill
+    /// gather that holds fewer than four pairs per expert with zero rows, so
+    /// MLX runs its batched expert kernel instead of one matvec per pair.
+    /// Kill switch only: the padding applies on Neural Accelerator hosts,
+    /// where it was measured (see
+    /// [`flash_next_moe_prefill_pad_enabled`]). The batched kernel
+    /// accumulates in another order, so the kill is a numerics-tier token.
+    flash_next_moe_prefill_pad_allowed,
+    "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_HC_PREFILL_KERNELS` — run the hyper-connection
+    /// grouped norm, stream mix and residual write of a Flash Next prefill
+    /// chunk of at least 64 rows as one Metal kernel each instead of the MLX
+    /// op chain. Each kernel reproduces the chain bit for bit and is
+    /// self-checked against it before first use. Kill switch only: the
+    /// kernels apply on Neural Accelerator hosts, where they were measured
+    /// (see [`flash_next_hc_prefill_kernels_enabled`]).
+    flash_next_hc_prefill_kernels_allowed,
+    "AX_MLX_FLASH_NEXT_HC_PREFILL_KERNELS"
+);
+
+/// Hardware and kill-switch predicate for the Flash Next hyper-connection
+/// prefill kernels.
+pub(crate) fn flash_next_hc_prefill_kernels_enabled() -> bool {
+    flash_next_hc_prefill_kernels_allowed() && crate::hardware::neural_accelerator_active()
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_MOE_PREFILL_SUM` — fold the unsort, the routing
+    /// weights and the sum over the routed experts of a sorted Flash Next
+    /// prefill gather into one Metal kernel. The kernel reproduces the MLX op
+    /// chain bit for bit and is self-checked against it before first use.
+    /// Kill switch only: the kernel applies on Neural Accelerator hosts, where
+    /// it was measured (see [`flash_next_moe_prefill_sum_enabled`]).
+    flash_next_moe_prefill_sum_allowed,
+    "AX_MLX_FLASH_NEXT_MOE_PREFILL_SUM"
+);
+
+/// Hardware and kill-switch predicate for the Flash Next routed-sum prefill
+/// kernel.
+pub(crate) fn flash_next_moe_prefill_sum_enabled() -> bool {
+    flash_next_moe_prefill_sum_allowed() && crate::hardware::neural_accelerator_active()
+}
+
+/// Hardware and kill-switch predicate for the Flash Next prefill gather
+/// padding.
+pub(crate) fn flash_next_moe_prefill_pad_enabled() -> bool {
+    flash_next_moe_prefill_pad_allowed() && crate::hardware::neural_accelerator_active()
+}
 
 env_flag!(
     /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING` — route long multi-token
@@ -7837,6 +7924,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `qwen_exact=0` — explicit `AX_MLX_QWEN_LINEAR_MTP_EXACT` kill
 /// - `narrow_softmax=0` — full-width MoE softmax instead of the top-k subset
 /// - `expert_sort=0` — unsorted Flash Next prefill expert gather
+/// - `moe_prefill_pad=0` — short sorted Flash Next prefill gathers stay on the per-pair kernel
 /// - `qsa_batched=0` — padded max-length QSA SDPA off (different reduction)
 /// - `gd_streaming` / `gd_tile_512` / `gd_chunkwise` — GatedDelta prefill route
 /// - `gd_decode_metal=0` — singleton GatedDelta decode leaves the Metal kernel
@@ -7846,6 +7934,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `mla_chunk=N` / `mla_cold=N` — MLA prefill chunk overrides
 /// - `mla_prefix_restore=0` — MLA warm-snapshot restore killed; the warm path can drift
 /// - `gdn_prefill_mlx=0` — Flash Next GDN prefill leaves the MLX recurrence
+/// - `gdn_prefill_mlx_min=N` — that route's shortest chunk differs from auto
 /// - `qwen_gdn_mlx` — Qwen GatedDelta prefill uses the MLX recurrence
 /// - `dequant_dense=off|cached|transient` — dense-GEMM prefill differs from auto
 /// - `dequant_min=N` — that route's minimum sequence differs from auto
@@ -7942,6 +8031,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) qsa_fused_gather: bool,
     pub(crate) invariant_qmv_bf16_q4: bool,
     pub(crate) prefill_expert_sort: bool,
+    pub(crate) moe_prefill_pad: bool,
     pub(crate) gd_streaming: bool,
     pub(crate) gd_tile_512: bool,
     pub(crate) gd_chunkwise: bool,
@@ -7954,6 +8044,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) mla_cold_chunk: Option<usize>,
     pub(crate) mla_prefix_restore_disabled: bool,
     pub(crate) flash_gdn_prefill_mlx: bool,
+    pub(crate) flash_gdn_prefill_mlx_min_seq: Option<i32>,
     pub(crate) qwen_gdn_prefill_mlx: bool,
     pub(crate) dequant_dense: Option<&'static str>,
     pub(crate) dequant_dense_min_seq: Option<i32>,
@@ -8096,6 +8187,7 @@ impl Default for NumericsTierSwitches {
             qsa_fused_gather: true,
             invariant_qmv_bf16_q4: true,
             prefill_expert_sort: true,
+            moe_prefill_pad: true,
             gd_streaming: false,
             gd_tile_512: false,
             gd_chunkwise: false,
@@ -8108,6 +8200,7 @@ impl Default for NumericsTierSwitches {
             mla_cold_chunk: None,
             mla_prefix_restore_disabled: false,
             flash_gdn_prefill_mlx: true,
+            flash_gdn_prefill_mlx_min_seq: None,
             qwen_gdn_prefill_mlx: false,
             dequant_dense: None,
             dequant_dense_min_seq: None,
@@ -8259,6 +8352,9 @@ impl NumericsTierSwitches {
             qsa_fused_gather: flash_next_qsa_fused_gather_enabled(),
             invariant_qmv_bf16_q4: invariant_qmv_bf16_q4_enabled(),
             prefill_expert_sort: flash_next_prefill_expert_sort_enabled(),
+            // The kill only changes numerics where the padding would run.
+            moe_prefill_pad: flash_next_moe_prefill_pad_allowed()
+                || !crate::hardware::neural_accelerator_active(),
             gd_streaming: qwen_gated_delta_prefill_streaming_enabled(),
             gd_tile_512: qwen_gated_delta_prefill_tile_512_enabled(),
             gd_chunkwise: qwen_gd_prefill_chunkwise_enabled(),
@@ -8271,6 +8367,13 @@ impl NumericsTierSwitches {
             mla_cold_chunk: mla_cold_prefill_chunk_override(),
             mla_prefix_restore_disabled: mla_prefix_restore_disabled(),
             flash_gdn_prefill_mlx: flash_next_gdn_prefill_mlx_enabled(),
+            flash_gdn_prefill_mlx_min_seq: {
+                let auto = flash_next_gdn_prefill_mlx_default_min_seq(
+                    crate::hardware::neural_accelerator_active(),
+                );
+                let actual = flash_next_gdn_prefill_mlx_min_seq();
+                (actual != auto).then_some(actual)
+            },
             qwen_gdn_prefill_mlx: qwen_gated_delta_prefill_mlx_enabled(),
             dequant_dense: dequant_dense_tier_token(
                 qwen_prefill_dequant_dense_mode(),
@@ -8577,6 +8680,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     if !switches.narrow_softmax {
         tokens.push("narrow_softmax=0".to_string());
     }
+    if !switches.moe_prefill_pad {
+        tokens.push("moe_prefill_pad=0".to_string());
+    }
     if !switches.prefill_expert_sort {
         tokens.push("expert_sort=0".to_string());
     }
@@ -8621,6 +8727,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if !switches.flash_gdn_prefill_mlx {
         tokens.push("gdn_prefill_mlx=0".to_string());
+    }
+    if let Some(min_seq) = switches.flash_gdn_prefill_mlx_min_seq {
+        tokens.push(format!("gdn_prefill_mlx_min={min_seq}"));
     }
     if switches.qwen_gdn_prefill_mlx {
         tokens.push("qwen_gdn_mlx".to_string());

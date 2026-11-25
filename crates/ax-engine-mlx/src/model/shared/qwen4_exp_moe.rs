@@ -15,6 +15,7 @@ use mlx_sys::{
 use super::mlp::{SwitchGatherInputs, switch_gather_inputs, top_k_by_argpartition};
 use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_gdn::{FusedProjections, projection_policy};
+use super::qwen4_exp_native_moe_sum;
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_gather, qw_with_policy, squeeze_switch_singleton};
 use crate::expert_stream::{ExpertLayerSource, LayerExpertStack};
@@ -41,6 +42,57 @@ pub(crate) enum Qwen4ExpExpertWeights {
 /// long prompts). Decode and short verifier windows keep the original
 /// unsorted gather; outputs are restored to token order before the weighted sum.
 const PREFILL_EXPERT_SORT_MIN_TOKENS: i32 = 64;
+
+/// Pairs per expert of the stack from which MLX's sorted gather runs its
+/// batched expert kernel (`B / E >= 4` in `GatherQMM::eval_gpu`, MLX 0.32.4).
+/// Below it every (row, expert) pair is one matvec.
+const BATCHED_GATHER_PAIRS_PER_EXPERT: i32 = 4;
+
+/// Zero rows a sorted gather of `pairs` (row, expert) pairs over a stack of
+/// `experts` is padded with so MLX takes the batched expert kernel, or 0 when
+/// the gather already qualifies or is too short for the padding to pay.
+///
+/// MacBook Pro M5 Max 128 GB, Qwen 3.8 Flash Next MXFP4, routed experts of all
+/// 48 layers inside one prefill forward: 228 ms at 127 rows and 40 ms at 15
+/// rows through the per-pair kernel, 130 ms at 209 rows through the batched
+/// one, whose cost is mostly the one read of the expert stack. The padding
+/// starts where the per-pair cost passes that, at three pairs per two experts.
+fn batched_gather_padding(pairs: i32, experts: i32) -> i32 {
+    let target = experts.saturating_mul(BATCHED_GATHER_PAIRS_PER_EXPERT);
+    if pairs >= target || pairs.saturating_mul(2) < experts.saturating_mul(3) {
+        0
+    } else {
+        target - pairs
+    }
+}
+
+/// Append `padding` zero rows routed to the last expert of the stack, which
+/// keeps the indices sorted. Their outputs are dropped after the down
+/// projection.
+fn pad_sorted_gather(
+    x: &MlxArray,
+    indices: &MlxArray,
+    padding: i32,
+    experts: i32,
+) -> (MlxArray, MlxArray) {
+    let mut shape = x.shape();
+    shape[0] = padding;
+    let last = vec![(experts - 1) as u32; padding as usize];
+    let last = astype(
+        &MlxArray::from_raw_data(
+            last.as_ptr().cast(),
+            std::mem::size_of_val(last.as_slice()),
+            &[padding],
+            MlxDtype::Uint32,
+        ),
+        indices.dtype(),
+        None,
+    );
+    (
+        concatenate(&[x, &mlx_sys::zeros(&shape, x.dtype(), None)], 0, None),
+        concatenate(&[indices, &last], 0, None),
+    )
+}
 
 #[cfg(test)]
 fn trial_tiled_router_projection(
@@ -94,6 +146,8 @@ pub(crate) struct Qwen4ExpMoe {
     selected_prefill: bool,
     /// Gather experts in expert-id order for long prefill chunks.
     prefill_expert_sort: bool,
+    /// Pad a short sorted prefill gather up to MLX's batched expert kernel.
+    prefill_gather_padding: bool,
     /// The expert router and the shared-expert router as one fused weight for
     /// one-row decode; both read the layer input.
     fused_routers: Option<FusedProjections>,
@@ -368,6 +422,7 @@ impl Qwen4ExpMoe {
             selected_prefill: std::env::var_os("AX_MLX_FLASH_NEXT_SELECTED_PREFILL")
                 .is_some_and(|v| v == "1"),
             prefill_expert_sort: crate::fastpath::flash_next_prefill_expert_sort_enabled(),
+            prefill_gather_padding: crate::fastpath::flash_next_moe_prefill_pad_enabled(),
         })
     }
 
@@ -697,10 +752,43 @@ impl Qwen4ExpMoe {
         };
         let sorted = gathered.sorted_indices;
         let rows = shape[1];
-        let gate = qw_gather(&gathered.x, experts.gate(), &gathered.indices, sorted);
-        let up = qw_gather(&gathered.x, experts.up(), &gathered.indices, sorted);
+        let pairs = gathered.indices.shape().first().copied().unwrap_or(0);
+        let stack = experts.gate().weight.shape().first().copied().unwrap_or(0);
+        let padding = if sorted && self.prefill_gather_padding {
+            batched_gather_padding(pairs, stack)
+        } else {
+            0
+        };
+        let (gather_x, gather_indices) = if padding > 0 {
+            pad_sorted_gather(&gathered.x, &gathered.indices, padding, stack)
+        } else {
+            (gathered.x.clone(), gathered.indices.clone())
+        };
+        let gate = qw_gather(&gather_x, experts.gate(), &gather_indices, sorted);
+        let up = qw_gather(&gather_x, experts.up(), &gather_indices, sorted);
         let activated = swiglu(&gate, &up, rows, ROUTED_SWIGLU_STAGES);
-        let down_gathered = qw_gather(&activated, experts.down(), &gathered.indices, sorted);
+        let down_gathered = qw_gather(&activated, experts.down(), &gather_indices, sorted);
+        // The routed-sum kernel reads the sorted rows through the inverse
+        // order, padding included, so it takes the gather output as it is.
+        let routed = gathered.inv_order.as_ref().and_then(|inverse| {
+            qwen4_exp_native_moe_sum::routed_sum(
+                &down_gathered,
+                inverse,
+                routing,
+                rows,
+                self.top_k as i32,
+                shape[2],
+            )
+        });
+        let down_gathered = if padding > 0 {
+            let mut stop = down_gathered.shape();
+            stop[0] = pairs;
+            let start = vec![0; stop.len()];
+            let strides = vec![1; stop.len()];
+            slice(&down_gathered, &start, &stop, &strides, None)
+        } else {
+            down_gathered
+        };
         let down = if sorted {
             gathered.unsort(down_gathered)
         } else {
@@ -736,11 +824,15 @@ impl Qwen4ExpMoe {
         };
         // The reshape back to the input shape is a view, so it stays outside the
         // tail stretch.
-        let output = reshape(
-            &combine(&down, routing, &shared, &shared_router, rows),
-            &shape,
-            None,
-        );
+        let combined = match &routed {
+            Some(routed) => add(
+                routed,
+                &multiply(&shared, &sigmoid_projection_dtype(&shared_router), None),
+                None,
+            ),
+            None => combine(&down, routing, &shared, &shared_router, rows),
+        };
+        let output = reshape(&combined, &shape, None);
         // Only intermediates that exist on the path taken: the fused stretches
         // do not materialise the activations and the weighted sum inputs, and a
         // dump of a graph the run never built would be a different op sequence.
@@ -1285,6 +1377,84 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn batched_gather_padding_covers_the_per_pair_range_only() {
+        // 512 experts: the batched kernel starts at 2,048 pairs and the
+        // padding at 768.
+        assert_eq!(batched_gather_padding(2048, 512), 0);
+        assert_eq!(batched_gather_padding(4096, 512), 0);
+        assert_eq!(batched_gather_padding(2047, 512), 1);
+        assert_eq!(batched_gather_padding(768, 512), 1280);
+        assert_eq!(batched_gather_padding(767, 512), 0);
+        assert_eq!(batched_gather_padding(0, 512), 0);
+        assert_eq!(batched_gather_padding(10, 0), 0);
+    }
+
+    /// 64 rows of two experts each over a 64-expert stack sit between the
+    /// padding threshold (96 pairs) and the batched kernel's (256), so the
+    /// padded gather runs the batched kernel on 128 real and 128 zero rows.
+    /// Its real rows must equal the per-pair gather up to accumulation order.
+    #[test]
+    fn padded_prefill_gather_matches_the_per_pair_gather() {
+        let mut module = Qwen4ExpMoe::new(
+            64,
+            32,
+            32,
+            64,
+            2,
+            true,
+            Qwen4ExpMoeWeights {
+                router: bf16_dense(64, 64, 3),
+                experts: Qwen4ExpExpertWeights::Resident(Box::new(Qwen4ExpResidentExperts {
+                    gate: mxfp4_stack(64, 32, 64, 11),
+                    up: mxfp4_stack(64, 32, 64, 23),
+                    down: mxfp4_stack(64, 64, 32, 37),
+                })),
+                shared_gate: bf16_dense(32, 64, 41),
+                shared_up: bf16_dense(32, 64, 43),
+                shared_down: bf16_dense(64, 32, 47),
+                shared_router: bf16_dense(1, 64, 53),
+            },
+        )
+        .unwrap();
+        let tokens = 64i32;
+        let values: Vec<f32> = (0..tokens * 64)
+            .map(|i| (((i * 37) % 101) as f32 - 50.0) / 40.0)
+            .collect();
+        let input = astype(
+            &reshape(&MlxArray::from_f32_slice(&values), &[1, tokens, 64], None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        module.prefill_expert_sort = true;
+        module.prefill_gather_padding = false;
+        let plain = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        module.prefill_gather_padding = true;
+        let padded = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        let (plain, padded) = (
+            astype(&plain, MlxDtype::Float32, None),
+            astype(&padded, MlxDtype::Float32, None),
+        );
+        eval(&[&plain, &padded]);
+        assert_eq!(padded.shape(), plain.shape());
+        let (a, b) = (padded.data_f32(), plain.data_f32());
+        let scale = b.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+        let max_abs = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(scale > 0.0, "the gather produced no signal");
+        assert!(
+            max_abs <= scale * 2.0e-2,
+            "padded prefill gather drifted: {max_abs} of {scale}"
+        );
     }
 
     /// The block MTP verifier retains batched MoE output, so a window whose

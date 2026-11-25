@@ -29,6 +29,7 @@ use thiserror::Error;
 
 use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_native_hc_gemv;
+use super::qwen4_exp_native_hc_prefill;
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::weights::QuantizedWeight;
 
@@ -87,6 +88,13 @@ pub(super) fn write_graph(
         None,
     );
     add(residual, &astype(&delta, residual.dtype(), None), None)
+}
+
+fn prefill_geometry(layout: Qwen4ExpStreamLayout) -> qwen4_exp_native_hc_prefill::Geometry {
+    qwen4_exp_native_hc_prefill::Geometry {
+        streams: layout.stream_count,
+        hidden: layout.hidden_size,
+    }
 }
 
 /// Registry key of the compiled stretches: the geometry plus the norm eps, with
@@ -431,6 +439,11 @@ impl Qwen4ExpGatedResidual {
         })
     }
 
+    /// Geometry handed to the prefill-sized kernels.
+    fn prefill_geometry(&self) -> qwen4_exp_native_hc_prefill::Geometry {
+        prefill_geometry(self.layout)
+    }
+
     /// Registry key shared by every stretch of this residual.
     fn fuse_key(&self) -> [i64; 4] {
         residual_fuse_key(self.layout, self.eps)
@@ -438,6 +451,15 @@ impl Qwen4ExpGatedResidual {
 
     /// Grouped norm, compiled when the stretch is enabled and decode-sized.
     fn normalize_stretch(&self, packed: &MlxArray, rows: i32) -> Result<MlxArray> {
+        if let Some(normalized) = qwen4_exp_native_hc_prefill::norm(
+            self.prefill_geometry(),
+            packed,
+            &self.norm_gain,
+            self.eps,
+            rows,
+        ) {
+            return Ok(normalized);
+        }
         match qwen4_exp_fused::apply(
             Stretch::HcNorm,
             rows,
@@ -689,13 +711,22 @@ impl Qwen4ExpGatedResidual {
         let layout = self.layout;
         let up = qw_with_policy(low, &self.read_up, policy);
         let streams_f32 = cached_scalar(layout.stream_count as f32, MlxDtype::Float32);
-        let mean = match qwen4_exp_fused::apply(
-            Stretch::HcMix,
+        let native = qwen4_exp_native_hc_prefill::mix(
+            self.prefill_geometry(),
+            &up,
+            normalized,
+            self.eps,
             seq,
-            self.fuse_key(),
-            || mix_closure(layout),
-            &[&up, normalized, &streams_f32],
-        ) {
+        );
+        let mean = match native.or_else(|| {
+            qwen4_exp_fused::apply(
+                Stretch::HcMix,
+                seq,
+                self.fuse_key(),
+                || mix_closure(layout),
+                &[&up, normalized, &streams_f32],
+            )
+        }) {
             Some(mean) => mean,
             None => {
                 let gate = sigmoid_projection_dtype(&up);
@@ -773,6 +804,16 @@ impl Qwen4ExpResidualRead {
             });
         }
         ensure_floating("branch output", branch_output.dtype())?;
+        if let Some(written) = qwen4_exp_native_hc_prefill::write(
+            prefill_geometry(self.layout),
+            &self.residual,
+            &self.write_gate,
+            branch_output,
+            self.eps,
+            self.seq,
+        ) {
+            return Ok(written);
+        }
         if let Some(written) = qwen4_exp_fused::apply(
             Stretch::HcWrite,
             self.seq,

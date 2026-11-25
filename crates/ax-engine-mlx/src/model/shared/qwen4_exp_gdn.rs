@@ -894,6 +894,12 @@ impl Qwen4ExpGdn {
             None
         };
         #[cfg(test)]
+        let prefill = if crate::model::qwen4_exp::profiling::skip_stage("gdn_recurrence") {
+            Some((v.clone(), recurrent.clone()))
+        } else {
+            prefill
+        };
+        #[cfg(test)]
         let used_mlx_prefill = prefill.is_some();
         let (output, recurrent) = if let Some(prefill) = prefill {
             prefill

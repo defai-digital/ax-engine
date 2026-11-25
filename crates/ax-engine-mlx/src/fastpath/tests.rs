@@ -3711,6 +3711,10 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     expert_sort.prefill_expert_sort = false;
     push("expert_sort=0", expert_sort);
 
+    let mut moe_pad = base;
+    moe_pad.moe_prefill_pad = false;
+    push("moe_prefill_pad=0", moe_pad);
+
     let mut qsa_batched = base;
     qsa_batched.qsa_batched_attention = false;
     push("qsa_batched=0", qsa_batched);
@@ -3758,6 +3762,10 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     let mut gdn_mlx = base;
     gdn_mlx.flash_gdn_prefill_mlx = false;
     push("gdn_prefill_mlx=0", gdn_mlx);
+
+    let mut gdn_mlx_min = base;
+    gdn_mlx_min.flash_gdn_prefill_mlx_min_seq = Some(64);
+    push("gdn_prefill_mlx_min=64", gdn_mlx_min);
 
     let mut qwen_gdn = base;
     qwen_gdn.qwen_gdn_prefill_mlx = true;
@@ -4034,4 +4042,10 @@ fn fused_gdn_verify_width_admits_the_dflash2_block_independently_of_mtp_depth() 
     // A wider MTP depth is never narrowed.
     assert!(!qwen_linear_fused_gdn_verify_seq_contains_for(9, 8, false));
     assert!(qwen_linear_fused_gdn_verify_seq_contains_for(8, 8, false));
+}
+
+#[test]
+fn flash_next_gdn_prefill_mlx_floor_drops_only_on_neural_accelerator_hosts() {
+    assert_eq!(flash_next_gdn_prefill_mlx_default_min_seq(true), 32);
+    assert_eq!(flash_next_gdn_prefill_mlx_default_min_seq(false), 128);
 }
