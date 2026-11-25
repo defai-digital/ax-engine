@@ -45,10 +45,10 @@ not complete the workload.
 
 On the 27B, AX Engine's DFlash2 decode is ahead of Splash on this
 64-token harness and behind it on prefill and on 256-token outputs. On
-Flash Next, decode is level with oMLX, first text is ahead at 127 to 128
-input tokens and behind at 1,492 and on longer prompts.
+Flash Next, decode is level with oMLX; first text is ahead at 127 to 128
+input tokens, level at 1,492 and behind from about 3,000 tokens up.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
-[Flash Next first text by prompt length](docs/performance/flash-next-prefill-schedule-2026-11-25.md).
+[Flash Next first text by prompt length](docs/performance/flash-next-prefill-fused-stretches-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
 
@@ -77,8 +77,8 @@ input tokens and behind at 1,492 and on longer prompts.
 
 | Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
 | --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+c3ce06f7 (Direct greedy) † | 59.64 | 2299.74 | 0.23 | 0.83 |
-| oMLX 0.8.2 (Direct greedy) † | 59.35 | 3901.75 | 0.36 | 0.71 |
+| AX Engine 8.1.0+071e5477 (Direct greedy) † | 59.36 | 2837.63 | 0.22 | 0.70 |
+| oMLX 0.8.2 (Direct greedy) † | 59.39 | 4016.76 | 0.36 | 0.71 |
 | mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
 | MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
 | TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
