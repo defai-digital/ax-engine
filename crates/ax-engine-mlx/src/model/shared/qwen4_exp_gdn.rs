@@ -2246,6 +2246,63 @@ mod tests {
         }
     }
 
+    /// With the prefill-width switch on, a prefill forward runs every
+    /// compiled stretch and none of the native kernels, and reproduces the
+    /// eager bits. The fused arm enables all stretches, as a server does, and
+    /// the registry is not cleared between row counts: each closure serves
+    /// one row count, another, and the first again.
+    #[test]
+    fn fused_gdn_stretches_match_eager_at_prefill_rows() {
+        let module = synthetic_pack_geometry_with(MlxDtype::Bfloat16, GdnGateActivation::Silu);
+        let floor = qwen4_exp_fused::PREFILL_FUSE_MIN_ROWS;
+        qwen4_exp_fused::reset_registry_for_test();
+        for rows in [floor, 97, floor] {
+            let input = deterministic_input(
+                32,
+                rows,
+                case_seed(900 + rows as u64),
+                1.5,
+                MlxDtype::Bfloat16,
+            );
+            let (eager_output, eager_state) = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                run_forward(&module, &input, None)
+            };
+            let compiled_before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
+            let native_before = [Stretch::GdnNativeDecay, Stretch::GdnNativeQk]
+                .map(qwen4_exp_fused::applied_for_test);
+            let (fused_output, fused_state) = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                let _prefill = qwen4_exp_fused::force_prefill_rows_for_test(true);
+                run_forward(&module, &input, None)
+            };
+            for (stretch, before) in GDN_STRETCHES.iter().zip(compiled_before) {
+                assert!(
+                    qwen4_exp_fused::applied_for_test(*stretch) > before,
+                    "{stretch:?} must apply at rows={rows}",
+                );
+                assert!(!qwen4_exp_fused::tombstoned_for_test(*stretch));
+            }
+            for (stretch, before) in [Stretch::GdnNativeDecay, Stretch::GdnNativeQk]
+                .iter()
+                .zip(native_before)
+            {
+                assert_eq!(
+                    qwen4_exp_fused::applied_for_test(*stretch),
+                    before,
+                    "{stretch:?} must stay decode-only at rows={rows}",
+                );
+            }
+            assert_bit_identical(&fused_output, &eager_output, "output");
+            assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
+            assert_bit_identical(
+                &fused_state.recurrent,
+                &eager_state.recurrent,
+                "recurrent state",
+            );
+        }
+    }
+
     /// Prefill-sized inputs must skip the stretches entirely: eager bits, no
     /// applies, and no tombstone (the row gate is a skip, not a failure).
     #[test]

@@ -1437,6 +1437,48 @@ mod tests {
         }
     }
 
+    /// With the prefill-width switch on, a prefill-width read and write run
+    /// the compiled stretches and reproduce the eager bits. The registry is
+    /// not cleared between row counts or dtypes, so each closure serves one
+    /// row count, another, and the first again.
+    #[test]
+    fn prefill_width_inputs_fuse_bit_identically_when_switched_on() {
+        let fixture = residual_fixture();
+        let eager_module = residual_fixture_module();
+        let fused_module = residual_fixture_module();
+        let floor = qwen4_exp_fused::PREFILL_FUSE_MIN_ROWS;
+        qwen4_exp_fused::reset_registry_for_test();
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for rows in [floor, 97, floor] {
+                let rows = usize::try_from(rows).expect("positive rows");
+                let (packed, branch) = tiled_fixture_tensors(&fixture, dtype, rows);
+                let eager = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    read_write_bits(&eager_module, &packed, &branch)
+                };
+                let native_before = qwen4_exp_fused::applied_for_test(Stretch::HcNativeLowGate);
+                let before = applied_counts();
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    let _prefill = qwen4_exp_fused::force_prefill_rows_for_test(true);
+                    read_write_bits(&fused_module, &packed, &branch)
+                };
+                let applied = applied_deltas(before, applied_counts());
+                let case = format!("{dtype:?} at {rows} rows");
+                assert_read_write_identical(&eager, &fused, &case);
+                assert_eq!(
+                    qwen4_exp_fused::applied_for_test(Stretch::HcNativeLowGate),
+                    native_before,
+                    "the native kernel must stay decode-only for {case}"
+                );
+                for (stretch, applied) in HC_STRETCHES.into_iter().zip(applied) {
+                    assert!(applied >= 1, "{stretch:?} took the eager path for {case}");
+                    assert!(!qwen4_exp_fused::tombstoned_for_test(stretch));
+                }
+            }
+        }
+    }
+
     #[test]
     fn prefill_sized_inputs_never_fuse() {
         let fixture = residual_fixture();
