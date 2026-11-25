@@ -16,14 +16,19 @@ For fleet routing and orchestration, use
 [AX Serving](https://github.com/defai-digital/ax-serving).
 
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**. The Qwen 3.8 27B and Flash Next product scope is
+for Qwen 3.8 27B AXQ**. Install the macOS app with one curl command to
+download models, chat and serve OpenAI-compatible endpoints locally.
+
+[Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
+
+<a href="docs/images/ax-engine-macos-catalog.png"><img src="docs/images/ax-engine-macos-catalog.png" width="540" alt="AX Engine for macOS showing Qwen 3.8 27B and Flash Next models in the catalog with download buttons."></a>
+
+The Qwen 3.8 27B and Flash Next product scope is
 **MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
 The generic pinned selectors load MXFP4 MTP packs; the Qwen 3.8 27B MXFP8
 pack is a catalog Candidate and Flash Next MXFP8 remains an explicit preview.
 Standalone affine 4-bit and 8-bit and non-MTP variants for these two models
 are unsupported. MTP execution remains explicit opt-in until its gates pass.
-Install the macOS app with one curl command to download models, chat and serve
-OpenAI-compatible endpoints locally.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -38,8 +43,6 @@ Browse AutomatosX serve-ready chat / coding / embedding snapshots in the
 Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper,
 MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
-
-[Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
 
 ## Performance
 
