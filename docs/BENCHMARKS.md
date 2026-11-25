@@ -60,6 +60,7 @@ charts to imply a different model source.
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
 | How does AX MTP perform on the recommended local-agent targets and against 4-bit peer comparisons? | Prepare models with `ax-engine download-mtp`; run the MTP harness in `mtp` mode only | MTP-only artifact with per-model decode tok/s, prefill tok/s, TTFT, MTP accept rate, quantization lane, and model/package provenance |
 | What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
+| Did cold first-text latency regress at any prompt length? | `scripts/check_first_text_by_length.py measure` against a running server, then `compare --baseline` | `ax.first_text_by_length.v1` documents; [Flash Next M5 Max baseline](../benchmarks/results/flash-next-first-text-by-length-m5-20261125/README.md) |
 | How does Gemma 4 12B handle image/audio/video inputs? | `scripts/bench_gemma4_multimodal.py` plus `scripts/check_gemma4_multimodal_benchmark_artifact.py` | `ax.gemma4_multimodal_benchmark.v1` artifacts with native runtime prefill, OpenAI chat E2E latency, modality coverage, and fail-closed llama.cpp peer rows |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned

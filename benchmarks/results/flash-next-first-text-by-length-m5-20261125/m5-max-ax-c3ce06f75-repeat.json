@@ -1,0 +1,101 @@
+{
+  "schema": "ax.first_text_by_length.v1",
+  "label": "t20b",
+  "model": "peer-flash-next",
+  "api": "completions",
+  "repeats": 3,
+  "warmups": 3,
+  "run_id": "t1795635565164017000",
+  "rows": [
+    {
+      "sentences": 1,
+      "input_tokens": 59,
+      "first_text_seconds": [
+        0.21296,
+        0.210048,
+        0.210881
+      ],
+      "median_seconds": 0.210881
+    },
+    {
+      "sentences": 8,
+      "input_tokens": 150,
+      "first_text_seconds": [
+        0.229629,
+        0.225587,
+        0.226227
+      ],
+      "median_seconds": 0.226227
+    },
+    {
+      "sentences": 16,
+      "input_tokens": 255,
+      "first_text_seconds": [
+        0.261931,
+        0.260199,
+        0.260508
+      ],
+      "median_seconds": 0.260508
+    },
+    {
+      "sentences": 30,
+      "input_tokens": 437,
+      "first_text_seconds": [
+        0.348617,
+        0.343915,
+        0.343132
+      ],
+      "median_seconds": 0.343915
+    },
+    {
+      "sentences": 60,
+      "input_tokens": 827,
+      "first_text_seconds": [
+        0.520697,
+        0.516926,
+        0.517223
+      ],
+      "median_seconds": 0.517223
+    },
+    {
+      "sentences": 113,
+      "input_tokens": 1517,
+      "first_text_seconds": [
+        0.833915,
+        0.82989,
+        0.836294
+      ],
+      "median_seconds": 0.833915
+    },
+    {
+      "sentences": 170,
+      "input_tokens": 2258,
+      "first_text_seconds": [
+        1.393948,
+        1.381252,
+        1.383817
+      ],
+      "median_seconds": 1.383817
+    },
+    {
+      "sentences": 226,
+      "input_tokens": 2986,
+      "first_text_seconds": [
+        2.030576,
+        2.045497,
+        2.074245
+      ],
+      "median_seconds": 2.045497
+    },
+    {
+      "sentences": 340,
+      "input_tokens": 4468,
+      "first_text_seconds": [
+        3.5828,
+        3.579759,
+        3.633381
+      ],
+      "median_seconds": 3.5828
+    }
+  ]
+}

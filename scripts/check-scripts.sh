@@ -72,6 +72,8 @@ bash scripts/check-qa.sh
   scripts/test_simulate_mtp_verify_prefix.py \
   scripts/probe_hybrid_prefix_reuse.py \
   scripts/test_probe_hybrid_prefix_reuse.py \
+  scripts/check_first_text_by_length.py \
+  scripts/test_check_first_text_by_length.py \
   scripts/probe_agent_turn_reuse.py \
   scripts/test_probe_agent_turn_reuse.py \
   scripts/bench_ax_serving.py \
@@ -335,6 +337,7 @@ bash scripts/check-qa.sh
   scripts/test_simulate_dflash2_tree.py \
   scripts/test_simulate_mtp_verify_prefix.py \
   scripts/test_probe_hybrid_prefix_reuse.py \
+  scripts/test_check_first_text_by_length.py \
   scripts/test_probe_agent_turn_reuse.py \
   scripts/test_bench_ax_serving.py \
   scripts/test_observe_serving_cpu.py \
@@ -459,6 +462,7 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/test_smoke_compatible_models.py
 "$PYTHON_BIN" scripts/smoke_compatible_models.py --dry-run >/dev/null
 
+"$PYTHON_BIN" scripts/check_first_text_by_length.py --help >/dev/null
 "$PYTHON_BIN" -m unittest scripts/test_check_flash_next_peer_bench_plan.py
 "$PYTHON_BIN" scripts/check_flash_next_peer_bench_plan.py --dry-run
 
