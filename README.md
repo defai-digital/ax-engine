@@ -165,9 +165,10 @@ still depend on memory capacity and workload; see the
   OCR, and Whisper transcription/translation run through repo-owned MLX graphs
   with capability-gated OpenAI endpoints (checkpoint-authoritative; see media
   table below)
-- **Clear fleet boundary** — AX Engine owns local Apple Silicon inference;
-  [AX Serving](docs/AX-SERVING.md) owns fleet orchestration and NVIDIA/CUDA
-  workers
+- **Clear fleet boundary** — AX Engine owns local Apple Silicon inference.
+  [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start)
+  owns Linux CUDA inference.
+  [AX Serving](docs/AX-SERVING.md) owns fleet orchestration.
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
@@ -181,7 +182,9 @@ thread. `ax-engine-core` admits the request, plans a decode-first batch, and
 owns the paged KV ledger. `ax-engine-mlx` runs the graph, including DFlash2
 block drafting for eligible greedy Qwen text, MTP, n-gram acceleration,
 expert paging, and NAX attention on M5. Optional `mlx_lm.server` and llama.cpp
-adapters stay on the compatibility route.
+adapters stay on the compatibility route. Linux CUDA inference is
+[AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start).
+[AX Serving](docs/AX-SERVING.md) owns fleet routing.
 Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 ## Install AX Engine for macOS

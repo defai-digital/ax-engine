@@ -78,7 +78,7 @@
   <text x="652" y="742" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">owned execution path.</text>
 
   <text x="32" y="816" fill="#5c6b7a" font-family="Helvetica, Arial, sans-serif" font-size="13">Each loaded model keeps its own scheduler. A process arbiter rotates Metal turns.</text>
-  <text x="32" y="836" fill="#5c6b7a" font-family="Helvetica, Arial, sans-serif" font-size="13">AXQuant converts packs. AX Serving owns fleet routing and NVIDIA workers.</text>
+  <text x="32" y="836" fill="#5c6b7a" font-family="Helvetica, Arial, sans-serif" font-size="13">AXQuant converts packs. CUDA inference is AX Engine for SGLang. AX Serving owns fleet routing.</text>
 
   <text x="32" y="878" fill="#1b3a4b" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">NATIVE GENERATION WORKFLOW</text>
 
