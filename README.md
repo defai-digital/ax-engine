@@ -33,8 +33,8 @@ MiniCPM-V, and others) are documented under
 
 ## Performance
 
-Results are grouped by machine, then by model (Qwen 3.8 27B, then
-Qwen 3.8 Flash Next).
+Results are grouped by machine, then by model: Qwen 3.8 Flash Next,
+then Qwen 3.8 27B. Both published packs here are AXQ MXFP4.
 
 ### MacBook Pro M5 Max 128 GB
 
@@ -48,13 +48,29 @@ short and a long input, so it moves when either probe moves; the two
 latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
-On the 27B, AX Engine's DFlash2 decode is ahead of Splash on this
-64-token harness and behind it on prefill and on 256-token outputs. On
-Flash Next, decode is level with oMLX, first text is ahead at 127 to 128
-input tokens and behind at 1,492.
+On Flash Next, decode is level with oMLX, first text is ahead at 127 to
+128 input tokens and behind at 1,492. On the 27B, AX Engine's DFlash2
+decode is ahead of Splash on this 64-token harness and behind it on
+prefill and on 256-token outputs.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
+
+#### Qwen 3.8 Flash Next MXFP4
+
+![Qwen 3.8 Flash Next decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-modes.svg)
+
+| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
+| --- | ---: | ---: | ---: | ---: |
+| AX Engine 8.1.0+b04a5f2e (Direct greedy) † | 59.58 | 2217.08 | 0.29 | 0.91 |
+| oMLX 0.8.2 (Direct greedy) † | 59.31 | 3984.03 | 0.37 | 0.71 |
+| mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
+| MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
+| TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
+| ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
+| Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
+
+† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
 #### Qwen 3.8 27B MXFP4
 
@@ -72,22 +88,6 @@ input tokens and behind at 1,492.
 | TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
 | TensorFold 1.3.4 (DFlash2) | 0 | 0 | — | — |
 | ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
-
-† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
-
-#### Qwen 3.8 Flash Next MXFP4
-
-![Qwen 3.8 Flash Next decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-modes.svg)
-
-| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
-| --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+b04a5f2e (Direct greedy) † | 59.58 | 2217.08 | 0.29 | 0.91 |
-| oMLX 0.8.2 (Direct greedy) † | 59.31 | 3984.03 | 0.37 | 0.71 |
-| mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
-| MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
-| TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
-| ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
-| Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
 
 † Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
