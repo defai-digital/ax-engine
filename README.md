@@ -38,9 +38,16 @@ Each model uses a pinned pack and the same requests across engines.
 The 27B DFlash2 rows use identical drafter weights.
 
 **Decode** measures visible output after the first SSE text chunk.
-**Effective prefill** uses the first-text latency difference between
-short and long inputs. A zero means the tested configuration did not
-complete the workload.
+**Effective prefill** is the slope between the first-text latencies of a
+short and a long input, so it moves when either probe moves; the two
+latencies are listed beside it. A zero means the tested configuration did
+not complete the workload.
+
+On the 27B, AX Engine's DFlash2 decode is ahead of Splash on this
+64-token harness and behind it on prefill and on 256-token outputs. On
+Flash Next, decode is level with oMLX, first text is ahead at 127 to 128
+input tokens and behind at 1,492.
+[What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
 
@@ -48,32 +55,36 @@ complete the workload.
 
 ![Qwen 3.8 27B decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-27b-m5-modes.svg)
 
-| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) |
-| --- | ---: | ---: |
-| AX Engine 8.1.0 (Direct greedy) | 35.35 | 965.41 |
-| AX Engine 8.1.0 (DFlash2) | 82.83 | 895.73 |
-| Splash 1.7.0 (DFlash2) | 108.95 | 1292.85 |
-| oMLX 0.8.2 (Direct greedy) | 34.47 | 996.35 |
-| oMLX 0.8.2 (DFlash2) | 40.02 | 1027.14 |
-| mlx-lm 0.32.0 (Direct greedy) | 31.92 | 857.92 |
-| MTPLX 2.12.3 (Direct greedy) | 31.18 | 800.05 |
-| TensorFold 1.3.4 (Direct greedy) | 0 | 0 |
-| TensorFold 1.3.4 (DFlash2) | 0 | 0 |
-| ds4 19b3f501 (Direct greedy) | 0 | 0 |
+| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
+| --- | ---: | ---: | ---: | ---: |
+| AX Engine 8.1.0+b04a5f2e (Direct greedy) † | 35.35 | 972.50 | 0.23 | 1.63 |
+| AX Engine 8.1.0+b04a5f2e (DFlash2) † | 111.02 | 951.60 | 0.23 | 1.64 |
+| Splash 1.7.0 (DFlash2) † | 108.88 | 1321.38 | 0.17 | 1.19 |
+| oMLX 0.8.2 (Direct greedy) † | 34.55 | 1056.15 | 0.22 | 1.52 |
+| oMLX 0.8.2 (DFlash2) | 40.02 | 1027.14 | 0.30 | 1.65 |
+| mlx-lm 0.32.0 (Direct greedy) | 31.92 | 857.92 | 0.24 | 1.83 |
+| MTPLX 2.12.3 (Direct greedy) | 31.18 | 800.05 | 0.24 | 1.94 |
+| TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
+| TensorFold 1.3.4 (DFlash2) | 0 | 0 | — | — |
+| ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
+
+† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
 ### Qwen 3.8 Flash Next MXFP4
 
 ![Qwen 3.8 Flash Next decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-modes.svg)
 
-| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) |
-| --- | ---: | ---: |
-| AX Engine 8.1.0 (Direct greedy) | 50.94 | 3201.85 |
-| oMLX 0.8.2 (Direct greedy) | 59.01 | 2284.24 |
-| mlx-lm 0.32.0 (Direct greedy) | 0 | 0 |
-| MTPLX 2.12.3 (Direct greedy) | 0 | 0 |
-| TensorFold 1.3.4 (Direct greedy) | 0 | 0 |
-| ds4 19b3f501 (Direct greedy) | 0 | 0 |
-| Splash 1.7.0 (DFlash2) | 0 | 0 |
+| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
+| --- | ---: | ---: | ---: | ---: |
+| AX Engine 8.1.0+b04a5f2e (Direct greedy) † | 59.58 | 2217.08 | 0.29 | 0.91 |
+| oMLX 0.8.2 (Direct greedy) † | 59.31 | 3984.03 | 0.37 | 0.71 |
+| mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
+| MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
+| TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
+| ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
+| Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
+
+† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
 <!-- qwen38-m5-modes:end -->
 

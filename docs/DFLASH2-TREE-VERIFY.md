@@ -1,8 +1,9 @@
 # DFlash2 tree verify on Apple silicon: step 0 measurements
 
 The row-cost and block-size tables are historical measurements from branch
-`track-l-lattice-tree`. The current engine has an experimental tree
-verifier and separate packed-cohort controls.
+`track-l-lattice-tree`. The current engine verifies a draft tree in one
+target forward on M5 and later hosts and has separate packed-cohort
+controls.
 
 ## Current Qwen 3.8 27B MXFP4 controls
 
@@ -19,6 +20,66 @@ replay and reports graph build and evaluation time separately. Use a
 separate run for throughput measurements because the diagnostic adds a
 GPU synchronization point.
 [M5 serving and replay controls](../benchmarks/results/qwen-cross-engine-mlx-20261125/README.md#qwen-38-27b-dflash2).
+
+## One-forward draft tree
+
+A chain round stops at the first draft the target rejects, even when the
+drafter's second choice was right. A tree round verifies alternatives in
+the same forward. The solo drafter already scores 16 candidates per
+position and a 16 by 16 transition table between positions, so the tree
+costs no extra drafter work.
+
+- **Shape.** A Metal kernel grows the tree best first from that table.
+  A node's children are the next position's candidates scored by their
+  own logit plus the transition score from the node, at most four
+  children per node, and a child's score is its parent's score times its
+  share of that softmax. Rows are laid out in pre-order, so a node's
+  ancestors precede it and a row's depth is its position offset.
+- **Forward.** Full attention uses an ancestor mask and per-row RoPE
+  offsets. The gated-delta layers run a tree kernel that keeps one
+  recurrent state per depth and starts each row from its parent's state.
+- **Commit.** The target's greedy tokens pick one path. The K/V rows are
+  trimmed to that path and the path is replayed through the gated-delta
+  state, as after a partially accepted chain.
+
+`AX_MLX_DFLASH2_TREE_ROWS` sets the row count, anchor included (4 to 16;
+`0` keeps the chain). Unset, it is 8 rows where a NAX kernel serves the
+verify projections (M5 or later, including the pinned MLX 0.32.4 wheel
+through AX's `qmv_nax` port) and the chain elsewhere. The tree covers solo
+greedy rounds that verify the whole drafter block on the dense Qwen
+gated-delta stack. A cut window, a routed-expert model and a cohort keep
+the chain. `tree_rows` in each `dflash2_round` trace line is the row count
+of that round, or 0 for a chain round.
+
+The emitted tokens are the target's own greedy choices in both forms.
+Off-chain rows put their keys in another order, so sums can differ in the
+last bits and a near-tie can resolve differently than under the chain.
+
+MacBook Pro M5 Max 128 GB, Qwen 3.8 27B MXFP4, pinned MLX 0.32.4, greedy,
+interleaved arms of one binary:
+
+| Verify | 3 prompts x 2, 64 tokens (tok/s) | 7 prompts, 256 tokens (tok/s) | Eval per round (ms) |
+| --- | ---: | ---: | ---: |
+| Chain, 8 rows | 97.6 | 95.4 | 36.2 |
+| Tree, 8 rows | 111.6, 110.6, 111.3 | 101.2, 100.4 | 36.7 |
+| Tree, 10 rows | | 98.4 | 39.8 |
+| Tree, 16 rows | 108.4 | 102.8, 102.8 | 41.1 |
+
+The tree rows include the draft-head subset (`AX_MLX_DFLASH2_HEAD_SUBSET`);
+an 8-row tree with the whole head measured 108.1 tok/s on the 64-token
+workload, and the chain with the subset 100.0. Accepted tokens per round
+over the seven 256-token prompts are 4.1 for the chain, 4.4 at 8 rows and
+5.0 at 16 rows. Rows 9 to 16 cost 3 to 4 ms more per round, because the LM
+head and attention leave their 8-row kernels and the projections read a
+second row tile, which takes back most of what the wider tree accepts.
+That is why the default is 8 rows.
+
+To price another tree shape before writing a kernel, record candidate
+tables with `AX_MLX_DFLASH2_CANDIDATE_TRACE=<path>` and replay them:
+
+```bash
+python3 scripts/simulate_dflash2_tree.py <trace.jsonl> --rows 8 12 16 --children 2 4
+```
 
 ## Historical experiments
 
@@ -93,6 +154,9 @@ MLX 0.32.5 end to end at block 8: code 144-150, math 118-122, chat 65-67 tok/s (
 81-88, 53-55); plain decoding 32-34 tok/s on both.
 
 ## Decision
+
+The decision below predates the one-forward tree above and AX's own
+`qmv_nax` port, which removed the dependence on MLX 0.32.5.
 
 - A Metal 16-node tree verify is worth building, **on MLX 0.32.5 or later only**: there it costs the
   same as today's 8-row chain verify, so the B200 gain (1.14-1.42x in accepted tokens per verify)
