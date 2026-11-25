@@ -3,7 +3,6 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/defai-digital/ax-engine/ci.yml?branch=main&label=CI)](https://github.com/defai-digital/ax-engine/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/ax-engine?label=PyPI)](https://pypi.org/project/ax-engine/)
 [![macOS](https://img.shields.io/badge/macOS-arm64-000000?logo=apple&logoColor=white)](#install-ax-engine-for-macos)
-[![Metal](https://img.shields.io/badge/Metal-000000?logo=apple&logoColor=white)](docs/MLX-BACKEND.md)
 [![MLX](https://img.shields.io/badge/MLX-000000?logo=apple&logoColor=white)](docs/MLX-BACKEND.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -197,8 +196,8 @@ Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 ## Install AX Engine for macOS
 
 Use the curl installer on **Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort), macOS 26.2 or newer**.
-It installs **AX Engine.app with its native inference runtime bundled**. You do
-not need Homebrew, Python, Xcode or a Hugging Face account for public models.
+It installs **AX Engine.app**, the native SwiftUI desktop app with the Rust/MLX
+inference runtime bundled. Public model downloads work directly from the app.
 Quit AX Engine before installing or upgrading, then run in Terminal:
 
 ```bash
@@ -237,18 +236,23 @@ for usage and [distribution guide](docs/MACOS-DISTRIBUTION.md) for release verif
 
 ## Advanced: CLI and Python installation
 
-The curl command above is the end-user app installation path. The channels below
-are for shell automation, direct API serving or Python development; they do not
-install the GUI app. Native CLI packages require Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort)
-and macOS 26.2 or later.
-
 | Goal | Channel |
 | --- | --- |
-| Python SDK and CLI in one environment | [pip](#install-with-pip-no-homebrew-needed) |
+| Download models, chat, and start a local server from the desktop | [macOS app via curl](#install-ax-engine-for-macos) |
+| Import `ax_engine` for in-process inference or use Python integrations | [Python wheel via pip](#install-with-pip-no-homebrew-needed) |
+| Call a running AX Engine server from any language | [OpenAI-compatible HTTP client](docs/API-COMPATIBILITY.md) |
 | CLI/server without Homebrew or the Python SDK | [Standalone archive](#standalone-download-no-homebrew-no-python-sdk) |
 | CLI/server managed by Homebrew | [Homebrew](#homebrew) |
 
+Native CLI packages require Apple Silicon (M5 or later recommended, M3–M4
+supported, M2 best-effort) and macOS 26.2 or later.
+
 ### Install with pip (no Homebrew needed)
+
+The PyPI wheel lets a Python project pin the [Python SDK](docs/sdk/python.md)
+and bundled runtime in its virtual environment. Use it for in-process inference,
+Python integrations such as LangChain, or automation that needs the bundled CLI
+and server. An HTTP-only client can connect directly to a running server.
 
 1. Install Python from the official macOS installer: open
    [python.org/downloads/macos](https://www.python.org/downloads/macos/),
