@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 240" role="img" aria-label="AX Engine">
+  <rect width="1200" height="240" rx="28" fill="#F9FCF3"/>
+  <g transform="translate(203.3 -82.5) scale(0.1978)">
+    <rect x="580" y="569" width="137" height="910" fill="#37B67C"/>
+    <rect x="816" y="959" width="415" height="131" fill="#272B36"/>
+    <rect x="1333" y="571" width="132" height="906" fill="#272B36"/>
+  </g>
+  <text x="525" y="120" fill="#272B36" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="64" font-weight="600" dominant-baseline="middle">AX Engine</text>
+</svg>

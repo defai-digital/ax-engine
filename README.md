@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="docs/images/ax-engine-icon.png" width="128" alt="">
-</p>
+<div align="center">
+
+<img src="docs/images/ax-engine-banner.svg" alt="AX Engine" width="100%">
 
 # AX Engine
 
@@ -9,6 +9,8 @@
 [![macOS](https://img.shields.io/badge/macOS-arm64-000000?logo=apple&logoColor=white)](#install-ax-engine-for-macos)
 [![MLX](https://img.shields.io/badge/MLX-000000?logo=apple&logoColor=white)](docs/MLX-BACKEND.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+</div>
 
 **Using NVIDIA GPUs on Linux?** Use the CUDA edition,
 [AX Engine for SGLang (`ax-engine-sglang`)](https://github.com/defai-digital/ax-engine-sglang#quick-start).
