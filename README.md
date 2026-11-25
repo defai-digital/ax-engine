@@ -3,6 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/defai-digital/ax-engine/ci.yml?branch=main&label=CI)](https://github.com/defai-digital/ax-engine/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/ax-engine?label=PyPI)](https://pypi.org/project/ax-engine/)
 [![macOS](https://img.shields.io/badge/macOS-arm64-000000?logo=apple&logoColor=white)](#install-ax-engine-for-macos)
+[![Metal](https://img.shields.io/badge/Metal-MLX-000000?logo=apple&logoColor=white)](docs/MLX-BACKEND.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 **Using NVIDIA GPUs on Linux?** Use the CUDA edition,
