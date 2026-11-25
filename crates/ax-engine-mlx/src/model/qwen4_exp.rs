@@ -1163,6 +1163,13 @@ impl<'a> PreparedForward<'a> {
             })
             .unwrap_or(weights.layers.len());
         let offset = next.position;
+        // A one-row decode step hands finished layers to the GPU while the
+        // host is still building the rest of the graph.
+        let eager_dispatch = if tokens.len() == 1 {
+            crate::fastpath::flash_next_eager_dispatch_layers()
+        } else {
+            0
+        };
         // Image requests rotate attention and QSA keys at their MRoPE positions.
         let _media_scope = crate::qwen4_exp_qsa::scoped_media(next.media.clone());
         #[cfg(test)]
@@ -1291,6 +1298,10 @@ impl<'a> PreparedForward<'a> {
             hidden = read.write(&delta).map_err(|e| e.to_string())?;
             #[cfg(test)]
             profiling::mark("mlp_hc_write", &[&hidden]);
+            if eager_dispatch > 0 && (index + 1) % eager_dispatch == 0 && index + 1 < layer_end {
+                mlx_sys::try_async_eval(&[&hidden])
+                    .map_err(|e| format!("qwen4_exp layer {index} dispatch failed: {e}"))?;
+            }
         }
         if layer_end < weights.layers.len() {
             let mut arrays = next.arrays();

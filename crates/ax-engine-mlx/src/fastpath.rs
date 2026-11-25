@@ -159,6 +159,24 @@ pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
 }
 
+/// Flash Next submits the layers built so far to the GPU every this many
+/// layers of a one-row decode step, without waiting, so the GPU computes the
+/// early layers while the host builds the rest of the graph. The arrays and
+/// what they compute are unchanged. **Default: every 3 layers.** M5 Max,
+/// MXFP4 pack, 3 prompts x 2 at 64 tokens: 51.6 -> 57.0 tok/s, identical text;
+/// cadences of 1, 3 and 6 layers measured 57.1 / 57.0 / 56.7.
+/// `AX_FLASH_NEXT_EAGER_DISPATCH=0` keeps the single submit at the end of the
+/// step; another number sets the cadence.
+pub(crate) fn flash_next_eager_dispatch_layers() -> usize {
+    static LAYERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LAYERS.get_or_init(|| {
+        std::env::var("AX_FLASH_NEXT_EAGER_DISPATCH")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(3)
+    })
+}
+
 /// Flash Next keeps the QSA K/V history as a sealed prefix plus a short tail
 /// so a decode step copies only the tail. Kill switch:
 /// `AX_FLASH_NEXT_KV_SEGMENTS=0`.
@@ -2116,6 +2134,44 @@ env_flag!(
     dflash2_profile_replay_enabled,
     "AX_MLX_DFLASH2_PROFILE_REPLAY"
 );
+
+/// `AX_MLX_DFLASH2_CANDIDATE_TRACE=<path>`: append JSON lines to `<path>` for
+/// the offline tree-verify simulator (`scripts/simulate_dflash2_tree.py`):
+/// per solo DFlash2 draft, every position's top-k candidates, their drafter
+/// logits and the selector's edge score for every pair of consecutive
+/// candidates; per committed round, the tokens it emitted. Capture only: the
+/// drafted chain and the committed tokens are unchanged. Costs one small
+/// extra evaluation and host read per round. **Default: unset (off).** Read
+/// once per process.
+pub(crate) fn dflash2_candidate_trace_path() -> Option<&'static str> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("AX_MLX_DFLASH2_CANDIDATE_TRACE")
+                .ok()
+                .map(|raw| raw.trim().to_owned())
+                .filter(|path| !path.is_empty())
+        })
+        .as_deref()
+}
+
+/// `AX_MLX_DFLASH2_TRACE_ACCEPT_CAP=<n>`: measurement aid for
+/// `AX_MLX_DFLASH2_CANDIDATE_TRACE`. A solo linear DFlash2 round commits at
+/// most `n` drafts, as if draft `n` had been rejected; `0` makes every round
+/// emit only the target's own token, so the next round drafts from the very
+/// next output position and one run records a draft at every position. The
+/// emitted tokens are still the target's choices, but decoding is much slower
+/// (up to one verify round per token). The window policy and the hand-off keep
+/// reading the uncapped match count, so the request stays on DFlash2.
+/// **Default: unset (no cap).** Read once per process.
+pub(crate) fn dflash2_trace_accept_cap() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_TRACE_ACCEPT_CAP")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+    })
+}
 
 /// `AX_MLX_DFLASH2_BLOCK`: experimental. Draft and verify this many rows per
 /// round (anchor plus drafts, 4 to 32) instead of the block size the drafter

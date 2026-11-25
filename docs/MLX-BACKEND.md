@@ -28,9 +28,10 @@ The build rejects a different header or dylib version. Admission evidence is in
 
 ### Running an unreleased MLX locally
 
-The M5+ NAX verify kernels need MLX 0.32.5 (commit `914732419`), which is not
-on PyPI yet. Published installs stay on the pinned wheel, where those paths
-are off. To use them on your own M5 or later Mac (macOS 26.2+, Xcode
+The full set of M5+ NAX verify kernels needs MLX 0.32.5 (commit `914732419`),
+which is not on PyPI yet. On the pinned wheel, AX's own port of the MX-format
+`qmv_nax` kernel (`AX_MLX_MTP_VERIFY_QMM_NAX_PORT`) covers MXFP4/MXFP8 verify
+projections; the affine `qmv_nax` and native verify SDPA paths stay off. To use them on your own M5 or later Mac (macOS 26.2+, Xcode
 installed), build MLX from source and link AX against it:
 
 ```sh
@@ -376,6 +377,7 @@ what the kill switch restores.
 | `AX_MLX_DFLASH2_FUSED_CONV` | on | Runs the DFlash2 drafter's grouped dynamic convolution as one Metal kernel instead of a chain of slice, multiply and add ops; same values as the op chain (tested), about 0.2 ms per draft on the M5 Max. `0` restores the op chain. |
 | `AX_MLX_PREFIX_LIVE_SNAPSHOT` | on | On linear-attention models (Qwen 3.5/3.8 hybrids), the in-memory prefix store keeps a clone of the live cache instead of serializing it, and stores the end-of-prompt state for exact greedy replays. A hit then skips the deserialize and the partial-block replay (25K-token replay TTFT 39 ms instead of 190-270 ms on the M5 Max). The disk mirror still serializes. `0` restores serialized snapshots. |
 | `AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS` | 6 | On M5 or later (macOS 26.2+) with MLX 0.32.5 or newer, verify projections of at least this many rows (up to 8) use stock NAX QMM instead of AX's verify kernels. MXFP4/MXFP8 heads 100K or wider and affine 8-bit keep AX's kernels. `0` keeps AX's kernels for every row count. Inert on other hosts and older MLX. See [the 914732419 record](performance/mlx-nax-914732419-2026-11-02.md). |
+| `AX_MLX_MTP_VERIFY_QMM_NAX_PORT` | on | On M5 or later (macOS 26.2+) when the linked MLX has no `qmv_nax` (the pinned 0.32.4 wheel), MXFP4/MXFP8 verify projections of 6-16 rows use AX's port of MLX 914732419's `fp_qmv_nax` ([ADR-053 notice](../THIRD_PARTY_NOTICES)) after a passing load-time probe against stock QMM, and the DFlash2 window uses the NAX round cost. Affine projections keep AX's kernels. `0` turns the port off. Inert on M4 and earlier and when stock `qmv_nax` is present. |
 | `AX_MLX_MTP_VERIFY_QMM_NAX_PAD` | off | With the hand-off above active, pads 3 to 5 verify rows with zero rows to the cut-over and runs stock NAX QMM. `1` opts in; it ties on code and loses 3-6% on prose. |
 | `AX_MLX_NAX_VERIFY_NATIVE_SDPA` | on | On M5 or later with MLX 0.32.5 or newer, a relaxed target verify (DFlash2, relaxed MTP) runs the whole 2 to 8 row window through native SDPA (NAX `sdpa_split`) instead of per-row singleton SDPA and the f32 upcast. Exact profiles keep the fold. `0` restores the fold. |
 | `AX_MLX_DFLASH2_BF16` | off | Keeps the drafter in bf16. Unset quantizes its large matrices to MXFP4 at load. |

@@ -20,13 +20,15 @@
 //! Unset or `0` keeps the linear path.
 
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use mlx_sys::{MlxArray, MlxDtype, argmax, astype, concatenate, contiguous, reshape, slice};
 
 use super::*;
-use crate::dflash2::{Dflash2Drafter, Dflash2Weights, HandoffCosts};
+use crate::dflash2::{CandidateTraceCapture, Dflash2Drafter, Dflash2Weights, HandoffCosts};
 use crate::fastpath::dflash2_logit_probe;
 use crate::model::layer_capture;
 
@@ -156,6 +158,9 @@ pub(super) struct Dflash2RequestState {
     /// round's commit returned.
     trace_entry: Option<Instant>,
     trace_last_end: Option<Instant>,
+    /// Candidate trace: cache length the last traced round left. A round that
+    /// starts anywhere else opens a new trace segment.
+    trace_next_offset: Option<usize>,
     pub(super) rounds: u32,
     pub(super) drafted: u32,
     pub(super) accepted: u32,
@@ -190,6 +195,7 @@ impl Dflash2RequestState {
             predraft: None,
             trace_entry: None,
             trace_last_end: None,
+            trace_next_offset: None,
             rounds: 0,
             drafted: 0,
             accepted: 0,
@@ -278,6 +284,7 @@ impl Dflash2RequestState {
         self.predraft = None;
         self.trace_entry = None;
         self.trace_last_end = None;
+        self.trace_next_offset = None;
         self.tree_nodes_verified = 0;
         self.tree_accepted_length = 0;
         self.tree_branch_chosen = 0;
@@ -337,7 +344,7 @@ fn round_cost_ms_classic(window: usize) -> f64 {
 }
 
 /// The same round on M5 or later with the NAX verify hand-off
-/// (`verify_qmm::nax_stock_handoff_active`): stock NAX QMM serves 6..=8 rows
+/// (`verify_qmm::nax_verify_handoff_active`): NAX QMM serves 6..=8 rows
 /// for about the cost of four. Measured on the M5 Max, 27B MXFP4, MLX 0.32.5,
 /// pinned windows over 7 prompts: 39.2 ms at four rows, 42.1 at six and 43.0
 /// at eight; pinned eight then decoded 1.31x pinned four and 1.10x the
@@ -346,27 +353,68 @@ fn round_cost_ms_nax(window: usize) -> f64 {
     39.2 + 0.95 * window.saturating_sub(4) as f64
 }
 
-/// Whether a dense target verifies the whole drafter block every round.
-///
-/// With the NAX verify hand-off a dense target's round costs about the same at
-/// any window: on the M5 Max, 27B MXFP4, MLX 0.32.5, the adaptive policy's
-/// 4-5 row prose rounds took 43.6-47.5 ms against 45.1 ms for eight rows (the
-/// 2-5 row routes are slower than stock NAX at 6-8), so narrowing only lost
-/// accepted tokens. Pinning eight rows decoded the 17-prompt suite 2.6%
-/// faster (prose 70.7 -> 73.1 tok/s, code 155.2 -> 158.9). MoE targets route
-/// experts per row and keep the adaptive window.
-fn dense_full_window(moe_expert_count: usize) -> bool {
-    moe_expert_count == 0
-        && crate::fastpath::dflash2_dense_full_window_enabled()
-        && crate::model::shared::verify_qmm::nax_stock_handoff_active()
+/// The same round where AX's port of `qmv_nax` serves the projections on an
+/// MLX without its own (the 0.32.4 wheel). Measured on the M5 Max, 27B MXFP4,
+/// pinned windows over 3 prompts x 2, whole round: 36.7 ms at three rows, 39.0
+/// at four, 39.6 at five, 40.2 at six, 40.5 at seven and 40.8 at eight. Rows
+/// past eight are extrapolated.
+fn round_cost_ms_nax_port(window: usize) -> f64 {
+    match window {
+        0..=3 => 36.7,
+        _ => 39.0 + 0.47 * window.saturating_sub(4) as f64,
+    }
 }
 
-/// Round cost on this host: the NAX fit where the hand-off is active.
+/// Which measured round-cost curve a target's verify follows on this host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VerifyCost {
+    /// AX's verify kernels at every row count.
+    Classic,
+    /// Stock MLX NAX QMM and NAX verify attention (MLX 0.32.5+ on M5+).
+    Nax,
+    /// AX's `qmv_nax` port for the projections, AX's verify attention.
+    NaxPort,
+}
+
+/// Whether a dense target verifies the whole drafter block every round.
+///
+/// With the stock NAX verify hand-offs a dense target's round costs about the
+/// same at any window: on the M5 Max, 27B MXFP4, MLX 0.32.5, the adaptive
+/// policy's 4-5 row prose rounds took 43.6-47.5 ms against 45.1 ms for eight
+/// rows (the 2-5 row routes are slower than stock NAX at 6-8), so narrowing
+/// only lost accepted tokens. Pinning eight rows decoded the 17-prompt suite
+/// 2.6% faster (prose 70.7 -> 73.1 tok/s, code 155.2 -> 158.9). MoE targets
+/// route experts per row and keep the adaptive window. AX's port is flatter
+/// still (eight rows cost 4.7% more than four), and pinning eight rows there
+/// decoded 3 prompts x 2 5% faster than the adaptive policy (97.2 against
+/// 92.5 tok/s).
+fn dense_full_window(moe_expert_count: usize, cost: VerifyCost) -> bool {
+    moe_expert_count == 0
+        && crate::fastpath::dflash2_dense_full_window_enabled()
+        && cost != VerifyCost::Classic
+}
+
+/// Round cost on this host for a target every hand-off serves.
+#[cfg(test)]
 fn round_cost_ms(window: usize) -> f64 {
-    if crate::model::shared::verify_qmm::nax_stock_handoff_active() {
-        round_cost_ms_nax(window)
-    } else {
-        round_cost_ms_classic(window)
+    use crate::model::shared::verify_qmm;
+    let cost = match (
+        verify_qmm::nax_verify_handoff_active(),
+        verify_qmm::nax_verify_handoff_is_port(),
+    ) {
+        (false, _) => VerifyCost::Classic,
+        (true, false) => VerifyCost::Nax,
+        (true, true) => VerifyCost::NaxPort,
+    };
+    round_cost_ms_for(cost, window)
+}
+
+/// Round cost of a `window`-row verify on the given curve.
+fn round_cost_ms_for(cost: VerifyCost, window: usize) -> f64 {
+    match cost {
+        VerifyCost::Classic => round_cost_ms_classic(window),
+        VerifyCost::Nax => round_cost_ms_nax(window),
+        VerifyCost::NaxPort => round_cost_ms_nax_port(window),
     }
 }
 
@@ -771,6 +819,8 @@ pub(super) struct Dflash2PreDraft {
     drafted: MlxArray,
     cursor: crate::dflash2::DrafterCursor,
     draft_wall_us: u32,
+    /// Candidate trace only: the draft's candidate table.
+    candidates: Option<CandidateTraceCapture>,
 }
 
 /// `AX_MLX_DFLASH2_ROUND_TRACE=1`: one stderr line per DFlash2 round with the
@@ -830,6 +880,8 @@ pub(super) struct Dflash2StagedVerify {
     drafts: Vec<u32>,
     hidden_all: MlxArray,
     post_norm: Option<MlxArray>,
+    /// Candidate trace only: the candidate table of a solo draft.
+    candidates: Option<CandidateTraceCapture>,
 }
 
 fn clear_mtp_proposal_after_dflash2_round(state: &mut RequestState) {
@@ -907,6 +959,132 @@ fn cut_at_think_entry(tokens: &mut Vec<u32>, accepted: usize, think_start: Optio
 /// past the cut. The emitted count is one higher (the target's bonus token).
 fn committed_draft_count(pre_cut_accepted: usize, keep: usize) -> usize {
     keep.saturating_sub(1).min(pre_cut_accepted)
+}
+
+/// `AX_MLX_DFLASH2_TRACE_ACCEPT_CAP`: keeps at most `cap` accepted drafts of a
+/// greedy walk (`tokens`: the accepted drafts, then the target's token) and
+/// returns the new accepted count. An accepted draft is the target's choice
+/// for its row, so the token left at the cut is still the target's own and
+/// the round commits as if draft `cap` had been rejected.
+fn cap_accepted_drafts(tokens: &mut Vec<u32>, accepted: usize, cap: Option<usize>) -> usize {
+    match cap {
+        Some(cap) if accepted > cap => {
+            tokens.truncate(cap + 1);
+            cap
+        }
+        _ => accepted,
+    }
+}
+
+/// The `{"kind":"commit",...}` line of `AX_MLX_DFLASH2_CANDIDATE_TRACE`,
+/// without a newline: the tokens a round emitted in order, how many of them
+/// are committed drafts, how many drafts the verify matched before any cut,
+/// and the rows it verified.
+fn candidate_trace_commit_line(
+    request: u64,
+    tokens: &[u32],
+    accepted_drafts: usize,
+    matched_drafts: usize,
+    window: usize,
+) -> String {
+    let tokens = tokens
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"kind\":\"commit\",\"request\":{request},\"tokens\":[{tokens}],\
+         \"accepted_drafts\":{accepted_drafts},\"matched_drafts\":{matched_drafts},\
+         \"window\":{window}}}"
+    )
+}
+
+/// The append-mode file of `AX_MLX_DFLASH2_CANDIDATE_TRACE`, opened on the
+/// first traced round. `None` when it cannot be opened (logged once).
+fn candidate_trace_file(path: &str) -> Option<&'static Mutex<std::fs::File>> {
+    static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    FILE.get_or_init(|| {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => Some(Mutex::new(file)),
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::dflash2",
+                    path,
+                    %error,
+                    "cannot open AX_MLX_DFLASH2_CANDIDATE_TRACE; tracing is off"
+                );
+                None
+            }
+        }
+    })
+    .as_ref()
+}
+
+/// Logs the first candidate-trace failure of the process; later ones are
+/// dropped. A trace failure never affects decoding.
+fn warn_candidate_trace_once(error: &dyn std::fmt::Display) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            target: "ax_engine_mlx::dflash2",
+            %error,
+            "AX_MLX_DFLASH2_CANDIDATE_TRACE record failed; later failures are not logged"
+        );
+    }
+}
+
+/// Appends one committed round to the candidate trace as one write: a
+/// `request_start` line when the round does not continue the request's
+/// previous traced round, the draft's candidate table when the round has one
+/// (solo drafts), and the commit line.
+#[allow(clippy::too_many_arguments)]
+fn record_candidate_trace_round(
+    path: &str,
+    request: u64,
+    segment_start: bool,
+    candidates: Option<&CandidateTraceCapture>,
+    tokens: &[u32],
+    accepted_drafts: usize,
+    matched_drafts: usize,
+    window: usize,
+) {
+    let Some(file) = candidate_trace_file(path) else {
+        return;
+    };
+    let mut lines = String::new();
+    if segment_start {
+        lines.push_str(&format!(
+            "{{\"kind\":\"request_start\",\"request\":{request}}}\n"
+        ));
+    }
+    match candidates.map(CandidateTraceCapture::read) {
+        Some(Ok(record)) => {
+            lines.push_str(&record.json_line(request));
+            lines.push('\n');
+        }
+        Some(Err(error)) => warn_candidate_trace_once(&error),
+        None => {}
+    }
+    lines.push_str(&candidate_trace_commit_line(
+        request,
+        tokens,
+        accepted_drafts,
+        matched_drafts,
+        window,
+    ));
+    lines.push('\n');
+    match file.lock() {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(lines.as_bytes()) {
+                warn_candidate_trace_once(&error);
+            }
+        }
+        Err(error) => warn_candidate_trace_once(&error),
+    }
 }
 
 fn cohort_predraft_anchor(
@@ -1380,7 +1558,7 @@ impl MlxRunner {
             Self::take_dflash2_predraft(state, &plan)
         };
         let was_predrafted = predrafted.is_some();
-        let (draft_arr, cursor, draft_wall_us) = match predrafted {
+        let (draft_arr, cursor, draft_wall_us, candidates) = match predrafted {
             Some(predrafted) => predrafted,
             None => {
                 let dflash = state.dflash2.as_mut()?;
@@ -1423,7 +1601,8 @@ impl MlxRunner {
                     dflash.park_for_retry(handoff_target);
                     return decline("draft submission failed");
                 }
-                (draft_arr, cursor, elapsed_us(draft_started))
+                let candidates = dflash.drafter.take_candidate_trace();
+                (draft_arr, cursor, elapsed_us(draft_started), candidates)
             }
         };
 
@@ -1560,6 +1739,7 @@ impl MlxRunner {
             drafts: drafts_owned,
             hidden_all,
             post_norm: keep_post_norm.then_some(post_norm),
+            candidates,
         };
         self.commit_dflash2_round(state, staged, options)
     }
@@ -1658,13 +1838,48 @@ impl MlxRunner {
         })
     }
 
+    /// The round-cost curve of this target's verify: the NAX curves apply
+    /// when the hand-off (stock MLX `qmv_nax`, or AX's port for MX-format
+    /// packs) serves its projections. The port leaves affine projections on
+    /// AX's kernels, where the classic curve still holds.
+    fn dflash2_verify_cost(&self) -> VerifyCost {
+        use crate::model::shared::verify_qmm;
+        if !verify_qmm::nax_verify_handoff_active() {
+            return VerifyCost::Classic;
+        }
+        if !verify_qmm::nax_verify_handoff_is_port() {
+            return VerifyCost::Nax;
+        }
+        // Every layer's output projection must take the port, or part of the
+        // forward still pays the classic per-row cost.
+        let mut projections = self
+            .weights
+            .layers
+            .iter()
+            .filter_map(|layer| layer.down_proj.as_ref().or(layer.o_proj.as_ref()))
+            .peekable();
+        if projections.peek().is_some() && projections.all(verify_qmm::nax_verify_handoff_serves) {
+            VerifyCost::NaxPort
+        } else {
+            VerifyCost::Classic
+        }
+    }
+
     /// Verify window a round at this point would take: pinned, the dense full
     /// block, or the policy's pick for the request's acceptance so far.
     fn dflash2_next_window(&self, dflash: &Dflash2RequestState, block: usize) -> usize {
         match crate::fastpath::dflash2_window_override() {
             Some(rows) => pinned_window(rows, block),
-            None if dense_full_window(self.cfg.moe_expert_count) => block,
-            None => dflash.window_stats.best_window(block, round_cost_ms),
+            None => {
+                let cost = self.dflash2_verify_cost();
+                if dense_full_window(self.cfg.moe_expert_count, cost) {
+                    block
+                } else {
+                    dflash
+                        .window_stats
+                        .best_window(block, |window| round_cost_ms_for(cost, window))
+                }
+            }
         }
     }
 
@@ -1714,21 +1929,32 @@ impl MlxRunner {
             drafted,
             cursor,
             draft_wall_us: elapsed_us(started),
+            candidates: dflash.drafter.take_candidate_trace(),
         });
     }
 
     /// Takes the pre-draft that matches `plan`, cut to its window; any other
-    /// pre-draft is rolled back. Returns the window ids, the pre-draft cursor
-    /// and its build time.
+    /// pre-draft is rolled back. Returns the window ids, the pre-draft cursor,
+    /// its build time and (candidate trace only) its candidate table.
     fn take_dflash2_predraft(
         state: &mut RequestState,
         plan: &Dflash2RoundPlan,
-    ) -> Option<(MlxArray, crate::dflash2::DrafterCursor, u32)> {
+    ) -> Option<(
+        MlxArray,
+        crate::dflash2::DrafterCursor,
+        u32,
+        Option<CandidateTraceCapture>,
+    )> {
         let dflash = state.dflash2.as_mut()?;
         let predraft = dflash.predraft.take()?;
         if predraft.primary == plan.primary && predraft.token_offset == plan.token_offset {
             let ids = dflash2_window_ids(&predraft.drafted, plan.window);
-            Some((ids, predraft.cursor, predraft.draft_wall_us))
+            Some((
+                ids,
+                predraft.cursor,
+                predraft.draft_wall_us,
+                predraft.candidates,
+            ))
         } else {
             dflash.restore_drafter_cursor(predraft.cursor);
             None
@@ -1758,6 +1984,7 @@ impl MlxRunner {
             drafts: drafts_owned,
             hidden_all,
             post_norm,
+            candidates,
         } = staged;
         let Dflash2RoundPlan {
             primary,
@@ -1783,6 +2010,19 @@ impl MlxRunner {
             }
             return None;
         };
+        // Measurement aid (solo rounds): commit fewer drafts than the verify
+        // matched. Everything below sees a round whose draft `cap` missed.
+        let matched_drafts = accepted;
+        let accepted = if cohort_lanes == 1 {
+            cap_accepted_drafts(
+                &mut new_tokens,
+                accepted,
+                crate::fastpath::dflash2_trace_accept_cap(),
+            )
+        } else {
+            accepted
+        };
+        let accept_capped = accepted < matched_drafts;
         let think_start = self
             .cfg
             .think_start_token_id
@@ -1917,7 +2157,14 @@ impl MlxRunner {
             dflash.stint_rounds += 1;
             dflash.drafted += drafts.len() as u32;
             dflash.accepted += committed_drafts as u32;
-            dflash.window_stats.record(drafts.len(), committed_drafts);
+            // A capped round still tells the window policy and the hand-off
+            // what the verify matched, so the request stays on DFlash2.
+            let observed_drafts = if accept_capped {
+                matched_drafts
+            } else {
+                committed_drafts
+            };
+            dflash.window_stats.record(drafts.len(), observed_drafts);
         }
         // A draft made before this route took over (the MTP head's first
         // proposal) no longer matches the position.
@@ -1938,6 +2185,25 @@ impl MlxRunner {
         // The budget and terminal cuts already happened. This latches the
         // last emitted token for the next step.
         let tokens = apply_decode_result(state, &emitted, options.terminal_token_ids);
+        if let Some(path) = crate::fastpath::dflash2_candidate_trace_path() {
+            let continues = state
+                .dflash2
+                .as_ref()
+                .is_some_and(|dflash| dflash.trace_next_offset == Some(token_offset));
+            record_candidate_trace_round(
+                path,
+                options.request_context.map_or(0, |ctx| ctx.request_id.0),
+                !continues,
+                candidates.as_ref(),
+                &tokens,
+                committed_drafts,
+                matched_drafts,
+                window,
+            );
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.trace_next_offset = Some(token_offset + keep);
+            }
+        }
         if let (Some((position, ids)), Some(logits), Some(ctx)) = (
             dflash2_logit_probe(),
             probe_logits.as_ref(),
@@ -2027,7 +2293,7 @@ impl MlxRunner {
         let block = cfg.block_size as usize;
         if crate::fastpath::dflash2_window_override().is_none()
             && crate::fastpath::dflash2_cohort_window_enabled()
-            && crate::model::shared::verify_qmm::nax_stock_handoff_active()
+            && self.dflash2_verify_cost() == VerifyCost::Nax
         {
             let stats: Vec<Option<&WindowStats>> = lanes
                 .iter()
@@ -2060,7 +2326,7 @@ impl MlxRunner {
             })
         }) {
             for (idx, (state, plan)) in lanes.iter_mut().enumerate() {
-                if let Some((ids, cursor, wall_us)) = Self::take_dflash2_predraft(state, plan) {
+                if let Some((ids, cursor, wall_us, _)) = Self::take_dflash2_predraft(state, plan) {
                     predrafted.push((idx, ids, cursor));
                     predraft_wall_us = predraft_wall_us.max(wall_us);
                 }
@@ -2303,6 +2569,7 @@ impl MlxRunner {
                 ));
             }
             state.dflash2_staged = Some(Dflash2StagedVerify {
+                candidates: None,
                 plan: *plan,
                 cursor,
                 draft_wall_us,
@@ -2429,6 +2696,7 @@ impl MlxRunner {
                         drafted,
                         cursor,
                         draft_wall_us,
+                        candidates: None,
                     });
                 }
                 // Packing or submission failed: the lane drafts in its own round.
@@ -3217,6 +3485,7 @@ mod tests {
                     drafts: vec![bad_draft],
                     hidden_all: mlx_sys::zeros(&[1, 2, width], MlxDtype::Bfloat16, None),
                     post_norm: None,
+                    candidates: None,
                 };
                 let options = DecodeOneOptions {
                     terminal_token_ids: &[],
@@ -3280,6 +3549,7 @@ mod tests {
             drafted: mlx_sys::zeros(&[1, 1], MlxDtype::Uint32, None),
             cursor: before_predraft,
             draft_wall_us: 0,
+            candidates: None,
         });
 
         state.discard_uncommitted_round(Some(before_round));
@@ -3816,6 +4086,49 @@ mod tests {
         // A later match does not count after a mismatch.
         let predicted = [1, 9, 3, 4, 5, 6, 7, 8];
         assert_eq!(greedy_walk(&drafts, &predicted), Some((1, vec![1, 9])));
+    }
+
+    #[test]
+    fn accept_cap_commits_the_targets_token_at_the_cut() {
+        let drafts = [1_u32, 2, 3, 4, 5, 6, 7];
+        // Three drafts match, then the target picks 9.
+        let predicted = [1, 2, 3, 9, 5, 6, 7, 8];
+        let (accepted, walked) = greedy_walk(&drafts, &predicted).unwrap();
+        assert_eq!((accepted, walked.clone()), (3, vec![1, 2, 3, 9]));
+        for (cap, expected_accepted) in [(None, 3), (Some(7), 3), (Some(3), 3), (Some(2), 2)] {
+            let mut tokens = walked.clone();
+            assert_eq!(
+                cap_accepted_drafts(&mut tokens, accepted, cap),
+                expected_accepted
+            );
+            // Kept drafts, then the target's choice for the next row.
+            let mut expected = drafts[..expected_accepted].to_vec();
+            expected.push(predicted[expected_accepted]);
+            assert_eq!(tokens, expected, "cap {cap:?}");
+            // The capped round keeps the anchor row and the kept drafts.
+            let (emitted, keep) = linear_window_commit(&tokens, expected_accepted, 16, &[]);
+            assert_eq!((emitted, keep), (expected, expected_accepted + 1));
+        }
+        // Cap zero: every round emits exactly the target's token after the anchor.
+        let mut tokens = walked;
+        assert_eq!(cap_accepted_drafts(&mut tokens, accepted, Some(0)), 0);
+        assert_eq!(tokens, vec![predicted[0]]);
+        let mut missed = vec![9_u32];
+        assert_eq!(cap_accepted_drafts(&mut missed, 0, Some(0)), 0);
+        assert_eq!(missed, vec![9]);
+    }
+
+    #[test]
+    fn candidate_trace_commit_line_is_one_json_object() {
+        let line = candidate_trace_commit_line(5, &[10, 20, 30], 2, 4, 8);
+        assert_eq!(
+            line,
+            "{\"kind\":\"commit\",\"request\":5,\"tokens\":[10,20,30],\
+             \"accepted_drafts\":2,\"matched_drafts\":4,\"window\":8}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["tokens"].as_array().map(Vec::len), Some(3));
+        assert!(candidate_trace_commit_line(0, &[], 0, 0, 3).contains("\"tokens\":[]"));
     }
 
     #[test]

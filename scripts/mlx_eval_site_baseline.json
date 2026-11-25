@@ -16,7 +16,7 @@
   },
   "crates/ax-engine-mlx/src/dflash2.rs": {
     "eval": 1,
-    "try_eval": 4
+    "try_eval": 5
   },
   "crates/ax-engine-mlx/src/diffusion.rs": {
     "eval": 8
@@ -105,6 +105,9 @@
   "crates/ax-engine-mlx/src/model/shared/utils.rs": {
     "async_eval": 1,
     "eval": 1
+  },
+  "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": {
+    "try_eval": 1
   },
   "crates/ax-engine-mlx/src/mtp.rs": {
     "async_eval": 2,

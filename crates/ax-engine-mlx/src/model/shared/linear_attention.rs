@@ -1514,9 +1514,12 @@ pub(crate) fn linear_attention_inputs(
         let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(model_cfg)
             && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled()
             && !fastpath::qwen_linear_mtp_exact_for_seq(seq);
+        // The packed C++ helper runs stock MLX QMM. Where AX's `qmv_nax` port
+        // serves this window, the QKVZ projection is cheaper through `qw`.
         if fuse_norm.is_none()
             && !fastpath::qwen_linear_mtp_exact_for_seq(seq)
             && (fastpath::direct_cpp_linear_attention_inputs_enabled() || qwen_default_enabled)
+            && !super::verify_qmm::nax_port_serves_window(x, qkvz_w)
         {
             record_linear_attention_direct_cpp_inputs_attempt();
             if profile_enabled {
