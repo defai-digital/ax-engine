@@ -16,7 +16,7 @@
   },
   "crates/ax-engine-mlx/src/dflash2.rs": {
     "eval": 1,
-    "try_eval": 5
+    "try_eval": 6
   },
   "crates/ax-engine-mlx/src/diffusion.rs": {
     "eval": 8
@@ -139,7 +139,7 @@
     "try_eval": 6
   },
   "crates/ax-engine-mlx/src/runner/dflash2_decode.rs": {
-    "try_eval": 11
+    "try_eval": 13
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,

@@ -42,8 +42,9 @@ pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
 pub(crate) use linear_attention::{
     LinearAttentionVerifyOutput, linear_attention_forward, linear_attention_forward_batched,
-    linear_attention_forward_verify_functional, replay_linear_attention_mtp_prefix,
-    set_qwen_la_exact_attn_norm, set_qwen_la_norm_qkvz_fuse_weights,
+    linear_attention_forward_tree, linear_attention_forward_verify_functional,
+    replay_linear_attention_mtp_prefix, set_qwen_la_exact_attn_norm,
+    set_qwen_la_norm_qkvz_fuse_weights,
 };
 pub(crate) use mla::glm_mla_attention_forward;
 pub(crate) use mlp::clear_worker_mlp_compile_caches;

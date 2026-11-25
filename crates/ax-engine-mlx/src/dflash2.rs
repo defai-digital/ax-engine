@@ -801,6 +801,77 @@ pub(crate) struct Dflash2Weights {
     artifact: DrafterArtifact,
 }
 
+/// Leading rows of the LM head a draft reads.
+pub(crate) const DRAFT_HEAD_PREFIX_ROWS: i32 = 148_288;
+/// Trailing rows of the LM head a draft reads: the control tokens live there.
+pub(crate) const DRAFT_HEAD_TAIL_ROWS: i32 = 320;
+/// Tokens of recent text that must lie in the draft head's rows for a draft
+/// to use it.
+pub(crate) const DRAFT_HEAD_RECENT_TOKENS: usize = 64;
+
+/// True when `token` is one the draft head's rows can propose.
+pub(crate) fn draft_head_covers(token: u32, vocab: i32) -> bool {
+    let token = i64::from(token);
+    token < i64::from(DRAFT_HEAD_PREFIX_ROWS) || token >= i64::from(vocab - DRAFT_HEAD_TAIL_ROWS)
+}
+
+/// The leading and trailing rows of the target's LM head, as views.
+struct DraftHead {
+    prefix: QuantizedWeight,
+    tail: QuantizedWeight,
+    /// Added to a column index at or past the prefix to get its token id.
+    tail_shift: u32,
+}
+
+impl DraftHead {
+    fn build(head: &QuantizedWeight, vocab: i32) -> Option<Self> {
+        let rows = *head.weight.shape().first()?;
+        if rows != vocab || vocab <= DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS {
+            return None;
+        }
+        let prefix = head.row_range(0, DRAFT_HEAD_PREFIX_ROWS)?;
+        let tail = head.row_range(vocab - DRAFT_HEAD_TAIL_ROWS, vocab)?;
+        // Resolve the views once, so a draft graph holds no slice nodes.
+        let mut views = vec![&prefix.weight, &tail.weight];
+        views.extend(prefix.scales.iter().chain(&prefix.biases));
+        views.extend(tail.scales.iter().chain(&tail.biases));
+        mlx_sys::try_eval(&views).ok()?;
+        Some(Self {
+            prefix,
+            tail,
+            tail_shift: (vocab - DRAFT_HEAD_PREFIX_ROWS - DRAFT_HEAD_TAIL_ROWS) as u32,
+        })
+    }
+
+    /// `[1, rows, prefix + tail]` logits of `x` over the head's rows.
+    fn project(&self, x: &MlxArray) -> MlxArray {
+        concatenate(&[&qw(x, &self.prefix), &qw(x, &self.tail)], 2, None)
+    }
+
+    /// Token ids of column indices into [`Self::project`]'s output.
+    fn token_ids(&self, columns: &MlxArray) -> MlxArray {
+        let columns = astype(columns, MlxDtype::Uint32, None);
+        let scalar = |value: u32| {
+            MlxArray::from_raw_data(
+                (&value as *const u32).cast::<u8>(),
+                std::mem::size_of::<u32>(),
+                &[1],
+                MlxDtype::Uint32,
+            )
+        };
+        let past_prefix = astype(
+            &mlx_sys::greater_equal(&columns, &scalar(DRAFT_HEAD_PREFIX_ROWS as u32), None),
+            MlxDtype::Uint32,
+            None,
+        );
+        add(
+            &columns,
+            &multiply(&past_prefix, &scalar(self.tail_shift), None),
+            None,
+        )
+    }
+}
+
 fn take_tensor(
     tensors: &mut std::collections::HashMap<String, MlxArray>,
     name: &str,
@@ -979,6 +1050,12 @@ pub(crate) struct Dflash2Drafter {
     /// runtime does for greedy decoding too (`AX_MLX_DFLASH2_SELECTOR`,
     /// default on). Off, drafts take the plain argmax of the target LM head.
     use_selector: bool,
+    /// The next solo draft may read only the draft head's rows.
+    head_subset: bool,
+    /// Those rows of this drafter's target, built at the first draft that
+    /// may use them. A drafter serves one request, so one target; `Some(None)`
+    /// when that target's head has no such rows.
+    draft_head: Option<Option<std::sync::Arc<DraftHead>>>,
     /// When set, every stage is evaluated and timed (diagnostic; breaks overlap).
     stage_times: Option<Vec<(&'static str, f64)>>,
     caches: Vec<LayerCache>,
@@ -1000,11 +1077,14 @@ impl Dflash2Drafter {
         Self {
             weights,
             use_selector: false,
+            head_subset: false,
+            draft_head: None,
             stage_times: None,
             caches: (0..layers).map(|_| LayerCache::default()).collect(),
             offset: 0,
             tree_alternatives: [None, None],
-            trace_candidates: crate::fastpath::dflash2_candidate_trace_path().is_some(),
+            trace_candidates: crate::fastpath::dflash2_candidate_trace_path().is_some()
+                || crate::dflash2_tree::tree_rows().is_some(),
             candidate_trace: None,
         }
     }
@@ -1018,6 +1098,13 @@ impl Dflash2Drafter {
     #[cfg(test)]
     pub(crate) fn set_candidate_trace_for_test(&mut self, enabled: bool) {
         self.trace_candidates = enabled;
+    }
+
+    /// Lets the next solo drafts read only the draft head's rows of the
+    /// target's LM head. The caller clears it when recent text holds a token
+    /// outside those rows.
+    pub(crate) fn set_head_subset(&mut self, enabled: bool) {
+        self.head_subset = enabled;
     }
 
     pub(crate) fn with_selector(mut self, enabled: bool) -> Self {
@@ -1572,7 +1659,24 @@ impl Dflash2Drafter {
             Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
             _ => draft_hidden.clone(),
         };
-        let logits = qw(&head_input, &target.lm_head);
+        // The selector path can draft through part of the head; the plain
+        // argmax path and its runner-up reads index the whole vocabulary.
+        let draft_head = if self.head_subset && self.use_selector && !capture_alternatives {
+            self.draft_head
+                .get_or_insert_with(|| {
+                    crate::fastpath::dflash2_head_subset_enabled()
+                        .then(|| DraftHead::build(&target.lm_head, cfg.vocab_size))
+                        .flatten()
+                        .map(std::sync::Arc::new)
+                })
+                .clone()
+        } else {
+            None
+        };
+        let logits = match draft_head.as_deref() {
+            Some(head) => head.project(&head_input),
+            None => qw(&head_input, &target.lm_head),
+        };
         let logits = if cfg.output_multiplier != 1.0 {
             multiply(
                 &logits,
@@ -1614,6 +1718,7 @@ impl Dflash2Drafter {
                 cfg,
                 &draft_hidden,
                 &logits,
+                draft_head.as_deref(),
                 anchor,
                 capture_alternatives,
             )
@@ -1888,12 +1993,14 @@ impl Dflash2Drafter {
     /// Chain-aware rescoring of each position's top-k logits: the score of a
     /// candidate is its logit plus a low-rank edge score against the previously
     /// chosen token, and the best candidate is taken position by position.
+    #[allow(clippy::too_many_arguments)]
     fn select(
         &mut self,
         selector: &Selector,
         cfg: &Dflash2Config,
         draft_hidden: &MlxArray,
         logits: &MlxArray,
+        draft_head: Option<&DraftHead>,
         anchor: u32,
         capture_alternatives: bool,
     ) -> (MlxArray, Option<String>) {
@@ -1901,7 +2008,7 @@ impl Dflash2Drafter {
         let proposals = shape[1];
         let vocab = shape[2];
         let top_k = cfg.selector_top_k;
-        let candidates = top_k_indices(logits, top_k).unwrap_or_else(|| {
+        let columns = top_k_indices(logits, top_k).unwrap_or_else(|| {
             slice(
                 &argpartition_axis(logits, vocab - top_k, 2, None),
                 &[0, 0, vocab - top_k],
@@ -1910,7 +2017,12 @@ impl Dflash2Drafter {
                 None,
             )
         });
-        let unary = take_along_axis(logits, &candidates, 2, None);
+        let unary = take_along_axis(logits, &columns, 2, None);
+        // `logits` covers the draft head's rows only: name the tokens.
+        let candidates = match draft_head {
+            Some(head) => head.token_ids(&columns),
+            None => columns,
+        };
         let projected = matmul(draft_hidden, &selector.hidden_projection_t, None);
         let anchor_arr = MlxArray::from_raw_data(
             (&anchor as *const u32).cast::<u8>(),
@@ -2196,6 +2308,33 @@ fn push_json_rows<T>(
         push_json_list(line, row, format);
     }
     line.push(']');
+}
+
+impl CandidateTraceCapture {
+    /// The best-first draft tree of `rows` rows over this table, as lazy
+    /// arrays. `None` without selector edge scores or when the table is too
+    /// small for a tree.
+    pub(crate) fn tree_layout(&self, rows: i32) -> Option<crate::dflash2_tree::TreeLayout> {
+        let anchor = MlxArray::from_raw_data(
+            (&self.anchor as *const u32).cast::<u8>(),
+            std::mem::size_of::<u32>(),
+            &[1],
+            MlxDtype::Uint32,
+        );
+        crate::dflash2_tree::build_tree_layout(
+            &astype(&self.candidates, MlxDtype::Uint32, None),
+            &self.unary,
+            self.edge0.as_ref()?,
+            self.edges.as_ref()?,
+            &anchor,
+            rows,
+        )
+    }
+
+    /// Draft positions the table covers.
+    pub(crate) fn positions(&self) -> usize {
+        self.positions.max(0) as usize
+    }
 }
 
 /// The candidate table of a selector draft. `candidates` and `unary` are
@@ -2779,6 +2918,108 @@ pub(crate) fn dflash2_fixture_with(
 mod tests {
     use super::*;
 
+    /// The draft head projects to the same logits as the matching columns of
+    /// the whole head, and names its columns' tokens.
+    #[test]
+    fn draft_head_matches_the_whole_head_on_its_rows() {
+        let vocab = DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS + 1000;
+        let hidden = 64;
+        let dense: Vec<f32> = (0..vocab as usize * hidden as usize)
+            .map(|i| (((i * 2_654_435_761usize) >> 9) % 2001) as f32 * 1e-3 - 1.0)
+            .collect();
+        let dense = MlxArray::from_raw_data(
+            dense.as_ptr().cast::<u8>(),
+            dense.len() * 4,
+            &[vocab, hidden],
+            MlxDtype::Float32,
+        );
+        let mut parts = mlx_sys::quantize(
+            &dense,
+            Some(64),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(parts.len(), 3);
+        let biases = parts.pop();
+        let scales = parts.pop();
+        let weight = parts.pop().expect("quantized weight");
+        let head = QuantizedWeight::with_quantization(
+            weight,
+            scales,
+            biases,
+            Some(&ax_engine_core::NativeTensorQuantization {
+                mode: "affine".into(),
+                group_size: 64,
+                bits: 8,
+            }),
+        );
+        let draft = DraftHead::build(&head, vocab).expect("draft head");
+        assert_eq!(draft.tail_shift, 1000);
+        let x: Vec<f32> = (0..3 * hidden as usize)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.02)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x.as_ptr().cast::<u8>(),
+            x.len() * 4,
+            &[1, 3, hidden],
+            MlxDtype::Float32,
+        );
+        let full = qw(&x, &head);
+        let part = draft.project(&x);
+        mlx_sys::eval(&[&full, &part]);
+        assert_eq!(
+            part.shape(),
+            vec![1, 3, DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS]
+        );
+        let full = full.data_f32();
+        let part = part.data_f32();
+        let width = (DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS) as usize;
+        for row in 0..3usize {
+            for column in (0..width).step_by(97).chain(width - 400..width) {
+                let token = if column < DRAFT_HEAD_PREFIX_ROWS as usize {
+                    column
+                } else {
+                    column + 1000
+                };
+                let (got, want) = (
+                    part[row * width + column],
+                    full[row * vocab as usize + token],
+                );
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1.0),
+                    "row {row} column {column}: {got} vs {want}"
+                );
+            }
+        }
+        let columns: [u32; 4] = [
+            0,
+            DRAFT_HEAD_PREFIX_ROWS as u32 - 1,
+            DRAFT_HEAD_PREFIX_ROWS as u32,
+            width as u32 - 1,
+        ];
+        let ids = draft.token_ids(&MlxArray::from_raw_data(
+            columns.as_ptr().cast::<u8>(),
+            16,
+            &[1, 1, 4],
+            MlxDtype::Uint32,
+        ));
+        mlx_sys::eval(&[&ids]);
+        assert_eq!(
+            ids.data_u32(),
+            &[
+                0,
+                DRAFT_HEAD_PREFIX_ROWS as u32 - 1,
+                (vocab - DRAFT_HEAD_TAIL_ROWS) as u32,
+                vocab as u32 - 1
+            ]
+        );
+        assert!(draft_head_covers(5, vocab) && draft_head_covers(vocab as u32 - 1, vocab));
+        assert!(!draft_head_covers(DRAFT_HEAD_PREFIX_ROWS as u32, vocab));
+        assert!(DraftHead::build(&head, vocab + 1).is_none());
+    }
+
     #[test]
     fn stage_timing_eval_failure_restores_the_drafter_cursor() {
         let (weights, target) = dflash2_tiny_fixture();
@@ -2953,6 +3194,8 @@ mod tests {
         };
         for use_selector in [true, false] {
             let mut plain = Dflash2Drafter::new(weights.clone()).with_selector(use_selector);
+            // A host that verifies draft trees records the table by default.
+            plain.set_candidate_trace_for_test(false);
             let mut traced = Dflash2Drafter::new(weights.clone()).with_selector(use_selector);
             traced.set_candidate_trace_for_test(true);
             for (round, anchor) in [3_u32, 7, 11, 5, 14, 2].into_iter().enumerate() {

@@ -30,6 +30,7 @@ static GATED_DELTA_DECODE_SEQ_TAPE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::
 static GATED_DELTA_DECODE_SEQ_TAPE_REPLAY_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GATED_DELTA_FUSED_VERIFY_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GATED_DELTA_FUSED_VERIFY_TREE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GATED_DELTA_FUSED_VERIFY_TRACE_ONCE: OnceLock<()> = OnceLock::new();
 static GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_TRACE_ONCE: OnceLock<()> = OnceLock::new();
 static DECODE_POST_INPUT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -795,6 +796,202 @@ pub(crate) fn gated_delta_fused_verify_no_checkpoint_from_qkv(
         eprintln!("AX_MTP_FUSED_GDN_VERIFY_NO_CHECKPOINT engaged seq={seq}");
     }
     Some((y, state_out, new_conv_state))
+}
+
+/// Deepest row a tree verify window holds: the anchor is depth 0 and a block
+/// of eight drafts ends at depth 7.
+pub(crate) const GATED_DELTA_TREE_MAX_DEPTH: i32 = 8;
+/// Most rows one tree verify window holds.
+pub(crate) const GATED_DELTA_TREE_MAX_ROWS: i32 = 16;
+
+/// [`gated_delta_fused_verify_no_checkpoint_from_qkv`] over a draft tree: row
+/// `i` continues the recurrence of its parent row instead of row `i - 1`.
+///
+/// Rows are in pre-order, so a row at depth `d` always follows its parent's
+/// subtree start and the kernel keeps one state per depth. `node_depth[i]` is
+/// the row's depth (0 for the anchor, below [`GATED_DELTA_TREE_MAX_DEPTH`]:
+/// the tree builder admits fewer draft positions than that, and the kernel
+/// clamps a deeper row's level, whose output would then be wrong).
+/// `tail_src[i][t]` names the convolution input `TailLen - t` steps before row
+/// `i` on its path: a row index, or `-(r + 1)` for row `r` of `conv_state`.
+///
+/// Each row's arithmetic is the chain kernel's, in the same order, so a row's
+/// output equals the last row of a chain verify over its root path. The
+/// kernel returns the rows' outputs only: the caller replays the accepted
+/// path to advance the state.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gated_delta_fused_verify_tree_from_qkv(
+    cfg: &LinearAttentionConfig,
+    qkv: &MlxArray,
+    conv_weight: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    recurrent_state: &MlxArray,
+    node_depth: &MlxArray,
+    tail_src: &MlxArray,
+    q_scale: f32,
+    k_scale: f32,
+    eps: f32,
+) -> Option<MlxArray> {
+    const TGY: i32 = 8;
+    let qkv_shape = qkv.shape();
+    if qkv_shape.len() != 3
+        || qkv_shape[0] != 1
+        || !(1..=GATED_DELTA_TREE_MAX_ROWS).contains(&qkv_shape[1])
+    {
+        return None;
+    }
+    let seq = qkv_shape[1];
+    let key_heads = cfg.num_key_heads as i32;
+    let value_heads = cfg.num_value_heads as i32;
+    let key_dim = cfg.key_head_dim as i32;
+    let value_dim = cfg.value_head_dim as i32;
+    if key_heads <= 0
+        || value_heads <= 0
+        || value_heads % key_heads != 0
+        || key_dim != value_dim
+        || !(32..=256).contains(&key_dim)
+        || !(key_dim as u32).is_power_of_two()
+        || value_dim % TGY != 0
+        || cfg.conv_kernel_dim < 2
+    {
+        return None;
+    }
+    // The kernel keeps every row's q and k of one key head, the tile's v and
+    // the gates in threadgroup memory, which Metal caps at 32 KiB.
+    let element_bytes = match qkv.dtype() {
+        MlxDtype::Float32 => 4,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 => 2,
+        _ => return None,
+    };
+    if 2 * seq * key_dim * element_bytes + seq * TGY * element_bytes + 2 * seq * 4 > 32 * 1024 {
+        return None;
+    }
+    let conv_dim = cfg.conv_dim() as i32;
+    let tail_len = cfg.conv_kernel_dim as i32 - 1;
+    if qkv_shape[2] != conv_dim
+        || conv_weight.shape() != vec![conv_dim, cfg.conv_kernel_dim as i32, 1]
+        || a_log.shape() != vec![value_heads]
+        || dt_bias.shape() != vec![value_heads]
+        || a_raw.shape() != vec![1, seq, value_heads]
+        || b_raw.shape() != vec![1, seq, value_heads]
+        || recurrent_state.shape() != vec![1, value_heads, value_dim, key_dim]
+        || node_depth.shape() != vec![seq]
+        || node_depth.dtype() != MlxDtype::Int32
+        || tail_src.shape() != vec![seq, tail_len]
+        || tail_src.dtype() != MlxDtype::Int32
+    {
+        return None;
+    }
+    let zero_conv_state;
+    let conv_state = if let Some(state) = cached_conv_state {
+        if state.shape() != vec![1, tail_len, conv_dim] {
+            return None;
+        }
+        state
+    } else {
+        zero_conv_state = zeros(&[1, tail_len, conv_dim], qkv.dtype(), None);
+        &zero_conv_state
+    };
+
+    let kernel = GATED_DELTA_FUSED_VERIFY_TREE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_gated_delta_fused_verify_tree_v1",
+            &[
+                "qkv",
+                "conv_weight",
+                "conv_state",
+                "a_log",
+                "a_raw",
+                "dt_bias",
+                "b_raw",
+                "state_in",
+                "node_depth",
+                "tail_src",
+                "q_scale",
+                "k_scale",
+                "eps",
+            ],
+            &["y"],
+            GATED_DELTA_FUSED_VERIFY_TREE_KERNEL_SOURCE,
+            POST_INPUT_ROUNDING_HEADER,
+            true,
+        )
+    });
+    let q_scale_arr = scalar_f32_as(q_scale, MlxDtype::Float32);
+    let k_scale_arr = scalar_f32_as(k_scale, MlxDtype::Float32);
+    let eps_arr = scalar_f32_as(eps, MlxDtype::Float32);
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[
+                qkv,
+                conv_weight,
+                conv_state,
+                a_log,
+                a_raw,
+                dt_bias,
+                b_raw,
+                recurrent_state,
+                node_depth,
+                tail_src,
+                &q_scale_arr,
+                &k_scale_arr,
+                &eps_arr,
+            ],
+            &[KernelOutputSpec {
+                shape: vec![1, seq, value_heads, value_dim],
+                dtype: qkv.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "InT",
+                    dtype: qkv.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Dk",
+                    value: key_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Dv",
+                    value: value_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Hk",
+                    value: key_heads,
+                },
+                KernelTemplateArg::Int {
+                    name: "Hv",
+                    value: value_heads,
+                },
+                KernelTemplateArg::Int {
+                    name: "SeqLen",
+                    value: seq,
+                },
+                KernelTemplateArg::Int {
+                    name: "ConvKernelDim",
+                    value: cfg.conv_kernel_dim as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "Tgy",
+                    value: TGY,
+                },
+                KernelTemplateArg::Int {
+                    name: "MaxDepth",
+                    value: GATED_DELTA_TREE_MAX_DEPTH,
+                },
+            ],
+            (32, value_dim, value_heads),
+            (32, TGY, 1),
+            None,
+        )
+        .ok()?;
+    if outputs.len() != 1 {
+        return None;
+    }
+    outputs.pop()
 }
 
 /// Most lanes one [`gated_delta_fused_verify_no_checkpoint_lanes`] dispatch
@@ -3389,6 +3586,157 @@ const GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL_SOURCE: &str = r#"
     }
     for (int i = 0; i < NPerLane; ++i) {
       o_state[s_base + i] = static_cast<StT>(state[i]);
+    }
+"#;
+
+// Tree form of the no-checkpoint fused verify kernel. A row reads its
+// convolution tail through `tail_src` and continues the recurrence of the
+// state kept for the depth above it; rows arrive in pre-order, so that state
+// is its parent's. Per row the arithmetic and its order are the chain's.
+const GATED_DELTA_FUSED_VERIFY_TREE_KERNEL_SOURCE: &str = r#"
+    constexpr int KeyDim = Hk * Dk;
+    constexpr int ValueDim = Hv * Dv;
+    constexpr int ConvDim = 2 * KeyDim + ValueDim;
+    constexpr int TailLen = ConvKernelDim - 1;
+    constexpr int NPerLane = Dk / 32;
+    constexpr int ValuesPerKeyHead = SeqLen * Dk;
+
+    const int lane = thread_position_in_threadgroup.x;
+    const int local_y = thread_position_in_threadgroup.y;
+    const int value_tile = threadgroup_position_in_grid.y;
+    const int dv_idx = value_tile * Tgy + local_y;
+    const int hv_idx = thread_position_in_grid.z;
+    const int values_per_key = Hv / Hk;
+    const int hk_idx = hv_idx / values_per_key;
+    const int s_base = lane * NPerLane;
+
+    threadgroup InT q_values[ValuesPerKeyHead];
+    threadgroup InT k_values[ValuesPerKeyHead];
+    threadgroup InT v_values[SeqLen * Tgy];
+    threadgroup float g_values[SeqLen];
+    threadgroup float beta_values[SeqLen];
+
+    if (thread_index_in_threadgroup == 0) {
+      const float exp_a_log = exp(static_cast<float>(a_log[hv_idx]));
+      const float dt_bias_v = static_cast<float>(dt_bias[hv_idx]);
+      for (int token = 0; token < SeqLen; ++token) {
+        float a_plus_dt =
+            static_cast<float>(a_raw[token * Hv + hv_idx]) + dt_bias_v;
+        float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
+        g_values[token] = exp(-exp_a_log * sp);
+        float b_val = static_cast<float>(b_raw[token * Hv + hv_idx]);
+        beta_values[token] = static_cast<float>(
+            static_cast<InT>(1.0f / (1.0f + exp(-b_val))));
+      }
+    }
+
+    if (local_y == 0) {
+      for (int token = 0; token < SeqLen; ++token) {
+        float q_raw[NPerLane];
+        float k_raw[NPerLane];
+        float q_square_sum = 0.0f;
+        float k_square_sum = 0.0f;
+        auto qkv_t = qkv + token * ConvDim;
+        for (int i = 0; i < NPerLane; ++i) {
+          const int d = s_base + i;
+          const int q_channel = hk_idx * Dk + d;
+          const int k_channel = KeyDim + hk_idx * Dk + d;
+          float q_acc = static_cast<float>(qkv_t[q_channel]) *
+              static_cast<float>(
+                  conv_weight[q_channel * ConvKernelDim + TailLen]);
+          float k_acc = static_cast<float>(qkv_t[k_channel]) *
+              static_cast<float>(
+                  conv_weight[k_channel * ConvKernelDim + TailLen]);
+          for (int t = 0; t < TailLen; ++t) {
+            const int src = tail_src[token * TailLen + t];
+            const float q_prev = src >= 0
+                ? static_cast<float>(qkv[src * ConvDim + q_channel])
+                : static_cast<float>(
+                      conv_state[(-src - 1) * ConvDim + q_channel]);
+            const float k_prev = src >= 0
+                ? static_cast<float>(qkv[src * ConvDim + k_channel])
+                : static_cast<float>(
+                      conv_state[(-src - 1) * ConvDim + k_channel]);
+            q_acc += q_prev * static_cast<float>(
+                conv_weight[q_channel * ConvKernelDim + t]);
+            k_acc += k_prev * static_cast<float>(
+                conv_weight[k_channel * ConvKernelDim + t]);
+          }
+          q_raw[i] = ax_post_input_silu<InT>(q_acc);
+          k_raw[i] = ax_post_input_silu<InT>(k_acc);
+          q_square_sum += q_raw[i] * q_raw[i];
+          k_square_sum += k_raw[i] * k_raw[i];
+        }
+        q_square_sum = simd_sum(q_square_sum);
+        k_square_sum = simd_sum(k_square_sum);
+        const float q_norm =
+            rsqrt(q_square_sum / static_cast<float>(Dk) + eps[0]);
+        const float k_norm =
+            rsqrt(k_square_sum / static_cast<float>(Dk) + eps[0]);
+        for (int i = 0; i < NPerLane; ++i) {
+          const int d = s_base + i;
+          q_values[token * Dk + d] =
+              ax_post_input_scaled_norm<InT>(q_raw[i], q_norm, q_scale[0]);
+          k_values[token * Dk + d] =
+              ax_post_input_scaled_norm<InT>(k_raw[i], k_norm, k_scale[0]);
+        }
+      }
+    }
+
+    if (lane == 0) {
+      const int v_channel = 2 * KeyDim + hv_idx * Dv + dv_idx;
+      for (int token = 0; token < SeqLen; ++token) {
+        auto qkv_t = qkv + token * ConvDim;
+        float v_acc = static_cast<float>(qkv_t[v_channel]) *
+            static_cast<float>(
+                conv_weight[v_channel * ConvKernelDim + TailLen]);
+        for (int t = 0; t < TailLen; ++t) {
+          const int src = tail_src[token * TailLen + t];
+          const float v_prev = src >= 0
+              ? static_cast<float>(qkv[src * ConvDim + v_channel])
+              : static_cast<float>(
+                    conv_state[(-src - 1) * ConvDim + v_channel]);
+          v_acc += v_prev * static_cast<float>(
+              conv_weight[v_channel * ConvKernelDim + t]);
+        }
+        v_values[token * Tgy + local_y] =
+            static_cast<InT>(ax_post_input_silu<InT>(v_acc));
+      }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    auto i_state = state_in + (hv_idx * Dv + dv_idx) * Dk;
+    float state[MaxDepth + 1][NPerLane];
+    for (int i = 0; i < NPerLane; ++i) {
+      state[0][i] = static_cast<float>(i_state[s_base + i]);
+    }
+
+    for (int token = 0; token < SeqLen; ++token) {
+      const int level = clamp(node_depth[token], 0, MaxDepth - 1);
+      float row[NPerLane];
+      float kv_mem = 0.0f;
+      for (int i = 0; i < NPerLane; ++i) {
+        const float k = static_cast<float>(k_values[token * Dk + s_base + i]);
+        row[i] = state[level][i] * g_values[token];
+        kv_mem += row[i] * k;
+      }
+      kv_mem = simd_sum(kv_mem);
+      const float delta =
+          (static_cast<float>(v_values[token * Tgy + local_y]) - kv_mem) *
+          beta_values[token];
+      float out = 0.0f;
+      for (int i = 0; i < NPerLane; ++i) {
+        const float k = static_cast<float>(k_values[token * Dk + s_base + i]);
+        const float q = static_cast<float>(q_values[token * Dk + s_base + i]);
+        row[i] += k * delta;
+        out += row[i] * q;
+        state[level + 1][i] = row[i];
+      }
+      out = simd_sum(out);
+      if (lane == 0) {
+        y[(token * Hv + hv_idx) * Dv + dv_idx] = static_cast<InT>(out);
+      }
     }
 "#;
 

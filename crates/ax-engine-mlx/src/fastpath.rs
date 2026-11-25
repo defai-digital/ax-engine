@@ -2073,6 +2073,19 @@ env_flag_default_on!(
     "AX_MLX_DFLASH2_PREDRAFT"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2_HEAD_SUBSET` — the solo drafter projects its draft
+    /// positions through the first 148,288 and the last 320 rows of the
+    /// target's quantized LM head instead of all of it, which is about 60% of
+    /// the head's bytes, while the last 64 tokens of the request (prompt and
+    /// output) all lie in those rows. A draft outside them can then not be
+    /// proposed, so text that has used such a token keeps the whole head. The
+    /// target verify always reads the whole head: the emitted tokens are still
+    /// the target's own. **Default: ON**; `0` drafts through the whole head.
+    dflash2_head_subset_enabled,
+    "AX_MLX_DFLASH2_HEAD_SUBSET"
+);
+
 env_flag!(
     /// `AX_MLX_DFLASH2_ROUND_TRACE` — one stderr line per DFlash2 round with
     /// the host-side split of the round (gap since the previous commit, draft
@@ -2183,6 +2196,33 @@ pub(crate) fn dflash2_trace_accept_cap() -> Option<usize> {
         std::env::var("AX_MLX_DFLASH2_TRACE_ACCEPT_CAP")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
+    })
+}
+
+/// `AX_MLX_DFLASH2_TREE_ROWS=<n>`: verify a draft tree of `n` rows (4 to 16)
+/// in one target forward instead of one chain of the round's window; `0`
+/// keeps the chain. The tree is grown best first from the drafter's
+/// candidate table, so a round whose first choice misses can still accept a
+/// runner-up and what follows it. Solo greedy rounds on the dense Qwen
+/// gated-delta stack with the selector; everything else keeps the chain. The
+/// committed tokens are still the target's own choices, but off-chain rows
+/// see their keys in another order than a chain verify would, so sums can
+/// differ in the last bits.
+/// **Default: unset**, which is 8 rows where a NAX kernel serves the verify
+/// projections (M5 or later) and the chain elsewhere: see
+/// `dflash2_tree::tree_rows`. Read once per process.
+///
+/// `Some(0)` is the explicit chain, `None` unset or out of range.
+pub(crate) fn dflash2_tree_rows_setting() -> Option<i32> {
+    static CACHED: OnceLock<Option<i32>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_TREE_ROWS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|rows| {
+                *rows == 0
+                    || (4..=crate::linear_attention_ops::GATED_DELTA_TREE_MAX_ROWS).contains(rows)
+            })
     })
 }
 

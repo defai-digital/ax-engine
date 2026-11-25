@@ -29,6 +29,7 @@ use mlx_sys::{MlxArray, MlxDtype, argmax, astype, concatenate, contiguous, resha
 
 use super::*;
 use crate::dflash2::{CandidateTraceCapture, Dflash2Drafter, Dflash2Weights, HandoffCosts};
+use crate::dflash2_tree::TreeLayout;
 use crate::fastpath::dflash2_logit_probe;
 use crate::model::layer_capture;
 
@@ -819,8 +820,10 @@ pub(super) struct Dflash2PreDraft {
     drafted: MlxArray,
     cursor: crate::dflash2::DrafterCursor,
     draft_wall_us: u32,
-    /// Candidate trace only: the draft's candidate table.
+    /// Candidate trace and tree verify: the draft's candidate table.
     candidates: Option<CandidateTraceCapture>,
+    /// Tree verify: the draft tree over that table, already submitted.
+    tree: Option<TreeLayout>,
 }
 
 /// `AX_MLX_DFLASH2_ROUND_TRACE=1`: one stderr line per DFlash2 round with the
@@ -882,6 +885,83 @@ pub(super) struct Dflash2StagedVerify {
     post_norm: Option<MlxArray>,
     /// Candidate trace only: the candidate table of a solo draft.
     candidates: Option<CandidateTraceCapture>,
+    /// A one-forward tree verify: `predicted` then holds every tree row's
+    /// argmax and `drafts` the accepted path's draft tokens.
+    tree: Option<Dflash2StagedTree>,
+}
+
+/// The verified tree of a solo round and the path its walk accepted.
+pub(super) struct Dflash2StagedTree {
+    forward: crate::model::draft_tree::TreeVerifyForward,
+    /// Rows from the anchor down the accepted path.
+    path: Vec<usize>,
+    /// The accepted draft tokens, then the target's token after the path.
+    tokens: Vec<u32>,
+    /// Draft positions the candidate table offered.
+    proposed: usize,
+}
+
+/// The lazy draft tree of a round and its submission to the GPU. `None` when
+/// the table cannot carry a tree; the round then verifies its chain.
+fn dflash2_submit_tree(
+    rows: Option<i32>,
+    candidates: Option<&CandidateTraceCapture>,
+    drafted: &MlxArray,
+) -> Option<TreeLayout> {
+    let tree = candidates?.tree_layout(rows?)?;
+    mlx_sys::try_async_eval(&[
+        drafted,
+        &tree.ids,
+        &tree.depth,
+        &tree.parent,
+        &tree.tail_src,
+        &tree.visible,
+    ])
+    .ok()?;
+    Some(tree)
+}
+
+/// True when the last [`crate::dflash2::DRAFT_HEAD_RECENT_TOKENS`] tokens of
+/// the request (prompt, output, then `next`) all lie in the draft head's
+/// rows, so the next draft can skip the rest of the LM head.
+fn dflash2_recent_text_in_draft_head(state: &RequestState, next: &[u32], vocab: i32) -> bool {
+    let mut left = crate::dflash2::DRAFT_HEAD_RECENT_TOKENS;
+    for part in [
+        next,
+        state.generated_tokens.as_slice(),
+        state.prompt_prefix_tokens.as_slice(),
+    ] {
+        for &token in part.iter().rev().take(left) {
+            if !crate::dflash2::draft_head_covers(token, vocab) {
+                return false;
+            }
+        }
+        left = left.saturating_sub(part.len());
+        if left == 0 {
+            break;
+        }
+    }
+    true
+}
+
+/// A round's draft: the window ids, the drafter cursor before it, its build
+/// time, and (when recorded) its candidate table and the tree grown from it.
+type Dflash2TakenDraft = (
+    MlxArray,
+    crate::dflash2::DrafterCursor,
+    u32,
+    Option<CandidateTraceCapture>,
+    Option<TreeLayout>,
+);
+
+/// What a tree verify left for the round.
+enum TreeVerify {
+    /// Verified and walked: commit it.
+    Staged(Box<Dflash2StagedVerify>),
+    /// The round ended here (declined or failed).
+    Done(Option<Vec<u32>>),
+    /// The model does not take a tree; nothing was written.
+    Unsupported,
 }
 
 fn clear_mtp_proposal_after_dflash2_round(state: &mut RequestState) {
@@ -1558,10 +1638,16 @@ impl MlxRunner {
             Self::take_dflash2_predraft(state, &plan)
         };
         let was_predrafted = predrafted.is_some();
-        let (draft_arr, cursor, draft_wall_us, candidates) = match predrafted {
+        let (draft_arr, cursor, draft_wall_us, candidates, draft_tree) = match predrafted {
             Some(predrafted) => predrafted,
             None => {
+                let head_subset = dflash2_recent_text_in_draft_head(
+                    state,
+                    &[primary],
+                    self.cfg.vocab_size as i32,
+                );
                 let dflash = state.dflash2.as_mut()?;
+                dflash.drafter.set_head_subset(head_subset);
                 let read = if tree {
                     Dflash2DraftRead::Tree
                 } else {
@@ -1587,7 +1673,14 @@ impl MlxRunner {
                 // round's eval then only waits for the verify. Off the fast
                 // path (tree verify) the draft is read eagerly anyway. A
                 // submission error surfaces at that eval.
+                let candidates = dflash.drafter.take_candidate_trace();
+                let draft_tree = if tree {
+                    None
+                } else {
+                    dflash2_submit_tree(self.dflash2_tree_rows(), candidates.as_ref(), &draft_arr)
+                };
                 if !tree
+                    && draft_tree.is_none()
                     && crate::fastpath::dflash2_async_draft_enabled()
                     && let Err(error) = mlx_sys::try_async_eval(&[&draft_arr])
                 {
@@ -1601,8 +1694,13 @@ impl MlxRunner {
                     dflash.park_for_retry(handoff_target);
                     return decline("draft submission failed");
                 }
-                let candidates = dflash.drafter.take_candidate_trace();
-                (draft_arr, cursor, elapsed_us(draft_started), candidates)
+                (
+                    draft_arr,
+                    cursor,
+                    elapsed_us(draft_started),
+                    candidates,
+                    draft_tree,
+                )
             }
         };
 
@@ -1646,6 +1744,32 @@ impl MlxRunner {
             }
         }
 
+        // The MTP head can only take over warm if it gets these rows.
+        let keep_post_norm = handoff_target == HandoffTarget::Mtp;
+        // A tree spends the whole block's rows: a round whose plan cut the
+        // window (output budget, context cap, window policy) verifies the
+        // chain of that window instead.
+        if let Some(tree_layout) = draft_tree.filter(|_| window == cfg.block_size as usize) {
+            match self.verify_dflash2_tree(
+                state,
+                &plan,
+                tree_layout,
+                &draft_arr,
+                cursor.clone(),
+                draft_wall_us,
+                was_predrafted,
+                keep_post_norm,
+                candidates.clone(),
+            ) {
+                TreeVerify::Staged(staged) => {
+                    return self.commit_dflash2_round(state, *staged, options);
+                }
+                TreeVerify::Done(result) => return result,
+                // The model or a layer does not take a tree: verify the chain.
+                TreeVerify::Unsupported => {}
+            }
+        }
+
         // Linear-attention state cannot be trimmed: verify on a clone that
         // records the prefix tape, then adopt, restore or replay it.
         let clone_started = Instant::now();
@@ -1654,8 +1778,6 @@ impl MlxRunner {
         let clone_wall_us = elapsed_us(clone_started);
 
         let verify_started = Instant::now();
-        // The MTP head can only take over warm if it gets these rows.
-        let keep_post_norm = handoff_target == HandoffTarget::Mtp;
         let capture = layer_capture::capture_layers(&cfg.target_layer_ids);
         let (logits_all, post_norm) = crate::model::forward_all_positions_with_post_norm_ids(
             &self.cfg,
@@ -1740,8 +1862,153 @@ impl MlxRunner {
             hidden_all,
             post_norm: keep_post_norm.then_some(post_norm),
             candidates,
+            tree: None,
         };
         self.commit_dflash2_round(state, staged, options)
+    }
+
+    /// Verifies a solo round's draft tree in one target forward and walks it.
+    /// The request cache is written only by the K/V rebind, as in the chain
+    /// round.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_dflash2_tree(
+        &self,
+        state: &mut RequestState,
+        plan: &Dflash2RoundPlan,
+        tree: TreeLayout,
+        draft_arr: &MlxArray,
+        cursor: crate::dflash2::DrafterCursor,
+        draft_wall_us: u32,
+        predrafted: bool,
+        keep_post_norm: bool,
+        candidates: Option<CandidateTraceCapture>,
+    ) -> TreeVerify {
+        let Some(cfg) = self.dflash2.as_ref().map(|weights| weights.config()) else {
+            return TreeVerify::Unsupported;
+        };
+        let handoff_target = self.dflash2_handoff_target();
+        let token_offset = plan.token_offset;
+        let rows = tree.rows as usize;
+        let park_cursor = cursor.clone();
+        let park = move |state: &mut RequestState| {
+            if let Some(dflash) = state.dflash2.as_mut() {
+                dflash.restore_drafter_cursor(park_cursor);
+                dflash.park_for_retry(handoff_target);
+            }
+        };
+
+        let clone_started = Instant::now();
+        let mut verify_cache = state.cache.clone();
+        verify_cache.begin_linear_prefix_capture(1);
+        let clone_wall_us = elapsed_us(clone_started);
+
+        let verify_started = Instant::now();
+        let capture = layer_capture::capture_layers(&cfg.target_layer_ids);
+        let forward = crate::model::draft_tree::forward_tree_verify(
+            &self.cfg,
+            &self.weights,
+            &tree,
+            &mut verify_cache,
+            token_offset,
+        );
+        let captured = layer_capture::take();
+        drop(capture);
+        let (Some(forward), Some(captured)) = (forward, captured) else {
+            // Nothing reached the request cache; the clone is dropped.
+            return TreeVerify::Unsupported;
+        };
+        verify_cache.advance(rows);
+        if verify_cache.hard_cap_exhausted() {
+            park(state);
+            return TreeVerify::Done(decline("tree verify exceeds the KV block cap"));
+        }
+        let cache_rebound = crate::fastpath::mtp_rebind_verify_fa_enabled()
+            && state
+                .cache
+                .rebind_contiguous_attention_storage_from(&verify_cache);
+        let predicted_arr = argmax(&forward.logits, None);
+        let refs: Vec<&MlxArray> = captured.iter().collect();
+        let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
+        let verify_build_us = elapsed_us(verify_started);
+        let eval_started = Instant::now();
+        let fence_error = crate::dflash2::take_dflash2_capture_verify_eval_error().or_else(|| {
+            let mut targets = vec![
+                &predicted_arr,
+                &hidden_all,
+                draft_arr,
+                &tree.ids,
+                &tree.parent,
+            ];
+            if keep_post_norm {
+                targets.push(&forward.post_norm);
+            }
+            mlx_sys::try_eval(&targets).err()
+        });
+        if let Some(error) = fence_error {
+            if cache_rebound {
+                return TreeVerify::Done(fail_linear_verify_fence(state, error));
+            }
+            park(state);
+            return TreeVerify::Done(decline("tree verify evaluation failed"));
+        }
+        let eval_wall_us = elapsed_us(eval_started);
+        let verify_wall_us = elapsed_us(verify_started);
+        let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+        let ids: Vec<u32> = tree.ids.data_u32().to_vec();
+        let parent_f32 = astype(&tree.parent, MlxDtype::Float32, None);
+        if let Err(error) = mlx_sys::try_eval(&[&parent_f32]) {
+            if cache_rebound {
+                return TreeVerify::Done(fail_linear_verify_fence(state, error));
+            }
+            park(state);
+            return TreeVerify::Done(decline("tree verify evaluation failed"));
+        }
+        let parent: Vec<i32> = parent_f32.data_f32().iter().map(|v| *v as i32).collect();
+        let Some(walk) = crate::dflash2_tree::accepted_path(&ids, &parent, &predicted) else {
+            if cache_rebound {
+                return TreeVerify::Done(fail_linear_verify_fence(
+                    state,
+                    "tree verify returned mismatched rows".to_owned(),
+                ));
+            }
+            park(state);
+            return TreeVerify::Done(decline("tree verify returned mismatched rows"));
+        };
+        let proposed = candidates.as_ref().map_or(
+            plan.window.saturating_sub(1),
+            CandidateTraceCapture::positions,
+        );
+        let drafts: Vec<u32> = walk.tokens[..walk.tokens.len() - 1].to_vec();
+        TreeVerify::Staged(Box::new(Dflash2StagedVerify {
+            plan: Dflash2RoundPlan {
+                primary: plan.primary,
+                token_offset: plan.token_offset,
+                window: plan.window,
+                remaining: plan.remaining,
+                ignore_eos: plan.ignore_eos,
+            },
+            cursor,
+            draft_wall_us,
+            clone_wall_us,
+            verify_wall_us,
+            verify_build_us,
+            eval_wall_us,
+            predrafted,
+            cohort_lanes: 1,
+            probe_logits: None,
+            verify_cache,
+            predicted,
+            drafts,
+            hidden_all,
+            post_norm: keep_post_norm.then(|| forward.post_norm.clone()),
+            candidates,
+            tree: Some(Dflash2StagedTree {
+                forward,
+                path: walk.path,
+                tokens: walk.tokens,
+                proposed,
+            }),
+        }))
     }
 
     /// The checks, window and anchor of the next DFlash2 round. `Err` carries
@@ -1888,6 +2155,13 @@ impl MlxRunner {
     /// the next step's planning happen on the host (`AX_MLX_DFLASH2_PREDRAFT`).
     /// Nothing is pre-drafted when the request is leaving DFlash2, its budget
     /// ends, or a cohort pre-pass already drafted it.
+    /// Rows of the draft tree a round of this model verifies, or `None` for
+    /// the chain.
+    fn dflash2_tree_rows(&self) -> Option<i32> {
+        crate::dflash2_tree::tree_rows()
+            .filter(|_| crate::model::draft_tree::model_takes_tree(&self.cfg, &self.weights))
+    }
+
     fn predraft_dflash2_round(
         &self,
         state: &mut RequestState,
@@ -1895,6 +2169,10 @@ impl MlxRunner {
         next_primary: u32,
         next_offset: usize,
         remaining_after: usize,
+        // Tokens emitted since `state.generated_tokens` was last extended,
+        // ending with `next_primary`; `None` when the caller does not have
+        // them, which keeps the draft on the whole LM head.
+        emitted: Option<&[u32]>,
     ) {
         if !crate::fastpath::dflash2_predraft_enabled()
             || crate::fastpath::tree_verify_enabled()
@@ -1907,19 +2185,26 @@ impl MlxRunner {
         let Some(cfg) = self.dflash2.as_ref().map(|weights| weights.config()) else {
             return;
         };
+        let head_subset = emitted.is_some_and(|emitted| {
+            dflash2_recent_text_in_draft_head(state, emitted, self.cfg.vocab_size as i32)
+        });
+        let tree_rows = self.dflash2_tree_rows();
         let Some(dflash) = state.dflash2.as_mut() else {
             return;
         };
         if dflash.disabled || dflash.handed_off.is_some() || dflash.predraft.is_some() {
             return;
         }
+        dflash.drafter.set_head_subset(head_subset);
         let started = Instant::now();
         let Some((drafted, cursor)) =
             dflash2_draft_block_from(dflash, hidden, next_primary, &self.weights, cfg.block_size)
         else {
             return;
         };
-        if mlx_sys::try_async_eval(&[&drafted]).is_err() {
+        let candidates = dflash.drafter.take_candidate_trace();
+        let tree = dflash2_submit_tree(tree_rows, candidates.as_ref(), &drafted);
+        if tree.is_none() && mlx_sys::try_async_eval(&[&drafted]).is_err() {
             dflash.restore_drafter_cursor(cursor);
             return;
         }
@@ -1929,7 +2214,8 @@ impl MlxRunner {
             drafted,
             cursor,
             draft_wall_us: elapsed_us(started),
-            candidates: dflash.drafter.take_candidate_trace(),
+            candidates,
+            tree,
         });
     }
 
@@ -1939,12 +2225,7 @@ impl MlxRunner {
     fn take_dflash2_predraft(
         state: &mut RequestState,
         plan: &Dflash2RoundPlan,
-    ) -> Option<(
-        MlxArray,
-        crate::dflash2::DrafterCursor,
-        u32,
-        Option<CandidateTraceCapture>,
-    )> {
+    ) -> Option<Dflash2TakenDraft> {
         let dflash = state.dflash2.as_mut()?;
         let predraft = dflash.predraft.take()?;
         if predraft.primary == plan.primary && predraft.token_offset == plan.token_offset {
@@ -1954,6 +2235,7 @@ impl MlxRunner {
                 predraft.cursor,
                 predraft.draft_wall_us,
                 predraft.candidates,
+                predraft.tree,
             ))
         } else {
             dflash.restore_drafter_cursor(predraft.cursor);
@@ -1985,6 +2267,7 @@ impl MlxRunner {
             hidden_all,
             post_norm,
             candidates,
+            tree,
         } = staged;
         let Dflash2RoundPlan {
             primary,
@@ -1997,10 +2280,14 @@ impl MlxRunner {
             ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize
         });
         let drafts: &[u32] = &drafts_owned;
-        let walk = if predicted.len() == verify_len {
-            greedy_walk(drafts, &predicted)
-        } else {
-            None
+        // Draft positions the round offered: a tree commits one of its paths,
+        // so its `drafts` is only what the walk accepted.
+        let proposed = tree.as_ref().map_or(drafts.len(), |tree| tree.proposed);
+        let walk = match tree.as_ref() {
+            // The walk ran when the tree was verified: `drafts` is the path.
+            Some(tree) => Some((drafts.len(), tree.tokens.clone())),
+            None if predicted.len() == verify_len => greedy_walk(drafts, &predicted),
+            None => None,
         };
         let Some((accepted, mut new_tokens)) = walk else {
             // Cannot happen for a well-formed verify. Rewind the drafter and
@@ -2013,7 +2300,7 @@ impl MlxRunner {
         // Measurement aid (solo rounds): commit fewer drafts than the verify
         // matched. Everything below sees a round whose draft `cap` missed.
         let matched_drafts = accepted;
-        let accepted = if cohort_lanes == 1 {
+        let accepted = if cohort_lanes == 1 && tree.is_none() {
             cap_accepted_drafts(
                 &mut new_tokens,
                 accepted,
@@ -2047,7 +2334,43 @@ impl MlxRunner {
         let mut replay_graph_us = 0;
         let mut replay_eval_us = 0;
         let mut cache_eval_failed = false;
-        let adopted = if keep == verify_len {
+        let adopted = if let Some(tree) = tree.as_ref() {
+            // A tree keeps one path of its rows: rewrite the K/V the path
+            // moved and replay the gated-delta state along it.
+            let committed = crate::model::draft_tree::commit_tree_path(
+                &self.cfg,
+                &self.weights,
+                &state.cache,
+                &mut verify_cache,
+                &tree.forward,
+                token_offset,
+                &tree.path[..keep.min(tree.path.len())],
+            );
+            // The request cache still holds the K/V the verify wrote. Hand it
+            // the path's rewrite too, so MLX can update that storage in place.
+            let rewrite_rebound = committed
+                && crate::fastpath::mtp_rebind_verify_fa_enabled()
+                && state
+                    .cache
+                    .rebind_contiguous_attention_storage_from(&verify_cache);
+            if committed && !crate::fastpath::mtp_lazy_adopt_state_enabled() {
+                let refs = verify_cache.collect_eval_refs();
+                match try_linear_cache_eval(&refs) {
+                    Ok(()) => true,
+                    // The request cache now holds the rewrite that could not
+                    // be read: there is no K/V left to continue from.
+                    Err(error) if rewrite_rebound => {
+                        return fail_linear_verify_fence(state, error);
+                    }
+                    Err(_) => {
+                        cache_eval_failed = true;
+                        false
+                    }
+                }
+            } else {
+                committed
+            }
+        } else if keep == verify_len {
             if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
                 let refs = verify_cache.collect_eval_refs();
                 if try_linear_cache_eval(&refs).is_err() {
@@ -2122,31 +2445,57 @@ impl MlxRunner {
                 &drafts[..kept],
                 token_offset,
             );
-            debug_assert_eq!(after, predicted[kept]);
+            debug_assert_eq!(
+                after,
+                match tree.as_ref() {
+                    Some(tree) => predicted[tree.path[kept]],
+                    None => predicted[kept],
+                }
+            );
         }
         let rollback_wall_us = elapsed_us(rollback_started);
 
         // The rows of the committed tokens condition the next round.
         let width = hidden_all.shape()[2];
-        let committed_hidden = slice(
-            &hidden_all,
-            &[0, 0, 0],
-            &[1, keep as i32, width],
-            &[1, 1, 1],
-            None,
-        );
+        // A tree's committed rows are its path's, which need not be leading.
+        let path_rows = tree.as_ref().and_then(|tree| {
+            let path = &tree.path[..keep.min(tree.path.len())];
+            path.iter()
+                .enumerate()
+                .any(|(slot, row)| slot != *row)
+                .then(|| {
+                    let rows: Vec<u32> = path.iter().map(|row| *row as u32).collect();
+                    MlxArray::from_raw_data(
+                        rows.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(rows.as_slice()),
+                        &[rows.len() as i32],
+                        MlxDtype::Uint32,
+                    )
+                })
+        });
+        let leading_rows = |rows_all: &MlxArray, rows: usize, width: i32| match path_rows.as_ref() {
+            Some(path) if rows == keep => mlx_sys::take(rows_all, path, 1, None),
+            Some(path) => mlx_sys::take(
+                rows_all,
+                &slice(path, &[0], &[rows as i32], &[1], None),
+                1,
+                None,
+            ),
+            None => slice(
+                rows_all,
+                &[0, 0, 0],
+                &[1, rows as i32, width],
+                &[1, 1, 1],
+                None,
+            ),
+        };
+        let committed_hidden = leading_rows(&hidden_all, keep, width);
         let committed_drafts = committed_draft_count(accepted, keep);
         if let Some(dflash) = state.dflash2.as_mut() {
             // Row `j` processed `ids[j]`; the token after it is `emitted[j]`.
             let rows = keep.min(emitted.len());
             if let Some(post_norm) = post_norm.as_ref().filter(|_| rows > 0) {
-                let hidden = slice(
-                    post_norm,
-                    &[0, 0, 0],
-                    &[1, rows as i32, self.cfg.hidden_size as i32],
-                    &[1, 1, 1],
-                    None,
-                );
+                let hidden = leading_rows(post_norm, rows, self.cfg.hidden_size as i32);
                 dflash
                     .mtp_gap
                     .push(token_offset, hidden, emitted[..rows].to_vec());
@@ -2155,7 +2504,7 @@ impl MlxRunner {
             dflash.captured_rows = token_offset + keep;
             dflash.rounds += 1;
             dflash.stint_rounds += 1;
-            dflash.drafted += drafts.len() as u32;
+            dflash.drafted += proposed as u32;
             dflash.accepted += committed_drafts as u32;
             // A capped round still tells the window policy and the hand-off
             // what the verify matched, so the request stays on DFlash2.
@@ -2164,14 +2513,14 @@ impl MlxRunner {
             } else {
                 committed_drafts
             };
-            dflash.window_stats.record(drafts.len(), observed_drafts);
+            dflash.window_stats.record(proposed, observed_drafts);
         }
         // A draft made before this route took over (the MTP head's first
         // proposal) no longer matches the position.
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_lazy = None;
         state.mtp_pending_draft_sources.clear();
-        record_dflash2_committed_drafts(&mut state.mtp_telemetry, drafts.len(), committed_drafts);
+        record_dflash2_committed_drafts(&mut state.mtp_telemetry, proposed, committed_drafts);
         state.mtp_telemetry.record_timings(MtpStepTimings {
             cache_clone_wall_us: clone_wall_us,
             verify_forward_wall_us: verify_wall_us,
@@ -2239,6 +2588,7 @@ impl MlxRunner {
                 next_primary,
                 token_offset + keep,
                 remaining.saturating_sub(emitted.len()),
+                Some(&emitted),
             );
         }
         if trace_enabled
@@ -2261,15 +2611,20 @@ impl MlxRunner {
                  rollback_us={rollback_wall_us} replay_graph_us={replay_graph_us} \
                  replay_eval_us={replay_eval_us} keep={keep} window={window} predrafted={} \
                  predraft_next={} request_id={} generated={} cohort_lanes={cohort_lanes} \
-                 proposed={} accepted={committed_drafts} emitted={} recomputed={} \
+                 proposed={} accepted={committed_drafts} emitted={} recomputed={} tree_rows={} \
                  tape_layers={tape_layers} mlx_peak_bytes={}",
                 predrafted as u8,
                 dflash.predraft.is_some() as u8,
                 ctx.request_id.0,
                 ctx.generated_len,
-                drafts.len(),
+                proposed,
                 tokens.len(),
                 u8::from(!adopted),
+                tree.as_ref().map_or(0, |tree| tree
+                    .forward
+                    .attention_rows
+                    .first()
+                    .map_or(0, |(_, k, _)| k.shape()[2])),
                 mlx_sys::get_peak_memory(),
             );
             dflash.trace_last_end = Some(now);
@@ -2326,7 +2681,8 @@ impl MlxRunner {
             })
         }) {
             for (idx, (state, plan)) in lanes.iter_mut().enumerate() {
-                if let Some((ids, cursor, wall_us, _)) = Self::take_dflash2_predraft(state, plan) {
+                if let Some((ids, cursor, wall_us, _, _)) = Self::take_dflash2_predraft(state, plan)
+                {
                     predrafted.push((idx, ids, cursor));
                     predraft_wall_us = predraft_wall_us.max(wall_us);
                 }
@@ -2593,6 +2949,7 @@ impl MlxRunner {
                 drafts,
                 hidden_all: row_slice(&hidden_all, width),
                 post_norm: keep_post_norm.then(|| row_slice(&post_norm, hidden_size)),
+                tree: None,
             });
             start = end;
         }
@@ -2627,7 +2984,8 @@ impl MlxRunner {
         next_rounds.sort_by_key(|(idx, ..)| *idx);
         if next_rounds.len() == 1 {
             if let Some((idx, primary, offset, hidden)) = next_rounds.pop() {
-                self.predraft_dflash2_round(lanes[idx].0, &hidden, primary, offset, 2);
+                // The lane's tokens of this round are not committed yet.
+                self.predraft_dflash2_round(lanes[idx].0, &hidden, primary, offset, 2, None);
             }
             return;
         }
@@ -2697,6 +3055,7 @@ impl MlxRunner {
                         cursor,
                         draft_wall_us,
                         candidates: None,
+                        tree: None,
                     });
                 }
                 // Packing or submission failed: the lane drafts in its own round.
@@ -3486,6 +3845,7 @@ mod tests {
                     hidden_all: mlx_sys::zeros(&[1, 2, width], MlxDtype::Bfloat16, None),
                     post_norm: None,
                     candidates: None,
+                    tree: None,
                 };
                 let options = DecodeOneOptions {
                     terminal_token_ids: &[],
@@ -3550,6 +3910,7 @@ mod tests {
             cursor: before_predraft,
             draft_wall_us: 0,
             candidates: None,
+            tree: None,
         });
 
         state.discard_uncommitted_round(Some(before_round));

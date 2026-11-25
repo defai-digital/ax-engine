@@ -2618,3 +2618,167 @@ fn lane_batched_fused_verify_matches_one_call_per_lane() {
         }
     }
 }
+
+/// Depths and convolution-tail sources of a pre-order tree given by `parents`.
+fn tree_tables(parents: &[i32], tail_len: usize) -> (Vec<i32>, Vec<i32>, Vec<Vec<usize>>) {
+    let mut paths: Vec<Vec<usize>> = Vec::with_capacity(parents.len());
+    for (node, &parent) in parents.iter().enumerate() {
+        let mut path = if parent < 0 {
+            Vec::new()
+        } else {
+            paths[parent as usize].clone()
+        };
+        path.push(node);
+        paths.push(path);
+    }
+    let depths: Vec<i32> = paths.iter().map(|path| path.len() as i32 - 1).collect();
+    let mut tails = Vec::with_capacity(parents.len() * tail_len);
+    for path in &paths {
+        let depth = path.len() - 1;
+        for slot in 0..tail_len {
+            let back = tail_len - slot;
+            tails.push(if depth >= back {
+                path[depth - back] as i32
+            } else {
+                -((slot + depth) as i32 + 1)
+            });
+        }
+    }
+    (depths, tails, paths)
+}
+
+fn i32_array(data: &[i32], shape: &[i32]) -> MlxArray {
+    MlxArray::from_raw_data(
+        data.as_ptr().cast::<u8>(),
+        std::mem::size_of_val(data),
+        shape,
+        MlxDtype::Int32,
+    )
+}
+
+/// Every row of the tree kernel equals the last row of the chain kernel run
+/// over that row's root path, bit for bit, in f32 and bf16.
+#[test]
+fn fused_gated_delta_tree_rows_match_chain_over_each_path() {
+    let (q_scale, k_scale) = linear_attention_qk_scale(32);
+    let cfg = LinearAttentionConfig {
+        full_attention_interval: 4,
+        num_value_heads: 2,
+        num_key_heads: 1,
+        key_head_dim: 32,
+        value_head_dim: 32,
+        conv_kernel_dim: 4,
+        q_scale,
+        k_scale,
+    };
+    let conv_dim = cfg.conv_dim();
+    // Pre-order: 0 -> 1 -> 2 -> {3, 4}; 1 -> 5 -> 6; 0 -> 7 -> {8, 9}; 9 -> 10 -> 11.
+    let parents = [-1, 0, 1, 2, 2, 1, 5, 0, 7, 7, 9, 10];
+    let rows = parents.len();
+    let (depths, tails, paths) = tree_tables(&parents, cfg.conv_kernel_dim - 1);
+    for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+        let typed = |array: MlxArray| mlx_sys::astype(&array, dtype, None);
+        let conv_state = typed(f32_array(
+            &(0..3 * conv_dim)
+                .map(|idx| ((idx % 13) as f32 - 6.0) * 0.05)
+                .collect::<Vec<_>>(),
+            &[1, 3, conv_dim as i32],
+        ));
+        let recurrent_state = f32_array(
+            &(0..cfg.num_value_heads * 32 * 32)
+                .map(|idx| ((idx % 19) as f32 - 9.0) * 0.02)
+                .collect::<Vec<_>>(),
+            &[1, 2, 32, 32],
+        );
+        let weight = typed(f32_array(
+            &(0..conv_dim * cfg.conv_kernel_dim)
+                .map(|idx| ((idx % 7) as f32 - 3.0) * 0.2)
+                .collect::<Vec<_>>(),
+            &[conv_dim as i32, cfg.conv_kernel_dim as i32, 1],
+        ));
+        let a_log = f32_array(&[-0.2, -0.15], &[2]);
+        let dt_bias = f32_array(&[0.05, -0.02], &[2]);
+        let qkv_data: Vec<f32> = (0..rows * conv_dim)
+            .map(|idx| (((idx * 31 + idx / conv_dim * 7) % 23) as f32 - 11.0) * 0.07)
+            .collect();
+        let a_data: Vec<f32> = (0..rows * 2)
+            .map(|idx| ((idx * 5 % 11) as f32 - 5.0) * 0.3)
+            .collect();
+        let b_data: Vec<f32> = (0..rows * 2)
+            .map(|idx| ((idx * 3 % 13) as f32 - 6.0) * 0.25)
+            .collect();
+        let qkv = typed(f32_array(&qkv_data, &[1, rows as i32, conv_dim as i32]));
+        let a_raw = typed(f32_array(&a_data, &[1, rows as i32, 2]));
+        let b_raw = typed(f32_array(&b_data, &[1, rows as i32, 2]));
+        let tree_y = gated_delta_fused_verify_tree_from_qkv(
+            &cfg,
+            &qkv,
+            &weight,
+            Some(&conv_state),
+            &a_log,
+            &a_raw,
+            &dt_bias,
+            &b_raw,
+            &recurrent_state,
+            &i32_array(&depths, &[rows as i32]),
+            &i32_array(&tails, &[rows as i32, 3]),
+            q_scale,
+            k_scale,
+            1e-6,
+        )
+        .expect("tree fused verifier");
+        let tree_y = mlx_sys::astype(&tree_y, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&tree_y]);
+        let tree_bits: Vec<u32> = tree_y.data_f32().iter().map(|v| v.to_bits()).collect();
+        let row_width = cfg.num_value_heads * cfg.value_head_dim;
+        for (node, path) in paths.iter().enumerate() {
+            // The chain kernel serves two rows and up: give the anchor a
+            // throwaway second row and read row 0.
+            let (chain_rows, read_row): (Vec<usize>, usize) = if path.len() == 1 {
+                (vec![path[0], 1], 0)
+            } else {
+                (path.clone(), path.len() - 1)
+            };
+            let gather = |data: &[f32], width: usize| -> Vec<f32> {
+                chain_rows
+                    .iter()
+                    .flat_map(|&row| data[row * width..(row + 1) * width].iter().copied())
+                    .collect()
+            };
+            let seq = chain_rows.len() as i32;
+            let chain_qkv = typed(f32_array(
+                &gather(&qkv_data, conv_dim),
+                &[1, seq, conv_dim as i32],
+            ));
+            let chain_a = typed(f32_array(&gather(&a_data, 2), &[1, seq, 2]));
+            let chain_b = typed(f32_array(&gather(&b_data, 2), &[1, seq, 2]));
+            let (chain_y, _, _) = gated_delta_fused_verify_no_checkpoint_from_qkv(
+                &cfg,
+                &chain_qkv,
+                &weight,
+                Some(&conv_state),
+                &a_log,
+                &chain_a,
+                &dt_bias,
+                &chain_b,
+                &recurrent_state,
+                q_scale,
+                k_scale,
+                1e-6,
+            )
+            .expect("chain fused verifier");
+            let chain_y = mlx_sys::astype(&chain_y, MlxDtype::Float32, None);
+            mlx_sys::eval(&[&chain_y]);
+            let chain = chain_y.data_f32();
+            let expected: Vec<u32> = chain[read_row * row_width..(read_row + 1) * row_width]
+                .iter()
+                .map(|v| v.to_bits())
+                .collect();
+            assert_eq!(
+                &tree_bits[node * row_width..(node + 1) * row_width],
+                expected.as_slice(),
+                "{dtype:?} tree row {node} differs from the chain over {path:?}"
+            );
+        }
+    }
+}

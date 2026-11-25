@@ -695,6 +695,39 @@ impl QuantizedWeight {
         }
     }
 
+    /// Output rows `start..end` of a quantized `[out, ...]` weight as views of
+    /// the same buffers: a projection through it yields those output columns
+    /// of the full projection. `None` for an unquantized weight, one with a
+    /// dense bias, or a range outside the weight.
+    pub(crate) fn row_range(&self, start: i32, end: i32) -> Option<Self> {
+        let rows = *self.weight.shape().first()?;
+        if self.linear_bias.is_some() || start < 0 || start >= end || end > rows {
+            return None;
+        }
+        let rows_of = |array: &MlxArray| {
+            let shape = array.shape();
+            (shape.len() == 2 && shape[0] == rows)
+                .then(|| mlx_sys::slice(array, &[start, 0], &[end, shape[1]], &[1, 1], None))
+        };
+        Some(Self {
+            weight: rows_of(&self.weight)?,
+            scales: Some(rows_of(self.scales.as_ref()?)?),
+            biases: match self.biases.as_ref() {
+                Some(biases) => Some(rows_of(biases)?),
+                None => None,
+            },
+            group_size: self.group_size,
+            bits: self.bits,
+            mode: self.mode.clone(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: WeightViewCell::default(),
+        })
+    }
+
     pub(crate) fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
         self.linear_bias = linear_bias;
         self

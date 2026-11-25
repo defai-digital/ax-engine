@@ -233,6 +233,70 @@ pub(crate) fn linear_attention_forward_verify_functional(
     })
 }
 
+/// One gated-delta layer over a DFlash2 draft tree, and the projections the
+/// commit replays along the accepted path.
+pub(crate) struct LinearAttentionTreeOutput {
+    pub output: MlxArray,
+    pub qkv: MlxArray,
+    pub a: MlxArray,
+    pub b: MlxArray,
+}
+
+/// Tree counterpart of [`linear_attention_forward_verify_functional`]: the
+/// same projections, gate and output projection around the tree recurrence
+/// kernel. The layer's state in `cache` is read and left as it is.
+pub(crate) fn linear_attention_forward_tree(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &MlxKVCache,
+    layer_idx: usize,
+    node_depth: &MlxArray,
+    tail_src: &MlxArray,
+) -> Option<LinearAttentionTreeOutput> {
+    let linear_cfg = cfg.linear_attention.as_ref()?;
+    let linear_w = w.linear_attn.as_ref()?;
+    let seq = x.shape().get(1).copied()?;
+    let (qkv, z, a, b) = linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, false);
+    let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
+    let state = recurrent_state
+        .cloned()
+        .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
+    let out = crate::linear_attention_ops::gated_delta_fused_verify_tree_from_qkv(
+        linear_cfg,
+        &qkv,
+        &linear_w.conv1d_dense,
+        conv_state,
+        &linear_w.a_log,
+        &a,
+        &linear_w.dt_bias,
+        &b,
+        &state,
+        node_depth,
+        tail_src,
+        linear_cfg.q_scale,
+        linear_cfg.k_scale,
+        cfg.rms_norm_eps,
+    )?;
+    let value_dim = linear_cfg.value_dim() as i32;
+    let output = if let Some(fused) =
+        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim, layer_idx)
+    {
+        fused
+    } else {
+        let gated = rms_norm_gated_with_full_gate_policy(
+            &out,
+            &z,
+            &linear_w.norm,
+            cfg.rms_norm_eps,
+            linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
+        );
+        let flat = reshape(&gated, &[1, seq, value_dim], None);
+        qw(&flat, &linear_w.out_proj)
+    };
+    Some(LinearAttentionTreeOutput { output, qkv, a, b })
+}
+
 pub(crate) fn linear_attention_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,

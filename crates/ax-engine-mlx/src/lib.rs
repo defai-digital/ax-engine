@@ -8,6 +8,7 @@ pub mod batched_kv_cache;
 pub mod batched_linear_state;
 pub mod batched_sampling;
 mod dflash2;
+mod dflash2_tree;
 pub(crate) mod diffusion;
 mod disk_page_store;
 pub mod disk_prefix_cache;
