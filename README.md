@@ -33,7 +33,12 @@ MiniCPM-V, and others) are documented under
 
 ## Performance
 
-**MacBook Pro M5 Max 128 GB · Qwen 3.8 AXQ MXFP4 · One active request.**
+Results are grouped by machine, then by model (Qwen 3.8 27B, then
+Qwen 3.8 Flash Next).
+
+### MacBook Pro M5 Max 128 GB
+
+**Qwen 3.8 AXQ MXFP4 · One active request.**
 Each model uses a pinned pack and the same requests across engines.
 The 27B DFlash2 rows use identical drafter weights.
 
@@ -51,7 +56,7 @@ input tokens and behind at 1,492.
 
 <!-- qwen38-m5-modes:begin -->
 
-### Qwen 3.8 27B MXFP4
+#### Qwen 3.8 27B MXFP4
 
 ![Qwen 3.8 27B decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-27b-m5-modes.svg)
 
@@ -70,7 +75,7 @@ input tokens and behind at 1,492.
 
 † Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
-### Qwen 3.8 Flash Next MXFP4
+#### Qwen 3.8 Flash Next MXFP4
 
 ![Qwen 3.8 Flash Next decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-modes.svg)
 

@@ -114,7 +114,7 @@ def tables(versions, grouped):
         name = MODEL_NAMES[model]
         chart = figure_name(model)
         parts += [
-            f"### {name} MXFP4",
+            f"#### {name} MXFP4",   # under the README's per-machine heading
             "",
             f"![{name} decode and effective prefill by engine version and mode on M5 Max.](docs/assets/{chart})",
             "",
