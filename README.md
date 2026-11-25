@@ -197,7 +197,8 @@ Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 Use the curl installer on **Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort), macOS 26.2 or newer**.
 It installs **AX Engine.app**, the native SwiftUI desktop app with the Rust/MLX
-inference runtime bundled. Public model downloads work directly from the app.
+inference runtime bundled. The app runs independently of Python, Homebrew, and
+Xcode and downloads public models directly.
 Quit AX Engine before installing or upgrading, then run in Terminal:
 
 ```bash

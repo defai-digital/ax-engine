@@ -99,9 +99,11 @@ Homebrew or Python package path.
 
 | Goal | Recommended channel |
 | --- | --- |
+| Download models, chat, and control a local server from the desktop | [macOS app via curl](../README.md#install-ax-engine-for-macos) |
 | Run the CLI, server, or benchmark tools, and you use Homebrew | Homebrew |
 | Run the CLI and server without Homebrew or the Python SDK | Standalone download |
-| Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment (Python from python.org) |
+| Embed inference in Python with `import ax_engine` or use Python integrations | [Python wheel via pip](#python-wheel-sdk-no-homebrew-needed) |
+| Connect to a running AX Engine server from any language | [OpenAI-compatible HTTP client](API-COMPATIBILITY.md) |
 | Develop AX Engine or test unreleased changes | Source build |
 
 Prebuilt packages need **Apple Silicon** (M5 or later recommended, M3–M4
@@ -292,10 +294,14 @@ signatures for every asset are described in [MINISIGN.md](MINISIGN.md).
 
 ### Python wheel (SDK, no Homebrew needed)
 
-Use the wheel when you need the **Python package** (`import ax_engine`),
-LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
-use Homebrew. Use a dedicated Python 3.12+ virtual environment so the wheel,
-Python dependencies, and command wrappers stay on one version.
+Use the [PyPI wheel](https://pypi.org/project/ax-engine/) to run inference inside
+a Python process with `import ax_engine`, use integrations such as LangChain,
+or manage the bundled CLI and server alongside Python automation. A dedicated
+Python 3.12+ virtual environment lets your project pin the SDK and runtime
+together. See the [Python SDK](sdk/python.md) for in-process examples.
+
+If your application calls an existing AX Engine server, use its
+[OpenAI-compatible HTTP API](API-COMPATIBILITY.md) with your usual client.
 
 Without `uv` or Homebrew, use the official Python macOS installer:
 
