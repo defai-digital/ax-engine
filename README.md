@@ -29,6 +29,34 @@ Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper
 MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
+[Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
+
+## Performance
+
+**MacBook Pro M5 Max 128 GB · Qwen 3.8 AXQ MXFP4 · One active request.**
+Each engine ran six streamed HTTP completions against the same pinned pack
+and raw prompts for each model. Output tok/s includes prefill and streaming.
+
+![Qwen 3.8 27B and Flash Next output throughput on M5 Max, with 0 for workloads that did not complete.](docs/assets/perf-qwen38-mxfp4-m5-peers.svg)
+
+| Engine | Qwen 3.8 27B (tok/s) | Qwen 3.8 Flash Next (tok/s) |
+| --- | ---: | ---: |
+| **AX Engine** | **33.18** | **35.90** |
+| Splash | 93.79 | 0 |
+| oMLX | 31.30 | 46.57 |
+| mlx-lm | 29.05 | 0 |
+| MTPLX | 28.61 | 0 |
+| TensorFold | 0 | 0 |
+| ds4 | 0 | 0 |
+
+AX Engine used resident direct decode. Splash used DFlash2 on 27B.
+A zero means the lane did not complete this pack and workload.
+The full matrix reports first-text latency, engine versions and failure reasons.
+[M5 peer results and reproduction](benchmarks/results/qwen38-m5-peer-20261125/README.md) ·
+[AX concurrency, verifier and startup controls](#ax-runtime-controls)
+
+## Hardware and model fit
+
 **Prebuilt packages require macOS 26.2 or later on Apple Silicon.** Hardware tiers:
 
 | Tier | Chips | What to expect |
@@ -448,20 +476,7 @@ mixed prefill+decode routes, backed by a paged logical KV ledger. Full design:
   decode tok/s, error rate) that [AX Serving](docs/AX-SERVING.md) and other
   routers consume for node selection; token scheduling itself stays on-box
 
-## Performance
-
-The benchmark focus is the pinned Qwen 3.8 27B and Flash Next AXQ MXFP4
-packs on MacBook Pro M5 Max 128 GB. The serving rows use native HTTP on
-MLX 0.32.4. Output throughput includes prefill and streaming. Each model
-has its own prompt set and serving profile.
-
-The [M5 peer comparison](benchmarks/results/qwen38-m5-peer-20261125/README.md)
-uses the same raw HTTP prompts and pinned MXFP4 packs across AX Engine
-and seven peers. AX Engine measured **33.18 tok/s** on 27B and
-**35.90 tok/s** on Flash Next in resident direct mode with one request
-active. Splash led 27B at **93.79 tok/s** with DFlash2. oMLX led Flash
-Next at **46.57 tok/s**. The matrix records each peer's throughput or a
-zero with its failure reason.
+## AX runtime controls
 
 | Model and workload | M5 result |
 | --- | --- |

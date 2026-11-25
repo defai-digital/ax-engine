@@ -28,6 +28,8 @@ It records visible output throughput and first-text latency over six
 streamed completions with one request active at a time. A zero means the
 lane could not finish the workload. Each zero has an accompanying reason.
 
+![Qwen 3.8 MXFP4 single-request HTTP throughput on M5 Max](assets/perf-qwen38-mxfp4-m5-peers.svg)
+
 | Pack | AX Engine direct | Fastest completed peer |
 | --- | ---: | --- |
 | Qwen 3.8 27B MXFP4 | 33.18 tok/s | Splash with DFlash2, 93.79 tok/s |
