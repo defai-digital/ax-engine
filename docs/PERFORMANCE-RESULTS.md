@@ -22,6 +22,17 @@ workload recorded with it.
 
 ## Qwen 3.8 MXFP4 evidence
 
+The [M5 peer matrix](../benchmarks/results/qwen38-m5-peer-20261125/README.md)
+uses the same pinned packs and requests across AX Engine and seven peers.
+It records visible output throughput and first-text latency over six
+streamed completions with one request active at a time. A zero means the
+lane could not finish the workload. Each zero has an accompanying reason.
+
+| Pack | AX Engine direct | Fastest completed peer |
+| --- | ---: | --- |
+| Qwen 3.8 27B MXFP4 | 33.18 tok/s | Splash with DFlash2, 93.79 tok/s |
+| Qwen 3.8 Flash Next MXFP4 | 35.90 tok/s | oMLX, 46.57 tok/s |
+
 | Measurement | Result and scope |
 | --- | --- |
 | [Flash Next startup crossover](../benchmarks/results/flash-next-automatic-buffered-reader-m5-20261123/README.md) | One resident request, 32K combined budget and MTP off on M5 Max 128 GB. Mapped reads reached HTTP in 162–168 s. Automatic buffered reads reached HTTP in 28–30 s. The pack was already on the internal SSD. |

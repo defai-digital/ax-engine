@@ -53,6 +53,7 @@ charts to imply a different model source.
 | How fast is the repo-owned MLX runtime against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX direct and n-gram acceleration rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
 | How does AX behave as an online serving endpoint over a prompt mix? | `scripts/bench_ax_serving.py` | `ax.serving_benchmark.v1` artifacts with client-observed TTFT, TPOT, streaming step intervals, E2E latency, queue delay, throughput, category summaries, and SLO goodput |
+| Which peer servers complete the pinned Qwen 3.8 MXFP4 workloads on M5 Max? | [M5 peer comparison](../benchmarks/results/qwen38-m5-peer-20261125/README.md) | One active raw HTTP completion at a time, visible output throughput, first-text latency and a recorded failure reason for each zero |
 | Is the local host ready for repo-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |

@@ -455,6 +455,14 @@ packs on MacBook Pro M5 Max 128 GB. The serving rows use native HTTP on
 MLX 0.32.4. Output throughput includes prefill and streaming. Each model
 has its own prompt set and serving profile.
 
+The [M5 peer comparison](benchmarks/results/qwen38-m5-peer-20261125/README.md)
+uses the same raw HTTP prompts and pinned MXFP4 packs across AX Engine
+and seven peers. AX Engine measured **33.18 tok/s** on 27B and
+**35.90 tok/s** on Flash Next in resident direct mode with one request
+active. Splash led 27B at **93.79 tok/s** with DFlash2. oMLX led Flash
+Next at **46.57 tok/s**. The matrix records each peer's throughput or a
+zero with its failure reason.
+
 | Model and workload | M5 result |
 | --- | --- |
 | **Qwen 3.8 27B MXFP4**, one request, explicit direct decode | **32.64 tok/s** across eight fixed-budget prompts. [Direct control](benchmarks/results/qwen-cross-engine-mlx-20261125/README.md#single-request-direct-controls) |

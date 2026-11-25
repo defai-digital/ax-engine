@@ -1,0 +1,12 @@
+mlx_lm.benchmark 0.32.0 with MLX 0.32.4
+Arguments for each pinned local snapshot: -p 128 -g 64 -b 1 -n 2
+
+Qwen 3.8 27B (exit 0)
+Running warmup..
+Timing with prompt_tokens=128, generation_tokens=64, batch_size=1.
+Trial 1:  prompt_tps=607.153, generation_tps=34.647, peak_memory=16.203, total_time=2.065
+Trial 2:  prompt_tps=606.599, generation_tps=33.964, peak_memory=16.203, total_time=2.102
+Averages: prompt_tps=606.876, generation_tps=34.305, peak_memory=16.203
+
+Qwen 3.8 Flash Next (exit 1)
+ValueError: Model type qwen4_exp not supported.
