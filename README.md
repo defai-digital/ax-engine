@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/ax-engine-banner.svg" alt="AX Engine" width="100%">
+<img src="docs/images/ax-engine-banner.svg" alt="" width="100%">
 
 # AX Engine
 
