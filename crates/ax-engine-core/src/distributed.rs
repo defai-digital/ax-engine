@@ -199,9 +199,17 @@ pub struct ActivationFrameHeader {
     pub token_offset: u64,
     pub token_count: u32,
     pub dtype: ActivationDtype,
+    #[serde(deserialize_with = "deserialize_activation_shape")]
     pub shape: Vec<u32>,
     pub payload_bytes: u64,
     pub payload_sha256: String,
+}
+
+fn deserialize_activation_shape<'de, D>(deserializer: D) -> Result<Vec<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <[u32; 3]>::deserialize(deserializer).map(Vec::from)
 }
 
 impl ActivationFrameHeader {
@@ -248,8 +256,7 @@ impl ActivationFrameHeader {
         Ok(())
     }
 
-    pub(crate) fn verify_payload(&self, payload: &[u8]) -> Result<(), PipelineContractError> {
-        self.validate()?;
+    fn verify_payload(&self, payload: &[u8]) -> Result<(), PipelineContractError> {
         if u64::try_from(payload.len()).ok() != Some(self.payload_bytes) {
             return Err(PipelineContractError::ActivationSizeMismatch {
                 expected: self.payload_bytes,
@@ -321,18 +328,41 @@ impl ActivationFrame {
         if payload_start > bytes.len() {
             return Err(PipelineContractError::MalformedActivationFrame);
         }
-        let header = serde_json::from_slice::<ActivationFrameHeader>(&bytes[8..payload_start])
-            .map_err(|error| PipelineContractError::HeaderDeserialization(error.to_string()))?;
+        let (header_bytes, payload) = bytes[8..].split_at(header_len);
+        if payload.len() as u64 > maximum_payload_bytes {
+            return Err(PipelineContractError::PayloadLimitExceeded {
+                limit: maximum_payload_bytes,
+                actual: payload.len() as u64,
+            });
+        }
+        // The version-one encoder writes a JSON object with a fixed schema.
+        if header_bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+            return Err(PipelineContractError::HeaderDeserialization(
+                "expected a JSON object".into(),
+            ));
+        }
+        let invalid_header = |error: serde_json::Error| {
+            PipelineContractError::HeaderDeserialization(format!(
+                "invalid JSON or fields at line {} column {}",
+                error.line(),
+                error.column()
+            ))
+        };
+        let mut decoder = serde_json::Deserializer::from_slice(header_bytes);
+        let header = ActivationFrameHeader::deserialize(&mut decoder).map_err(invalid_header)?;
+        decoder.end().map_err(invalid_header)?;
         if header.payload_bytes > maximum_payload_bytes {
             return Err(PipelineContractError::PayloadLimitExceeded {
                 limit: maximum_payload_bytes,
                 actual: header.payload_bytes,
             });
         }
-        let payload = bytes[payload_start..].to_vec();
-        let frame = Self { header, payload };
-        frame.validate(topology)?;
-        Ok(frame)
+        topology.validate_frame_route(&header)?;
+        header.verify_payload(payload)?;
+        Ok(Self {
+            header,
+            payload: payload.to_vec(),
+        })
     }
 }
 
@@ -745,5 +775,86 @@ mod tests {
                 actual: 16
             })
         ));
+    }
+
+    fn wire_frame(header: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = PIPELINE_FRAME_MAGIC.to_vec();
+        bytes.extend_from_slice(&(header.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn activation_decode_checks_received_payload_size() {
+        let payload = [0_u8; 16];
+        let header = serde_json::to_vec(&frame(&payload)).expect("header should serialize");
+        let encoded = wire_frame(&header, &[0; 17]);
+        assert_eq!(
+            ActivationFrame::decode(&encoded, &topology(), 16),
+            Err(PipelineContractError::PayloadLimitExceeded {
+                limit: 16,
+                actual: 17,
+            })
+        );
+        assert_eq!(
+            ActivationFrame::decode(&encoded, &topology(), 17),
+            Err(PipelineContractError::ActivationSizeMismatch {
+                expected: 16,
+                actual: 17,
+            })
+        );
+    }
+
+    #[test]
+    fn activation_decode_rejects_invalid_header_schema() {
+        let payload = [0_u8; 16];
+        let valid = serde_json::to_value(frame(&payload)).expect("header should serialize");
+        let mut invalid_shape = valid.clone();
+        invalid_shape["shape"] = serde_json::json!([1, 2, 2, 2]);
+        let mut unknown_field = valid.clone();
+        unknown_field["extra"] = serde_json::json!(true);
+        for header in [
+            invalid_shape,
+            unknown_field,
+            serde_json::Value::Array(vec![]),
+        ] {
+            let encoded = wire_frame(header.to_string().as_bytes(), &payload);
+            assert!(matches!(
+                ActivationFrame::decode(&encoded, &topology(), 16),
+                Err(PipelineContractError::HeaderDeserialization(_))
+            ));
+        }
+        let trailing_json = format!("{valid} {{}}");
+        let encoded = wire_frame(trailing_json.as_bytes(), &payload);
+        assert!(matches!(
+            ActivationFrame::decode(&encoded, &topology(), 16),
+            Err(PipelineContractError::HeaderDeserialization(_))
+        ));
+    }
+
+    #[test]
+    fn activation_decode_checks_route_and_digest() {
+        let payload = [0_u8; 16];
+        let mut header = frame(&payload);
+        header.generation -= 1;
+        let encoded = wire_frame(
+            &serde_json::to_vec(&header).expect("header should serialize"),
+            &payload,
+        );
+        assert_eq!(
+            ActivationFrame::decode(&encoded, &topology(), 16),
+            Err(PipelineContractError::StaleOrForeignGeneration)
+        );
+
+        header.generation += 1;
+        let encoded = wire_frame(
+            &serde_json::to_vec(&header).expect("header should serialize"),
+            &[1; 16],
+        );
+        assert_eq!(
+            ActivationFrame::decode(&encoded, &topology(), 16),
+            Err(PipelineContractError::ActivationDigestMismatch)
+        );
     }
 }
