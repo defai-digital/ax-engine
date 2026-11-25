@@ -13,6 +13,14 @@ usual verifier policy. Leave `--disable-ngram-acceleration` absent when
 testing DFlash2. That flag prevents the drafter from attaching. Check
 `ax_mlx_dflash2_cohort_lanes` before comparing throughput.
 
+`AX_MLX_DFLASH2_ROUND_TRACE=1` records the actual packed verifier width
+in each `dflash2_cohort` line. `lanes` and `rows` describe the completed
+target forward. `planned_lanes` and `planned_rows` include lanes that
+could not draft for that forward. `draft_rows` excludes each lane's
+anchor, and `lane_rows_min` and `lane_rows_max` show the range of
+widths that actually ran. These counts describe logical verifier rows.
+Individual Metal projections may pad their inputs internally.
+
 `AX_MLX_DFLASH2_PROFILE_REPLAY=1` with `AX_MLX_DFLASH2_ROUND_TRACE=1`
 materializes the convolution and recurrent state after partial-prefix
 replay and reports graph build and evaluation time separately. Use a

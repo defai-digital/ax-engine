@@ -2235,25 +2235,35 @@ impl MlxRunner {
         }
         let eval_wall_us = elapsed_us(eval_started);
         let verify_wall_us = elapsed_us(verify_started);
+        let predicted_all: Vec<u32> = predicted_arr.data_u32().to_vec();
         if round_trace_enabled() {
-            let contexts: Vec<_> = drafted
-                .iter()
-                .map(|(idx, _, _)| lanes[*idx].1.token_offset)
-                .collect();
+            let plans = drafted.iter().map(|(idx, _, _)| &lanes[*idx].1);
+            let verified_lanes = drafted.len();
+            let rows = predicted_all.len();
             eprintln!(
-                "dflash2_cohort lanes={} rows={} predrafted={} draft_us={} vbuild_us={} eval_us={} context_min={} context_max={} context_total={}",
-                drafted.len(),
+                "dflash2_cohort lanes={verified_lanes} rows={rows} planned_lanes={} planned_rows={} \
+                 draft_rows={} lane_rows_min={} lane_rows_max={} predrafted={} \
+                 draft_us={draft_wall_us} vbuild_us={verify_build_us} eval_us={eval_wall_us} \
+                 context_min={} context_max={} context_total={}",
+                lanes.len(),
                 lanes.iter().map(|(_, plan)| plan.window).sum::<usize>(),
+                rows.saturating_sub(verified_lanes),
+                plans.clone().map(|plan| plan.window).min().unwrap_or(0),
+                plans.clone().map(|plan| plan.window).max().unwrap_or(0),
                 used_predraft as u8,
-                draft_wall_us,
-                verify_build_us,
-                eval_wall_us,
-                contexts.iter().min().copied().unwrap_or(0),
-                contexts.iter().max().copied().unwrap_or(0),
-                contexts.iter().sum::<usize>(),
+                plans
+                    .clone()
+                    .map(|plan| plan.token_offset)
+                    .min()
+                    .unwrap_or(0),
+                plans
+                    .clone()
+                    .map(|plan| plan.token_offset)
+                    .max()
+                    .unwrap_or(0),
+                plans.map(|plan| plan.token_offset).sum::<usize>(),
             );
         }
-        let predicted_all: Vec<u32> = predicted_arr.data_u32().to_vec();
         let width = hidden_all.shape()[2];
         let hidden_size = self.cfg.hidden_size as i32;
         let mut start = 0usize;
