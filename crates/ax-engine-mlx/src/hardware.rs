@@ -199,6 +199,11 @@ pub struct NaxVerifyKernelStatus {
     /// probe on the same host and MLX version gate).
     #[serde(default)]
     pub native_sdpa_active: bool,
+    /// The linked MLX lacks `qmv_nax`, so MX-format verify projections use
+    /// AX's port of it (ADR-053) after a passing load-time probe. Filled in by
+    /// [`nax_verify_kernel_status_with_port`]; plain status leaves it false.
+    #[serde(default)]
+    pub ax_port_active: bool,
 }
 
 /// What the loaded MLX runtime offers, probed once per process.
@@ -260,7 +265,17 @@ pub fn nax_verify_kernel_status() -> NaxVerifyKernelStatus {
         version_ok,
         metallib_has_qmv_nax: kernels,
         metallib_has_sdpa_split: sdpa_kernels,
+        ax_port_active: false,
     }
+}
+
+/// [`nax_verify_kernel_status`] plus whether AX's `qmv_nax` port is active.
+/// Running the port's probe needs Metal, so `ax-engine doctor` asks for it
+/// explicitly instead of every status read.
+pub fn nax_verify_kernel_status_with_port() -> NaxVerifyKernelStatus {
+    let mut status = nax_verify_kernel_status();
+    status.ax_port_active = crate::model::shared::verify_qmm::mx_nax_port_active();
+    status
 }
 
 /// Kernel-name fragment every MLX `affine_qmv_nax` instantiation carries.

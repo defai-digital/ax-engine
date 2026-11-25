@@ -66,6 +66,8 @@ bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/download_model.py \
   scripts/test_download_model.py \
+  scripts/simulate_dflash2_tree.py \
+  scripts/test_simulate_dflash2_tree.py \
   scripts/simulate_mtp_verify_prefix.py \
   scripts/test_simulate_mtp_verify_prefix.py \
   scripts/probe_hybrid_prefix_reuse.py \
@@ -330,6 +332,7 @@ bash scripts/check-qa.sh
 "$PYTHON_BIN" -m unittest \
   scripts/test_download_model.py \
   scripts/test_bench_omlx_prompt_suites.py \
+  scripts/test_simulate_dflash2_tree.py \
   scripts/test_simulate_mtp_verify_prefix.py \
   scripts/test_probe_hybrid_prefix_reuse.py \
   scripts/test_probe_agent_turn_reuse.py \

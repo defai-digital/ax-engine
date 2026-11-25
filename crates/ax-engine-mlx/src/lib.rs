@@ -8,6 +8,7 @@ pub mod batched_kv_cache;
 pub mod batched_linear_state;
 pub mod batched_sampling;
 mod dflash2;
+mod dflash2_tree;
 pub(crate) mod diffusion;
 mod disk_page_store;
 pub mod disk_prefix_cache;
@@ -77,7 +78,9 @@ pub mod diagnostics {
 }
 
 pub use fastpath::{MlxNumericsPreset, install_mlx_numerics_preset, mlx_numerics_preset_name};
-pub use hardware::{NaxVerifyKernelStatus, nax_verify_kernel_status};
+pub use hardware::{
+    NaxVerifyKernelStatus, nax_verify_kernel_status, nax_verify_kernel_status_with_port,
+};
 pub use runner::{MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell, MtpSessionPolicy};
 pub use whisper::{WhisperError, WhisperModel, WhisperTranscription};
 

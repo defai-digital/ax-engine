@@ -5,8 +5,8 @@
 
 use mlx_sys::ops::cached_scalar;
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, add, astype, divide, exp, log1p, maximum, minimum, multiply,
-    negative, power, reshape, rms_norm, sigmoid, sum_axis, zeros,
+    MlxArray, MlxClosure, MlxDtype, add, astype, concatenate, divide, exp, log1p, maximum, minimum,
+    multiply, negative, power, reshape, rms_norm, sigmoid, slice, sum_axis, zeros,
 };
 
 use super::qwen4_exp_fused::{self, Stretch};
@@ -18,6 +18,206 @@ use crate::linear_attention_ops::{
 };
 use crate::model::LinearAttentionConfig;
 use crate::weights::QuantizedWeight;
+
+#[cfg(test)]
+thread_local! {
+    /// Test override of the fused one-row projections on this thread.
+    static FUSED_PROJECTIONS_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+    /// Fused projection calls served on this thread.
+    static FUSED_PROJECTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `body` with the fused one-row projections forced on or off on this
+/// thread. `Some(true)` also builds them when the process switch is off.
+#[cfg(test)]
+pub(crate) fn with_fused_projections<T>(enabled: Option<bool>, body: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FUSED_PROJECTIONS_OVERRIDE.set(self.0);
+        }
+    }
+    let _restore = Restore(FUSED_PROJECTIONS_OVERRIDE.replace(enabled));
+    body()
+}
+
+#[cfg(test)]
+pub(crate) fn fused_projection_calls_for_test() -> u64 {
+    FUSED_PROJECTION_CALLS.get()
+}
+
+/// Bytes of every fused weight copy built in this process (any thread).
+#[cfg(test)]
+static FUSED_PROJECTION_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn fused_projections_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = FUSED_PROJECTIONS_OVERRIDE.get() {
+        return forced;
+    }
+    crate::fastpath::flash_next_fuse_projections_enabled()
+}
+
+/// Same-input projections of one Flash Next layer, concatenated along the
+/// output axis so a one-row decode step launches one quantized matmul for the
+/// group instead of one per member.
+///
+/// MLX serves a one-row quantized matmul with a matrix-vector kernel that it
+/// picks from the input width, the mode and the bit width, never from the
+/// output width, and that kernel reduces every output row on its own. A
+/// member's columns of the fused output therefore carry the bits of that
+/// member's own call, and the split back into members is a set of views.
+///
+/// The fused arrays are a second copy of the member weights. Every path other
+/// than the one-row shared-policy step keeps using the members.
+pub(crate) struct FusedProjections {
+    weight: QuantizedWeight,
+    /// `[start, end)` output columns of each member, in member order.
+    spans: Vec<(i32, i32)>,
+}
+
+impl FusedProjections {
+    /// Concatenate `members` when the switch is on and they share one
+    /// quantization contract: mode, bit width, group size, input width and the
+    /// dtypes of the packed weight, scales and group biases. `None` leaves
+    /// every member on its own call.
+    pub(crate) fn build(members: &[&QuantizedWeight]) -> Option<Self> {
+        if !fused_projections_enabled() || members.len() < 2 {
+            return None;
+        }
+        let first = *members.first()?;
+        let first_shape = first.weight.shape();
+        let first_scales = first.scales.as_ref()?;
+        if first_shape.len() != 2 || first.linear_bias.is_some() {
+            return None;
+        }
+        let mut spans = Vec::with_capacity(members.len());
+        let mut start = 0_i32;
+        for member in members {
+            let shape = member.weight.shape();
+            let scales = member.scales.as_ref()?;
+            let same_contract = (first.matching_affine_quant(member)
+                || first.matching_mxfp4_quant(member))
+                && member.linear_bias.is_none()
+                && shape.len() == 2
+                && shape[0] > 0
+                && shape[1] == first_shape[1]
+                && member.weight.dtype() == first.weight.dtype()
+                && scales.dtype() == first_scales.dtype()
+                && scales.shape().get(1..) == first_scales.shape().get(1..)
+                && match (&first.biases, &member.biases) {
+                    (Some(a), Some(b)) => {
+                        a.dtype() == b.dtype() && a.shape().get(1..) == b.shape().get(1..)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+            if !same_contract {
+                return None;
+            }
+            let end = start.checked_add(shape[0])?;
+            spans.push((start, end));
+            start = end;
+        }
+        let weights: Vec<&MlxArray> = members.iter().map(|member| &member.weight).collect();
+        let scales: Vec<&MlxArray> = members
+            .iter()
+            .filter_map(|member| member.scales.as_ref())
+            .collect();
+        let biases: Vec<&MlxArray> = members
+            .iter()
+            .filter_map(|member| member.biases.as_ref())
+            .collect();
+        if scales.len() != members.len() || (!biases.is_empty() && biases.len() != members.len()) {
+            return None;
+        }
+        let mut weight = QuantizedWeight::new(
+            concatenate(&weights, 0, None),
+            Some(concatenate(&scales, 0, None)),
+            (!biases.is_empty()).then(|| concatenate(&biases, 0, None)),
+        );
+        weight.group_size = first.group_size;
+        weight.bits = first.bits;
+        weight.mode.clone_from(&first.mode);
+        #[cfg(test)]
+        FUSED_PROJECTION_BYTES.fetch_add(
+            weight.weight.nbytes()
+                + weight.scales.as_ref().map_or(0, MlxArray::nbytes)
+                + weight.biases.as_ref().map_or(0, MlxArray::nbytes),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Some(Self { weight, spans })
+    }
+
+    /// Whether `input` is the one-row step this group serves: one batch row,
+    /// one token, every member on the shared batch policy, and no exact
+    /// verifier scope (which may route a member away from stock quantized
+    /// matmul).
+    fn serves(input: &MlxArray, policies: &[ProjectionBatchPolicy]) -> bool {
+        let shape = input.shape();
+        fused_projections_enabled()
+            && shape.len() == 3
+            && shape[0] == 1
+            && shape[1] == 1
+            && policies
+                .iter()
+                .all(|policy| *policy == ProjectionBatchPolicy::Shared)
+            && !crate::fastpath::qwen_linear_mtp_exact_enabled()
+    }
+
+    /// Project `input` through every member with one quantized matmul and
+    /// return the members' outputs in member order. `None` when this call is
+    /// not the one-row shared-policy step or `N` is not the member count; the
+    /// caller then runs each member's own projection.
+    pub(crate) fn project<const N: usize>(
+        fused: Option<&Self>,
+        input: &MlxArray,
+        policies: &[ProjectionBatchPolicy],
+    ) -> Option<[MlxArray; N]> {
+        let fused = fused?;
+        if fused.spans.len() != N {
+            return None;
+        }
+        <[MlxArray; N]>::try_from(fused.project_members(input, policies)?).ok()
+    }
+
+    /// [`Self::project`] for a member count known only at run time; `policies`
+    /// holds one batch policy per member.
+    fn project_members(
+        &self,
+        input: &MlxArray,
+        policies: &[ProjectionBatchPolicy],
+    ) -> Option<Vec<MlxArray>> {
+        if policies.len() != self.spans.len() || !Self::serves(input, policies) {
+            return None;
+        }
+        let output = qw_with_policy(input, &self.weight, ProjectionBatchPolicy::Shared);
+        #[cfg(test)]
+        FUSED_PROJECTION_CALLS.set(FUSED_PROJECTION_CALLS.get() + 1);
+        Some(
+            self.spans
+                .iter()
+                .map(|&(start, end)| slice(&output, &[0, 0, start], &[1, 1, end], &[1, 1, 1], None))
+                .collect(),
+        )
+    }
+}
+
+/// The batch policy a projection runs under: MXFP4 batch rounding can alter
+/// retained state, so MXFP4 weights follow the verifier policy.
+pub(crate) fn projection_policy(
+    weight: &QuantizedWeight,
+    policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
+) -> ProjectionBatchPolicy {
+    if weight.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+        verifier_policy
+    } else {
+        policy
+    }
+}
 
 pub(crate) struct Qwen4ExpGdnWeights {
     pub qkv: QuantizedWeight,
@@ -81,6 +281,9 @@ pub(crate) struct Qwen4ExpGdn {
     eps: f32,
     activation: GdnGateActivation,
     weights: Qwen4ExpGdnWeights,
+    /// The qkv, gate, decay and beta projections as one fused weight for
+    /// one-row decode; all four read the layer input.
+    fused_inputs: Option<FusedProjections>,
     /// `exp(a_log)` in FP32, built on first use by [`Qwen4ExpGdn::exp_a_log`].
     exp_a_log: std::sync::OnceLock<MlxArray>,
 }
@@ -114,12 +317,11 @@ fn qwen4_verifier_projection(
     verifier_policy: ProjectionBatchPolicy,
 ) -> MlxArray {
     // MXFP4 batch rounding can alter both conv state and the output residual.
-    let qkv_policy = if weight.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
-        verifier_policy
-    } else {
-        policy
-    };
-    qw_with_policy(input, weight, qkv_policy)
+    qw_with_policy(
+        input,
+        weight,
+        projection_policy(weight, policy, verifier_policy),
+    )
 }
 
 #[cfg(test)]
@@ -387,12 +589,15 @@ impl Qwen4ExpGdn {
         ] {
             require_float_shape(name, tensor, &[config.num_value_heads as i32])?;
         }
+        let fused_inputs =
+            FusedProjections::build(&[&weights.qkv, &weights.gate, &weights.decay, &weights.beta]);
         Ok(Self {
             config,
             hidden,
             eps,
             activation,
             weights,
+            fused_inputs,
             exp_a_log: std::sync::OnceLock::new(),
         })
     }
@@ -535,7 +740,27 @@ impl Qwen4ExpGdn {
         if let Some(state) = state {
             self.validate_state(state, batch as usize, input.dtype())?;
         }
-        let qkv = qwen4_verifier_projection(input, &self.weights.qkv, policy, verifier_policy);
+        // One-row decode projects qkv, gate, decay and beta with one fused
+        // quantized matmul; every other call runs the four members.
+        let member_policy =
+            |weight: &QuantizedWeight| projection_policy(weight, policy, verifier_policy);
+        let fused: Option<[MlxArray; 4]> = FusedProjections::project(
+            self.fused_inputs.as_ref(),
+            input,
+            &[
+                member_policy(&self.weights.qkv),
+                member_policy(&self.weights.gate),
+                member_policy(&self.weights.decay),
+                member_policy(&self.weights.beta),
+            ],
+        );
+        let (qkv, fused_gates) = match fused {
+            Some([qkv, gate, decay, beta]) => (qkv, Some([gate, decay, beta])),
+            None => (
+                qwen4_verifier_projection(input, &self.weights.qkv, policy, verifier_policy),
+                None,
+            ),
+        };
         let (convolved, conv) = qwen4_conv1d(cfg, &qkv, &self.weights.conv, state.map(|s| &s.conv));
         let split = split_linear_attention_qkv(cfg, &convolved);
         #[cfg(test)]
@@ -608,16 +833,20 @@ impl Qwen4ExpGdn {
         };
         // Both gate projections are built once and handed to the native
         // kernel or to their compiled and eager stages unchanged.
-        let project_decay =
-            || qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy);
+        let project_decay = || match &fused_gates {
+            Some([_, decay, _]) => decay.clone(),
+            None => qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy),
+        };
         #[cfg(test)]
         let decay_projection =
             trial_tiled_decay_projection(input, &self.weights.decay, policy, verifier_policy)
                 .unwrap_or_else(project_decay);
         #[cfg(not(test))]
         let decay_projection = project_decay();
-        let beta_projection =
-            qwen4_verifier_projection(input, &self.weights.beta, policy, verifier_policy);
+        let beta_projection = match &fused_gates {
+            Some([_, _, beta]) => beta.clone(),
+            None => qwen4_verifier_projection(input, &self.weights.beta, policy, verifier_policy),
+        };
         // The native kernel produces decay and beta together; when it does not
         // apply, both stages keep their original chain.
         let (decay, beta) = if qwen4_exp_fused::native_allowed(Stretch::GdnNativeDecay, seq)
@@ -663,6 +892,12 @@ impl Qwen4ExpGdn {
             crate::flash_next_gdn::try_mlx_prefill(&q, &k, &v, &decay, &beta, &recurrent)
         } else {
             None
+        };
+        #[cfg(test)]
+        let prefill = if crate::model::qwen4_exp::profiling::skip_stage("gdn_recurrence") {
+            Some((v.clone(), recurrent.clone()))
+        } else {
+            prefill
         };
         #[cfg(test)]
         let used_mlx_prefill = prefill.is_some();
@@ -717,8 +952,10 @@ impl Qwen4ExpGdn {
             eps.to_bits() as i64,
             activation_code | (dtype_code << 8),
         ];
-        let gate_projection =
-            qwen4_verifier_projection(input, &self.weights.gate, policy, verifier_policy);
+        let gate_projection = match &fused_gates {
+            Some([gate, _, _]) => gate.clone(),
+            None => qwen4_verifier_projection(input, &self.weights.gate, policy, verifier_policy),
+        };
         let gated = match qwen4_exp_fused::apply(
             Stretch::GdnPost,
             seq,
@@ -2686,6 +2923,452 @@ mod tests {
             &native_state.recurrent,
             &eager_state.recurrent,
             "recurrent state",
+        );
+    }
+
+    /// A deterministic `[output, input]` projection quantized as MXFP4 (4-bit)
+    /// or 8-bit affine, both at group size 32, with `dtype` scales.
+    fn prng_quantized(
+        rng: &mut XorShift64,
+        output: i32,
+        input: i32,
+        mode: mlx_sys::MlxQuantizationMode,
+        dtype: MlxDtype,
+    ) -> QuantizedWeight {
+        let dense = prng_dense(rng, output as usize, input as usize, 0.05, dtype);
+        let affine = mode == mlx_sys::MlxQuantizationMode::Affine;
+        let bits = if affine { 8 } else { 4 };
+        let packed = mlx_sys::quantize(&dense.weight, Some(32), Some(bits), mode, None, None);
+        let mut weight = QuantizedWeight::new(
+            packed[0].clone(),
+            Some(packed[1].clone()),
+            affine.then(|| packed[2].clone()),
+        );
+        weight.mode = if affine { "affine" } else { "mxfp4" }.to_string();
+        weight.bits = bits;
+        weight.group_size = 32;
+        weight
+    }
+
+    /// Every fused group, at the shipped widths and at widths that reach MLX's
+    /// other one-row kernels (an output count that is not a multiple of the
+    /// kernel tile, an input width below the fast kernel's step, and the
+    /// 128-wide kernel), must hand each member the bits of its own call.
+    #[test]
+    fn fused_projections_match_member_calls_bitwise() {
+        use mlx_sys::MlxQuantizationMode::{Affine, Mxfp4};
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let shared = ProjectionBatchPolicy::Shared;
+        let all = [MlxDtype::Bfloat16, MlxDtype::Float16, MlxDtype::Float32];
+        let bf16 = [MlxDtype::Bfloat16];
+        // Label, mode, input width, member output widths, activation dtypes.
+        type Group<'a> = (
+            &'a str,
+            mlx_sys::MlxQuantizationMode,
+            i32,
+            &'a [i32],
+            &'a [MlxDtype],
+        );
+        let groups: [Group<'_>; 10] = [
+            (
+                "gdn qkv|gate|decay|beta",
+                Mxfp4,
+                2560,
+                &[10240, 6144, 48, 48],
+                &bf16,
+            ),
+            ("attention q|k|v", Mxfp4, 2560, &[12288, 512, 512], &bf16),
+            ("moe shared gate|up", Mxfp4, 2560, &[640, 640], &all),
+            ("moe router|shared router", Affine, 2560, &[512, 1], &all),
+            ("partial tile mxfp4", Mxfp4, 2560, &[5, 1, 3], &all),
+            ("partial tile affine", Affine, 2560, &[3, 9, 1, 2], &all),
+            ("short input mxfp4", Mxfp4, 96, &[7, 16], &all),
+            ("short input affine", Affine, 160, &[1, 12, 3], &all),
+            ("128-wide mxfp4", Mxfp4, 128, &[9, 24], &all),
+            ("128-wide affine", Affine, 128, &[1, 8, 5], &all),
+        ];
+        for (label, mode, input_width, outputs, dtypes) in groups {
+            for &dtype in dtypes {
+                let mut rng = XorShift64::new(case_seed(
+                    7000 + u64::from(input_width as u32) + outputs.len() as u64,
+                ));
+                let members: Vec<QuantizedWeight> = outputs
+                    .iter()
+                    .map(|&output| prng_quantized(&mut rng, output, input_width, mode, dtype))
+                    .collect();
+                let refs: Vec<&QuantizedWeight> = members.iter().collect();
+                let fused = with_fused_projections(Some(true), || FusedProjections::build(&refs))
+                    .unwrap_or_else(|| panic!("{label} {dtype:?}: members must fuse"));
+                assert_eq!(fused.spans.len(), members.len(), "{label}: member count");
+                let policies = vec![shared; members.len()];
+                for seed in 0_u64..3 {
+                    let input =
+                        deterministic_input(input_width, 1, case_seed(7100 + seed), 1.5, dtype);
+                    let before = fused_projection_calls_for_test();
+                    let actual = with_fused_projections(Some(true), || {
+                        fused.project_members(&input, &policies)
+                    })
+                    .unwrap_or_else(|| panic!("{label} {dtype:?}: one row must be served"));
+                    assert_eq!(fused_projection_calls_for_test(), before + 1);
+                    for (index, (actual, member)) in actual.iter().zip(&members).enumerate() {
+                        let expected = qw_with_policy(&input, member, shared);
+                        assert_eq!(actual.dtype(), expected.dtype(), "{label} dtype");
+                        assert_bit_identical(
+                            actual,
+                            &expected,
+                            &format!("{label} {dtype:?} seed {seed} member {index}"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The fused call is taken only for the plain one-row shared-policy step
+    /// with the switch on; every other call and every mixed member set leaves
+    /// the members on their own projections.
+    #[test]
+    fn fused_projections_decline_outside_the_one_row_shared_step() {
+        use mlx_sys::MlxQuantizationMode::{Affine, Mxfp4};
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let shared = ProjectionBatchPolicy::Shared;
+        let row_exact = ProjectionBatchPolicy::RowExact;
+        let dtype = MlxDtype::Bfloat16;
+        let mut rng = XorShift64::new(case_seed(7200));
+        let a = prng_quantized(&mut rng, 24, 512, Mxfp4, dtype);
+        let b = prng_quantized(&mut rng, 8, 512, Mxfp4, dtype);
+        let build = |members: &[&QuantizedWeight]| {
+            with_fused_projections(Some(true), || FusedProjections::build(members))
+        };
+        let fused = build(&[&a, &b]).unwrap();
+        let one_row = deterministic_input(512, 1, case_seed(7201), 1.5, dtype);
+        let project = |input: &MlxArray, policies: &[ProjectionBatchPolicy]| {
+            FusedProjections::project::<2>(Some(&fused), input, policies)
+        };
+        let on = |body: &dyn Fn() -> bool| with_fused_projections(Some(true), body);
+        assert!(on(&|| project(&one_row, &[shared, shared]).is_some()));
+        // The kill switch: nothing is built, and a built group stays unused.
+        assert!(
+            with_fused_projections(Some(false), || FusedProjections::build(&[&a, &b])).is_none()
+        );
+        assert!(with_fused_projections(Some(false), || {
+            project(&one_row, &[shared, shared]).is_none()
+        }));
+        // Verifier windows, batched decode and row-exact members.
+        let two_rows = deterministic_input(512, 2, case_seed(7202), 1.5, dtype);
+        let two_batches = reshape(&two_rows, &[2, 1, 512], None);
+        let flat = reshape(&one_row, &[1, 512], None);
+        assert!(on(&|| project(&two_rows, &[shared, shared]).is_none()));
+        assert!(on(&|| project(&two_batches, &[shared, shared]).is_none()));
+        assert!(on(&|| project(&flat, &[shared, shared]).is_none()));
+        assert!(on(&|| project(&one_row, &[shared, row_exact]).is_none()));
+        assert!(on(&|| project(&one_row, &[row_exact, row_exact]).is_none()));
+        assert!(on(&|| project(&one_row, &[shared]).is_none()));
+        assert!(on(&|| {
+            FusedProjections::project::<3>(Some(&fused), &one_row, &[shared; 3]).is_none()
+        }));
+        assert!(on(&|| {
+            FusedProjections::project::<2>(None, &one_row, &[shared, shared]).is_none()
+        }));
+        // The exact verifier scope may route a member to another kernel.
+        {
+            let _exact_on = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+            assert!(on(&|| project(&one_row, &[shared, shared]).is_none()));
+        }
+        assert!(on(&|| project(&one_row, &[shared, shared]).is_some()));
+        // Member sets that do not share one quantization contract.
+        let affine = prng_quantized(&mut rng, 8, 512, Affine, dtype);
+        let other_width = prng_quantized(&mut rng, 8, 256, Mxfp4, dtype);
+        let dense = prng_dense(&mut rng, 8, 512, 0.05, dtype);
+        let f32_scales = prng_quantized(&mut rng, 8, 512, Affine, MlxDtype::Float32);
+        let mut biased = prng_quantized(&mut rng, 8, 512, Mxfp4, dtype);
+        biased.linear_bias = Some(zeros(&[8], dtype, None));
+        assert!(build(&[&a]).is_none(), "one member");
+        assert!(build(&[&a, &affine]).is_none(), "mixed modes");
+        assert!(build(&[&a, &other_width]).is_none(), "mixed input widths");
+        assert!(build(&[&a, &dense]).is_none(), "unquantized member");
+        assert!(build(&[&dense, &dense]).is_none(), "unquantized group");
+        assert!(
+            build(&[&affine, &f32_scales]).is_none(),
+            "mixed scale dtypes"
+        );
+        assert!(build(&[&a, &biased]).is_none(), "dense linear bias");
+        assert!(
+            build(&[&affine, &affine]).is_some(),
+            "matching affine members"
+        );
+    }
+
+    /// A GDN layer at the shipped geometry with MXFP4 input projections: the
+    /// fused one-row step must reproduce the unfused output and both retained
+    /// states bit for bit over a decode chain, on the default and the portable
+    /// recurrence, and a verifier window must not use the fused weight.
+    #[test]
+    fn fused_input_projections_keep_gdn_decode_bits() {
+        use mlx_sys::MlxQuantizationMode::Mxfp4;
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let dtype = MlxDtype::Bfloat16;
+        let mut rng = XorShift64::new(case_seed(7300));
+        let conv_data: Vec<f32> = (0..10240 * 4).map(|_| rng.next_f32(0.5)).collect();
+        let conv = astype(
+            &MlxArray::from_raw_data(
+                conv_data.as_ptr().cast(),
+                conv_data.len() * 4,
+                &[10240, 4, 1],
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        );
+        let module = with_fused_projections(Some(true), || {
+            Qwen4ExpGdn::new(
+                LinearAttentionConfig {
+                    full_attention_interval: 4,
+                    num_key_heads: 16,
+                    num_value_heads: 48,
+                    key_head_dim: 128,
+                    value_head_dim: 128,
+                    conv_kernel_dim: 4,
+                    q_scale: 1.0,
+                    k_scale: 1.0,
+                },
+                2560,
+                1e-6,
+                GdnGateActivation::Silu,
+                Qwen4ExpGdnWeights {
+                    qkv: prng_quantized(&mut rng, 10240, 2560, Mxfp4, dtype),
+                    gate: prng_quantized(&mut rng, 6144, 2560, Mxfp4, dtype),
+                    decay: prng_quantized(&mut rng, 48, 2560, Mxfp4, dtype),
+                    beta: prng_quantized(&mut rng, 48, 2560, Mxfp4, dtype),
+                    output: prng_quantized(&mut rng, 2560, 6144, Mxfp4, dtype),
+                    conv,
+                    a_log: prng_vector(&mut rng, 48, 0.4),
+                    dt_bias: prng_vector(&mut rng, 48, 0.4),
+                    norm_gain: mlx_sys::broadcast_to(
+                        &astype(&MlxArray::from_f32(1.0), dtype, None),
+                        &[128],
+                        None,
+                    ),
+                },
+            )
+            .unwrap()
+        });
+        assert!(
+            module.fused_inputs.is_some(),
+            "the four projections must fuse"
+        );
+        let shared = ProjectionBatchPolicy::Shared;
+        let default_forward = |input: &MlxArray, state: Option<&Qwen4ExpGdnState>| {
+            module.forward(input, state, shared, shared).unwrap()
+        };
+        let portable_forward =
+            |input: &MlxArray, state: Option<&Qwen4ExpGdnState>| run_forward(&module, input, state);
+        type Forward<'a> =
+            &'a dyn Fn(&MlxArray, Option<&Qwen4ExpGdnState>) -> (MlxArray, Qwen4ExpGdnState);
+        let forwards: [(&str, Forward<'_>); 2] = [
+            ("default", &default_forward),
+            ("portable", &portable_forward),
+        ];
+        for (label, forward) in forwards {
+            let mut split_state: Option<Qwen4ExpGdnState> = None;
+            let mut fused_state: Option<Qwen4ExpGdnState> = None;
+            for step in 0_u64..4 {
+                let input = deterministic_input(2560, 1, case_seed(7310 + step), 1.0, dtype);
+                let (split_output, split_next) =
+                    with_fused_projections(Some(false), || forward(&input, split_state.as_ref()));
+                let before = fused_projection_calls_for_test();
+                let (fused_output, fused_next) =
+                    with_fused_projections(Some(true), || forward(&input, fused_state.as_ref()));
+                assert_eq!(
+                    fused_projection_calls_for_test(),
+                    before + 1,
+                    "{label} step {step}: one fused call per layer step"
+                );
+                let at = format!("{label} step {step}");
+                assert_bit_identical(&fused_output, &split_output, &format!("{at} output"));
+                assert_bit_identical(&fused_next.conv, &split_next.conv, &format!("{at} conv"));
+                assert_bit_identical(
+                    &fused_next.recurrent,
+                    &split_next.recurrent,
+                    &format!("{at} recurrent"),
+                );
+                split_state = Some(split_next);
+                fused_state = Some(fused_next);
+            }
+            let window = deterministic_input(2560, 3, case_seed(7320), 1.0, dtype);
+            let before = fused_projection_calls_for_test();
+            let _ = with_fused_projections(Some(true), || forward(&window, fused_state.as_ref()));
+            assert_eq!(
+                fused_projection_calls_for_test(),
+                before,
+                "{label}: a verifier window must use the member projections"
+            );
+        }
+    }
+
+    /// On the real pack, a greedy decode chain with the fused one-row
+    /// projections must produce the logits bits, the tokens and the serialized
+    /// state of the chain that runs every member projection, and verifier
+    /// windows from the same prefix must be unchanged. Also reports the bytes
+    /// of the fused weight copies and the fused calls per token.
+    #[test]
+    #[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS"]
+    fn flash_next_fused_projections_match_split_on_real_pack() {
+        use crate::model::ModelConfig;
+        use crate::model::qwen4_exp::{Qwen4ExpOutput, Qwen4ExpState, forward};
+        use ax_engine_core::NativeModelArtifacts;
+        use std::path::PathBuf;
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+
+        let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+        let tokens: Vec<u32> =
+            serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+        let steps = std::env::var("AX_FLASH_NEXT_PROFILE_STEPS")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(64);
+        let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+        let cfg = ModelConfig::from_manifest(artifacts.manifest());
+        let bytes_before = FUSED_PROJECTION_BYTES.load(Ordering::Relaxed);
+        let weights =
+            with_fused_projections(Some(true), || crate::weights::load_weights(&artifacts))
+                .unwrap();
+        let fused_bytes = FUSED_PROJECTION_BYTES.load(Ordering::Relaxed) - bytes_before;
+        let trunk = weights.qwen4_exp.as_ref().unwrap();
+        let owner = cfg.compile_cache_identity;
+        let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+            forward(trunk, input, state, owner, policy).unwrap()
+        };
+        let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+            let logits = astype(&output.logits, MlxDtype::Float32, None);
+            eval(&[&logits]);
+            logits.data_f32().iter().map(|v| v.to_bits()).collect()
+        };
+        let snapshot = |state: Qwen4ExpState| {
+            let mut cache = crate::kv_cache::MlxKVCache::new_contiguous(state.layer_count());
+            cache.advance(state.position());
+            cache.qwen4_exp = Some(state);
+            cache.serialize_to_bytes()
+        };
+        // Greedy token of the last row.
+        let greedy = |bits: &[u32], rows: usize| -> u32 {
+            let width = bits.len() / rows;
+            let last = &bits[bits.len() - width..];
+            let mut best = 0usize;
+            for (index, value) in last.iter().enumerate() {
+                if f32::from_bits(*value) > f32::from_bits(last[best]) {
+                    best = index;
+                }
+            }
+            best as u32
+        };
+
+        let mut prefix = Qwen4ExpState::new(trunk, owner);
+        let mut first_token = 0u32;
+        let mut start = 0usize;
+        while start < tokens.len() {
+            let end = (start + 1024).min(tokens.len());
+            let output = with_fused_projections(Some(false), || {
+                run(&tokens[start..end], &prefix, ProjectionBatchPolicy::Shared)
+            });
+            if end == tokens.len() {
+                first_token = greedy(&bits(&output), end - start);
+            }
+            prefix = output.state;
+            start = end;
+        }
+
+        let mut split_state = prefix.clone();
+        let mut fused_state = prefix.clone();
+        let (mut split_token, mut fused_token) = (first_token, first_token);
+        let (mut split_secs, mut fused_secs) = (0.0f64, 0.0f64);
+        let mut first_fused_secs = 0.0f64;
+        let mut generated = Vec::with_capacity(steps);
+        let calls_before = fused_projection_calls_for_test();
+        for step in 0..steps {
+            let run_split = |secs: &mut f64| {
+                let started = Instant::now();
+                let output = with_fused_projections(Some(false), || {
+                    run(&[split_token], &split_state, ProjectionBatchPolicy::Shared)
+                });
+                let logits = bits(&output);
+                *secs += started.elapsed().as_secs_f64();
+                (output, logits)
+            };
+            let run_fused = |secs: &mut f64| {
+                let started = Instant::now();
+                let output = with_fused_projections(Some(true), || {
+                    run(&[fused_token], &fused_state, ProjectionBatchPolicy::Shared)
+                });
+                let logits = bits(&output);
+                *secs += started.elapsed().as_secs_f64();
+                (output, logits)
+            };
+            // Alternate which arm runs first so neither always pays the
+            // allocator and cache cost of following the other.
+            let ((split, split_bits), (fused, fused_bits)) = if step % 2 == 0 {
+                let split = run_split(&mut split_secs);
+                (split, run_fused(&mut fused_secs))
+            } else {
+                let fused = run_fused(&mut fused_secs);
+                (run_split(&mut split_secs), fused)
+            };
+            if step == 0 {
+                // The first fused step also materialises the fused weights.
+                first_fused_secs = fused_secs;
+            }
+            assert_eq!(fused_bits, split_bits, "decode step {step}: logits");
+            split_token = greedy(&split_bits, 1);
+            fused_token = greedy(&fused_bits, 1);
+            assert_eq!(fused_token, split_token, "decode step {step}: token");
+            generated.push(fused_token);
+            split_state = split.state;
+            fused_state = fused.state;
+        }
+        let fused_calls = fused_projection_calls_for_test() - calls_before;
+        assert!(
+            fused_calls >= steps as u64 && fused_calls.is_multiple_of(steps as u64),
+            "fused projections served {fused_calls} calls over {steps} steps"
+        );
+
+        // Verifier windows and row-exact singletons keep the member
+        // projections, so both arms must agree from the decoded state too.
+        let window: Vec<u32> = generated.iter().copied().take(8).collect();
+        for policy in [
+            ProjectionBatchPolicy::Shared,
+            ProjectionBatchPolicy::RowExact,
+        ] {
+            for rows in [1usize, 2, 4, 8] {
+                if rows > window.len() {
+                    continue;
+                }
+                let split = with_fused_projections(Some(false), || {
+                    run(&window[..rows], &split_state, policy)
+                });
+                let fused = with_fused_projections(Some(true), || {
+                    run(&window[..rows], &fused_state, policy)
+                });
+                assert_eq!(bits(&fused), bits(&split), "{policy:?} rows {rows}: logits");
+                assert_eq!(
+                    snapshot(fused.state),
+                    snapshot(split.state),
+                    "{policy:?} rows {rows}: retained state"
+                );
+            }
+        }
+        assert_eq!(snapshot(fused_state), snapshot(split_state), "chain state");
+        eprintln!(
+            "FUSED_PROJECTIONS_VS_SPLIT prompt={} steps={steps} fused_calls_per_step={} \
+             fused_copy_mib={:.1} split_ms_per_step={:.2} fused_ms_per_step={:.2} \
+             first_fused_step_ms={:.1} tokens={:?}",
+            tokens.len(),
+            fused_calls / steps as u64,
+            fused_bytes as f64 / (1024.0 * 1024.0),
+            split_secs * 1e3 / steps as f64,
+            fused_secs * 1e3 / steps as f64,
+            first_fused_secs * 1e3,
+            &generated[..generated.len().min(16)],
         );
     }
 }

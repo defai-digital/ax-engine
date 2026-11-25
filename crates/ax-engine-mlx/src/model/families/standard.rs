@@ -868,6 +868,134 @@ pub(crate) fn layer_forward_verify_functional(
     })
 }
 
+/// Most rows one tree attention call hands MLX: its fused vector kernel
+/// serves up to eight query rows, and wider calls fall back to separate
+/// matmul and softmax kernels.
+pub(crate) const TREE_ATTENTION_CHUNK_ROWS: i32 = 8;
+
+/// Dense-Qwen full-attention layer over one DFlash2 draft tree.
+///
+/// The rows are tree nodes, not a sequence: `positions` holds each row's own
+/// position (`[rows]` int32), and `masks` holds, for each
+/// chunk of [`TREE_ATTENTION_CHUNK_ROWS`] rows, the `[chunk, key_len]` bool
+/// mask that opens the cached prefix, the row itself and its ancestors. The
+/// rows' K/V are appended to `cache` in row order and also returned, so the
+/// caller can rewrite the accepted path in place. Per row the arithmetic is
+/// [`layer_forward_verify_functional`]'s.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layer_forward_tree_verify(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    positions: &MlxArray,
+    masks: &[MlxArray],
+) -> Option<(MlxArray, MlxArray, MlxArray)> {
+    let (head_dim, rope_theta, rope_dims, layer_rope_freqs, sliding_window, kv_source, v_norm) =
+        layer_params(cfg, layer_idx);
+    if sliding_window.is_some()
+        || kv_source.is_some()
+        || w.router_proj.is_some()
+        || w.ffn_post_norm.is_some()
+        || w.per_layer_gate.is_some()
+        || w.layer_scalar.is_some()
+        || cfg.uses_geglu
+    {
+        return None;
+    }
+    let seq = hidden.shape().get(1).copied()?;
+    let rows = seq as usize;
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape().get(2).copied()? as usize).checked_div(head_dim)?;
+    let v_new =
+        prepare_value_bhsd_from_proj(&v_raw, v_norm, kv_heads, head_dim, rows, cfg.rms_norm_eps);
+    // MLX RoPE takes one offset per batch row: lay the rows out as the batch
+    // (`[rows, heads, 1, head_dim]` is the projection's own memory order),
+    // rotate each to its position, then view them as one sequence.
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let rope_base = rope_freqs.is_none().then_some(rope_theta);
+    let norm_rope = |proj: &MlxArray, norm: Option<&MlxArray>, heads: i32| {
+        let by_row = mlx_sys::reshape(proj, &[seq, heads, 1, head_dim as i32], None);
+        let normed = match norm {
+            Some(norm) => rms_norm(&by_row, Some(norm), cfg.rms_norm_eps, None),
+            None => by_row,
+        };
+        let rotated = rope_dynamic(
+            &normed,
+            rope_dims as i32,
+            false,
+            rope_base,
+            1.0,
+            positions,
+            rope_freqs,
+            None,
+        );
+        mlx_sys::contiguous(&mlx_sys::transpose(&rotated, &[2, 1, 0, 3], None), None)
+    };
+    let q_rope = norm_rope(&q_raw, w.q_norm.as_ref(), cfg.n_heads as i32);
+    let k_new = norm_rope(&k_raw, w.k_norm.as_ref(), kv_heads as i32);
+    let (k_all, v_all) = cache.append(layer_idx, k_new.clone(), v_new.clone());
+    let key_len = k_all.shape().get(2).copied()?;
+    let heads = cfg.n_heads as i32;
+    let width = head_dim as i32;
+    let mut chunks = Vec::with_capacity(masks.len());
+    let mut start = 0;
+    for mask in masks {
+        let mask_shape = mask.shape();
+        if mask_shape.len() != 2 || mask_shape[1] != key_len {
+            return None;
+        }
+        let end = start + mask_shape[0];
+        if end > seq {
+            return None;
+        }
+        let q_chunk = if start == 0 && end == seq {
+            q_rope.clone()
+        } else {
+            slice(
+                &q_rope,
+                &[0, 0, start, 0],
+                &[1, heads, end, width],
+                &[1, 1, 1, 1],
+                None,
+            )
+        };
+        chunks.push(mlx_sys::scaled_dot_product_attention_with_mask(
+            &q_chunk,
+            &k_all,
+            &v_all,
+            cfg.query_scale,
+            mlx_sys::ScaledDotProductAttentionMask::Array(mask),
+            None,
+        ));
+        start = end;
+    }
+    if start != seq {
+        return None;
+    }
+    let attn = if chunks.len() == 1 {
+        chunks.pop()?
+    } else {
+        let refs: Vec<&MlxArray> = chunks.iter().collect();
+        mlx_sys::concatenate(&refs, 2, None)
+    };
+    let flat = flatten_attention_output_bhsd(&attn, rows, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection_with_post_norm_policy(
+        &flat,
+        attn_gate.as_ref(),
+        w.o_proj.as_ref()?,
+        w.attn_post_norm.as_ref(),
+        cfg.rms_norm_eps,
+        ProjectionBatchPolicy::Shared,
+    );
+    let (residual, normed2) =
+        add_rms_norm_pair(hidden, &attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
+    let hidden = ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &residual);
+    Some((hidden, k_new, v_new))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,

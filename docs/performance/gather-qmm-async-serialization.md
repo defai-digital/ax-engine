@@ -303,3 +303,34 @@ the raise globally.
 
 Raw probe artifacts:
 `benchmarks/results/profiling/2026-08-03-auto-buffer-caps-family-sweep/`.
+
+## Update (2026-11-25): Flash Next raises the byte cap only on M5+
+
+On a Neural Accelerator host the both-caps raise stays `qwen3_next` only.
+`qwen4_exp` (Flash Next) now raises `MLX_MAX_MB_PER_BUFFER` to 256 there and
+leaves `MLX_MAX_OPS_PER_BUFFER` at MLX's default. MacBook Pro M5 Max 128 GB,
+Qwen 3.8 Flash Next MXFP4, greedy decode over 3 prompts x 2 at 64 tokens,
+interleaved arms of one binary, identical output in every arm. Effective
+prefill is the input-token difference over the first-text latency difference
+of a long and a 127-token prompt.
+
+| `MLX_MAX_MB_PER_BUFFER` | Decode tok/s | Prefill tok/s, 1.5k prompt | Prefill tok/s, 16k prompt |
+| --- | ---: | ---: | ---: |
+| unset (MLX default) | 58.00, 58.11, 58.24, 58.08 | 3255, 3188 | 947, 926 |
+| 100 | 58.01 | 3103 | |
+| 200 | 60.34, 60.27, 60.31 | 3059 | 915, 928 |
+| 400 | 60.12 | 3005 | |
+| 512 | 60.06, 60.33 | | 892, 932 |
+| 1000 or 1024 | 60.30, 60.03, 59.40, 60.09 | 2964, 2970 | 886, 928 |
+| 4000 | 60.21 | 2996 | |
+| 1000000 | 60.29, 60.05 | 2980, 2936 | |
+
+One decode step reads more weight bytes than the default cap admits per
+command buffer, so it was split into many of them. Decode gains nothing at
+100 MB and all of it from 200 MB up, while prefill gives back a little more
+as the cap grows, so the shipped value sits near the low end of the plateau.
+Raising the op-count cap as well gave no further decode gain and cost prefill
+(58.99 decode and 2235 prefill at 1000 ops). On Qwen 3.8 27B DFlash2 a
+1024 MB byte cap measured 110.4 against 111.3 tok/s, so that family keeps
+MLX's defaults. `AX_MLX_AUTO_BUFFER_CAPS=0` disables the raise and a pre-set
+`MLX_MAX_MB_PER_BUFFER` still wins.

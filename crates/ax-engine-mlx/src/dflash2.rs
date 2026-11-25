@@ -801,6 +801,77 @@ pub(crate) struct Dflash2Weights {
     artifact: DrafterArtifact,
 }
 
+/// Leading rows of the LM head a draft reads.
+pub(crate) const DRAFT_HEAD_PREFIX_ROWS: i32 = 148_288;
+/// Trailing rows of the LM head a draft reads: the control tokens live there.
+pub(crate) const DRAFT_HEAD_TAIL_ROWS: i32 = 320;
+/// Tokens of recent text that must lie in the draft head's rows for a draft
+/// to use it.
+pub(crate) const DRAFT_HEAD_RECENT_TOKENS: usize = 64;
+
+/// True when `token` is one the draft head's rows can propose.
+pub(crate) fn draft_head_covers(token: u32, vocab: i32) -> bool {
+    let token = i64::from(token);
+    token < i64::from(DRAFT_HEAD_PREFIX_ROWS) || token >= i64::from(vocab - DRAFT_HEAD_TAIL_ROWS)
+}
+
+/// The leading and trailing rows of the target's LM head, as views.
+struct DraftHead {
+    prefix: QuantizedWeight,
+    tail: QuantizedWeight,
+    /// Added to a column index at or past the prefix to get its token id.
+    tail_shift: u32,
+}
+
+impl DraftHead {
+    fn build(head: &QuantizedWeight, vocab: i32) -> Option<Self> {
+        let rows = *head.weight.shape().first()?;
+        if rows != vocab || vocab <= DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS {
+            return None;
+        }
+        let prefix = head.row_range(0, DRAFT_HEAD_PREFIX_ROWS)?;
+        let tail = head.row_range(vocab - DRAFT_HEAD_TAIL_ROWS, vocab)?;
+        // Resolve the views once, so a draft graph holds no slice nodes.
+        let mut views = vec![&prefix.weight, &tail.weight];
+        views.extend(prefix.scales.iter().chain(&prefix.biases));
+        views.extend(tail.scales.iter().chain(&tail.biases));
+        mlx_sys::try_eval(&views).ok()?;
+        Some(Self {
+            prefix,
+            tail,
+            tail_shift: (vocab - DRAFT_HEAD_PREFIX_ROWS - DRAFT_HEAD_TAIL_ROWS) as u32,
+        })
+    }
+
+    /// `[1, rows, prefix + tail]` logits of `x` over the head's rows.
+    fn project(&self, x: &MlxArray) -> MlxArray {
+        concatenate(&[&qw(x, &self.prefix), &qw(x, &self.tail)], 2, None)
+    }
+
+    /// Token ids of column indices into [`Self::project`]'s output.
+    fn token_ids(&self, columns: &MlxArray) -> MlxArray {
+        let columns = astype(columns, MlxDtype::Uint32, None);
+        let scalar = |value: u32| {
+            MlxArray::from_raw_data(
+                (&value as *const u32).cast::<u8>(),
+                std::mem::size_of::<u32>(),
+                &[1],
+                MlxDtype::Uint32,
+            )
+        };
+        let past_prefix = astype(
+            &mlx_sys::greater_equal(&columns, &scalar(DRAFT_HEAD_PREFIX_ROWS as u32), None),
+            MlxDtype::Uint32,
+            None,
+        );
+        add(
+            &columns,
+            &multiply(&past_prefix, &scalar(self.tail_shift), None),
+            None,
+        )
+    }
+}
+
 fn take_tensor(
     tensors: &mut std::collections::HashMap<String, MlxArray>,
     name: &str,
@@ -979,6 +1050,12 @@ pub(crate) struct Dflash2Drafter {
     /// runtime does for greedy decoding too (`AX_MLX_DFLASH2_SELECTOR`,
     /// default on). Off, drafts take the plain argmax of the target LM head.
     use_selector: bool,
+    /// The next solo draft may read only the draft head's rows.
+    head_subset: bool,
+    /// Those rows of this drafter's target, built at the first draft that
+    /// may use them. A drafter serves one request, so one target; `Some(None)`
+    /// when that target's head has no such rows.
+    draft_head: Option<Option<std::sync::Arc<DraftHead>>>,
     /// When set, every stage is evaluated and timed (diagnostic; breaks overlap).
     stage_times: Option<Vec<(&'static str, f64)>>,
     caches: Vec<LayerCache>,
@@ -987,6 +1064,11 @@ pub(crate) struct Dflash2Drafter {
     /// Second-best token at the first two draft positions. Filled only by
     /// [`Self::draft_block_capturing_alternatives`]; otherwise both are `None`.
     pub(crate) tree_alternatives: [Option<u32>; 2],
+    /// `AX_MLX_DFLASH2_CANDIDATE_TRACE` is set: each draft also leaves its
+    /// candidate table in `candidate_trace`.
+    trace_candidates: bool,
+    /// The last draft's candidate table (lazy), until the caller takes it.
+    candidate_trace: Option<CandidateTraceCapture>,
 }
 
 impl Dflash2Drafter {
@@ -995,11 +1077,34 @@ impl Dflash2Drafter {
         Self {
             weights,
             use_selector: false,
+            head_subset: false,
+            draft_head: None,
             stage_times: None,
             caches: (0..layers).map(|_| LayerCache::default()).collect(),
             offset: 0,
             tree_alternatives: [None, None],
+            trace_candidates: crate::fastpath::dflash2_candidate_trace_path().is_some()
+                || crate::dflash2_tree::tree_rows().is_some(),
+            candidate_trace: None,
         }
+    }
+
+    /// The candidate table of the draft just built, when
+    /// `AX_MLX_DFLASH2_CANDIDATE_TRACE` is set. The next draft replaces it.
+    pub(crate) fn take_candidate_trace(&mut self) -> Option<CandidateTraceCapture> {
+        self.candidate_trace.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_candidate_trace_for_test(&mut self, enabled: bool) {
+        self.trace_candidates = enabled;
+    }
+
+    /// Lets the next solo drafts read only the draft head's rows of the
+    /// target's LM head. The caller clears it when recent text holds a token
+    /// outside those rows.
+    pub(crate) fn set_head_subset(&mut self, enabled: bool) {
+        self.head_subset = enabled;
     }
 
     pub(crate) fn with_selector(mut self, enabled: bool) -> Self {
@@ -1152,6 +1257,7 @@ impl Dflash2Drafter {
         }
         self.offset = 0;
         self.tree_alternatives = [None, None];
+        self.candidate_trace = None;
     }
 
     /// Drafts `block - 1` tokens after `anchor`.
@@ -1438,6 +1544,7 @@ impl Dflash2Drafter {
         // read. Keep the pre-call cursor so a failed read does not stick.
         let cursor = self.snapshot_cursor();
         self.tree_alternatives = [None, None];
+        self.candidate_trace = None;
         let weights = self.weights.clone();
         let cfg = &weights.cfg;
         // Arm the fused multi-row matmuls for the whole block: the projections
@@ -1552,7 +1659,24 @@ impl Dflash2Drafter {
             Some(dtype) if dtype != draft_hidden.dtype() => astype(&draft_hidden, dtype, None),
             _ => draft_hidden.clone(),
         };
-        let logits = qw(&head_input, &target.lm_head);
+        // The selector path can draft through part of the head; the plain
+        // argmax path and its runner-up reads index the whole vocabulary.
+        let draft_head = if self.head_subset && self.use_selector && !capture_alternatives {
+            self.draft_head
+                .get_or_insert_with(|| {
+                    crate::fastpath::dflash2_head_subset_enabled()
+                        .then(|| DraftHead::build(&target.lm_head, cfg.vocab_size))
+                        .flatten()
+                        .map(std::sync::Arc::new)
+                })
+                .clone()
+        } else {
+            None
+        };
+        let logits = match draft_head.as_deref() {
+            Some(head) => head.project(&head_input),
+            None => qw(&head_input, &target.lm_head),
+        };
         let logits = if cfg.output_multiplier != 1.0 {
             multiply(
                 &logits,
@@ -1579,6 +1703,14 @@ impl Dflash2Drafter {
             } else {
                 None
             };
+            if self.trace_candidates {
+                self.candidate_trace = Some(greedy_candidate_trace(
+                    anchor,
+                    cfg.selector_top_k,
+                    &logits,
+                    &tokens,
+                ));
+            }
             (tokens, capture_error)
         } else {
             self.select(
@@ -1586,12 +1718,14 @@ impl Dflash2Drafter {
                 cfg,
                 &draft_hidden,
                 &logits,
+                draft_head.as_deref(),
                 anchor,
                 capture_alternatives,
             )
         };
         if capture_error.is_some() {
             self.restore_cursor(cursor);
+            self.candidate_trace = None;
         }
         (tokens, capture_error)
     }
@@ -1859,12 +1993,14 @@ impl Dflash2Drafter {
     /// Chain-aware rescoring of each position's top-k logits: the score of a
     /// candidate is its logit plus a low-rank edge score against the previously
     /// chosen token, and the best candidate is taken position by position.
+    #[allow(clippy::too_many_arguments)]
     fn select(
         &mut self,
         selector: &Selector,
         cfg: &Dflash2Config,
         draft_hidden: &MlxArray,
         logits: &MlxArray,
+        draft_head: Option<&DraftHead>,
         anchor: u32,
         capture_alternatives: bool,
     ) -> (MlxArray, Option<String>) {
@@ -1872,7 +2008,7 @@ impl Dflash2Drafter {
         let proposals = shape[1];
         let vocab = shape[2];
         let top_k = cfg.selector_top_k;
-        let candidates = top_k_indices(logits, top_k).unwrap_or_else(|| {
+        let columns = top_k_indices(logits, top_k).unwrap_or_else(|| {
             slice(
                 &argpartition_axis(logits, vocab - top_k, 2, None),
                 &[0, 0, vocab - top_k],
@@ -1881,7 +2017,12 @@ impl Dflash2Drafter {
                 None,
             )
         });
-        let unary = take_along_axis(logits, &candidates, 2, None);
+        let unary = take_along_axis(logits, &columns, 2, None);
+        // `logits` covers the draft head's rows only: name the tokens.
+        let candidates = match draft_head {
+            Some(head) => head.token_ids(&columns),
+            None => columns,
+        };
         let projected = matmul(draft_hidden, &selector.hidden_projection_t, None);
         let anchor_arr = MlxArray::from_raw_data(
             (&anchor as *const u32).cast::<u8>(),
@@ -1902,6 +2043,8 @@ impl Dflash2Drafter {
         let successor_all = take(&selector.successor_codebook, &candidates, 0, None);
         let predecessor_all = take(&selector.predecessor_codebook, &candidates, 0, None);
         let mut predecessor_row = take(&selector.predecessor_codebook, &anchor_arr, 0, None);
+        // Candidate trace only: the anchor's row, before the chain replaces it.
+        let trace_anchor_row = self.trace_candidates.then(|| predecessor_row.clone());
         let mut path = Vec::with_capacity(proposals as usize);
         let mut alt_slots = capture_alternatives.then(Vec::new);
         for position in 0..proposals {
@@ -1986,10 +2129,332 @@ impl Dflash2Drafter {
             None
         };
         let refs: Vec<&MlxArray> = path.iter().collect();
-        (
-            astype(&stack(&refs, 1, None), MlxDtype::Uint32, None),
-            capture_error,
+        let tokens = astype(&stack(&refs, 1, None), MlxDtype::Uint32, None);
+        if let Some(anchor_row) = trace_anchor_row {
+            self.candidate_trace = Some(selector_candidate_trace(
+                anchor,
+                rank,
+                &candidates,
+                &unary,
+                &projected,
+                &predecessor_all,
+                &successor_all,
+                &anchor_row,
+                &tokens,
+            ));
+        }
+        (tokens, capture_error)
+    }
+}
+
+/// One draft's candidate table for `AX_MLX_DFLASH2_CANDIDATE_TRACE`, as lazy
+/// arrays: nothing here is evaluated until [`Self::read`]. The edge scores
+/// are recomputed in float32 beside the chain and do not feed it, so they can
+/// differ from the chain's own sums in the last bits.
+#[derive(Clone)]
+pub(crate) struct CandidateTraceCapture {
+    anchor: u32,
+    top_k: i32,
+    positions: i32,
+    /// `[1, P, K]` token ids.
+    candidates: MlxArray,
+    /// `[1, P, K]` drafter logits of the candidates.
+    unary: MlxArray,
+    /// `[1, K]`: edge score of each first-position candidate after the anchor.
+    /// `None` without a selector.
+    edge0: Option<MlxArray>,
+    /// `[1, P - 1, K, K]`: `[p - 1][i][j]` is the edge score of candidate `j`
+    /// at position `p` after candidate `i` at position `p - 1`. `None`
+    /// without a selector or with a single position.
+    edges: Option<MlxArray>,
+    /// `[1, P]`: the chain the draft selected.
+    chain: MlxArray,
+}
+
+impl CandidateTraceCapture {
+    /// Evaluates the table and copies it to the host. Missing edge scores
+    /// (no selector) read as zeros.
+    pub(crate) fn read(&self) -> Result<CandidateTraceRecord, String> {
+        let dense =
+            |array: &MlxArray, dtype: MlxDtype| contiguous(&astype(array, dtype, None), None);
+        let candidates = dense(&self.candidates, MlxDtype::Uint32);
+        let unary = dense(&self.unary, MlxDtype::Float32);
+        let chain = dense(&self.chain, MlxDtype::Uint32);
+        let edge0 = self
+            .edge0
+            .as_ref()
+            .map(|array| dense(array, MlxDtype::Float32));
+        let edges = self
+            .edges
+            .as_ref()
+            .map(|array| dense(array, MlxDtype::Float32));
+        let mut refs = vec![&candidates, &unary, &chain];
+        refs.extend(edge0.as_ref());
+        refs.extend(edges.as_ref());
+        mlx_sys::try_eval(&refs)?;
+        let top_k = self.top_k.max(0) as usize;
+        let positions = self.positions.max(0) as usize;
+        let pairs = positions.saturating_sub(1) * top_k * top_k;
+        let record = CandidateTraceRecord {
+            anchor: self.anchor,
+            top_k,
+            positions,
+            candidates: candidates.data_u32().to_vec(),
+            unary: unary.data_f32().to_vec(),
+            edge0: edge0.map_or_else(|| vec![0.0; top_k], |array| array.data_f32().to_vec()),
+            edges: edges.map_or_else(|| vec![0.0; pairs], |array| array.data_f32().to_vec()),
+            chain: chain.data_u32().to_vec(),
+        };
+        if record.is_well_formed() {
+            Ok(record)
+        } else {
+            Err("DFlash2 candidate trace arrays have unexpected sizes".to_owned())
+        }
+    }
+}
+
+/// Host copy of one draft's candidate table, flattened row-major.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CandidateTraceRecord {
+    pub(crate) anchor: u32,
+    pub(crate) top_k: usize,
+    pub(crate) positions: usize,
+    /// `positions * top_k` token ids.
+    pub(crate) candidates: Vec<u32>,
+    /// `positions * top_k` drafter logits.
+    pub(crate) unary: Vec<f32>,
+    /// `top_k` edge scores after the anchor.
+    pub(crate) edge0: Vec<f32>,
+    /// `(positions - 1) * top_k * top_k` edge scores, `[p - 1][i][j]`.
+    pub(crate) edges: Vec<f32>,
+    /// `positions` selected tokens.
+    pub(crate) chain: Vec<u32>,
+}
+
+impl CandidateTraceRecord {
+    fn is_well_formed(&self) -> bool {
+        let cells = self.positions * self.top_k;
+        self.top_k > 0
+            && self.positions > 0
+            && self.candidates.len() == cells
+            && self.unary.len() == cells
+            && self.edge0.len() == self.top_k
+            && self.edges.len() == (self.positions - 1) * self.top_k * self.top_k
+            && self.chain.len() == self.positions
+    }
+
+    /// The `{"kind":"draft",...}` trace line of `request`, without a newline.
+    /// Non-finite scores are written as `null` so the line stays valid JSON.
+    pub(crate) fn json_line(&self, request: u64) -> String {
+        let width = self.top_k.max(1);
+        let mut line = String::with_capacity(64 + 12 * (self.unary.len() + self.edges.len()));
+        line.push_str(&format!(
+            "{{\"kind\":\"draft\",\"request\":{request},\"anchor\":{},\"top_k\":{},\
+             \"positions\":{},\"candidates\":",
+            self.anchor, self.top_k, self.positions,
+        ));
+        push_json_rows(&mut line, &self.candidates, width, |token| {
+            token.to_string()
+        });
+        line.push_str(",\"unary\":");
+        push_json_rows(&mut line, &self.unary, width, json_f32);
+        line.push_str(",\"edge0\":");
+        push_json_list(&mut line, &self.edge0, json_f32);
+        line.push_str(",\"edges\":[");
+        for (index, table) in self.edges.chunks(width * width).enumerate() {
+            if index > 0 {
+                line.push(',');
+            }
+            push_json_rows(&mut line, table, width, json_f32);
+        }
+        line.push_str("],\"chain\":");
+        push_json_list(&mut line, &self.chain, |token| token.to_string());
+        line.push('}');
+        line
+    }
+}
+
+fn json_f32(value: &f32) -> String {
+    if value.is_finite() {
+        format!("{value}")
+    } else {
+        "null".to_owned()
+    }
+}
+
+fn push_json_list<T>(line: &mut String, values: &[T], format: impl Fn(&T) -> String) {
+    line.push('[');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            line.push(',');
+        }
+        line.push_str(&format(value));
+    }
+    line.push(']');
+}
+
+/// `values` as a JSON list of `width`-long lists.
+fn push_json_rows<T>(
+    line: &mut String,
+    values: &[T],
+    width: usize,
+    format: impl Fn(&T) -> String + Copy,
+) {
+    line.push('[');
+    for (index, row) in values.chunks(width).enumerate() {
+        if index > 0 {
+            line.push(',');
+        }
+        push_json_list(line, row, format);
+    }
+    line.push(']');
+}
+
+impl CandidateTraceCapture {
+    /// The best-first draft tree of `rows` rows over this table, as lazy
+    /// arrays. `None` without selector edge scores or when the table is too
+    /// small for a tree.
+    pub(crate) fn tree_layout(&self, rows: i32) -> Option<crate::dflash2_tree::TreeLayout> {
+        let anchor = MlxArray::from_raw_data(
+            (&self.anchor as *const u32).cast::<u8>(),
+            std::mem::size_of::<u32>(),
+            &[1],
+            MlxDtype::Uint32,
+        );
+        crate::dflash2_tree::build_tree_layout(
+            &astype(&self.candidates, MlxDtype::Uint32, None),
+            &self.unary,
+            self.edge0.as_ref()?,
+            self.edges.as_ref()?,
+            &anchor,
+            rows,
         )
+    }
+
+    /// Draft positions the table covers.
+    pub(crate) fn positions(&self) -> usize {
+        self.positions.max(0) as usize
+    }
+}
+
+/// The candidate table of a selector draft. `candidates` and `unary` are
+/// `[1, P, K]`, `projected` `[1, P, rank]`, the gathered codebook rows
+/// `[1, P, K, rank]`, `anchor_row` `[1, rank]`, `chain` `[1, P]`. The pair
+/// scores of all positions are one batched matmul,
+/// `(predecessor[p - 1] * projected[p]) @ successor[p]^T`.
+#[allow(clippy::too_many_arguments)]
+fn selector_candidate_trace(
+    anchor: u32,
+    rank: i32,
+    candidates: &MlxArray,
+    unary: &MlxArray,
+    projected: &MlxArray,
+    predecessor_all: &MlxArray,
+    successor_all: &MlxArray,
+    anchor_row: &MlxArray,
+    chain: &MlxArray,
+) -> CandidateTraceCapture {
+    let shape = candidates.shape();
+    let (positions, top_k) = (shape[1], shape[2]);
+    let float = |array: &MlxArray| astype(array, MlxDtype::Float32, None);
+    let projected = float(projected);
+    // `[1, P, rank, K]`: each position's successor rows as matmul columns.
+    let successor_t = transpose(&float(successor_all), &[0, 1, 3, 2], None);
+    let first_hidden = reshape(
+        &slice(&projected, &[0, 0, 0], &[1, 1, rank], &[1, 1, 1], None),
+        &[1, rank],
+        None,
+    );
+    let first_successors = reshape(
+        &slice(
+            &successor_t,
+            &[0, 0, 0, 0],
+            &[1, 1, rank, top_k],
+            &[1, 1, 1, 1],
+            None,
+        ),
+        &[rank, top_k],
+        None,
+    );
+    let edge0 = matmul(
+        &multiply(&float(anchor_row), &first_hidden, None),
+        &first_successors,
+        None,
+    );
+    let edges = (positions > 1).then(|| {
+        let predecessors = slice(
+            &float(predecessor_all),
+            &[0, 0, 0, 0],
+            &[1, positions - 1, top_k, rank],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let hidden = reshape(
+            &slice(
+                &projected,
+                &[0, 1, 0],
+                &[1, positions, rank],
+                &[1, 1, 1],
+                None,
+            ),
+            &[1, positions - 1, 1, rank],
+            None,
+        );
+        let successors = slice(
+            &successor_t,
+            &[0, 1, 0, 0],
+            &[1, positions, rank, top_k],
+            &[1, 1, 1, 1],
+            None,
+        );
+        matmul(&multiply(&predecessors, &hidden, None), &successors, None)
+    });
+    CandidateTraceCapture {
+        anchor,
+        top_k,
+        positions,
+        candidates: candidates.clone(),
+        unary: float(unary),
+        edge0: Some(edge0),
+        edges,
+        chain: chain.clone(),
+    }
+}
+
+/// The candidate table of a plain-argmax draft: each position's top-k
+/// logits (`logits` is `[1, P, vocab]`, `chain` `[1, P]`) and no edge scores.
+fn greedy_candidate_trace(
+    anchor: u32,
+    top_k: i32,
+    logits: &MlxArray,
+    chain: &MlxArray,
+) -> CandidateTraceCapture {
+    let shape = logits.shape();
+    let (positions, vocab) = (shape[1], shape[2]);
+    let top_k = top_k.clamp(1, vocab.max(1));
+    let candidates = top_k_indices(logits, top_k).unwrap_or_else(|| {
+        slice(
+            &argpartition_axis(logits, vocab - top_k, 2, None),
+            &[0, 0, vocab - top_k],
+            &[1, positions, vocab],
+            &[1, 1, 1],
+            None,
+        )
+    });
+    let unary = astype(
+        &take_along_axis(logits, &candidates, 2, None),
+        MlxDtype::Float32,
+        None,
+    );
+    CandidateTraceCapture {
+        anchor,
+        top_k,
+        positions,
+        candidates,
+        unary,
+        edge0: None,
+        edges: None,
+        chain: chain.clone(),
     }
 }
 
@@ -2453,6 +2918,108 @@ pub(crate) fn dflash2_fixture_with(
 mod tests {
     use super::*;
 
+    /// The draft head projects to the same logits as the matching columns of
+    /// the whole head, and names its columns' tokens.
+    #[test]
+    fn draft_head_matches_the_whole_head_on_its_rows() {
+        let vocab = DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS + 1000;
+        let hidden = 64;
+        let dense: Vec<f32> = (0..vocab as usize * hidden as usize)
+            .map(|i| (((i * 2_654_435_761usize) >> 9) % 2001) as f32 * 1e-3 - 1.0)
+            .collect();
+        let dense = MlxArray::from_raw_data(
+            dense.as_ptr().cast::<u8>(),
+            dense.len() * 4,
+            &[vocab, hidden],
+            MlxDtype::Float32,
+        );
+        let mut parts = mlx_sys::quantize(
+            &dense,
+            Some(64),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(parts.len(), 3);
+        let biases = parts.pop();
+        let scales = parts.pop();
+        let weight = parts.pop().expect("quantized weight");
+        let head = QuantizedWeight::with_quantization(
+            weight,
+            scales,
+            biases,
+            Some(&ax_engine_core::NativeTensorQuantization {
+                mode: "affine".into(),
+                group_size: 64,
+                bits: 8,
+            }),
+        );
+        let draft = DraftHead::build(&head, vocab).expect("draft head");
+        assert_eq!(draft.tail_shift, 1000);
+        let x: Vec<f32> = (0..3 * hidden as usize)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.02)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x.as_ptr().cast::<u8>(),
+            x.len() * 4,
+            &[1, 3, hidden],
+            MlxDtype::Float32,
+        );
+        let full = qw(&x, &head);
+        let part = draft.project(&x);
+        mlx_sys::eval(&[&full, &part]);
+        assert_eq!(
+            part.shape(),
+            vec![1, 3, DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS]
+        );
+        let full = full.data_f32();
+        let part = part.data_f32();
+        let width = (DRAFT_HEAD_PREFIX_ROWS + DRAFT_HEAD_TAIL_ROWS) as usize;
+        for row in 0..3usize {
+            for column in (0..width).step_by(97).chain(width - 400..width) {
+                let token = if column < DRAFT_HEAD_PREFIX_ROWS as usize {
+                    column
+                } else {
+                    column + 1000
+                };
+                let (got, want) = (
+                    part[row * width + column],
+                    full[row * vocab as usize + token],
+                );
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1.0),
+                    "row {row} column {column}: {got} vs {want}"
+                );
+            }
+        }
+        let columns: [u32; 4] = [
+            0,
+            DRAFT_HEAD_PREFIX_ROWS as u32 - 1,
+            DRAFT_HEAD_PREFIX_ROWS as u32,
+            width as u32 - 1,
+        ];
+        let ids = draft.token_ids(&MlxArray::from_raw_data(
+            columns.as_ptr().cast::<u8>(),
+            16,
+            &[1, 1, 4],
+            MlxDtype::Uint32,
+        ));
+        mlx_sys::eval(&[&ids]);
+        assert_eq!(
+            ids.data_u32(),
+            &[
+                0,
+                DRAFT_HEAD_PREFIX_ROWS as u32 - 1,
+                (vocab - DRAFT_HEAD_TAIL_ROWS) as u32,
+                vocab as u32 - 1
+            ]
+        );
+        assert!(draft_head_covers(5, vocab) && draft_head_covers(vocab as u32 - 1, vocab));
+        assert!(!draft_head_covers(DRAFT_HEAD_PREFIX_ROWS as u32, vocab));
+        assert!(DraftHead::build(&head, vocab + 1).is_none());
+    }
+
     #[test]
     fn stage_timing_eval_failure_restores_the_drafter_cursor() {
         let (weights, target) = dflash2_tiny_fixture();
@@ -2546,6 +3113,136 @@ mod tests {
                 for (a, b) in solo.iter().zip(&packed) {
                     assert_eq!(a.cache_offset(), b.cache_offset());
                     assert_eq!(a.cache_rows(), b.cache_rows());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_trace_line_nests_rows_and_nulls_non_finite_scores() {
+        let record = CandidateTraceRecord {
+            anchor: 7,
+            top_k: 2,
+            positions: 2,
+            candidates: vec![11, 12, 21, 22],
+            unary: vec![1.5, -0.25, f32::NEG_INFINITY, 3.0],
+            edge0: vec![0.5, 0.0],
+            edges: vec![1.0, 2.0, 3.0, f32::NAN],
+            chain: vec![11, 22],
+        };
+        assert!(record.is_well_formed());
+        let line = record.json_line(42);
+        assert_eq!(
+            line,
+            "{\"kind\":\"draft\",\"request\":42,\"anchor\":7,\"top_k\":2,\"positions\":2,\
+             \"candidates\":[[11,12],[21,22]],\"unary\":[[1.5,-0.25],[null,3]],\
+             \"edge0\":[0.5,0],\"edges\":[[[1,2],[3,null]]],\"chain\":[11,22]}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(parsed["edges"][0][1][0], 3.0);
+
+        let mut short = record.clone();
+        short.edges.pop();
+        assert!(!short.is_well_formed());
+        // One position has no pair table.
+        let single = CandidateTraceRecord {
+            positions: 1,
+            candidates: vec![11, 12],
+            unary: vec![1.5, -0.25],
+            edges: Vec::new(),
+            chain: vec![11],
+            ..record
+        };
+        assert!(single.is_well_formed());
+        assert!(single.json_line(0).contains("\"edges\":[],"));
+    }
+
+    #[test]
+    fn candidate_trace_table_replays_the_selected_chain() {
+        let seed = std::cell::Cell::new(0x2545_f491_u32);
+        let fill = |shape: &[i32]| {
+            let n: i32 = shape.iter().product();
+            let values: Vec<f32> = (0..n)
+                .map(|_| {
+                    let mut x = seed.get();
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    seed.set(x);
+                    (x % 2001) as f32 / 1000.0 - 1.0
+                })
+                .collect();
+            astype(
+                &reshape(&MlxArray::from_f32_slice(&values), shape, None),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let (weights, target) = dflash2_fixture_with(&fill);
+        let width = weights.config().target_hidden_width();
+        let block = weights.config().block_size;
+        let top_k = weights.config().selector_top_k as usize;
+        let positions = (block - 1) as usize;
+        let argmax_of = |scores: &[f32]| {
+            let mut best = 0;
+            for (index, score) in scores.iter().enumerate() {
+                if *score > scores[best] {
+                    best = index;
+                }
+            }
+            best
+        };
+        for use_selector in [true, false] {
+            let mut plain = Dflash2Drafter::new(weights.clone()).with_selector(use_selector);
+            // A host that verifies draft trees records the table by default.
+            plain.set_candidate_trace_for_test(false);
+            let mut traced = Dflash2Drafter::new(weights.clone()).with_selector(use_selector);
+            traced.set_candidate_trace_for_test(true);
+            for (round, anchor) in [3_u32, 7, 11, 5, 14, 2].into_iter().enumerate() {
+                let hidden = fill(&[1, 1 + (round as i32 % 3), width]);
+                let expected = plain
+                    .draft_block(anchor, &hidden, &target, block)
+                    .expect("plain draft");
+                assert!(plain.take_candidate_trace().is_none());
+                let drafted = traced
+                    .draft_block(anchor, &hidden, &target, block)
+                    .expect("traced draft");
+                mlx_sys::eval(&[&expected, &drafted]);
+                // Tracing does not change what the draft selects.
+                assert_eq!(drafted.data_u32(), expected.data_u32(), "round {round}");
+                let record = traced
+                    .take_candidate_trace()
+                    .expect("capture")
+                    .read()
+                    .expect("read");
+                assert!(traced.take_candidate_trace().is_none());
+                assert_eq!(record.anchor, anchor);
+                assert_eq!((record.top_k, record.positions), (top_k, positions));
+                assert_eq!(record.chain, expected.data_u32());
+                if !use_selector {
+                    assert!(record.edge0.iter().all(|edge| *edge == 0.0));
+                    assert!(record.edges.iter().all(|edge| *edge == 0.0));
+                }
+                // Walking the table the way the selector does gives its chain:
+                // `edges[p - 1][i][j]` is indexed by the previous pick `i`.
+                let mut previous = 0;
+                for position in 0..positions {
+                    let row = position * top_k..(position + 1) * top_k;
+                    let scores: Vec<f32> = (0..top_k)
+                        .map(|next| {
+                            let edge = if position == 0 {
+                                record.edge0[next]
+                            } else {
+                                record.edges[((position - 1) * top_k + previous) * top_k + next]
+                            };
+                            record.unary[row.clone()][next] + edge
+                        })
+                        .collect();
+                    previous = argmax_of(&scores);
+                    assert_eq!(
+                        record.candidates[row][previous], record.chain[position],
+                        "selector {use_selector} round {round} position {position}"
+                    );
                 }
             }
         }

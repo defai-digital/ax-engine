@@ -37,6 +37,42 @@ checkpoint. The separate Flash Next routes use its pinned MXFP4 pack.
 [Per-request measurements and failures](results.jsonl) ·
 [Build and pack provenance](provenance.json)
 
+## Paired rerun
+
+The rows marked † in the README tables were measured again later on
+2026-11-25, after AX Engine gained a one-forward DFlash2 draft tree, an
+MX-format Neural Accelerator verify kernel and Flash Next decode and
+prefill changes
+([what changed](../../../docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md)).
+AX Engine was built from commit `b04a5f2ef` with default settings. The
+peers, packs, drafter, corpus and runner are those of the original session.
+
+- Six arms ran three times each: AX Engine direct and oMLX direct on both
+  models, AX Engine DFlash2 and Splash DFlash2 on the 27B. Every AX Engine
+  run was followed by its peer's run, with 30 seconds between arms.
+- A † row holds the median of the three per-run decode rates and of the
+  three per-run effective-prefill estimates. Its `prefill` list holds all
+  six probe pairs, and the first-text columns are medians over them.
+  [Every run](paired-rerun.jsonl) is recorded with its requests.
+- The [original single runs](results-original.jsonl) are kept unchanged.
+  They had AX Engine 8.1.0 at 35.35 and 82.83 tok/s (27B direct and
+  DFlash2) and 50.94 tok/s (Flash Next), Splash at 108.95 and oMLX at 59.01.
+- The original oMLX Flash Next effective prefill (2,284) came from one cold
+  long probe (2.13 s in the first pair, 0.71 s in the second). The rerun
+  measures 3,939 to 3,989.
+- AX Engine's Flash Next effective prefill is lower than in the original
+  run (2,217 against 3,202) although both probes are faster: first text
+  fell from 0.69 and 0.64 s to 0.34 and 0.24 s at 127 and 128 input
+  tokens, and from 1.09 to 0.91 s at 1,492. The estimate is the slope
+  between the two probes, so it falls when the short one improves more.
+- Rows without † are single runs from the original session and are not
+  paired with the reruns.
+
+Reading the reruns: the 27B DFlash2 decode lead over Splash (2.0% at the
+median) holds for this 64-token workload; on 256-token outputs AX Engine
+measures about 9% behind. The Flash Next decode difference (0.5%) is
+smaller than the difference between sessions and is a tie.
+
 ## Replay
 
 Stage the binaries and packs using the

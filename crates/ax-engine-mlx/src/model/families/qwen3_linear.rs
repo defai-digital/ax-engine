@@ -104,6 +104,52 @@ pub(crate) fn layer_forward_verify_functional(
     Some(QwenLinearVerifyLayerOutput { hidden, state })
 }
 
+/// Tree counterpart of [`layer_forward_verify_functional`]: one dense
+/// gated-delta layer over a DFlash2 draft tree. Returns the layer output and
+/// the tree rows' `(qkv, a, b)` projections; `cache` is not written.
+pub(crate) fn layer_forward_tree_verify(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &MlxKVCache,
+    layer_idx: usize,
+    node_depth: &MlxArray,
+    tail_src: &MlxArray,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    if w.router_proj.is_some() || w.ffn_post_norm.is_some() || cfg.uses_geglu {
+        return None;
+    }
+    let seq = hidden.shape().get(1).copied()?;
+    let fuse_la_norm = fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq);
+    if fuse_la_norm {
+        crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(Some((
+            w.attn_norm.clone(),
+            cfg.rms_norm_eps,
+        )));
+    }
+    let normed = if fuse_la_norm {
+        hidden.clone()
+    } else {
+        rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None)
+    };
+    let state = crate::model::shared::linear_attention_forward_tree(
+        cfg, w, &normed, cache, layer_idx, node_depth, tail_src,
+    );
+    if fuse_la_norm {
+        crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(None);
+    }
+    let state = state?;
+    let (residual, normed2) = qwen_linear_attn_residual_ffn_norm(
+        hidden,
+        &state.output,
+        &w.ffn_norm,
+        cfg.rms_norm_eps,
+        false,
+    );
+    let hidden = ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &residual);
+    Some((hidden, state.qkv, state.a, state.b))
+}
+
 fn stash_qwen_prefill_pending_ffn(ffn: MlxArray) {
     PENDING_PREFILL_FFN.with(|slot| {
         *slot.borrow_mut() = Some(ffn);

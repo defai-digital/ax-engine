@@ -116,13 +116,35 @@ const NAX_FP_WIDE_N: i32 = MSG_ROUTE_N;
 /// `AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS`: the stock cut-over row count on
 /// skinny-NAX hosts; `0` keeps AX's kernels for every routed row count.
 fn nax_stock_min_rows() -> i32 {
-    static CACHED: OnceLock<i32> = OnceLock::new();
+    nax_min_rows_override().unwrap_or(NAX_STOCK_MIN_ROWS)
+}
+
+/// The same cut-over for AX's port. M5 Max, 27B MXFP4 + DFlash2, whole
+/// verify eval: five rows 36.3 ms through the port against 41.2 on AX's
+/// kernels; four rows tie (36.2 / 36.3) and three rows favour AX's kernels
+/// (35.9 / 34.2).
+const NAX_PORT_MIN_ROWS: i32 = 5;
+
+fn nax_port_min_rows() -> i32 {
+    nax_min_rows_override().unwrap_or(NAX_PORT_MIN_ROWS)
+}
+
+/// The cut-over for the active backend.
+fn nax_min_rows(backend: NaxBackend) -> i32 {
+    if backend == NaxBackend::AxPort {
+        nax_port_min_rows()
+    } else {
+        nax_stock_min_rows()
+    }
+}
+
+fn nax_min_rows_override() -> Option<i32> {
+    static CACHED: OnceLock<Option<i32>> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS")
             .ok()
             .and_then(|raw| raw.trim().parse::<i32>().ok())
             .filter(|value| *value >= 0 && *value <= AFFINE_MAX_ROWS)
-            .unwrap_or(NAX_STOCK_MIN_ROWS)
     })
 }
 
@@ -137,10 +159,60 @@ fn nax_pad_enabled() -> bool {
     *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_NAX_PAD"))
 }
 
-/// True when 6..=8-row verify projections go to stock NAX QMM on this host,
-/// which makes a wide verify window almost as cheap as a four-row one.
-pub(crate) fn nax_stock_handoff_active() -> bool {
-    nax_stock_min_rows() > 0 && crate::hardware::skinny_qmv_nax_active()
+/// Which kernels serve the skinny-row NAX verify projections on this host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NaxBackend {
+    /// No NAX verify hand-off (M3/M4, macOS below 26.2, or both disabled).
+    Off,
+    /// Stock MLX QMM: the linked MLX carries `qmv_nax` (0.32.5+).
+    Stock,
+    /// AX's port of MLX's MX-format `qmv_nax` (ADR-053) on an MLX without it.
+    /// Serves MXFP4/MXFP8 projections only; affine ones keep AX's kernels.
+    AxPort,
+}
+
+fn nax_backend() -> NaxBackend {
+    if crate::hardware::skinny_qmv_nax_active() {
+        NaxBackend::Stock
+    } else if mx_nax_port_active() {
+        NaxBackend::AxPort
+    } else {
+        NaxBackend::Off
+    }
+}
+
+/// True when 6..=8-row verify projections take a NAX kernel on this host
+/// (stock MLX or AX's port), which makes a wide verify window almost as cheap
+/// as a four-row one.
+pub(crate) fn nax_verify_handoff_active() -> bool {
+    nax_stock_min_rows() > 0 && nax_backend() != NaxBackend::Off
+}
+
+/// True when the active NAX hand-off is AX's port and not stock MLX: the port
+/// has no NAX verify attention beside it, so its rounds cost more per row.
+pub(crate) fn nax_verify_handoff_is_port() -> bool {
+    nax_backend() == NaxBackend::AxPort
+}
+
+/// Whether the active NAX hand-off serves projections stored like `weight`.
+/// Stock MLX serves every mode it routes; the AX port serves MX formats only.
+pub(crate) fn nax_verify_handoff_serves(weight: &QuantizedWeight) -> bool {
+    match nax_backend() {
+        NaxBackend::Off => false,
+        NaxBackend::Stock => true,
+        // The same shape rules the route applies, at the full window.
+        NaxBackend::AxPort => mx_nax_weight_dims(weight).is_some_and(|(k, n, _)| {
+            nax_verify_route_for(
+                NaxBackend::AxPort,
+                nax_port_min_rows(),
+                false,
+                AFFINE_MAX_ROWS,
+                n,
+                k,
+                weight,
+            ) == NaxVerifyRoute::AxNax
+        }),
+    }
 }
 
 /// How one armed verify projection runs on this host.
@@ -152,10 +224,12 @@ enum NaxVerifyRoute {
     Stock,
     /// Stock MLX QMM on the window padded with zero rows to this many rows.
     StockPadded(i32),
+    /// AX's port of MLX's MX-format `qmv_nax` at the window's own rows.
+    AxNax,
 }
 
 fn nax_verify_route_for(
-    skinny_nax: bool,
+    backend: NaxBackend,
     cutover: i32,
     pad: bool,
     rows: i32,
@@ -167,9 +241,16 @@ fn nax_verify_route_for(
         weight.mlx_quantization_mode(),
         mlx_sys::MlxQuantizationMode::Affine
     );
-    if !skinny_nax
+    // The port serves MLX's whole `qmv_nax` row range; the stock hand-off
+    // and AX's kernels were measured to eight rows.
+    let max_rows = if backend == NaxBackend::AxPort {
+        MX_NAX_MAX_ROWS
+    } else {
+        AFFINE_MAX_ROWS
+    };
+    if backend == NaxBackend::Off
         || cutover == 0
-        || !(3..=AFFINE_MAX_ROWS).contains(&rows)
+        || !(3..=max_rows).contains(&rows)
         // Affine 8-bit: route and stock tie on M5 (0.98-1.04x).
         || (!fp_mode && weight.bits == 8)
         || (fp_mode && n >= NAX_FP_WIDE_N)
@@ -180,6 +261,16 @@ fn nax_verify_route_for(
     {
         return NaxVerifyRoute::AxKernels;
     }
+    if backend == NaxBackend::AxPort {
+        // The port replaces stock `qmv_nax` where MLX 0.32.5 would run it: MX
+        // formats, the cut-over rows and up, `N % 32 == 0`. No zero padding:
+        // padded windows lost end to end on stock as well.
+        return if rows >= cutover && mx_nax_mode_bits(weight).is_some() && n % MX_NAX_BN == 0 {
+            NaxVerifyRoute::AxNax
+        } else {
+            NaxVerifyRoute::AxKernels
+        };
+    }
     if rows >= cutover {
         NaxVerifyRoute::Stock
     } else if pad {
@@ -189,21 +280,296 @@ fn nax_verify_route_for(
     }
 }
 
+/// True when this verify window's projection through `weight` takes AX's
+/// `qmv_nax` port. Callers with a stock-QMM shortcut use it to step aside.
+pub(crate) fn nax_port_serves_window(x: &MlxArray, weight: &QuantizedWeight) -> bool {
+    nax_verify_route(x, weight) == NaxVerifyRoute::AxNax && mx_nax_eligible(x, weight).is_some()
+}
+
 fn nax_verify_route(x: &MlxArray, weight: &QuantizedWeight) -> NaxVerifyRoute {
     let shape = x.shape();
     let weight_shape = weight.weight.shape();
     if !verify_qmm_armed() || shape.len() != 3 || shape[0] != 1 || weight_shape.len() != 2 {
         return NaxVerifyRoute::AxKernels;
     }
+    let backend = nax_backend();
     nax_verify_route_for(
-        crate::hardware::skinny_qmv_nax_active(),
-        nax_stock_min_rows(),
+        backend,
+        nax_min_rows(backend),
         nax_pad_enabled(),
         shape[1],
         weight_shape[0],
         shape[2],
         weight,
     )
+}
+
+/// AX's port of MLX's MX-format skinny-row NAX GEMV (`fp_qmv_nax`, MLX
+/// `914732419`), carried under ADR-053 so M5 hosts linked against an MLX
+/// without `qmv_nax` (the published 0.32.4 wheel) still get the NAX verify
+/// curve. Output is bit-identical to stock `qmv_nax` on the same inputs.
+const MX_NAX_HEADER: &str = include_str!("verify_qmm_mx_nax.metal");
+const MX_NAX_SOURCE: &str = r#"
+    threadgroup float ps[(WK - 1) * 16 * BN];
+    ax_nax::mx_qmv_nax<InputT, Bits, WK, BN, KDim, NDim>(
+        w, scales, x, out, Rows, threadgroup_position_in_grid.x,
+        simdgroup_index_in_threadgroup, ps);
+"#;
+/// Simdgroups per threadgroup splitting K, and output columns per threadgroup
+/// (MLX's `qmv_nax` instantiation: `wk 8`, `bn 32`). Narrower K splits look
+/// faster when independent calls overlap on the GPU (5120 -> 17408 at 8 rows:
+/// 146 us at `wk 8`, 102 at `wk 2`), but a verify forward is one dependent
+/// chain: there a gate + down pair costs 199 us at every split, and the 27B
+/// DFlash2 verify eval was 1.0 ms slower with the narrow splits (38.4 against
+/// 37.35 ms on the M5 Max).
+const MX_NAX_WK: i32 = 8;
+const MX_NAX_BN: i32 = 32;
+/// K values one simdgroup consumes per step.
+const MX_NAX_BK: i32 = 128;
+/// The kernel holds rows `fm` and `fm + 8` of one 16-row fragment.
+const MX_NAX_MAX_ROWS: i32 = 16;
+/// MLX routes `qmv_nax` only when both N and K reach this size.
+const MX_NAX_MIN_DIM: i32 = 1024;
+
+static VERIFY_QMM_MX_NAX: LazyKernel = LazyKernel::new(
+    "ax_mx_qmv_nax_v1",
+    &["w", "scales", "x"],
+    &["out"],
+    MX_NAX_SOURCE,
+    MX_NAX_HEADER,
+    true,
+);
+
+/// `AX_MLX_MTP_VERIFY_QMM_NAX_PORT` (default **on**, `0` turns it off): use
+/// AX's `qmv_nax` port when the linked MLX lacks its own.
+fn mx_nax_port_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| crate::fastpath::env_flag_default_on("AX_MLX_MTP_VERIFY_QMM_NAX_PORT"))
+}
+
+/// The MX format's element bits when the port can read `weight`.
+fn mx_nax_mode_bits(weight: &QuantizedWeight) -> Option<i32> {
+    let bits = match weight.mlx_quantization_mode() {
+        mlx_sys::MlxQuantizationMode::Mxfp4 => 4,
+        mlx_sys::MlxQuantizationMode::Mxfp8 => 8,
+        _ => return None,
+    };
+    (weight.bits == bits
+        && weight.group_size == 32
+        && weight.biases.is_none()
+        && weight.weight.dtype() == MlxDtype::Uint32)
+        .then_some(bits)
+}
+
+/// `(k, n, bits)` when the port can read `weight` at all: an MX format whose
+/// shape meets the kernel's tile sizes, with its E8M0 scales.
+fn mx_nax_weight_dims(weight: &QuantizedWeight) -> Option<(i32, i32, i32)> {
+    let bits = mx_nax_mode_bits(weight)?;
+    let weight_shape = weight.weight.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let n = weight_shape[0];
+    let k = weight_shape[1] * 32 / bits;
+    if n < MX_NAX_MIN_DIM
+        || k < MX_NAX_MIN_DIM
+        || n % MX_NAX_BN != 0
+        || k % MX_NAX_BK != 0
+        || weight_shape[1] != k * bits / 32
+    {
+        return None;
+    }
+    let scales = weight.scales.as_ref()?;
+    if scales.dtype() != MlxDtype::Uint8 || scales.shape() != [n, k / 32] {
+        return None;
+    }
+    Some((k, n, bits))
+}
+
+/// `(rows, k, n, bits)` when the port can serve `x @ weight^T`.
+fn mx_nax_eligible(x: &MlxArray, weight: &QuantizedWeight) -> Option<(i32, i32, i32, i32)> {
+    if !matches!(x.dtype(), MlxDtype::Bfloat16 | MlxDtype::Float16) {
+        return None;
+    }
+    let (k, n, bits) = mx_nax_weight_dims(weight)?;
+    let shape = x.shape();
+    if shape.len() != 3
+        || shape[0] != 1
+        || !(1..=MX_NAX_MAX_ROWS).contains(&shape[1])
+        || shape[2] != k
+    {
+        return None;
+    }
+    Some((shape[1], k, n, bits))
+}
+
+/// `x @ dequant(weight)^T` through the port, `[1, rows, n]` in `x`'s dtype
+/// (excluding the dense Linear bias, which the caller adds).
+fn mx_nax_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
+    let (m, k, n, bits) = mx_nax_eligible(x, weight)?;
+    let scales = weight.scales.as_ref()?;
+    let kernel = VERIFY_QMM_MX_NAX.get()?;
+    let x_flat = contiguous(&reshape(x, &[m, k], None), None);
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[&weight.weight, scales, &x_flat],
+            &[KernelOutputSpec {
+                shape: vec![m, n],
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "InputT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "WK",
+                    value: MX_NAX_WK,
+                },
+                KernelTemplateArg::Int {
+                    name: "BN",
+                    value: MX_NAX_BN,
+                },
+                KernelTemplateArg::Int {
+                    name: "KDim",
+                    value: k,
+                },
+                KernelTemplateArg::Int {
+                    name: "NDim",
+                    value: n,
+                },
+                KernelTemplateArg::Int {
+                    name: "Rows",
+                    value: m,
+                },
+            ],
+            (n / MX_NAX_BN * 32, MX_NAX_WK, 1),
+            (32, MX_NAX_WK, 1),
+            None,
+        )
+        .ok()?;
+    let flat = outputs.pop()?;
+    Some(reshape(&flat, &[1, m, n], None))
+}
+
+/// True on an M5+ / macOS 26.2+ host whose linked MLX lacks `qmv_nax`, when
+/// the port is enabled and its one-time probe passes: the kernel must compile
+/// through MLX's JIT and match stock MLX QMM on a small MXFP4 window. Any
+/// failure keeps AX's previous kernels (fail closed). Resolved once per process
+/// and logged; call it after Metal is initialized.
+pub(crate) fn mx_nax_port_active() -> bool {
+    static ACTIVE: OnceLock<bool> = OnceLock::new();
+    *ACTIVE.get_or_init(|| {
+        if !crate::hardware::neural_accelerator_active()
+            || crate::hardware::skinny_qmv_nax_active()
+            || !mx_nax_port_enabled()
+            // A zero cut-over turns every NAX verify hand-off off.
+            || nax_stock_min_rows() == 0
+        {
+            return false;
+        }
+        let probe = mx_nax_probe();
+        tracing::info!(
+            target = "ax_engine_mlx",
+            probe = ?probe,
+            active = probe.is_ok(),
+            "AX qmv_nax port"
+        );
+        probe.is_ok()
+    })
+}
+
+/// Largest absolute difference between `ported` and `reference`, and the
+/// largest reference magnitude. A non-finite value on either side makes the
+/// difference infinite: `f32::max` drops NaN, so a plain fold would report a
+/// kernel that returns NaN as an exact match.
+fn max_abs_diff_and_scale(ported: &[f32], reference: &[f32]) -> (f32, f32) {
+    let mut diff = 0.0_f32;
+    let mut scale = 0.0_f32;
+    for (a, b) in ported.iter().zip(reference) {
+        if !a.is_finite() || !b.is_finite() {
+            return (f32::INFINITY, scale);
+        }
+        diff = diff.max((a - b).abs());
+        scale = scale.max(b.abs());
+    }
+    (diff, scale)
+}
+
+/// Runs the port once on a 6-row MXFP4 window and compares it with stock MLX.
+fn mx_nax_probe() -> Result<(), String> {
+    let (m, n, k) = (6, MX_NAX_MIN_DIM, MX_NAX_MIN_DIM);
+    let dense_data: Vec<f32> = (0..(n * k) as usize)
+        .map(|index| ((index * 7 % 251) as f32 - 125.0) / 512.0)
+        .collect();
+    let dense = mlx_sys::astype(
+        &reshape(&MlxArray::from_f32_slice(&dense_data), &[n, k], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let quantized = mlx_sys::quantize(
+        &dense,
+        Some(32),
+        Some(4),
+        mlx_sys::MlxQuantizationMode::Mxfp4,
+        None,
+        None,
+    );
+    let [packed, scales] = quantized.as_slice() else {
+        return Err("quantize returned an unexpected arity".to_owned());
+    };
+    let weight = QuantizedWeight {
+        weight: packed.clone(),
+        scales: Some(scales.clone()),
+        biases: None,
+        group_size: 32,
+        bits: 4,
+        mode: "mxfp4".to_owned(),
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+        weight_t_view: Default::default(),
+    };
+    let input_data: Vec<f32> = (0..(m * k) as usize)
+        .map(|index| ((index * 13 % 61) as f32 - 30.0) / 64.0)
+        .collect();
+    let x = mlx_sys::astype(
+        &reshape(&MlxArray::from_f32_slice(&input_data), &[1, m, k], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let ported = mx_nax_qmm(&x, &weight).ok_or("port declined the probe shape")?;
+    let stock = mlx_sys::quantized_matmul_with_mode(
+        &x,
+        packed,
+        scales,
+        None,
+        true,
+        Some(32),
+        Some(4),
+        mlx_sys::MlxQuantizationMode::Mxfp4,
+        None,
+    );
+    let ported = mlx_sys::astype(&ported, MlxDtype::Float32, None);
+    let stock = mlx_sys::astype(&stock, MlxDtype::Float32, None);
+    mlx_sys::try_eval(&[&ported, &stock])?;
+    let (ported, stock) = (ported.data_f32(), stock.data_f32());
+    let (diff, scale) = max_abs_diff_and_scale(ported, stock);
+    // Both accumulate in fp32 over the same bf16 dequantization; only the
+    // reduction order differs from 0.32.4's qmm. A gross error (wrong layout,
+    // garbage) is far above this bound.
+    if ported.len() != stock.len() || !diff.is_finite() || diff > 0.02 * scale.max(1.0) {
+        return Err(format!(
+            "port deviates from stock QMM: max diff {diff}, scale {scale}"
+        ));
+    }
+    Ok(())
 }
 
 /// Stock MLX QMM over `x` padded with zero rows to `rows` (excluding the dense
@@ -296,17 +662,19 @@ static VERIFY_QMM_MXFP4_WINDOW: LazyKernel = LazyKernel::new(
     true,
 );
 
-/// Test-only switch that forces the lazy verify-QMM kernels to report as
-/// unavailable, so the fail-closed fallback route can be exercised without a
-/// genuine Metal compile failure.
 #[cfg(test)]
-static FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    // Test-only switch that forces the lazy verify-QMM kernels to report as
+    // unavailable, so the fail-closed fallback route can be exercised without
+    // a genuine Metal compile failure. Thread-local so a test that forces it
+    // cannot starve the kernel tests running beside it on other test threads.
+    static FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Fail-closed lookup for the split-K verify kernel.
 fn verify_qmm_split_k_kernel() -> Option<&'static MlxMetalKernel> {
     #[cfg(test)]
-    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(Cell::get) {
         return None;
     }
     VERIFY_QMM_SPLIT_K.get()
@@ -315,7 +683,7 @@ fn verify_qmm_split_k_kernel() -> Option<&'static MlxMetalKernel> {
 /// Fail-closed lookup for the MXFP4 window verify kernel.
 fn verify_qmm_mxfp4_window_kernel() -> Option<&'static MlxMetalKernel> {
     #[cfg(test)]
-    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(Cell::get) {
         return None;
     }
     VERIFY_QMM_MXFP4_WINDOW.get()
@@ -324,7 +692,7 @@ fn verify_qmm_mxfp4_window_kernel() -> Option<&'static MlxMetalKernel> {
 /// Fail-closed lookup for the multi-simdgroup verify kernel.
 fn verify_qmm_msg_kernel() -> Option<&'static MlxMetalKernel> {
     #[cfg(test)]
-    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(Cell::get) {
         return None;
     }
     VERIFY_QMM_MSG.get()
@@ -941,6 +1309,15 @@ pub(crate) fn try_qwen_mtp_verify_qmm(x: &MlxArray, weight: &QuantizedWeight) ->
         NaxVerifyRoute::AxKernels => {}
         NaxVerifyRoute::Stock => return None,
         NaxVerifyRoute::StockPadded(rows) => return stock_qmm_padded(x, weight, rows),
+        NaxVerifyRoute::AxNax => {
+            #[cfg(test)]
+            if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(Cell::get) {
+                return None;
+            }
+            if let Some(out) = mx_nax_qmm(x, weight) {
+                return Some(out);
+            }
+        }
     }
     if matches!(
         weight.mlx_quantization_mode(),
@@ -1133,12 +1510,12 @@ mod tests {
         // Mock the kernel as unavailable: the routed path must signal fallback
         // (None) rather than panicking, and the caller's MLX reference QMM must
         // still produce the projection.
-        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Release);
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(|flag| flag.set(true));
         assert!(
             try_qwen_mtp_verify_qmm(&input, &weight).is_none(),
             "unavailable kernel must fall back to None (reference route)"
         );
-        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(false, std::sync::atomic::Ordering::Release);
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(|flag| flag.set(false));
 
         let reference = quantized_matmul_with_mode(
             &input,
@@ -1697,30 +2074,61 @@ mod tests {
             nax_verify_route_for(nax, 6, true, rows, n, 5120, w)
         };
         // M3/M4 or older MLX: unchanged.
-        assert_eq!(route(false, 8, 17_408, &affine4), AxKernels);
+        assert_eq!(route(NaxBackend::Off, 8, 17_408, &affine4), AxKernels);
         // 2 rows: stock 2-row QMM is already cheaper than a padded 6.
-        assert_eq!(route(true, 2, 17_408, &affine4), AxKernels);
+        assert_eq!(route(NaxBackend::Stock, 2, 17_408, &affine4), AxKernels);
         for rows in 3..=5 {
-            assert_eq!(route(true, rows, 17_408, &affine4), StockPadded(6));
-            assert_eq!(route(true, rows, 5_120, &mxfp4), StockPadded(6));
+            assert_eq!(
+                route(NaxBackend::Stock, rows, 17_408, &affine4),
+                StockPadded(6)
+            );
+            assert_eq!(
+                route(NaxBackend::Stock, rows, 5_120, &mxfp4),
+                StockPadded(6)
+            );
         }
         for rows in 6..=8 {
-            assert_eq!(route(true, rows, 17_408, &affine4), Stock);
-            assert_eq!(route(true, rows, 248_320, &affine4), Stock);
+            assert_eq!(route(NaxBackend::Stock, rows, 17_408, &affine4), Stock);
+            assert_eq!(route(NaxBackend::Stock, rows, 248_320, &affine4), Stock);
             // Fp-mode vocabulary heads stay on AX: stock NAX is 2-3x slower.
-            assert_eq!(route(true, rows, 248_320, &mxfp4), AxKernels);
-            assert_eq!(route(true, rows, 17_408, &affine8), AxKernels);
+            assert_eq!(route(NaxBackend::Stock, rows, 248_320, &mxfp4), AxKernels);
+            assert_eq!(route(NaxBackend::Stock, rows, 17_408, &affine8), AxKernels);
         }
         assert_eq!(
-            nax_verify_route_for(true, 0, true, 8, 17_408, 5120, &affine4),
+            nax_verify_route_for(NaxBackend::Stock, 0, true, 8, 17_408, 5120, &affine4),
             AxKernels
         );
         assert_eq!(
-            nax_verify_route_for(true, 6, false, 4, 17_408, 5120, &affine4),
+            nax_verify_route_for(NaxBackend::Stock, 6, false, 4, 17_408, 5120, &affine4),
             AxKernels
         );
         assert_eq!(
-            nax_verify_route_for(true, 6, true, 4, 512, 5120, &affine4),
+            nax_verify_route_for(NaxBackend::Stock, 6, true, 4, 512, 5120, &affine4),
+            AxKernels
+        );
+        // AX's qmv_nax port (MLX without its own): MX formats at the cut-over
+        // and up, no padding, affine and vocabulary heads stay on AX kernels.
+        let port = |rows, n, w: &QuantizedWeight| {
+            nax_verify_route_for(NaxBackend::AxPort, 6, true, rows, n, 5120, w)
+        };
+        for rows in 3..=5 {
+            assert_eq!(port(rows, 17_408, &mxfp4), AxKernels);
+        }
+        for rows in 6..=8 {
+            assert_eq!(port(rows, 17_408, &mxfp4), AxNax);
+            assert_eq!(port(rows, 5_120, &mxfp4), AxNax);
+            assert_eq!(port(rows, 17_408, &affine4), AxKernels);
+            assert_eq!(port(rows, 248_320, &mxfp4), AxKernels);
+            assert_eq!(port(rows, 17_400, &mxfp4), AxKernels);
+        }
+        // The port covers MLX's 6..=16 qmv_nax rows; stock stays at eight.
+        for rows in 9..=16 {
+            assert_eq!(port(rows, 17_408, &mxfp4), AxNax);
+            assert_eq!(route(NaxBackend::Stock, rows, 17_408, &mxfp4), AxKernels);
+        }
+        assert_eq!(port(17, 17_408, &mxfp4), AxKernels);
+        assert_eq!(
+            nax_verify_route_for(NaxBackend::AxPort, 0, true, 8, 17_408, 5120, &mxfp4),
             AxKernels
         );
     }
@@ -1813,6 +2221,136 @@ mod tests {
         )
     }
 
+    fn mx_test_weight(n: i32, k: i32, bits: i32) -> QuantizedWeight {
+        let mut weight = mxfp4_test_weight(n, k);
+        if bits == 8 {
+            let dense_data: Vec<f32> = (0..(n * k) as usize)
+                .map(|index| ((index * 7 % 251) as f32 - 125.0) / 512.0)
+                .collect();
+            let dense = astype(
+                &reshape(&MlxArray::from_f32_slice(&dense_data), &[n, k], None),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let quantized = quantize(
+                &dense,
+                Some(32),
+                Some(8),
+                MlxQuantizationMode::Mxfp8,
+                None,
+                None,
+            );
+            weight.weight = quantized[0].clone();
+            weight.scales = Some(quantized[1].clone());
+            weight.bits = 8;
+            weight.mode = "mxfp8".to_owned();
+        }
+        weight
+    }
+
+    #[test]
+    fn mx_nax_port_matches_stock_mx_qmm() {
+        // The fragment layout is the neural accelerators' (M5+): elsewhere the
+        // MPP op runs but lays fragments out differently, which the load-time
+        // probe rejects (see `mx_nax_probe_fails_closed_without_nax`).
+        if !crate::hardware::neural_accelerator_active() {
+            return;
+        }
+        // The port is bit-identical to MLX 0.32.5's own qmv_nax on M5; against
+        // the linked MLX it must agree to bf16 rounding of an fp32 reduction.
+        for bits in [4, 8] {
+            for (n, k) in [(1024, 1024), (2048, 1536)] {
+                let weight = mx_test_weight(n, k, bits);
+                let mode = if bits == 4 {
+                    MlxQuantizationMode::Mxfp4
+                } else {
+                    MlxQuantizationMode::Mxfp8
+                };
+                for (m, dtype) in [1, 3, 6, 7, 8, 12, 16]
+                    .into_iter()
+                    .flat_map(|m| [(m, MlxDtype::Bfloat16), (m, MlxDtype::Float16)])
+                {
+                    let input = astype(&mxfp4_test_input(m, k), dtype, None);
+                    let ported = mx_nax_qmm(&input, &weight)
+                        .unwrap_or_else(|| panic!("port declined m={m} n={n} k={k} bits={bits}"));
+                    let reference = quantized_matmul_with_mode(
+                        &input,
+                        &weight.weight,
+                        weight.scales.as_ref().unwrap(),
+                        None,
+                        true,
+                        Some(32),
+                        Some(bits),
+                        mode,
+                        None,
+                    );
+                    assert_eq!(ported.shape(), vec![1, m, n]);
+                    assert_eq!(ported.dtype(), dtype);
+                    let ported = astype(&ported, MlxDtype::Float32, None);
+                    let reference = astype(&reference, MlxDtype::Float32, None);
+                    eval(&[&ported, &reference]);
+                    let (diff, scale) =
+                        max_abs_diff_and_scale(ported.data_f32(), reference.data_f32());
+                    assert!(
+                        diff <= 0.01 * scale.max(1.0),
+                        "bits={bits} m={m} n={n} k={k} {dtype:?}: max diff {diff} (scale {scale})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_kernel_that_returns_nan_is_not_an_exact_match() {
+        let reference = [1.0_f32, -2.0, 0.5];
+        assert_eq!(max_abs_diff_and_scale(&reference, &reference), (0.0, 2.0));
+        let (diff, _) = max_abs_diff_and_scale(&[1.0, f32::NAN, 0.5], &reference);
+        assert!(diff.is_infinite());
+        let (diff, _) = max_abs_diff_and_scale(&[f32::NAN; 3], &reference);
+        assert!(diff.is_infinite());
+        let (diff, _) = max_abs_diff_and_scale(&reference, &[1.0, f32::INFINITY, 0.5]);
+        assert!(diff.is_infinite());
+    }
+
+    #[test]
+    fn mx_nax_port_declines_what_it_cannot_serve() {
+        let weight = mx_test_weight(1024, 1024, 4);
+        // More than one 16-row fragment.
+        assert!(mx_nax_qmm(&mxfp4_test_input(17, 1024), &weight).is_none());
+        // K below MLX's qmv_nax floor and not a multiple of 128.
+        let short_k = mx_test_weight(1024, 512, 4);
+        assert!(mx_nax_qmm(&mxfp4_test_input(6, 512), &short_k).is_none());
+        // N not a multiple of the 32-column tile.
+        let odd_n = mx_test_weight(1056 + 4, 1024, 4);
+        assert!(mx_nax_qmm(&mxfp4_test_input(6, 1024), &odd_n).is_none());
+        // Affine weights carry group biases.
+        let mut affine = weight.clone();
+        affine.mode = "affine".to_owned();
+        affine.biases = affine.scales.clone();
+        assert!(mx_nax_qmm(&mxfp4_test_input(6, 1024), &affine).is_none());
+        // f32 activations.
+        let x32 = astype(&mxfp4_test_input(6, 1024), MlxDtype::Float32, None);
+        assert!(mx_nax_qmm(&x32, &weight).is_none());
+    }
+
+    #[test]
+    fn mx_nax_probe_passes_on_nax_hosts() {
+        if crate::hardware::neural_accelerator_active() {
+            assert_eq!(mx_nax_probe(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn mx_nax_probe_fails_closed_without_nax() {
+        if crate::hardware::neural_accelerator_active() {
+            return;
+        }
+        // Pre-M5 GPUs run the MPP op with another fragment layout (on M2 the
+        // probe sees max diff ~5); the hardware gate keeps the port off there
+        // before the probe is consulted.
+        assert!(!mx_nax_port_active());
+    }
+
     #[test]
     fn mxfp4_window_matches_mxfp4_qmm_for_every_supported_row_count() {
         // K covers one and several 256-value steps; N is not a multiple of the
@@ -1875,9 +2413,9 @@ mod tests {
         mislabeled.mode = "affine".to_owned();
         assert!(mxfp4_window_qmm(&input, &mislabeled, 0).is_some());
         // An unavailable kernel falls back instead of panicking.
-        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Release);
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(|flag| flag.set(true));
         let unavailable = mxfp4_window_qmm(&input, &weight, 0);
-        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(false, std::sync::atomic::Ordering::Release);
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.with(|flag| flag.set(false));
         assert!(unavailable.is_none());
     }
 }

@@ -26,6 +26,8 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_ALIGNED_NOCACHE", shipped: "off", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_ALIGNED_BUFFERED", shipped: "auto on pinned resident M5 Max profile", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_FLASH_NEXT_KV_SEGMENTS", shipped: "on", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_FLASH_NEXT_EAGER_DISPATCH", shipped: "3", class: SwitchClass::NonNumeric("scheduling") },
+    SwitchRow { env: "AX_FLASH_NEXT_FUSE_PROJECTIONS", shipped: "on", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_METAL", shipped: "on", class: SwitchClass::ProvenExact("native_gdn_forward_matches_compiled_and_eager") },
     SwitchRow { env: "AX_FLASH_NEXT_ROPE_CACHE", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_FLASH_NEXT_POOLED_CACHE", shipped: "on", class: SwitchClass::NonNumeric("cache") },
@@ -111,13 +113,17 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_DFLASH2_ASYNC_DRAFT", shipped: "on", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_DFLASH2_PREDRAFT", shipped: "on", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_DFLASH2_TOPK_KERNEL", shipped: "on", class: SwitchClass::NonNumeric("draft") },
+    SwitchRow { env: "AX_MLX_DFLASH2_HEAD_SUBSET", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_ROUND_TRACE", shipped: "off", class: SwitchClass::NonNumeric("telemetry") },
     SwitchRow { env: "AX_MLX_DFLASH2_PROFILE_REPLAY", shipped: "off", class: SwitchClass::NonNumeric("telemetry") },
+    SwitchRow { env: "AX_MLX_DFLASH2_CANDIDATE_TRACE", shipped: "unset", class: SwitchClass::NonNumeric("telemetry") },
+    SwitchRow { env: "AX_MLX_DFLASH2_TRACE_ACCEPT_CAP", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_LOGIT_PROBE", shipped: "unset", class: SwitchClass::NonNumeric("telemetry") },
     SwitchRow { env: "AX_MLX_DFLASH2_LANE_BATCHED_GDN", shipped: "on", class: SwitchClass::ProvenExact("lane_batched_fused_verify_matches_one_call_per_lane") },
     SwitchRow { env: "AX_MLX_DFLASH2_FUSED_QKV", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_FUSED_GDN_VERIFY", shipped: "on", class: SwitchClass::ProvenExact("fused_gated_delta_verify_bf16_128d_matches_portable_prework") },
     SwitchRow { env: "AX_MLX_TREE_VERIFY", shipped: "off", class: SwitchClass::NonNumeric("draft") },
+    SwitchRow { env: "AX_MLX_DFLASH2_TREE_ROWS", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_MTP_QUANTIZED_HEAD_DRAFT", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_MTP_PENALIZED_VERIFY", shipped: "on", class: SwitchClass::NonNumeric("sampling") },
@@ -256,6 +262,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_DECODE_METAL", shipped: "on", class: SwitchClass::Token("gd_decode_metal=0") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX", shipped: "off", class: SwitchClass::Token("qwen_gdn_mlx") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX", shipped: "on", class: SwitchClass::Token("gdn_prefill_mlx=0") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ", shipped: "auto", class: SwitchClass::Token("gdn_prefill_mlx_min=64") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT", shipped: "on", class: SwitchClass::Token("qsa_decode_select=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_DIRECT_COALESCING", shipped: "off", class: SwitchClass::Token("two_resident_direct_rows") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_PREFILL_SPLIT", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
@@ -273,6 +280,9 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES", shipped: "off", class: SwitchClass::ProvenExact("qsa_tiled_score_bits_match_monolithic") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK", shipped: "unset", class: SwitchClass::Token("chunk=8192") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT", shipped: "on", class: SwitchClass::Token("expert_sort=0") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_HC_PREFILL_KERNELS", shipped: "on", class: SwitchClass::ProvenExact("kernels_match_the_mlx_ops_bit_for_bit_at_prefill_rows") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_MOE_PREFILL_SUM", shipped: "on", class: SwitchClass::ProvenExact("routed_sum_matches_the_mlx_ops_bit_for_bit_at_prefill_rows") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD", shipped: "on", class: SwitchClass::Token("moe_prefill_pad=0") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING", shipped: "off", class: SwitchClass::Token("gd_streaming") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_TILE_512", shipped: "off", class: SwitchClass::Token("gd_tile_512") },
     SwitchRow { env: "AX_MLX_QWEN_PREFILL_SINGLE_2048", shipped: "off", class: SwitchClass::Token("single_2048") },
@@ -775,6 +785,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
             switches.flash_gdn_prefill_mlx = false;
             true
         }
+        "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ" => {
+            switches.flash_gdn_prefill_mlx_min_seq = Some(64);
+            true
+        }
         "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT" => {
             switches.qsa_device_select = false;
             true
@@ -817,6 +831,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK" => {
             switches.tiled_prefill_chunk = Some(8192);
+            true
+        }
+        "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD" => {
+            switches.moe_prefill_pad = false;
             true
         }
         "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT" => {

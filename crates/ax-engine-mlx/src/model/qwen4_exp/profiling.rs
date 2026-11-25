@@ -125,6 +125,27 @@ thread_local! {
     static EVALS: Cell<u64> = const { Cell::new(0) };
 }
 
+thread_local! {
+    static SKIPPED_STAGES: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Timing ablation for `flash_next_prefill_latency_scan`: a stage named in
+/// `AX_FLASH_NEXT_SCAN_SKIP` (`moe`, `gdn`, `gdn_recurrence`, `qsa`) is
+/// replaced by a zero or pass-through result, so the difference to the
+/// whole forward is that stage's cost inside one unsynchronized evaluation.
+/// The outputs of such a run are meaningless.
+pub(crate) fn skip_stage(stage: &str) -> bool {
+    SKIPPED_STAGES.with_borrow_mut(|slot| {
+        slot.get_or_insert_with(|| {
+            std::env::var("AX_FLASH_NEXT_SCAN_SKIP")
+                .map(|value| parse_stage_csv(&value))
+                .unwrap_or_default()
+        })
+        .iter()
+        .any(|skipped| skipped == stage)
+    })
+}
+
 /// Per-layer operator splits requested by the prefill stage profile.
 const LAYER_SPLIT_STAGES: &[&str] = &[
     "ngram_lookup",
@@ -1717,6 +1738,64 @@ fn flash_next_prefill_stage_profile() {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
     eprintln!("{evidence}");
+}
+
+/// Warm prefill wall time by prompt length, one chunk each, with the last
+/// row's logits only (what a served request computes). The first run of a
+/// length pays its kernel and closure compiles, so it is reported apart from
+/// the best of the following runs. `AX_FLASH_NEXT_SCAN_ROWS` lists the prefix
+/// lengths taken from the prompt ids.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS(_FILE); timing only"]
+fn flash_next_prefill_latency_scan() {
+    use crate::model::ModelConfig;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let tokens = profile_prompt_ids(artifacts.manifest().vocab_size);
+    let lengths = parse_usize_csv(&std::env::var("AX_FLASH_NEXT_SCAN_ROWS").unwrap());
+    let repeats = env_usize("AX_FLASH_NEXT_SCAN_REPEATS").unwrap_or(4).max(2);
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let mut records = Vec::new();
+    for &len in &lengths {
+        assert!((1..=tokens.len()).contains(&len), "scan length {len}");
+        // The state is not serialized here: a run with a skipped stage has
+        // no complete state to serialize.
+        let seconds: Vec<f64> = (0..repeats)
+            .map(|_| {
+                let state = Qwen4ExpState::new(trunk, owner);
+                let start = Instant::now();
+                let output = forward_with_rows(
+                    trunk,
+                    &tokens[..len],
+                    &state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                    LogitRows::Last,
+                )
+                .unwrap();
+                mlx_sys::try_eval(&[&output.logits]).unwrap();
+                start.elapsed().as_secs_f64()
+            })
+            .collect();
+        let warm = seconds[1..].iter().copied().fold(f64::INFINITY, f64::min);
+        eprintln!(
+            "prefill_scan tokens={len} first_ms={:.1} warm_ms={warm_ms:.1} ms_per_token={:.3}",
+            seconds[0] * 1e3,
+            warm * 1e3 / len as f64,
+            warm_ms = warm * 1e3,
+        );
+        records
+            .push(serde_json::json!({ "tokens": len, "seconds": seconds, "warm_seconds": warm }));
+    }
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&records).unwrap()).unwrap();
+    }
 }
 
 #[test]

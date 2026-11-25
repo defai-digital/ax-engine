@@ -559,6 +559,14 @@ pub(crate) fn apply_nax_verify_kernel_status(
                 "MLX {version} carries {handoffs}; DFlash2 and relaxed MTP verify windows hand off to them (AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS=0 and AX_MLX_NAX_VERIFY_NATIVE_SDPA=0 turn them off)."
             ),
         )
+    } else if status.ax_port_active {
+        DoctorAdvice::info(
+            "nax_verify_kernels_ax_port",
+            "M5+ speculative verify uses AX's port of MLX's NAX qmv kernel.",
+            &format!(
+                "MLX {version} has no qmv_nax, so MXFP4/MXFP8 verify windows use AX's port of it (ADR-053); affine projections and verify attention keep AX's path until the runtime moves to 0.32.5+ (AX_MLX_MTP_VERIFY_QMM_NAX_PORT=0 turns the port off)."
+            ),
+        )
     } else if !status.version_ok {
         DoctorAdvice::info(
             "nax_verify_kernels_need_newer_mlx",

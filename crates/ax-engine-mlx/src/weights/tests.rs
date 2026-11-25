@@ -326,6 +326,41 @@ fn auto_buffer_caps_exclude_qwen3_5_family() {
 }
 
 #[test]
+fn flash_next_raises_only_the_byte_cap_on_neural_accelerator_hosts() {
+    assert!(should_raise_metal_buffer_byte_cap_for(
+        true,
+        true,
+        "qwen4_exp"
+    ));
+    // Before M5 the family keeps the both-caps raise it already had.
+    assert!(!should_raise_metal_buffer_byte_cap_for(
+        true,
+        false,
+        "qwen4_exp"
+    ));
+    assert!(should_auto_raise_metal_buffer_caps_for(
+        true,
+        true,
+        false,
+        "qwen4_exp"
+    ));
+    assert!(!should_auto_raise_metal_buffer_caps_for(
+        true,
+        true,
+        true,
+        "qwen4_exp"
+    ));
+    assert!(!should_raise_metal_buffer_byte_cap_for(
+        false,
+        true,
+        "qwen4_exp"
+    ));
+    for family in ["qwen3_next", "qwen3_5", "llama3", "gemma4"] {
+        assert!(!should_raise_metal_buffer_byte_cap_for(true, true, family));
+    }
+}
+
+#[test]
 fn auto_buffer_caps_na_host_raises_only_qwen3_next() {
     assert!(should_auto_raise_metal_buffer_caps_for(
         true,

@@ -6,6 +6,7 @@ from html import escape
 import json
 import math
 from pathlib import Path
+from statistics import median
 
 CAMPAIGN = Path(__file__).resolve().parent
 ROOT = CAMPAIGN.parents[2]
@@ -26,11 +27,18 @@ ENGINE_NAMES = {
     "ds4": "ds4",
 }
 MODE_NAMES = {"direct": "Direct greedy", "dflash2": "DFlash2"}
+RERUN_MARK = " †"
+RERUN_NOTE = (
+    "† Median of three runs interleaved with the neighbouring † rows in one later session "
+    "on the same day; the other rows are single runs from the original session. See the "
+    "[campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun)."
+)
 
 
 def label(row, versions):
     key = row["engine"]
-    return f"{ENGINE_NAMES[key]} {versions[key]} ({MODE_NAMES[row['mode']]})"
+    mark = RERUN_MARK if row.get("session") == "paired-rerun" else ""
+    return f"{ENGINE_NAMES[key]} {versions[key]} ({MODE_NAMES[row['mode']]}){mark}"
 
 
 def figure_name(model):
@@ -39,6 +47,12 @@ def figure_name(model):
 
 def rate(value):
     return f"{value:.2f}" if value else "0"
+
+
+def first_text(row, size):
+    """Median first-text latency of the short or long prefill probe, or a dash."""
+    probes = [pair[size]["first_text_seconds"] for pair in row.get("prefill") or []]
+    return f"{median(probes):.2f}" if probes else "—"
 
 
 def render(model, rows, versions):
@@ -104,14 +118,18 @@ def tables(versions, grouped):
             "",
             f"![{name} decode and effective prefill by engine version and mode on M5 Max.](docs/assets/{chart})",
             "",
-            "| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) |",
-            "| --- | ---: | ---: |",
+            "| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) "
+            "| First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |",
+            "| --- | ---: | ---: | ---: | ---: |",
         ]
         parts += [
-            f"| {label(row, versions)} | {rate(row['decode_tok_s'])} | {rate(row['prefill_tok_s'])} |"
+            f"| {label(row, versions)} | {rate(row['decode_tok_s'])} | {rate(row['prefill_tok_s'])} "
+            f"| {first_text(row, 'short')} | {first_text(row, 'long')} |"
             for row in rows
         ]
         parts.append("")
+        if any(row.get("session") == "paired-rerun" for row in rows):
+            parts += [RERUN_NOTE, ""]
     return "\n".join(parts + [END])
 
 

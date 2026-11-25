@@ -124,6 +124,7 @@ pub use config::{
     LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
+pub(crate) mod draft_tree;
 pub(crate) mod layer_capture;
 pub(crate) mod qwen4_exp;
 #[cfg(test)]

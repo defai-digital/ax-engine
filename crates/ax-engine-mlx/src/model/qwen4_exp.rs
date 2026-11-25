@@ -1163,6 +1163,13 @@ impl<'a> PreparedForward<'a> {
             })
             .unwrap_or(weights.layers.len());
         let offset = next.position;
+        // A one-row decode step hands finished layers to the GPU while the
+        // host is still building the rest of the graph.
+        let eager_dispatch = if tokens.len() == 1 {
+            crate::fastpath::flash_next_eager_dispatch_layers()
+        } else {
+            0
+        };
         // Image requests rotate attention and QSA keys at their MRoPE positions.
         let _media_scope = crate::qwen4_exp_qsa::scoped_media(next.media.clone());
         #[cfg(test)]
@@ -1223,52 +1230,63 @@ impl<'a> PreparedForward<'a> {
                 .map_err(|e| e.to_string())?;
             #[cfg(test)]
             profiling::mark("attention_hc_read", &[read.branch_input()]);
-            let delta = match (&layer.attention, &mut staged.attention) {
-                (Qwen4ExpAttentionBranch::Gdn(branch), AttentionState::Gdn(cache)) => {
-                    let (delta, new_state) = branch.forward(
-                        read.branch_input(),
-                        cache.as_ref(),
-                        policy,
-                        verifier_policy,
-                    )?;
-                    #[cfg(test)]
-                    profiling::mark("gdn", &[&delta, &new_state.conv, &new_state.recurrent]);
-                    *cache = Some(new_state);
-                    delta
-                }
-                (Qwen4ExpAttentionBranch::Qsa(branch), AttentionState::Qsa(cache)) => {
-                    let result = branch
-                        .forward_with_verifier_policy(
+            #[cfg(test)]
+            let skip_attention = profiling::skip_stage(match &layer.attention {
+                Qwen4ExpAttentionBranch::Gdn(_) => "gdn",
+                Qwen4ExpAttentionBranch::Qsa(_) => "qsa",
+            });
+            #[cfg(not(test))]
+            let skip_attention = false;
+            let delta = if skip_attention {
+                mlx_sys::subtract(read.branch_input(), read.branch_input(), None)
+            } else {
+                match (&layer.attention, &mut staged.attention) {
+                    (Qwen4ExpAttentionBranch::Gdn(branch), AttentionState::Gdn(cache)) => {
+                        let (delta, new_state) = branch.forward(
                             read.branch_input(),
-                            cache,
-                            offset,
+                            cache.as_ref(),
                             policy,
                             verifier_policy,
-                        )
-                        .map_err(|e| {
-                            format!(
-                                "qwen4_exp layer {index} at position {} with {} tokens: {e}; \
-                             MLX memory bytes at failure: active={:?}, cache={:?}, peak={:?}",
-                                offset,
-                                tokens.len(),
-                                mlx_sys::device_active_bytes(),
-                                mlx_sys::device_cache_bytes(),
-                                mlx_sys::device_peak_bytes(),
-                            )
-                        })?;
-                    let delta = result.delta().clone();
-                    *cache = result.into_next_state();
-                    #[cfg(test)]
-                    {
-                        let mut arrays = vec![&delta];
-                        arrays.extend(cache.keys().arrays());
-                        arrays.extend(cache.values().arrays());
-                        arrays.extend(cache.index().keys());
-                        profiling::mark("qsa", &arrays);
+                        )?;
+                        #[cfg(test)]
+                        profiling::mark("gdn", &[&delta, &new_state.conv, &new_state.recurrent]);
+                        *cache = Some(new_state);
+                        delta
                     }
-                    delta
+                    (Qwen4ExpAttentionBranch::Qsa(branch), AttentionState::Qsa(cache)) => {
+                        let result = branch
+                            .forward_with_verifier_policy(
+                                read.branch_input(),
+                                cache,
+                                offset,
+                                policy,
+                                verifier_policy,
+                            )
+                            .map_err(|e| {
+                                format!(
+                                    "qwen4_exp layer {index} at position {} with {} tokens: {e}; \
+                             MLX memory bytes at failure: active={:?}, cache={:?}, peak={:?}",
+                                    offset,
+                                    tokens.len(),
+                                    mlx_sys::device_active_bytes(),
+                                    mlx_sys::device_cache_bytes(),
+                                    mlx_sys::device_peak_bytes(),
+                                )
+                            })?;
+                        let delta = result.delta().clone();
+                        *cache = result.into_next_state();
+                        #[cfg(test)]
+                        {
+                            let mut arrays = vec![&delta];
+                            arrays.extend(cache.keys().arrays());
+                            arrays.extend(cache.values().arrays());
+                            arrays.extend(cache.index().keys());
+                            profiling::mark("qsa", &arrays);
+                        }
+                        delta
+                    }
+                    _ => return Err(format!("qwen4_exp layer {index} attention state mismatch")),
                 }
-                _ => return Err(format!("qwen4_exp layer {index} attention state mismatch")),
             };
             hidden = read.write(&delta).map_err(|e| e.to_string())?;
             #[cfg(test)]
@@ -1279,7 +1297,13 @@ impl<'a> PreparedForward<'a> {
                 .map_err(|e| e.to_string())?;
             #[cfg(test)]
             profiling::mark("mlp_hc_read", &[read.branch_input()]);
-            let delta = if policy == verifier_policy {
+            #[cfg(test)]
+            let skip_moe = profiling::skip_stage("moe");
+            #[cfg(not(test))]
+            let skip_moe = false;
+            let delta = if skip_moe {
+                mlx_sys::subtract(read.branch_input(), read.branch_input(), None)
+            } else if policy == verifier_policy {
                 layer.moe.forward(read.branch_input(), policy)?
             } else {
                 layer.moe.forward_with_verifier_policy(
@@ -1291,6 +1315,10 @@ impl<'a> PreparedForward<'a> {
             hidden = read.write(&delta).map_err(|e| e.to_string())?;
             #[cfg(test)]
             profiling::mark("mlp_hc_write", &[&hidden]);
+            if eager_dispatch > 0 && (index + 1) % eager_dispatch == 0 && index + 1 < layer_end {
+                mlx_sys::try_async_eval(&[&hidden])
+                    .map_err(|e| format!("qwen4_exp layer {index} dispatch failed: {e}"))?;
+            }
         }
         if layer_end < weights.layers.len() {
             let mut arrays = next.arrays();

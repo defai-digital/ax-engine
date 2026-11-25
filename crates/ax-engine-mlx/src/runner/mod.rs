@@ -2945,6 +2945,10 @@ impl MlxRunner {
             Some(cell) => cell.get_or_load(load_weights)?,
             None => (load_weights()?, false),
         };
+        // Resolve the NAX verify hand-off (stock `qmv_nax` or AX's port, whose
+        // one-time probe runs a Metal kernel) now that Metal is initialized,
+        // not inside the first verify forward.
+        let _ = crate::model::shared::verify_qmm::nax_verify_handoff_active();
         // Apply the guarded wired-residency policy: after weights are
         // loaded and `weights.expert_stream` is known, clear wired residency
         // for the exactly tested Tiel/Cyber export configuration on M5 Max

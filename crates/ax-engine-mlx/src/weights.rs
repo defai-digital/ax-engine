@@ -695,6 +695,39 @@ impl QuantizedWeight {
         }
     }
 
+    /// Output rows `start..end` of a quantized `[out, ...]` weight as views of
+    /// the same buffers: a projection through it yields those output columns
+    /// of the full projection. `None` for an unquantized weight, one with a
+    /// dense bias, or a range outside the weight.
+    pub(crate) fn row_range(&self, start: i32, end: i32) -> Option<Self> {
+        let rows = *self.weight.shape().first()?;
+        if self.linear_bias.is_some() || start < 0 || start >= end || end > rows {
+            return None;
+        }
+        let rows_of = |array: &MlxArray| {
+            let shape = array.shape();
+            (shape.len() == 2 && shape[0] == rows)
+                .then(|| mlx_sys::slice(array, &[start, 0], &[end, shape[1]], &[1, 1], None))
+        };
+        Some(Self {
+            weight: rows_of(&self.weight)?,
+            scales: Some(rows_of(self.scales.as_ref()?)?),
+            biases: match self.biases.as_ref() {
+                Some(biases) => Some(rows_of(biases)?),
+                None => None,
+            },
+            group_size: self.group_size,
+            bits: self.bits,
+            mode: self.mode.clone(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: WeightViewCell::default(),
+        })
+    }
+
     pub(crate) fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
         self.linear_bias = linear_bias;
         self
@@ -1237,6 +1270,34 @@ pub(crate) fn should_auto_raise_metal_buffer_caps_for(
     true
 }
 
+/// The byte cap [`should_raise_metal_buffer_byte_cap_for`] families get.
+/// Decode gains nothing at 100 MB and all of it from 200 MB up; the cap stays
+/// near the low end of that plateau because prefill gives a little back as
+/// it grows (see below).
+const BUFFER_BYTE_CAP_ONLY_TARGET_MB: u32 = 256;
+
+/// Whether this family raises only the byte cap on the current host.
+///
+/// `qwen4_exp` (Flash Next) on a Neural Accelerator host: one decode step
+/// reads more weight bytes than MLX's default byte cap admits per command
+/// buffer, so the step is split into many of them. On the MacBook Pro M5 Max
+/// 128 GB with the Qwen 3.8 Flash Next MXFP4 pack, greedy decode measures
+/// 58.0 to 58.2 tok/s at the default and at 100 MB, and 60.0 to 60.3 tok/s at
+/// 200, 400, 512, 1000, 4000 MB and unlimited (interleaved arms of one
+/// binary, identical output). Effective prefill over a 1.5k-token prompt is
+/// 3190 to 3255 tok/s at the default, 3059 at 200 MB and 2940 to 3005 from
+/// 400 MB up; over a 16k-token prompt 926 to 947 at the default against 886
+/// to 932 with the cap raised. Raising the op-count cap as well gives no
+/// further decode gain and costs prefill (2235 tok/s at 1000 ops over the
+/// 1.5k prompt), so the op cap stays at MLX's default.
+pub(crate) fn should_raise_metal_buffer_byte_cap_for(
+    auto_enabled: bool,
+    neural_accelerator_active: bool,
+    model_family: &str,
+) -> bool {
+    auto_enabled && neural_accelerator_active && model_family == "qwen4_exp"
+}
+
 /// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping
 /// host graph build with GPU execution on MoE-class checkpoints
 /// (`docs/performance/gather-qmm-async-serialization.md`).
@@ -1260,6 +1321,24 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
         // Resolve the M5+ skinny-NAX gate (version + metallib probe) at load,
         // not inside the first verify step.
         let _ = crate::hardware::skinny_qmv_nax_active();
+        if should_raise_metal_buffer_byte_cap_for(
+            crate::fastpath::auto_buffer_caps_enabled(),
+            na_active,
+            model_family,
+        ) {
+            let mb_applied = mlx_sys::set_metal_buffer_byte_cap_env(BUFFER_BYTE_CAP_ONLY_TARGET_MB);
+            tracing::info!(
+                target = "ax_engine_mlx",
+                model_family,
+                mb_applied,
+                target_mb = BUFFER_BYTE_CAP_ONLY_TARGET_MB,
+                "raised MLX's Metal command-buffer byte cap and kept its op-count \
+                 cap (applies to all subsequent models in this process). \
+                 AX_MLX_AUTO_BUFFER_CAPS=0 to disable; a pre-set \
+                 MLX_MAX_MB_PER_BUFFER wins."
+            );
+            return;
+        }
         if !should_auto_raise_metal_buffer_caps(model_family) {
             tracing::info!(
                 target = "ax_engine_mlx",

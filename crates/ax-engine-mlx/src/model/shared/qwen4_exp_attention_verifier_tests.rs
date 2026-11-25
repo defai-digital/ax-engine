@@ -954,3 +954,59 @@ fn dense_attention_is_not_used_beyond_the_qsa_budget() {
     // Past the budget selection is real, so the dense switch must not matter.
     exact(run(true).delta(), run(false).delta());
 }
+
+/// With MXFP4 q, k and v, a singleton decode step projects all three with one
+/// fused quantized matmul; the delta and the staged K/V and index caches must
+/// match the member projections bit for bit, and a window must not fuse.
+#[test]
+fn fused_qkv_projection_keeps_singleton_decode_bits() {
+    use super::super::qwen4_exp_gdn::{fused_projection_calls_for_test, with_fused_projections};
+    let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    let mxfp4 = Some(MlxQuantizationMode::Mxfp4);
+    let module = with_fused_projections(Some(true), || {
+        module_with_modes(mxfp4, mxfp4, mxfp4, mxfp4, mxfp4)
+    });
+    assert!(module.fused_qkv.is_some(), "q, k and v must fuse");
+    let input = input();
+    let cache = prefill(&module, &input);
+    let split = with_fused_projections(Some(false), || {
+        singleton_output(&module, &input, &cache, SHARED)
+    });
+    let before = fused_projection_calls_for_test();
+    let fused = with_fused_projections(Some(true), || {
+        singleton_output(&module, &input, &cache, SHARED)
+    });
+    assert_eq!(
+        fused_projection_calls_for_test(),
+        before + 2,
+        "one fused call per singleton step"
+    );
+    exact(fused.delta(), split.delta());
+    exact_cache(fused.next_state(), split.next_state());
+
+    let before = fused_projection_calls_for_test();
+    let window = with_fused_projections(Some(true), || {
+        module
+            .forward(
+                &span(&input, PREFIX, PREFIX + 2),
+                &cache,
+                PREFIX as usize,
+                SHARED,
+            )
+            .unwrap()
+    });
+    evaluate(&window);
+    assert_eq!(fused_projection_calls_for_test(), before, "window");
+
+    // A member in another quantization mode keeps all three on their own call.
+    let mixed = with_fused_projections(Some(true), || {
+        module_with_modes(
+            mxfp4,
+            Some(MlxQuantizationMode::Affine),
+            mxfp4,
+            mxfp4,
+            mxfp4,
+        )
+    });
+    assert!(mixed.fused_qkv.is_none(), "mixed modes must not fuse");
+}

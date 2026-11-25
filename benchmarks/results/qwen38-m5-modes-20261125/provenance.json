@@ -4,7 +4,7 @@
   "mlx": "0.32.4",
   "tokenizers": "0.23.3",
   "engine_versions": {
-    "ax-engine": "8.1.0",
+    "ax-engine": "8.1.0+b04a5f2e",
     "omlx": "0.8.2",
     "splash": "1.7.0",
     "mlx-lm": "0.32.0",
@@ -17,5 +17,23 @@
   "dense_draft_weight_sha256": "67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c",
   "dense_pack_revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
   "flash_pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
-  "corpus_sha256": "1d4099b3888dcb136d5e0832770a9807c61ce1982a62212fc0fe1dd8d8f1afa7"
+  "corpus_sha256": "1d4099b3888dcb136d5e0832770a9807c61ce1982a62212fc0fe1dd8d8f1afa7",
+  "paired_rerun": {
+    "date": "2026-11-25",
+    "ax_engine_source": "b04a5f2ef (branch perf/mlx-nax-port-20261125), release-server profile, default settings",
+    "ax_engine_binary_sha256_prefix": "a07703d661b998db",
+    "arms": [
+      "dense/ax-engine/direct",
+      "dense/omlx/direct",
+      "dense/ax-engine/dflash2",
+      "dense/splash/dflash2",
+      "flash/ax-engine/direct",
+      "flash/omlx/direct"
+    ],
+    "runs_per_arm": 3,
+    "order": "each AX Engine run is followed by its peer's run; 30 s between arms",
+    "aggregation": "medians of the per-run decode and effective prefill; the published prefill list holds all six probe pairs",
+    "per_run_records": "paired-rerun.jsonl",
+    "original_single_runs": "results-original.jsonl (AX Engine 8.1.0 at 4347f2ff9)"
+  }
 }

@@ -16,7 +16,7 @@
   },
   "crates/ax-engine-mlx/src/dflash2.rs": {
     "eval": 1,
-    "try_eval": 4
+    "try_eval": 6
   },
   "crates/ax-engine-mlx/src/diffusion.rs": {
     "eval": 8
@@ -52,7 +52,7 @@
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": {
     "eval": 23,
-    "try_eval": 4
+    "try_eval": 5
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": {
     "try_eval": 8
@@ -106,6 +106,9 @@
     "async_eval": 1,
     "eval": 1
   },
+  "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": {
+    "try_eval": 1
+  },
   "crates/ax-engine-mlx/src/mtp.rs": {
     "async_eval": 2,
     "eval": 14
@@ -136,7 +139,7 @@
     "try_eval": 6
   },
   "crates/ax-engine-mlx/src/runner/dflash2_decode.rs": {
-    "try_eval": 11
+    "try_eval": 13
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,

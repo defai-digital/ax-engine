@@ -121,7 +121,7 @@ pub fn try_mlx_prefill(
 ) -> Option<(MlxArray, MlxArray)> {
     let qs = q.shape();
     if !crate::mlx_gated_delta::mlx_gated_delta_prefill_supported(&qs, &v.shape(), q.dtype())
-        || !crate::fastpath::qwen_gated_delta_prefill_mlx_seq_eligible(qs[1])
+        || !crate::fastpath::flash_next_gdn_prefill_mlx_seq_eligible(qs[1])
         || validate(q, k, v, decay, beta, state).is_err()
     {
         return None;
@@ -297,8 +297,12 @@ mod tests {
         close(&rows(&full, 131, 262), &out2, 5e-5);
         close(&full_state, &second, 5e-5);
         assert_eq!(initial.data_f32(), initial_values);
-        // The experiment cannot select the short verification or singleton paths.
-        for seq in [1, 2, 4, 32, 127] {
+        // Short verification windows and the singleton never select MLX's
+        // recurrence; longer chunks do from the host's floor (32 on Neural
+        // Accelerator hosts, 128 elsewhere).
+        let floor = crate::fastpath::flash_next_gdn_prefill_mlx_min_seq();
+        assert!((32..=128).contains(&floor));
+        for seq in [1, 2, 4, 31, 32, 127] {
             let (q, k, v, d, b) = (
                 rows(&q, 0, seq),
                 rows(&k, 0, seq),
@@ -306,7 +310,8 @@ mod tests {
                 rows(&decay, 0, seq),
                 rows(&beta, 0, seq),
             );
-            assert!(try_mlx_prefill(&q, &k, &v, &d, &b, &state).is_none());
+            let selected = try_mlx_prefill(&q, &k, &v, &d, &b, &state).is_some();
+            assert_eq!(selected, seq >= floor, "seq {seq}");
         }
         let bad_gate = mlx_sys::zeros(&[2, 271, 48], MlxDtype::Bfloat16, None);
         assert!(try_mlx_prefill(&q, &k, &v, &bad_gate, &beta, &state).is_none());

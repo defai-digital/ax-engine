@@ -5250,3 +5250,178 @@ fn assert_packed_verify_lanes_match_solo(cfg: &ModelConfig, weights: &ModelWeigh
         }
     }
 }
+
+/// A four-layer hybrid (gated delta, attention, gated delta, attention) whose
+/// gated-delta layers take the fused verify kernels.
+fn patterned_qwen35_hybrid_four_layers() -> (ModelConfig, ModelWeights) {
+    let (mut cfg, mut weights) = patterned_qwen35_hybrid_with_value_head_dim(Some(32));
+    cfg.layer_count = 4;
+    let (_, second) = patterned_qwen35_hybrid_with_value_head_dim(Some(32));
+    weights.layers.extend(second.layers);
+    assert!(cfg.is_linear_attention_layer(2) && !cfg.is_linear_attention_layer(3));
+    (cfg, weights)
+}
+
+/// Tree verify oracle: each row of the one-forward tree verify must carry the
+/// logits a chain verify over that row's root path ends on, and committing a
+/// path must leave the cache a chain verify of that path leaves.
+#[test]
+fn draft_tree_verify_rows_and_commit_match_chain_verify_of_each_path() {
+    use crate::dflash2_tree::TreeLayout;
+    use crate::model::draft_tree::{commit_tree_path, forward_tree_verify};
+
+    let (cfg, weights) = patterned_qwen35_hybrid_four_layers();
+    let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+    let prompt: [u32; 5] = [1, 2, 3, 4, 5];
+    let mut base = MlxKVCache::new(cfg.layer_count);
+    let logits = forward_all_positions(&cfg, &weights, &prompt, &mut base, 0);
+    base.advance(prompt.len());
+    let mut refs = base.collect_eval_refs();
+    refs.push(&logits);
+    eval(&refs);
+    let offset = base.seq_len();
+
+    // Pre-order: 0 -> 1 -> 2 -> {3, 4}; 1 -> 5 -> 6; 0 -> 7 -> {8, 9}; 9 -> 10 -> 11.
+    let parents: [i32; 12] = [-1, 0, 1, 2, 2, 1, 5, 0, 7, 7, 9, 10];
+    let ids: [u32; 12] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+    let tree = TreeLayout::from_parents(&ids, &parents);
+    let mut paths: Vec<Vec<usize>> = Vec::new();
+    for (row, &parent) in parents.iter().enumerate() {
+        let mut path = if parent < 0 {
+            Vec::new()
+        } else {
+            paths[parent as usize].clone()
+        };
+        path.push(row);
+        paths.push(path);
+    }
+
+    let mut tree_cache = base.clone();
+    tree_cache.begin_linear_prefix_capture(1);
+    let forward = forward_tree_verify(&cfg, &weights, &tree, &mut tree_cache, offset)
+        .expect("tree verify forward");
+    tree_cache.advance(ids.len());
+    let tree_logits = astype(&forward.logits, MlxDtype::Float32, None);
+    eval(&[&tree_logits]);
+    let vocab = cfg.vocab_size;
+    let tree_values = tree_logits.data_f32().to_vec();
+    assert!(
+        tree_values
+            .iter()
+            .any(|v| (v - tree_values[0]).abs() > 1e-3),
+        "the oracle needs non-trivial logits"
+    );
+
+    let chain = |path: &[usize]| {
+        let chain_ids: Vec<u32> = path.iter().map(|&row| ids[row]).collect();
+        let arr = MlxArray::from_raw_data(
+            chain_ids.as_ptr().cast::<u8>(),
+            chain_ids.len() * 4,
+            &[chain_ids.len() as i32],
+            MlxDtype::Uint32,
+        );
+        let mut cache = base.clone();
+        cache.begin_linear_prefix_capture(1);
+        let (logits, _) = forward_all_positions_with_post_norm_ids(
+            &cfg,
+            &weights,
+            &arr,
+            chain_ids.len(),
+            &mut cache,
+            offset,
+            false,
+        );
+        cache.advance(chain_ids.len());
+        let logits = astype(&logits, MlxDtype::Float32, None);
+        let mut refs = cache.collect_eval_refs();
+        refs.push(&logits);
+        eval(&refs);
+        (logits.data_f32().to_vec(), cache)
+    };
+    // A Neural Accelerator host's matmul differs between row counts by a few
+    // 1e-4 per product (the same host fails `packed_verify_lanes_match_solo_
+    // verify_forwards` at its 2e-3), which four layers carry to under 1e-2. A
+    // wrong mask, position or state moves these logits by tenths.
+    let tolerance = if crate::hardware::neural_accelerator_active() {
+        2e-2
+    } else {
+        2e-3
+    };
+    let close = |label: &str, got: &[f32], want: &[f32]| {
+        assert_eq!(got.len(), want.len(), "{label}: length");
+        let scale = want.iter().fold(1.0f32, |m, v| m.max(v.abs()));
+        for (index, (g, w)) in got.iter().zip(want).enumerate() {
+            assert!(
+                (g - w).abs() <= tolerance * scale,
+                "{label}[{index}]: {g} vs {w} (scale {scale})"
+            );
+        }
+    };
+
+    for (row, path) in paths.iter().enumerate() {
+        let (chain_logits, chain_cache) = chain(path);
+        let last = path.len() - 1;
+        close(
+            &format!("row {row} logits"),
+            &tree_values[row * vocab..(row + 1) * vocab],
+            &chain_logits[last * vocab..(last + 1) * vocab],
+        );
+
+        // Commit this path and compare the cache with the chain's.
+        let mut committed = tree_cache.clone();
+        committed.begin_linear_prefix_capture(1);
+        assert!(
+            commit_tree_path(
+                &cfg,
+                &weights,
+                &base,
+                &mut committed,
+                &forward,
+                offset,
+                path
+            ),
+            "row {row}: commit"
+        );
+        assert_eq!(committed.seq_len(), offset + path.len(), "row {row}");
+        eval(&committed.collect_eval_refs());
+        for layer in 0..cfg.layer_count {
+            if cfg.is_linear_attention_layer(layer) {
+                let (conv, recurrent) = committed.linear_state(layer);
+                let (want_conv, want_recurrent) = chain_cache.linear_state(layer);
+                let floats = |array: Option<&MlxArray>| {
+                    let array = astype(array.expect("linear state"), MlxDtype::Float32, None);
+                    eval(&[&array]);
+                    array.data_f32().to_vec()
+                };
+                close(
+                    &format!("row {row} layer {layer} conv"),
+                    &floats(conv),
+                    &floats(want_conv),
+                );
+                close(
+                    &format!("row {row} layer {layer} recurrent"),
+                    &floats(recurrent),
+                    &floats(want_recurrent),
+                );
+            } else {
+                let (k, v) = committed.peek_layer_kv(layer).expect("committed K/V");
+                let (want_k, want_v) = chain_cache.peek_layer_kv(layer).expect("chain K/V");
+                let floats = |array: &MlxArray| {
+                    let array = astype(array, MlxDtype::Float32, None);
+                    eval(&[&array]);
+                    array.data_f32().to_vec()
+                };
+                close(
+                    &format!("row {row} layer {layer} k"),
+                    &floats(&k),
+                    &floats(&want_k),
+                );
+                close(
+                    &format!("row {row} layer {layer} v"),
+                    &floats(&v),
+                    &floats(&want_v),
+                );
+            }
+        }
+    }
+}

@@ -2599,6 +2599,7 @@ fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
             metallib_has_sdpa_split: kernels,
             active: version_ok && kernels == Some(true),
             native_sdpa_active: version_ok && kernels == Some(true),
+            ax_port_active: false,
         };
     let advice_ids = |report: &crate::doctor::DoctorReport| -> Vec<String> {
         report
@@ -2641,6 +2642,16 @@ fn doctor_reports_why_the_m5_nax_verify_kernels_are_on_or_off() {
         assert_eq!(advice_ids(&report), vec![expected.to_string()]);
         assert_eq!(report.nax_verify_kernels, Some(status));
     }
+
+    // MLX 0.32.4 on M5 with AX's qmv_nax port active.
+    let mut ported = status("0.32.4", false, Some(false));
+    ported.ax_port_active = true;
+    let mut report = base();
+    apply_nax_verify_kernel_status(&mut report, ported);
+    assert_eq!(
+        advice_ids(&report),
+        vec!["nax_verify_kernels_ax_port".to_string()]
+    );
 
     // Each hand-off is reported only when its own kernels were found.
     let mut qmv_only = status("0.32.5", true, Some(true));

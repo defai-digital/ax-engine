@@ -14,6 +14,8 @@ use mlx_sys::{
 
 use super::mlp::{SwitchGatherInputs, switch_gather_inputs, top_k_by_argpartition};
 use super::qwen4_exp_fused::{self, Stretch};
+use super::qwen4_exp_gdn::{FusedProjections, projection_policy};
+use super::qwen4_exp_native_moe_sum;
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_gather, qw_with_policy, squeeze_switch_singleton};
 use crate::expert_stream::{ExpertLayerSource, LayerExpertStack};
@@ -40,6 +42,57 @@ pub(crate) enum Qwen4ExpExpertWeights {
 /// long prompts). Decode and short verifier windows keep the original
 /// unsorted gather; outputs are restored to token order before the weighted sum.
 const PREFILL_EXPERT_SORT_MIN_TOKENS: i32 = 64;
+
+/// Pairs per expert of the stack from which MLX's sorted gather runs its
+/// batched expert kernel (`B / E >= 4` in `GatherQMM::eval_gpu`, MLX 0.32.4).
+/// Below it every (row, expert) pair is one matvec.
+const BATCHED_GATHER_PAIRS_PER_EXPERT: i32 = 4;
+
+/// Zero rows a sorted gather of `pairs` (row, expert) pairs over a stack of
+/// `experts` is padded with so MLX takes the batched expert kernel, or 0 when
+/// the gather already qualifies or is too short for the padding to pay.
+///
+/// MacBook Pro M5 Max 128 GB, Qwen 3.8 Flash Next MXFP4, routed experts of all
+/// 48 layers inside one prefill forward: 228 ms at 127 rows and 40 ms at 15
+/// rows through the per-pair kernel, 130 ms at 209 rows through the batched
+/// one, whose cost is mostly the one read of the expert stack. The padding
+/// starts where the per-pair cost passes that, at three pairs per two experts.
+fn batched_gather_padding(pairs: i32, experts: i32) -> i32 {
+    let target = experts.saturating_mul(BATCHED_GATHER_PAIRS_PER_EXPERT);
+    if pairs >= target || pairs.saturating_mul(2) < experts.saturating_mul(3) {
+        0
+    } else {
+        target - pairs
+    }
+}
+
+/// Append `padding` zero rows routed to the last expert of the stack, which
+/// keeps the indices sorted. Their outputs are dropped after the down
+/// projection.
+fn pad_sorted_gather(
+    x: &MlxArray,
+    indices: &MlxArray,
+    padding: i32,
+    experts: i32,
+) -> (MlxArray, MlxArray) {
+    let mut shape = x.shape();
+    shape[0] = padding;
+    let last = vec![(experts - 1) as u32; padding as usize];
+    let last = astype(
+        &MlxArray::from_raw_data(
+            last.as_ptr().cast(),
+            std::mem::size_of_val(last.as_slice()),
+            &[padding],
+            MlxDtype::Uint32,
+        ),
+        indices.dtype(),
+        None,
+    );
+    (
+        concatenate(&[x, &mlx_sys::zeros(&shape, x.dtype(), None)], 0, None),
+        concatenate(&[indices, &last], 0, None),
+    )
+}
 
 #[cfg(test)]
 fn trial_tiled_router_projection(
@@ -93,6 +146,24 @@ pub(crate) struct Qwen4ExpMoe {
     selected_prefill: bool,
     /// Gather experts in expert-id order for long prefill chunks.
     prefill_expert_sort: bool,
+    /// Pad a short sorted prefill gather up to MLX's batched expert kernel.
+    prefill_gather_padding: bool,
+    /// The expert router and the shared-expert router as one fused weight for
+    /// one-row decode; both read the layer input.
+    fused_routers: Option<FusedProjections>,
+    /// The shared expert's gate and up projections, fused the same way.
+    fused_shared: Option<FusedProjections>,
+}
+
+/// One routing decision for a chunk.
+struct Routing {
+    /// Selected expert ids per row.
+    indices: MlxArray,
+    /// Routing weight of each selected expert.
+    weights: MlxArray,
+    /// The shared-expert router projection, when one-row decode produced it
+    /// in the same fused call as the expert router logits.
+    shared_router: Option<MlxArray>,
 }
 
 /// A resolved streamed expert stack: split (or already-split) gate/up plus
@@ -335,18 +406,23 @@ impl Qwen4ExpMoe {
                 validate_expert(name, projection, experts as i32, out, input)?;
             }
         }
+        let fused_routers = FusedProjections::build(&[&weights.router, &weights.shared_router]);
+        let fused_shared = FusedProjections::build(&[&weights.shared_gate, &weights.shared_up]);
         Ok(Self {
             hidden: h,
             intermediate: i,
             experts,
             top_k,
             normalize_top_k,
+            fused_routers,
+            fused_shared,
             weights,
             selected_decode: std::env::var_os("AX_MLX_FLASH_NEXT_SELECTED_EXPERTS")
                 .is_some_and(|v| v == "1"),
             selected_prefill: std::env::var_os("AX_MLX_FLASH_NEXT_SELECTED_PREFILL")
                 .is_some_and(|v| v == "1"),
             prefill_expert_sort: crate::fastpath::flash_next_prefill_expert_sort_enabled(),
+            prefill_gather_padding: crate::fastpath::flash_next_moe_prefill_pad_enabled(),
         })
     }
 
@@ -544,15 +620,25 @@ impl Qwen4ExpMoe {
             }
             return Ok(concatenate(&outputs.iter().collect::<Vec<_>>(), 1, None));
         }
-        let (indices, routing) = self.route(input, policy);
+        let routing = self.route(input, policy);
         #[cfg(test)]
-        crate::model::qwen4_exp::profiling::mark("moe_routing", &[&indices, &routing]);
-        self.forward_routed(input, policy, verifier_policy, experts, &indices, &routing)
+        crate::model::qwen4_exp::profiling::mark(
+            "moe_routing",
+            &[&routing.indices, &routing.weights],
+        );
+        self.forward_routed(input, policy, verifier_policy, experts, &routing)
     }
 
-    fn route(&self, input: &MlxArray, policy: ProjectionBatchPolicy) -> (MlxArray, MlxArray) {
+    fn route(&self, input: &MlxArray, policy: ProjectionBatchPolicy) -> Routing {
         let w = &self.weights;
-        let project_router = || qw_with_policy(input, &w.router, policy);
+        let fused: Option<[MlxArray; 2]> =
+            FusedProjections::project(self.fused_routers.as_ref(), input, &[policy, policy]);
+        let (fused_logits, shared_router) = match fused {
+            Some([logits, shared_router]) => (Some(logits), Some(shared_router)),
+            None => (None, None),
+        };
+        let project_router =
+            || fused_logits.unwrap_or_else(|| qw_with_policy(input, &w.router, policy));
         #[cfg(test)]
         let logits =
             trial_tiled_router_projection(input, &w.router, policy).unwrap_or_else(project_router);
@@ -572,7 +658,11 @@ impl Qwen4ExpMoe {
             crate::model::qwen4_exp::profiling::dump("moe_indices", &[&indices]);
             crate::model::qwen4_exp::profiling::dump("moe_routing", &[&routing]);
         }
-        (indices, routing)
+        Routing {
+            indices,
+            weights: routing,
+            shared_router,
+        }
     }
 
     fn forward_selected(
@@ -582,7 +672,11 @@ impl Qwen4ExpMoe {
         verifier_policy: ProjectionBatchPolicy,
         source: &ExpertLayerSource,
     ) -> Result<Option<MlxArray>, String> {
-        let (indices, routing) = self.route(input, policy);
+        let Routing {
+            indices,
+            weights: routing,
+            shared_router,
+        } = self.route(input, policy);
         try_eval(&[&indices, &routing])
             .map_err(|e| format!("qwen4_exp selected router eval failed: {e}"))?;
         let host_indices = contiguous(&astype(&indices, MlxDtype::Uint32, None), None);
@@ -615,8 +709,12 @@ impl Qwen4ExpMoe {
             indices.dtype(),
             None,
         );
-        let output =
-            self.forward_routed(input, policy, verifier_policy, &experts, &indices, &routing)?;
+        let routing = Routing {
+            indices,
+            weights: routing,
+            shared_router,
+        };
+        let output = self.forward_routed(input, policy, verifier_policy, &experts, &routing)?;
         try_eval(&[&output])
             .map_err(|e| format!("qwen4_exp selected MoE output eval failed: {e}"))?;
         Ok(Some(output))
@@ -628,11 +726,15 @@ impl Qwen4ExpMoe {
         policy: ProjectionBatchPolicy,
         verifier_policy: ProjectionBatchPolicy,
         experts: &ResolvedExperts<'_>,
-        indices: &MlxArray,
-        routing: &MlxArray,
+        routing: &Routing,
     ) -> Result<MlxArray, String> {
         let shape = self.validate_input(input)?;
         let w = &self.weights;
+        let Routing {
+            indices,
+            weights: routing,
+            shared_router,
+        } = routing;
         let expanded = expand_dims_axes(input, &[-2, -3], None);
         let gathered = if self.prefill_expert_sort
             && shape[1] >= PREFILL_EXPERT_SORT_MIN_TOKENS
@@ -650,29 +752,64 @@ impl Qwen4ExpMoe {
         };
         let sorted = gathered.sorted_indices;
         let rows = shape[1];
-        let gate = qw_gather(&gathered.x, experts.gate(), &gathered.indices, sorted);
-        let up = qw_gather(&gathered.x, experts.up(), &gathered.indices, sorted);
+        let pairs = gathered.indices.shape().first().copied().unwrap_or(0);
+        let stack = experts.gate().weight.shape().first().copied().unwrap_or(0);
+        let padding = if sorted && self.prefill_gather_padding {
+            batched_gather_padding(pairs, stack)
+        } else {
+            0
+        };
+        let (gather_x, gather_indices) = if padding > 0 {
+            pad_sorted_gather(&gathered.x, &gathered.indices, padding, stack)
+        } else {
+            (gathered.x.clone(), gathered.indices.clone())
+        };
+        let gate = qw_gather(&gather_x, experts.gate(), &gather_indices, sorted);
+        let up = qw_gather(&gather_x, experts.up(), &gather_indices, sorted);
         let activated = swiglu(&gate, &up, rows, ROUTED_SWIGLU_STAGES);
-        let down_gathered = qw_gather(&activated, experts.down(), &gathered.indices, sorted);
+        let down_gathered = qw_gather(&activated, experts.down(), &gather_indices, sorted);
+        // The routed-sum kernel reads the sorted rows through the inverse
+        // order, padding included, so it takes the gather output as it is.
+        let routed = gathered.inv_order.as_ref().and_then(|inverse| {
+            qwen4_exp_native_moe_sum::routed_sum(
+                &down_gathered,
+                inverse,
+                routing,
+                rows,
+                self.top_k as i32,
+                shape[2],
+            )
+        });
+        let down_gathered = if padding > 0 {
+            let mut stop = down_gathered.shape();
+            stop[0] = pairs;
+            let start = vec![0; stop.len()];
+            let strides = vec![1; stop.len()];
+            slice(&down_gathered, &start, &stop, &strides, None)
+        } else {
+            down_gathered
+        };
         let down = if sorted {
             gathered.unsort(down_gathered)
         } else {
             squeeze_switch_singleton(&down_gathered)
         };
-        let shared_gate_policy =
-            if w.shared_gate.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
-                verifier_policy
-            } else {
-                policy
-            };
-        let shared_gate = qw_with_policy(input, &w.shared_gate, shared_gate_policy);
-        let shared_up_policy =
-            if w.shared_up.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
-                verifier_policy
-            } else {
-                policy
-            };
-        let shared_up = qw_with_policy(input, &w.shared_up, shared_up_policy);
+        let shared_gate_policy = projection_policy(&w.shared_gate, policy, verifier_policy);
+        let shared_up_policy = projection_policy(&w.shared_up, policy, verifier_policy);
+        // One-row decode projects the shared gate and up with one fused
+        // quantized matmul.
+        let fused: Option<[MlxArray; 2]> = FusedProjections::project(
+            self.fused_shared.as_ref(),
+            input,
+            &[shared_gate_policy, shared_up_policy],
+        );
+        let (shared_gate, shared_up) = match fused {
+            Some([gate, up]) => (gate, up),
+            None => (
+                qw_with_policy(input, &w.shared_gate, shared_gate_policy),
+                qw_with_policy(input, &w.shared_up, shared_up_policy),
+            ),
+        };
         let shared_input = swiglu(&shared_gate, &shared_up, rows, SHARED_SWIGLU_STAGES);
         let shared_down_policy =
             if w.shared_down.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
@@ -681,14 +818,21 @@ impl Qwen4ExpMoe {
                 policy
             };
         let shared = qw_with_policy(&shared_input, &w.shared_down, shared_down_policy);
-        let shared_router = qw_with_policy(input, &w.shared_router, policy);
+        let shared_router = match shared_router {
+            Some(shared_router) => shared_router.clone(),
+            None => qw_with_policy(input, &w.shared_router, policy),
+        };
         // The reshape back to the input shape is a view, so it stays outside the
         // tail stretch.
-        let output = reshape(
-            &combine(&down, routing, &shared, &shared_router, rows),
-            &shape,
-            None,
-        );
+        let combined = match &routed {
+            Some(routed) => add(
+                routed,
+                &multiply(&shared, &sigmoid_projection_dtype(&shared_router), None),
+                None,
+            ),
+            None => combine(&down, routing, &shared, &shared_router, rows),
+        };
+        let output = reshape(&combined, &shape, None);
         // Only intermediates that exist on the path taken: the fused stretches
         // do not materialise the activations and the weighted sum inputs, and a
         // dump of a graph the run never built would be a different op sequence.
@@ -877,8 +1021,11 @@ mod tests {
                 ProjectionBatchPolicy::Shared,
                 ProjectionBatchPolicy::Shared,
                 &resolved,
-                &indices,
-                &routing,
+                &Routing {
+                    indices: indices.clone(),
+                    weights: routing.clone(),
+                    shared_router: None,
+                },
             )
             .unwrap();
         let actual = module
@@ -887,8 +1034,11 @@ mod tests {
                 ProjectionBatchPolicy::Shared,
                 ProjectionBatchPolicy::Shared,
                 &compact,
-                &remap,
-                &routing,
+                &Routing {
+                    indices: remap.clone(),
+                    weights: routing.clone(),
+                    shared_router: None,
+                },
             )
             .unwrap();
         eval(&[&expected, &actual]);
@@ -1229,6 +1379,84 @@ mod tests {
         )
     }
 
+    #[test]
+    fn batched_gather_padding_covers_the_per_pair_range_only() {
+        // 512 experts: the batched kernel starts at 2,048 pairs and the
+        // padding at 768.
+        assert_eq!(batched_gather_padding(2048, 512), 0);
+        assert_eq!(batched_gather_padding(4096, 512), 0);
+        assert_eq!(batched_gather_padding(2047, 512), 1);
+        assert_eq!(batched_gather_padding(768, 512), 1280);
+        assert_eq!(batched_gather_padding(767, 512), 0);
+        assert_eq!(batched_gather_padding(0, 512), 0);
+        assert_eq!(batched_gather_padding(10, 0), 0);
+    }
+
+    /// 64 rows of two experts each over a 64-expert stack sit between the
+    /// padding threshold (96 pairs) and the batched kernel's (256), so the
+    /// padded gather runs the batched kernel on 128 real and 128 zero rows.
+    /// Its real rows must equal the per-pair gather up to accumulation order.
+    #[test]
+    fn padded_prefill_gather_matches_the_per_pair_gather() {
+        let mut module = Qwen4ExpMoe::new(
+            64,
+            32,
+            32,
+            64,
+            2,
+            true,
+            Qwen4ExpMoeWeights {
+                router: bf16_dense(64, 64, 3),
+                experts: Qwen4ExpExpertWeights::Resident(Box::new(Qwen4ExpResidentExperts {
+                    gate: mxfp4_stack(64, 32, 64, 11),
+                    up: mxfp4_stack(64, 32, 64, 23),
+                    down: mxfp4_stack(64, 64, 32, 37),
+                })),
+                shared_gate: bf16_dense(32, 64, 41),
+                shared_up: bf16_dense(32, 64, 43),
+                shared_down: bf16_dense(64, 32, 47),
+                shared_router: bf16_dense(1, 64, 53),
+            },
+        )
+        .unwrap();
+        let tokens = 64i32;
+        let values: Vec<f32> = (0..tokens * 64)
+            .map(|i| (((i * 37) % 101) as f32 - 50.0) / 40.0)
+            .collect();
+        let input = astype(
+            &reshape(&MlxArray::from_f32_slice(&values), &[1, tokens, 64], None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        module.prefill_expert_sort = true;
+        module.prefill_gather_padding = false;
+        let plain = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        module.prefill_gather_padding = true;
+        let padded = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        let (plain, padded) = (
+            astype(&plain, MlxDtype::Float32, None),
+            astype(&padded, MlxDtype::Float32, None),
+        );
+        eval(&[&plain, &padded]);
+        assert_eq!(padded.shape(), plain.shape());
+        let (a, b) = (padded.data_f32(), plain.data_f32());
+        let scale = b.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+        let max_abs = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(scale > 0.0, "the gather produced no signal");
+        assert!(
+            max_abs <= scale * 2.0e-2,
+            "padded prefill gather drifted: {max_abs} of {scale}"
+        );
+    }
+
     /// The block MTP verifier retains batched MoE output, so a window whose
     /// rows share an expert (M_e = 2..=4 in the grouped MXFP4 GEMM) must match
     /// the singleton per-row arithmetic bit for bit. Identical rows force the
@@ -1308,6 +1536,136 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An 8-bit affine `[out, input]` projection at group size 32 with BF16
+    /// scales and group biases, the router layout of the shipped MXFP4 pack.
+    fn affine8(out: i32, input: i32, phase: usize) -> QuantizedWeight {
+        let dense = bf16_dense(out, input, phase);
+        let packed = mlx_sys::quantize(
+            &dense.weight,
+            Some(32),
+            Some(8),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let mut weight = QuantizedWeight::new(
+            packed[0].clone(),
+            Some(packed[1].clone()),
+            Some(packed[2].clone()),
+        );
+        weight.mode = "affine".to_string();
+        weight.bits = 8;
+        weight.group_size = 32;
+        weight
+    }
+
+    /// One `[out, input]` MXFP4 projection.
+    fn mxfp4(out: i32, input: i32, phase: usize) -> QuantizedWeight {
+        let mut weight = mxfp4_stack(1, out, input, phase);
+        weight.weight = reshape(&weight.weight, &[out, -1], None);
+        weight.scales = weight
+            .scales
+            .map(|scales| reshape(&scales, &[out, -1], None));
+        weight
+    }
+
+    /// The MoE layout of the shipped MXFP4 pack (8-bit affine routers, MXFP4
+    /// shared expert) on a 512-wide layer: the one-row step must fuse the two
+    /// routers and the shared gate and up, and must reproduce the unfused MoE
+    /// delta bit for bit; a window keeps the member projections.
+    #[test]
+    fn fused_router_and_shared_projections_keep_moe_decode_bits() {
+        use super::super::qwen4_exp_gdn::{
+            fused_projection_calls_for_test, with_fused_projections,
+        };
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        const HIDDEN: i32 = 512;
+        let module = with_fused_projections(Some(true), || {
+            Qwen4ExpMoe::new(
+                HIDDEN as usize,
+                32,
+                64,
+                8,
+                3,
+                true,
+                Qwen4ExpMoeWeights {
+                    router: affine8(8, HIDDEN, 3),
+                    experts: Qwen4ExpExpertWeights::Resident(Box::new(Qwen4ExpResidentExperts {
+                        gate: mxfp4_stack(8, 32, HIDDEN, 11),
+                        up: mxfp4_stack(8, 32, HIDDEN, 23),
+                        down: mxfp4_stack(8, HIDDEN, 32, 37),
+                    })),
+                    shared_gate: mxfp4(64, HIDDEN, 41),
+                    shared_up: mxfp4(64, HIDDEN, 43),
+                    shared_down: mxfp4(HIDDEN, 64, 47),
+                    shared_router: affine8(1, HIDDEN, 53),
+                },
+            )
+            .unwrap()
+        });
+        assert!(module.fused_routers.is_some(), "routers must fuse");
+        assert!(
+            module.fused_shared.is_some(),
+            "shared gate and up must fuse"
+        );
+        let rows = |count: i32, phase: usize, scale: f32| {
+            let data: Vec<f32> = (0..(count * HIDDEN) as usize)
+                .map(|i| ((((i * 7 + phase) % 61) as f32) - 30.0) * scale)
+                .collect();
+            astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    std::mem::size_of_val(data.as_slice()),
+                    &[1, count, HIDDEN],
+                    MlxDtype::Float32,
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let bits = |array: &MlxArray| {
+            let widened = astype(&contiguous(array, None), MlxDtype::Float32, None);
+            eval(&[&widened]);
+            widened
+                .data_f32()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        for (phase, scale) in [(0, 0.03), (7, 0.02), (13, -0.025), (29, 0.04)] {
+            let input = rows(1, phase, scale);
+            let split = with_fused_projections(Some(false), || {
+                module.forward(&input, ProjectionBatchPolicy::Shared)
+            })
+            .unwrap();
+            let before = fused_projection_calls_for_test();
+            let fused = with_fused_projections(Some(true), || {
+                module.forward(&input, ProjectionBatchPolicy::Shared)
+            })
+            .unwrap();
+            assert_eq!(
+                fused_projection_calls_for_test(),
+                before + 2,
+                "one fused call per group"
+            );
+            assert_eq!(bits(&fused), bits(&split), "MoE delta, phase {phase}");
+            let before = fused_projection_calls_for_test();
+            let row_exact = with_fused_projections(Some(true), || {
+                module.forward(&input, ProjectionBatchPolicy::RowExact)
+            })
+            .unwrap();
+            assert_eq!(fused_projection_calls_for_test(), before, "RowExact");
+            assert_eq!(bits(&row_exact), bits(&split), "RowExact delta");
+        }
+        let window = rows(3, 5, 0.03);
+        let before = fused_projection_calls_for_test();
+        let _ = with_fused_projections(Some(true), || {
+            module.forward(&window, ProjectionBatchPolicy::Shared)
+        })
+        .unwrap();
+        assert_eq!(fused_projection_calls_for_test(), before, "window");
     }
 
     /// Deterministic xorshift64 PRNG, so the adversarial differential inputs
