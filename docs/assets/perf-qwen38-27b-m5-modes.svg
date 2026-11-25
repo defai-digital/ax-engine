@@ -6,8 +6,8 @@
 <text x="26" y="37" font-size="23" font-weight="700">Qwen 3.8 27B AXQ MXFP4</text>
 <text x="26" y="62" font-size="14" fill="#425674">MacBook Pro M5 Max 128 GB · One active streaming request · Greedy sampling</text>
 <text x="26" y="109" font-size="16" font-weight="700">Engine and decoding mode</text>
-<text x="26" y="164" font-size="13">AX Engine 8.1.0+b04a5f2e (Direct greedy) †</text>
-<text x="26" y="195" font-size="13">AX Engine 8.1.0+b04a5f2e (DFlash2) †</text>
+<text x="26" y="164" font-size="13">AX Engine 8.1.0+071e5477 (Direct greedy) †</text>
+<text x="26" y="195" font-size="13">AX Engine 8.1.0+071e5477 (DFlash2) †</text>
 <text x="26" y="226" font-size="13">Splash 1.7.0 (DFlash2) †</text>
 <text x="26" y="257" font-size="13">oMLX 0.8.2 (Direct greedy) †</text>
 <text x="26" y="288" font-size="13">oMLX 0.8.2 (DFlash2)</text>
@@ -22,14 +22,14 @@
 <line x1="392" x2="392" y1="140" y2="469" stroke="#d7e0ea"/><text x="392" y="133" text-anchor="middle" font-size="11" fill="#425674">60</text>
 <line x1="453" x2="453" y1="140" y2="469" stroke="#d7e0ea"/><text x="453" y="133" text-anchor="middle" font-size="11" fill="#425674">90</text>
 <line x1="514" x2="514" y1="140" y2="469" stroke="#d7e0ea"/><text x="514" y="133" text-anchor="middle" font-size="11" fill="#425674">120</text>
-<rect x="270" y="151" width="71.88" height="18" rx="3" fill="#176b63"/>
-<text x="348.88" y="164" font-size="12" font-weight="600">35.35</text>
-<rect x="270" y="182" width="225.74" height="18" rx="3" fill="#514388"/>
-<text x="502.74" y="195" font-size="12" font-weight="600">111.02</text>
-<rect x="270" y="213" width="221.40" height="18" rx="3" fill="#514388"/>
-<text x="498.40" y="226" font-size="12" font-weight="600">108.88</text>
-<rect x="270" y="244" width="70.24" height="18" rx="3" fill="#176b63"/>
-<text x="347.24" y="257" font-size="12" font-weight="600">34.55</text>
+<rect x="270" y="151" width="71.78" height="18" rx="3" fill="#176b63"/>
+<text x="348.78" y="164" font-size="12" font-weight="600">35.30</text>
+<rect x="270" y="182" width="225.71" height="18" rx="3" fill="#514388"/>
+<text x="502.71" y="195" font-size="12" font-weight="600">111.00</text>
+<rect x="270" y="213" width="221.95" height="18" rx="3" fill="#514388"/>
+<text x="498.95" y="226" font-size="12" font-weight="600">109.16</text>
+<rect x="270" y="244" width="70.13" height="18" rx="3" fill="#176b63"/>
+<text x="347.13" y="257" font-size="12" font-weight="600">34.49</text>
 <rect x="270" y="275" width="81.37" height="18" rx="3" fill="#514388"/>
 <text x="358.37" y="288" font-size="12" font-weight="600">40.02</text>
 <rect x="270" y="306" width="64.91" height="18" rx="3" fill="#176b63"/>
@@ -45,14 +45,14 @@
 <line x1="712" x2="712" y1="140" y2="469" stroke="#d7e0ea"/><text x="712" y="133" text-anchor="middle" font-size="11" fill="#425674">800</text>
 <line x1="773" x2="773" y1="140" y2="469" stroke="#d7e0ea"/><text x="773" y="133" text-anchor="middle" font-size="11" fill="#425674">1200</text>
 <line x1="834" x2="834" y1="140" y2="469" stroke="#d7e0ea"/><text x="834" y="133" text-anchor="middle" font-size="11" fill="#425674">1600</text>
-<rect x="590" y="151" width="148.31" height="18" rx="3" fill="#176b63"/>
-<text x="745.31" y="164" font-size="12" font-weight="600">972.50</text>
-<rect x="590" y="182" width="145.12" height="18" rx="3" fill="#514388"/>
-<text x="742.12" y="195" font-size="12" font-weight="600">951.60</text>
-<rect x="590" y="213" width="201.51" height="18" rx="3" fill="#514388"/>
-<text x="798.51" y="226" font-size="12" font-weight="600">1321.38</text>
-<rect x="590" y="244" width="161.06" height="18" rx="3" fill="#176b63"/>
-<text x="758.06" y="257" font-size="12" font-weight="600">1056.15</text>
+<rect x="590" y="151" width="148.10" height="18" rx="3" fill="#176b63"/>
+<text x="745.10" y="164" font-size="12" font-weight="600">971.16</text>
+<rect x="590" y="182" width="142.68" height="18" rx="3" fill="#514388"/>
+<text x="739.68" y="195" font-size="12" font-weight="600">935.61</text>
+<rect x="590" y="213" width="196.09" height="18" rx="3" fill="#514388"/>
+<text x="793.09" y="226" font-size="12" font-weight="600">1285.85</text>
+<rect x="590" y="244" width="161.33" height="18" rx="3" fill="#176b63"/>
+<text x="758.33" y="257" font-size="12" font-weight="600">1057.93</text>
 <rect x="590" y="275" width="156.64" height="18" rx="3" fill="#514388"/>
 <text x="753.64" y="288" font-size="12" font-weight="600">1027.14</text>
 <rect x="590" y="306" width="130.83" height="18" rx="3" fill="#176b63"/>

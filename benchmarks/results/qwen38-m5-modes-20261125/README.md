@@ -123,6 +123,26 @@ previous section stay in the same file with `"rerun": 2`.
   27B DFlash2 pair in the same session measured 110.67 against 109.29
   tok/s, with effective prefill at 966 against 1,282.
 
+### 27B rows at the same commit
+
+The four 27B † rows were then measured again at commit `071e5477a`, so
+that every † row of both tables comes from one AX Engine build. Three
+rounds, each of AX Engine direct, oMLX direct, AX Engine DFlash2 and
+Splash DFlash2 in that order, 30 seconds between arms. The twelve per-run
+records are the rows of [paired-rerun.jsonl](paired-rerun.jsonl) with
+`"rerun": 4`; the first rerun's 27B rows stay in the same file without
+that field.
+
+- Direct greedy: 35.37, 35.20 and 35.30 against 34.49, 34.44 and 34.50
+  tok/s for oMLX; first text at 1,492 input tokens 1.63 against 1.51 s.
+- DFlash2: 111.27, 111.00 and 110.84 against 109.30, 109.12 and 109.16
+  tok/s for Splash; first text at 1,492 input tokens 1.69 against 1.22 s,
+  effective prefill 936 against 1,286.
+- Against the first rerun the decode rates moved by less than 0.3%. The
+  DFlash2 arms' long probe is 0.03 to 0.05 s slower for both engines in
+  this session (AX Engine 1.64 to 1.69 s, Splash 1.19 to 1.22 s).
+- The 256-token comparison quoted above was not repeated.
+
 ## Replay
 
 Stage the binaries and packs using the
