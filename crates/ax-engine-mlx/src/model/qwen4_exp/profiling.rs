@@ -1762,17 +1762,38 @@ fn flash_next_prefill_latency_scan() {
     let trunk = weights.qwen4_exp.as_ref().unwrap();
     let owner = cfg.compile_cache_identity;
     let mut records = Vec::new();
+    // `AX_FLASH_NEXT_SCAN_PREFIX` rows are prefilled first, untimed, in
+    // forwards of at most 2,048 rows, so the scan times a forward that
+    // continues a context of that length.
+    let prefix = env_usize("AX_FLASH_NEXT_SCAN_PREFIX").unwrap_or(0);
+    let mut context = Qwen4ExpState::new(trunk, owner);
+    for chunk in tokens[..prefix].chunks(2048) {
+        let output = forward_with_rows(
+            trunk,
+            chunk,
+            &context,
+            owner,
+            ProjectionBatchPolicy::Shared,
+            LogitRows::Skip,
+        )
+        .unwrap();
+        mlx_sys::try_eval(&output.state.arrays()).unwrap();
+        context = output.state;
+    }
     for &len in &lengths {
-        assert!((1..=tokens.len()).contains(&len), "scan length {len}");
+        assert!(
+            (1..=tokens.len() - prefix).contains(&len),
+            "scan length {len}"
+        );
         // The state is not serialized here: a run with a skipped stage has
         // no complete state to serialize.
         let seconds: Vec<f64> = (0..repeats)
             .map(|_| {
-                let state = Qwen4ExpState::new(trunk, owner);
+                let state = context.clone();
                 let start = Instant::now();
                 let output = forward_with_rows(
                     trunk,
-                    &tokens[..len],
+                    &tokens[prefix..prefix + len],
                     &state,
                     owner,
                     ProjectionBatchPolicy::Shared,

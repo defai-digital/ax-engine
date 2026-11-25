@@ -283,6 +283,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_HC_PREFILL_KERNELS", shipped: "on", class: SwitchClass::ProvenExact("kernels_match_the_mlx_ops_bit_for_bit_at_prefill_rows") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_MOE_PREFILL_SUM", shipped: "on", class: SwitchClass::ProvenExact("routed_sum_matches_the_mlx_ops_bit_for_bit_at_prefill_rows") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD", shipped: "on", class: SwitchClass::Token("moe_prefill_pad=0") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK", shipped: "on", class: SwitchClass::Token("flash_next_wide_chunk=0") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING", shipped: "off", class: SwitchClass::Token("gd_streaming") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_TILE_512", shipped: "off", class: SwitchClass::Token("gd_tile_512") },
     SwitchRow { env: "AX_MLX_QWEN_PREFILL_SINGLE_2048", shipped: "off", class: SwitchClass::Token("single_2048") },
@@ -835,6 +836,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD" => {
             switches.moe_prefill_pad = false;
+            true
+        }
+        "AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK" => {
+            switches.flash_next_wide_chunk = false;
             true
         }
         "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT" => {

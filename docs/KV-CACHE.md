@@ -318,6 +318,37 @@ serializes. Together, on the M5 Max with Qwen 3.8 27B, exact-replay TTFT is
 the cold run. `AX_MLX_PREFIX_LIVE_SNAPSHOT=0` restores serialized snapshots and
 the partial-block replay.
 
+### Flash Next
+
+Flash Next without MTP (the default, and `--mlx-mtp-policy disabled`) reuses a
+stored prefix only as a whole prompt with its greedy first token, so that a
+warm reply is the cold reply. A snapshot inside a prompt could never be
+restored there, and the runner does not stop a prefill to take one: a cold
+prompt runs the schedule of an uncached prefill. Before 2026-11-25 it split
+every unaligned prompt at its last block boundary and serialized the state
+captured there (about 250 MB whatever the prompt length), which cost 65 to
+150 ms of first-text latency on the M5 Max for a snapshot no request could
+read.
+
+With MTP requested the boundary snapshot is used, and the cold prompt is
+split at the boundary as on the other linear-attention models, so that a warm
+reply is the cold reply.
+
+Taking that snapshot inside the forward that crosses the boundary, instead of
+splitting the prompt there, was built and measured on 2026-11-25 and not
+shipped. It saved 50 to 130 ms of cold first text on the M5 Max, and a
+real-pack test showed it breaks the equality above:
+
+- The cold request computes the rows after the boundary together with the
+  rows before it, and a request that restores the snapshot computes them as a
+  forward of their own. On a low-margin prompt the two pick different first
+  tokens.
+- The captured state equals the state of a prefill that stops at the boundary
+  bit for bit only while both forwards use the same matmul tiling. MLX 0.32.4
+  changes the tiling of a dense matmul when rows times output width reaches
+  2^20, which for this model is at 103, 205, 1,639 and 2,048 rows; a prompt and
+  its boundary on opposite sides of one of those differ by rounding.
+
 ## Value-Priced Restore and Semantic Cuts (Opt-In)
 
 Two further prefix features are opt-in and both default off. They are resolved

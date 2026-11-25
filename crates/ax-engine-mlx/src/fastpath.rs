@@ -6488,6 +6488,25 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK` — a Flash Next prompt of
+    /// 2,048 tokens or more keeps the runner's prefill chunk (2,048) instead
+    /// of the 512-token long-prompt clamp, while the whole prompt fits the
+    /// index-score workspace at that chunk
+    /// (`QsaConfig::monolithic_score_context_limit`, 32,768 tokens for the
+    /// production indexer). Every forward streams each routed expert stack
+    /// once, about 0.2 s whatever the row count, so four 512-row forwards
+    /// pay it four times: on the MacBook Pro M5 Max 128 GB first text of a
+    /// 2,233-token prompt fell from 1.60 s to 1.35 s and of a 31,223-token
+    /// prompt from 36.9 s to 33.3 s. Longer
+    /// prompts, expert streaming, the two-sequence prefill split and hosts
+    /// without a Neural Accelerator keep the clamp. The chunk changes how
+    /// rows are batched, so the kill is a numerics-tier token.
+    /// **Default: ON**; `0` restores the clamp.
+    flash_next_long_prompt_wide_chunk_enabled,
+    "AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_MOE_PREFILL_PAD` — pad a sorted Flash Next prefill
     /// gather that holds fewer than four pairs per expert with zero rows, so
     /// MLX runs its batched expert kernel instead of one matvec per pair.
@@ -7925,6 +7944,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `narrow_softmax=0` — full-width MoE softmax instead of the top-k subset
 /// - `expert_sort=0` — unsorted Flash Next prefill expert gather
 /// - `moe_prefill_pad=0` — short sorted Flash Next prefill gathers stay on the per-pair kernel
+/// - `flash_next_wide_chunk=0` — long Flash Next prompts prefill in 512-token chunks
 /// - `qsa_batched=0` — padded max-length QSA SDPA off (different reduction)
 /// - `gd_streaming` / `gd_tile_512` / `gd_chunkwise` — GatedDelta prefill route
 /// - `gd_decode_metal=0` — singleton GatedDelta decode leaves the Metal kernel
@@ -8032,6 +8052,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) invariant_qmv_bf16_q4: bool,
     pub(crate) prefill_expert_sort: bool,
     pub(crate) moe_prefill_pad: bool,
+    pub(crate) flash_next_wide_chunk: bool,
     pub(crate) gd_streaming: bool,
     pub(crate) gd_tile_512: bool,
     pub(crate) gd_chunkwise: bool,
@@ -8188,6 +8209,7 @@ impl Default for NumericsTierSwitches {
             invariant_qmv_bf16_q4: true,
             prefill_expert_sort: true,
             moe_prefill_pad: true,
+            flash_next_wide_chunk: true,
             gd_streaming: false,
             gd_tile_512: false,
             gd_chunkwise: false,
@@ -8354,6 +8376,8 @@ impl NumericsTierSwitches {
             prefill_expert_sort: flash_next_prefill_expert_sort_enabled(),
             // The kill only changes numerics where the padding would run.
             moe_prefill_pad: flash_next_moe_prefill_pad_allowed()
+                || !crate::hardware::neural_accelerator_active(),
+            flash_next_wide_chunk: flash_next_long_prompt_wide_chunk_enabled()
                 || !crate::hardware::neural_accelerator_active(),
             gd_streaming: qwen_gated_delta_prefill_streaming_enabled(),
             gd_tile_512: qwen_gated_delta_prefill_tile_512_enabled(),
@@ -8682,6 +8706,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if !switches.moe_prefill_pad {
         tokens.push("moe_prefill_pad=0".to_string());
+    }
+    if !switches.flash_next_wide_chunk {
+        tokens.push("flash_next_wide_chunk=0".to_string());
     }
     if !switches.prefill_expert_sort {
         tokens.push("expert_sort=0".to_string());

@@ -3715,6 +3715,10 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     moe_pad.moe_prefill_pad = false;
     push("moe_prefill_pad=0", moe_pad);
 
+    let mut wide_chunk = base;
+    wide_chunk.flash_next_wide_chunk = false;
+    push("flash_next_wide_chunk=0", wide_chunk);
+
     let mut qsa_batched = base;
     qsa_batched.qsa_batched_attention = false;
     push("qsa_batched=0", qsa_batched);

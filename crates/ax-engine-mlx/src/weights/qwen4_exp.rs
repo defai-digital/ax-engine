@@ -189,6 +189,26 @@ pub(crate) enum Qwen4ExpAttentionBranch {
     Qsa(Qwen4ExpAttention),
 }
 
+impl Qwen4ExpWeights {
+    /// Longest context at which a prefill chunk of `rows` tokens fits the
+    /// index-score workspace of every sparse-attention layer.
+    pub(crate) fn monolithic_score_context_limit(&self, rows: usize) -> usize {
+        self.layers
+            .iter()
+            .filter_map(|layer| match &layer.attention {
+                Qwen4ExpAttentionBranch::Qsa(attention) => Some(
+                    attention
+                        .indexer()
+                        .config()
+                        .monolithic_score_context_limit(rows),
+                ),
+                Qwen4ExpAttentionBranch::Gdn(_) => None,
+            })
+            .min()
+            .unwrap_or(usize::MAX)
+    }
+}
+
 /// One PLE layer's injection operator plus its bounded n-gram row source.
 pub(crate) struct Qwen4ExpPleBundle {
     pub(crate) operator: Qwen4ExpPle,
