@@ -23,7 +23,12 @@ download models, chat and serve OpenAI-compatible endpoints locally.
 
 [Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
 
-<a href="docs/images/ax-engine-macos-catalog.png"><img src="docs/images/ax-engine-macos-catalog.png" width="540" alt="AX Engine for macOS showing Qwen 3.8 27B and Flash Next models in the catalog with download buttons."></a>
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/ax-engine-macos-catalog.png">
+  <img src="docs/images/ax-engine-macos-preview.gif" width="540" alt="AX Engine for macOS showing the Qwen 3.8 model catalog and local API settings.">
+</picture>
+
+[View the full-size model catalog screenshot](docs/images/ax-engine-macos-catalog.png)
 
 The Qwen 3.8 27B and Flash Next product scope is
 **MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
