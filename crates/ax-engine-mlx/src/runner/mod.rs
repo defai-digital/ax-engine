@@ -8380,6 +8380,18 @@ impl MlxRunner {
                     // floored onto exactly these rungs. Capturing only in the
                     // completing item left multi-turn agent prompts without
                     // the rung the next turn needed (2026-10-31 probe).
+                    // A request served by the end-of-prompt snapshot runs
+                    // the uncached schedule: no stop at the last block
+                    // boundary, so the rung is captured even where it is
+                    // that boundary.
+                    let end_state_only = prefill_completes_prompt
+                        && !semantic_capture
+                        && self.prompt_end_state_replaces_boundary(
+                            &state.cache,
+                            ctx,
+                            sampling,
+                            media_key.as_deref().is_some_and(str::is_empty),
+                        );
                     let rung_head = if !semantic_capture
                         && self.cfg.linear_attention.is_some()
                         && !self.flash_next_exact_prefix_only()
@@ -8387,12 +8399,13 @@ impl MlxRunner {
                         && crate::fastpath::linear_prefix_grid_rung_enabled()
                         && self.prefix_cache.lock().enabled()
                     {
-                        let head = Self::linear_grid_rung_head_len(
+                        let head = Self::linear_grid_rung_head_len_for(
                             block_size_tokens as usize,
                             self.prefill_chunk,
                             prefill_chunk_for_request,
                             state.cache.seq_len(),
                             prefill_tokens.len(),
+                            !end_state_only,
                         )
                         // A rung this item just restored is already stored;
                         // one a previous item ended on is not.
@@ -8435,6 +8448,7 @@ impl MlxRunner {
                     let prefill_tokens = if !semantic_capture
                         && self.cfg.linear_attention.is_some()
                         && !self.flash_next_exact_prefix_only()
+                        && !end_state_only
                         && self.prefix_cache.lock().enabled()
                         && let Some(head) = Self::linear_boundary_capture_head_len(
                             block_size_tokens as usize,
@@ -9384,6 +9398,32 @@ impl MlxRunner {
             && self.live_prefix_snapshot_eligible(&state.cache)
     }
 
+    /// Whether a request leaves the end of an unaligned prompt to the
+    /// end-of-prompt snapshot alone (`AX_MLX_PREFIX_END_STATE_ONLY`): a
+    /// text-only greedy request on a model whose in-memory snapshots stay
+    /// live. Its cold prefill then runs the uncached schedule instead of
+    /// stopping at the last block boundary to capture a snapshot there, and
+    /// its replay restores either the end-of-prompt state or a grid rung,
+    /// never that boundary (whose tail a cold run of this request does not
+    /// compute as a forward of its own).
+    ///
+    /// The answer depends only on the request and the model, never on what
+    /// the cache holds, so a request's cold and warm runs take the same
+    /// schedule.
+    fn prompt_end_state_replaces_boundary(
+        &self,
+        cache: &MlxKVCache,
+        ctx: Option<&RunnerRequestContext>,
+        sampling: MlxSamplingParams,
+        text_only: bool,
+    ) -> bool {
+        crate::fastpath::prefix_end_state_only_enabled()
+            && crate::fastpath::prefix_boundary_replay_enabled()
+            && text_only
+            && prefill_output_token_cacheable(ctx, sampling)
+            && self.live_prefix_snapshot_eligible(cache)
+    }
+
     /// Keeps the live end-of-prompt state of an unaligned linear-attention
     /// prompt, keyed by the whole prompt, with its greedy prefill token and
     /// DFlash2 prompt rows. Only a byte-for-byte identical prompt with the
@@ -9599,8 +9639,23 @@ impl MlxRunner {
             hardware.silicon_generation,
             self.cfg.layer_count,
         );
-        // Omitted at shipped defaults, so today's signature bytes (and the
-        // v4 disk key that embeds them) stay the same. A deviation misses.
+        // Qwen hybrid prompts changed their cold arithmetic on 2026-11-25:
+        // a greedy prompt no longer stops at its last block boundary
+        // (`prompt_end_state_replaces_boundary`), and on M5 and later the
+        // prefill recurrence runs MLX's kernel. A disk snapshot written
+        // before that must miss.
+        let base = if self.cfg.linear_attention.is_some() && !self.flash_next_exact_prefix_only() {
+            let schedule = if crate::fastpath::prefix_end_state_only_enabled() {
+                "2"
+            } else {
+                "2-split"
+            };
+            format!("{base};linear_prefill={schedule}")
+        } else {
+            base
+        };
+        // Omitted at shipped defaults, so the signature bytes (and the v4
+        // disk key that embeds them) stay the same. A deviation misses.
         crate::fastpath::append_numerics_tier(
             &base,
             &crate::fastpath::numerics_tier_suffix_for_family(&self.cfg.model_family),
@@ -9716,6 +9771,28 @@ impl MlxRunner {
         prior_seq_len: usize,
         item_len: usize,
     ) -> Option<usize> {
+        Self::linear_grid_rung_head_len_for(
+            block_size,
+            grid,
+            request_chunk,
+            prior_seq_len,
+            item_len,
+            true,
+        )
+    }
+
+    /// [`Self::linear_grid_rung_head_len`] for an item that may run without
+    /// the block-aligned boundary capture (`boundary_captured == false`, see
+    /// [`Self::prompt_end_state_replaces_boundary`]): the rung is then
+    /// captured even where it is that boundary.
+    fn linear_grid_rung_head_len_for(
+        block_size: usize,
+        grid: usize,
+        request_chunk: usize,
+        prior_seq_len: usize,
+        item_len: usize,
+        boundary_captured: bool,
+    ) -> Option<usize> {
         if block_size == 0 || grid == 0 || item_len == 0 || request_chunk != grid {
             return None;
         }
@@ -9732,9 +9809,10 @@ impl MlxRunner {
             // rung: capture the cache as it stands, no split needed.
             return Some(0);
         }
-        let boundary_capture =
-            Self::linear_boundary_capture_head_len(block_size, prior_seq_len, item_len)
-                .map(|head| prior_seq_len + head);
+        let boundary_capture = boundary_captured
+            .then(|| Self::linear_boundary_capture_head_len(block_size, prior_seq_len, item_len))
+            .flatten()
+            .map(|head| prior_seq_len + head);
         (boundary_capture != Some(rung)).then(|| rung - prior_seq_len)
     }
 
@@ -10638,26 +10716,48 @@ impl MlxRunner {
         // restored, not only the priced choice: the terminal anchor is
         // block-aligned by construction, so the unpriced probe can land on a
         // planned cut too.
-        let boundary_replay_len = (self.cfg.linear_attention.is_some()
-            && crate::fastpath::prefix_boundary_replay_enabled())
-        .then(|| {
-            exact_boundary_replay_restore_len(
-                item,
-                reused_tokens.len(),
-                block_size_tokens as usize,
-                ctx.map(|ctx| ctx.prompt_len as usize),
-            )
-        })
-        .flatten();
+        let boundary_replay = self.cfg.linear_attention.is_some()
+            && crate::fastpath::prefix_boundary_replay_enabled();
+        let boundary_replay_len = boundary_replay
+            .then(|| {
+                exact_boundary_replay_restore_len(
+                    item,
+                    reused_tokens.len(),
+                    block_size_tokens as usize,
+                    ctx.map(|ctx| ctx.prompt_len as usize),
+                )
+            })
+            .flatten();
+        // A request whose cold prefill does not stop at the last block
+        // boundary (see `prompt_end_state_replaces_boundary`): this item
+        // completes an unaligned prompt. It is recognized from the request,
+        // not from what the probe found, since it stores no boundary
+        // snapshot and the probe lands on a rung or on nothing.
+        let end_state_only = boundary_replay
+            && item.mode == ExecutionMode::Prefill
+            && block_size_tokens > 0
+            && ctx.is_some_and(|ctx| {
+                let prompt_len = ctx.prompt_len as usize;
+                !prompt_len.is_multiple_of(block_size_tokens as usize)
+                    && item.reused_prefix_token_slice.len() + item.input_token_slice.len()
+                        == prompt_len
+            })
+            && self.prompt_end_state_replaces_boundary(
+                &state.cache,
+                ctx,
+                sampling,
+                media_key.is_empty(),
+            );
         let planned_cut_len = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len());
         if planned_cut_len.is_none()
-            && boundary_replay_len == Some(reused_tokens.len())
+            && (boundary_replay_len == Some(reused_tokens.len())
+                || (end_state_only && !item.reused_prefix_token_slice.is_empty()))
             && media_key.is_empty()
             && prefill_output_token_cacheable(ctx, sampling)
             && self.restore_prompt_end_state(
                 state,
                 item,
-                reused_tokens,
+                &item.reused_prefix_token_slice,
                 model_id,
                 block_size_tokens,
                 sampling,
@@ -10669,13 +10769,19 @@ impl MlxRunner {
         {
             return telemetry;
         }
-        let planned_restore_len = planned_cut_len.or(boundary_replay_len);
+        // Without its end-of-prompt state such a request replays from a
+        // grid rung like any other warm restore. A boundary snapshot another
+        // request stored is not its cold trajectory, whatever the tail
+        // length.
+        let planned_restore_len =
+            planned_cut_len.or(boundary_replay_len.filter(|_| !end_state_only));
         let Some(restore_len) = planned_restore_len.or_else(|| {
             grid_aligned_prefix_restore_len(
                 item,
                 reused_tokens.len(),
                 self.prefill_chunk.max(1),
                 self.prefix_gap_replay_enabled(),
+                end_state_only,
             )
         }) else {
             // The scheduler already removed this prefix from the input slice.
@@ -11567,6 +11673,7 @@ impl MlxRunner {
         let alignment_restricted = linear_attention || sliding_window || mla_attention;
         let exact_alignment_required = linear_attention;
         if exact_alignment_required && full_block_tokens != available_tokens {
+            let stores_before = telemetry.stores;
             if prefill_completes_prompt
                 && media_key.is_empty()
                 && let Some(token) = greedy_prefill_output_token
@@ -11599,7 +11706,12 @@ impl MlxRunner {
                 ));
                 return telemetry;
             }
-            telemetry.record_blocked_trim_failure();
+            // A prompt kept by its end-of-prompt state alone
+            // (`prompt_end_state_replaces_boundary`) has no boundary
+            // snapshot to store and nothing was blocked.
+            if telemetry.stores == stores_before {
+                telemetry.record_blocked_trim_failure();
+            }
             return telemetry;
         }
         let snapshot_start_tokens = prefix_snapshot_start_tokens(
@@ -19958,11 +20070,16 @@ fn extend_prompt_prefix_tokens(
 /// tokens past the rung ahead of the item's own input
 /// (`scheduler_gap_replay_tokens`), which is the cold trajectory from the
 /// rung on. A rung of zero still falls back to the full replay.
+///
+/// A one-token extension normally keeps its full length (the cold run's own
+/// final step). `floor_single_token_extension` floors it too, for a request
+/// whose cold prefill does not stop at `candidate_len`.
 fn grid_aligned_prefix_restore_len(
     item: &ax_engine_core::ExecutionItem,
     candidate_len: usize,
     chunk: usize,
     allow_gap_replay: bool,
+    floor_single_token_extension: bool,
 ) -> Option<usize> {
     let scheduler_claim = item.reused_prefix_token_slice.len();
     let extension_tokens = if item.mode == ExecutionMode::Prefill && scheduler_claim > 0 {
@@ -19971,11 +20088,12 @@ fn grid_aligned_prefix_restore_len(
     } else {
         item.input_token_slice.len().saturating_sub(candidate_len)
     };
-    let restore_len = if extension_tokens > 1 {
-        candidate_len / chunk.max(1) * chunk.max(1)
-    } else {
-        candidate_len
-    };
+    let restore_len =
+        if extension_tokens > 1 || (extension_tokens == 1 && floor_single_token_extension) {
+            candidate_len / chunk.max(1) * chunk.max(1)
+        } else {
+            candidate_len
+        };
     if item.mode == ExecutionMode::Prefill
         && restore_len < scheduler_claim
         && !(allow_gap_replay && restore_len > 0)

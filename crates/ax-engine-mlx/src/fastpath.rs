@@ -1948,6 +1948,23 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_PREFIX_END_STATE_ONLY` — on linear-attention models whose
+    /// in-memory snapshots stay live, a text-only greedy request keeps the
+    /// end of an unaligned prompt as its end-of-prompt state alone. Its cold
+    /// prefill runs the schedule of an uncached prefill instead of stopping
+    /// at the last block boundary to capture a snapshot there (a single-row
+    /// step and a forward of 1 to 15 rows, 55 to 106 ms on the M5 Max with
+    /// Qwen 3.8 27B), and its replay restores the end-of-prompt state or a
+    /// grid rung, never that boundary. A replay that misses the end-of-prompt
+    /// state recomputes from the rung below instead of from the boundary.
+    /// Requests that sample or use logits processors keep the boundary
+    /// snapshot. **Default: ON**; `0` restores the boundary split for every
+    /// request.
+    prefix_end_state_only_enabled,
+    "AX_MLX_PREFIX_END_STATE_ONLY"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_PREFIX_LIVE_SNAPSHOT` — on linear-attention models whose
     /// full-attention layers are not in the shared paged pool, the in-memory
     /// prefix store keeps a clone of the live cache (shared, immutable MLX
@@ -6169,13 +6186,46 @@ env_flag_default_on!(
     "AX_MLX_QWEN_GATED_DELTA_DECODE_METAL"
 );
 
-env_flag!(
-    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` — experimental MLX 0.32.3 GDN
-    /// prefill on supported 128-dimensional heads, T=128..2048. Default OFF.
-    /// Decode, short verifier windows, and dedicated Flash Next GDN are unchanged.
-    pub qwen_gated_delta_prefill_mlx_enabled,
-    "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX"
-);
+/// `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` — run the Qwen GatedDelta prefill
+/// recurrence through MLX's `gated_delta_update` on supported
+/// 128-dimensional heads, T=128..2048. Unset, the host decides
+/// ([`qwen_gated_delta_prefill_mlx_default`]); `1` turns it on anywhere and
+/// `0` restores the AX recurrence. Decode, short verifier windows and the
+/// dedicated Flash Next GDN are unchanged.
+pub fn qwen_gated_delta_prefill_mlx_enabled() -> bool {
+    qwen_gated_delta_prefill_mlx_override().unwrap_or_else(|| {
+        qwen_gated_delta_prefill_mlx_default(crate::hardware::neural_accelerator_active())
+    })
+}
+
+/// Explicit `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX`, if any.
+pub(crate) fn qwen_gated_delta_prefill_mlx_override() -> Option<bool> {
+    static CACHED: OnceLock<Option<bool>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX")
+            .ok()
+            .map(|raw| parse_bool_value(&raw))
+    })
+}
+
+/// Pure default behind [`qwen_gated_delta_prefill_mlx_enabled`].
+///
+/// On for Neural Accelerator hosts: on the MacBook Pro M5 Max 128 GB the
+/// recurrence of a 1,497-row Qwen 3.8 27B prefill costs about 3 ms per layer
+/// with the AX kernel and under 1 ms with MLX's. Other hosts keep the AX
+/// recurrence until they are measured.
+pub(crate) fn qwen_gated_delta_prefill_mlx_default(neural_accelerator: bool) -> bool {
+    neural_accelerator
+}
+
+/// What `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` changes against this host's
+/// default: `None` when the route is the default one.
+pub(crate) fn qwen_gated_delta_prefill_mlx_deviation(
+    enabled: bool,
+    neural_accelerator: bool,
+) -> Option<bool> {
+    (enabled != qwen_gated_delta_prefill_mlx_default(neural_accelerator)).then_some(enabled)
+}
 
 /// Keep short calls on AX: the M2 Ultra T=32 probe regressed with MLX.
 pub(crate) fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
@@ -7995,7 +8045,8 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `mla_prefix_restore=0` — MLA warm-snapshot restore killed; the warm path can drift
 /// - `gdn_prefill_mlx=0` — Flash Next GDN prefill leaves the MLX recurrence
 /// - `gdn_prefill_mlx_min=N` — that route's shortest chunk differs from auto
-/// - `qwen_gdn_mlx` — Qwen GatedDelta prefill uses the MLX recurrence
+/// - `qwen_gdn_mlx` / `qwen_gdn_mlx=0` — Qwen GatedDelta prefill uses, or leaves, the MLX
+///   recurrence against this host's default
 /// - `dequant_dense=off|cached|transient` — dense-GEMM prefill differs from auto
 /// - `dequant_min=N` — that route's minimum sequence differs from auto
 /// - `ffn_gs64` / `ffn_q3` / `la_q2` / `down_q2` — prefill bit-width overlays
@@ -8107,7 +8158,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) mla_prefix_restore_disabled: bool,
     pub(crate) flash_gdn_prefill_mlx: bool,
     pub(crate) flash_gdn_prefill_mlx_min_seq: Option<i32>,
-    pub(crate) qwen_gdn_prefill_mlx: bool,
+    pub(crate) qwen_gdn_prefill_mlx: Option<bool>,
     pub(crate) dequant_dense: Option<&'static str>,
     pub(crate) dequant_dense_min_seq: Option<i32>,
     pub(crate) ffn_gs64: bool,
@@ -8265,7 +8316,7 @@ impl Default for NumericsTierSwitches {
             mla_prefix_restore_disabled: false,
             flash_gdn_prefill_mlx: true,
             flash_gdn_prefill_mlx_min_seq: None,
-            qwen_gdn_prefill_mlx: false,
+            qwen_gdn_prefill_mlx: None,
             dequant_dense: None,
             dequant_dense_min_seq: None,
             ffn_gs64: false,
@@ -8443,7 +8494,10 @@ impl NumericsTierSwitches {
                 let actual = flash_next_gdn_prefill_mlx_min_seq();
                 (actual != auto).then_some(actual)
             },
-            qwen_gdn_prefill_mlx: qwen_gated_delta_prefill_mlx_enabled(),
+            qwen_gdn_prefill_mlx: qwen_gated_delta_prefill_mlx_deviation(
+                qwen_gated_delta_prefill_mlx_enabled(),
+                crate::hardware::neural_accelerator_active(),
+            ),
             dequant_dense: dequant_dense_tier_token(
                 qwen_prefill_dequant_dense_mode(),
                 prefill_dequant_dense_mode_for(None, || mlx_sys::gpu_device_architecture().ok()),
@@ -8806,8 +8860,10 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     if let Some(min_seq) = switches.flash_gdn_prefill_mlx_min_seq {
         tokens.push(format!("gdn_prefill_mlx_min={min_seq}"));
     }
-    if switches.qwen_gdn_prefill_mlx {
-        tokens.push("qwen_gdn_mlx".to_string());
+    match switches.qwen_gdn_prefill_mlx {
+        Some(true) => tokens.push("qwen_gdn_mlx".to_string()),
+        Some(false) => tokens.push("qwen_gdn_mlx=0".to_string()),
+        None => {}
     }
     if let Some(dequant) = switches.dequant_dense {
         tokens.push(dequant.to_string());

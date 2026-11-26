@@ -4736,7 +4736,7 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             prefix_tokens_reused: prefix_len as u32,
             prefix_blocks_reused: 1,
         };
-        let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk, false);
+        let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk, false, false);
         assert_eq!(
             selected, expected,
             "prefix={prefix_len}, suffix={suffix_len}"
@@ -4748,7 +4748,7 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             other => other,
         };
         assert_eq!(
-            grid_aligned_prefix_restore_len(&item, prefix_len, chunk, true),
+            grid_aligned_prefix_restore_len(&item, prefix_len, chunk, true, false),
             gap_expected,
             "gap replay prefix={prefix_len}, suffix={suffix_len}"
         );
@@ -4769,7 +4769,7 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
         }
         if prefix_len == 0 {
             assert_eq!(
-                grid_aligned_prefix_restore_len(&item, 12, chunk, false),
+                grid_aligned_prefix_restore_len(&item, 12, chunk, false, false),
                 Some(8)
             );
         }
@@ -4874,11 +4874,11 @@ fn planned_cut_is_not_refloored_onto_the_prefill_grid() {
     // claim. This is the regression the planned-cut check prevents.
     let item = prefill_item_with_claim(700, 300);
     assert_eq!(
-        grid_aligned_prefix_restore_len(&item, 768, 512, false),
+        grid_aligned_prefix_restore_len(&item, 768, 512, false, false),
         None
     );
     assert_eq!(
-        grid_aligned_prefix_restore_len(&item, 768, 512, true),
+        grid_aligned_prefix_restore_len(&item, 768, 512, true, false),
         Some(512)
     );
 }
@@ -4906,7 +4906,7 @@ fn legacy_grid_rung_requires_the_original_item_start() {
     // regression run).
     let item = prefill_item_with_claim(1920, 10);
     assert_eq!(
-        grid_aligned_prefix_restore_len(&item, 1920, 1024, true),
+        grid_aligned_prefix_restore_len(&item, 1920, 1024, true, false),
         Some(1024)
     );
 }
@@ -12626,4 +12626,226 @@ fn qwen_mtp_releases_verify_pages_before_committed_decode() {
             assert!(!state.cache.hard_cap_exhausted());
         }
     }
+}
+
+/// A greedy text request keeps the end of an unaligned prompt as its
+/// end-of-prompt state alone (`prompt_end_state_replaces_boundary`): the cold
+/// run is the uncached schedule, a repeat restores the end state, and no
+/// replay of such a request starts from a block boundary, including one a
+/// sampled request stored.
+#[test]
+fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
+    const BLOCK: u32 = 4;
+    const SHARED: usize = 28;
+    let prompt = |len: usize, tail: u32| -> Vec<u32> {
+        (0..len as u32)
+            .map(|i| {
+                if (i as usize) < SHARED {
+                    1 + (i * 7) % 13
+                } else {
+                    1 + (i * 5 + tail) % 13
+                }
+            })
+            .collect()
+    };
+    let new_runner = |chunk: usize, cached: bool| {
+        let (mut runner, artifacts) = tiny_qwen_hybrid_runner();
+        runner.prefill_chunk = chunk;
+        runner.cold_prefill_chunk = chunk;
+        runner.shared_fa_block_pool = None;
+        runner.terminal_token_ids.clear();
+        if !cached {
+            runner.prefix_cache.lock().policy.max_entries = 0;
+        }
+        assert_eq!(runner.prefix_cache.lock().enabled(), cached);
+        fs::remove_dir_all(artifacts.root_dir()).unwrap();
+        runner
+    };
+    let next_id = std::cell::Cell::new(200u64);
+    let run = |runner: &MlxRunner, claim: usize, tokens: &[u32], greedy: bool| {
+        let id = RequestId(next_id.replace(next_id.get() + 1));
+        let item = ax_engine_core::ExecutionItem {
+            request_id: id,
+            mode: ExecutionMode::Prefill,
+            planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+            input_token_slice: tokens[claim..].to_vec(),
+            reused_prefix_token_slice: tokens[..claim].to_vec(),
+            position_range: PositionRange {
+                start: claim as u32,
+                end_exclusive: tokens.len() as u32,
+            },
+            scheduled_token_count: (tokens.len() - claim) as u32,
+            block_table_ref: id,
+            prefix_tokens_reused: claim as u32,
+            prefix_blocks_reused: claim as u32 / BLOCK,
+        };
+        let ctx = RunnerRequestContext {
+            request_id: id,
+            prompt_len: tokens.len() as u32,
+            processed_prompt_tokens: claim as u32,
+            temperature: if greedy { 0.0 } else { 1.0 },
+            top_k: if greedy { 0 } else { 1 },
+            ..ctx_with_argmax(greedy)
+        };
+        let result = runner.run_item(
+            &item,
+            Some(&ctx),
+            "qwen3_5",
+            BLOCK,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.update.error.is_none(), "{:?}", result.update.error);
+        let state = runner.states.lock().remove(&id).unwrap();
+        (
+            result.update.output_token,
+            state.cache.serialize_to_bytes(),
+            result.prefix_cache,
+        )
+    };
+    let stored = |runner: &MlxRunner| {
+        let mut lens: Vec<_> = runner
+            .prefix_cache
+            .lock()
+            .entries
+            .values()
+            .map(|entry| entry.snapshot.token_count)
+            .collect();
+        lens.sort_unstable();
+        lens
+    };
+    let first = prompt(30, 0);
+    let edited = prompt(30, 3);
+    let one_token_tail = prompt(29, 5);
+
+    // The schedule of a greedy cold run is the uncached one, and only the
+    // end-of-prompt state is kept.
+    let uncached = new_runner(1024, false);
+    let (reference_token, reference_cache, _) = run(&uncached, 0, &first, true);
+    let runner = new_runner(1024, true);
+    let (cold_token, cold_cache, cold) = run(&runner, 0, &first, true);
+    assert_eq!(cold_token, reference_token);
+    assert_eq!(cold_cache, reference_cache);
+    assert_eq!(stored(&runner), [30]);
+    assert_eq!(cold.stores, 1);
+    assert_eq!(cold.blocked_trim_failure, 0);
+
+    // A repeat restores that state and runs nothing.
+    let (warm_token, warm_cache, warm) = run(&runner, SHARED, &first, true);
+    assert_eq!(warm_token, cold_token);
+    assert_eq!(warm_cache, cold_cache);
+    assert_eq!((warm.hits, warm.reused_tokens), (1, 30));
+
+    // An edited tail has no end state; it recomputes like its cold run.
+    let fresh = new_runner(1024, true);
+    let (edited_cold_token, edited_cold_cache, _) = run(&fresh, 0, &edited, true);
+    let (edited_token, edited_cache, edit) = run(&runner, SHARED, &edited, true);
+    assert_eq!(edit.hits, 0);
+    assert_eq!(edited_token, edited_cold_token);
+    assert_eq!(edited_cache, edited_cold_cache);
+
+    // A sampled request keeps the boundary snapshot and its replay.
+    let mixed = new_runner(1024, true);
+    let (sampled_token, sampled_cache, _) = run(&mixed, 0, &first, false);
+    assert_eq!(stored(&mixed), [SHARED]);
+    let (resampled_token, resampled_cache, resampled) = run(&mixed, SHARED, &first, false);
+    assert_eq!(
+        (resampled.hits, resampled.reused_tokens),
+        (1, SHARED as u32)
+    );
+    assert_eq!(resampled_token, sampled_token);
+    assert_eq!(resampled_cache, sampled_cache);
+
+    // A greedy request does not start from that boundary, whatever its tail
+    // length: its cold run never stopped there.
+    let (token, cache, telemetry) = run(&mixed, SHARED, &edited, true);
+    assert_eq!((telemetry.hits, telemetry.reused_tokens), (0, 0));
+    assert_eq!(token, edited_cold_token);
+    assert_eq!(cache, edited_cold_cache);
+    let (short_cold_token, short_cold_cache, _) = run(&fresh, 0, &one_token_tail, true);
+    let (token, cache, telemetry) = run(&mixed, SHARED, &one_token_tail, true);
+    assert_eq!((telemetry.hits, telemetry.reused_tokens), (0, 0));
+    assert_eq!(token, short_cold_token);
+    assert_eq!(cache, short_cold_cache);
+
+    // Where the last grid rung is the block boundary, the rung is still
+    // captured, and a follow-up turn restores it.
+    const RUNG: usize = 1024;
+    let long = prompt(RUNG + 2, 0);
+    let followup = prompt(RUNG + 17, 0);
+    let (long_token, long_cache, _) = run(&uncached, 0, &long, true);
+    let (followup_cold_token, followup_cold_cache, _) = run(&uncached, 0, &followup, true);
+    let gridded = new_runner(1024, true);
+    let (token, cache, _) = run(&gridded, 0, &long, true);
+    assert_eq!((token, &cache), (long_token, &long_cache));
+    assert_eq!(stored(&gridded), [RUNG, RUNG + 2]);
+    let (token, cache, telemetry) = run(&gridded, RUNG, &followup, true);
+    assert_eq!((telemetry.hits, telemetry.reused_tokens), (1, RUNG as u32));
+    assert_eq!(token, followup_cold_token);
+    assert_eq!(cache, followup_cold_cache);
+}
+
+#[test]
+fn single_token_extension_floors_only_for_an_end_state_only_request() {
+    // Claim 1,488 of a 1,489-token prompt: the one-token tail keeps its
+    // boundary restore unless the request never stops at that boundary.
+    let item = prefill_item_with_claim(1488, 1);
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 1488, 1024, true, false),
+        Some(1488)
+    );
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 1488, 1024, true, true),
+        Some(1024)
+    );
+    // No rung below the claim: full replay.
+    let item = prefill_item_with_claim(496, 1);
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 496, 1024, true, true),
+        None
+    );
+    // A whole-prompt restore has no extension and is never floored.
+    let mut whole = prefill_item_with_claim(0, 1489);
+    whole.reused_prefix_token_slice.clear();
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&whole, 1489, 1024, true, true),
+        Some(1489)
+    );
+}
+
+#[test]
+fn grid_rung_on_the_block_boundary_is_captured_without_the_boundary_capture() {
+    let rung = MlxRunner::linear_grid_rung_head_len_for;
+    // 1,030 tokens: the rung (1,024) is the block boundary.
+    assert_eq!(rung(16, 1024, 1024, 0, 1030, true), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 1030, false), Some(1024));
+    // Elsewhere the two agree.
+    for item_len in [127, 1498, 2100, 5000] {
+        assert_eq!(
+            rung(16, 1024, 1024, 0, item_len, false),
+            MlxRunner::linear_grid_rung_head_len(16, 1024, 1024, 0, item_len),
+            "{item_len}"
+        );
+    }
+}
+
+#[test]
+fn linear_prefill_disk_snapshots_carry_the_schedule_epoch() {
+    let (runner, artifacts) = tiny_qwen_hybrid_runner();
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+    let signature = runner.prefix_execution_signature();
+    let schedule = if crate::fastpath::prefix_end_state_only_enabled() {
+        ";linear_prefill=2"
+    } else {
+        ";linear_prefill=2-split"
+    };
+    assert!(
+        signature.contains(schedule)
+            && !signature.contains(&format!("{schedule}-"))
+            && signature.matches(";linear_prefill=").count() == 1,
+        "{signature}"
+    );
 }

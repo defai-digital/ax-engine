@@ -101,6 +101,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FUSED_GDN_VERIFY_MAX_SEQ", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_PREFIX_BOUNDARY_REPLAY", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_PREFIX_LIVE_SNAPSHOT", shipped: "on", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_MLX_PREFIX_END_STATE_ONLY", shipped: "on", class: SwitchClass::NonNumeric("cache") },
     SwitchRow { env: "AX_MLX_DFLASH2_COHORT_WINDOW", shipped: "on", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_COHORT_MAX_ROWS", shipped: "unset", class: SwitchClass::NonNumeric("draft") },
     SwitchRow { env: "AX_MLX_DFLASH2_COHORT_LANE_HEAD", shipped: "off", class: SwitchClass::Token("packed_verify_lm_head") },
@@ -260,7 +261,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL", shipped: "on", class: SwitchClass::Token("la_decode_post=0") },
     SwitchRow { env: "AX_MLX_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL", shipped: "off", class: SwitchClass::Token("la_prefill_post") },
     SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_DECODE_METAL", shipped: "on", class: SwitchClass::Token("gd_decode_metal=0") },
-    SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX", shipped: "off", class: SwitchClass::Token("qwen_gdn_mlx") },
+    SwitchRow { env: "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX", shipped: "on (M5+)", class: SwitchClass::Token("qwen_gdn_mlx") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX", shipped: "on", class: SwitchClass::Token("gdn_prefill_mlx=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX_MIN_SEQ", shipped: "auto", class: SwitchClass::Token("gdn_prefill_mlx_min=64") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT", shipped: "on", class: SwitchClass::Token("qsa_decode_select=0") },
@@ -780,7 +781,7 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
             true
         }
         "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX" => {
-            switches.qwen_gdn_prefill_mlx = true;
+            switches.qwen_gdn_prefill_mlx = Some(true);
             true
         }
         "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX" => {
