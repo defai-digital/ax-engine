@@ -309,10 +309,55 @@ pub fn set_metal_buffer_byte_cap_env(max_mb: u32) -> bool {
     true
 }
 
+/// MLX's control for re-requesting GPU residency of the wired allocations on
+/// a timer. Read once, when MLX creates its Metal device.
+pub const METAL_RESIDENCY_REFRESH_INTERVAL_ENV: &str = "MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS";
+
+/// Asks MLX to re-request residency of its wired allocations every
+/// `interval_ms`. macOS drops that residency after a few seconds without GPU
+/// work although the request stands, and the next evaluation then waits for
+/// the weights to be made resident again. Same timing rule as
+/// [`set_metal_buffer_caps_env`], and the same precedence for a value already
+/// in the environment. Returns whether the value was applied.
+pub fn set_metal_residency_refresh_env(interval_ms: u32) -> bool {
+    if std::env::var_os(METAL_RESIDENCY_REFRESH_INTERVAL_ENV).is_some() {
+        return false;
+    }
+    // SAFETY: called during single-threaded model/runner initialization,
+    // before decode worker threads that could read the environment
+    // concurrently are spawned.
+    unsafe {
+        std::env::set_var(
+            METAL_RESIDENCY_REFRESH_INTERVAL_ENV,
+            interval_ms.to_string(),
+        )
+    };
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::lock_process_global;
+    use crate::test_support::{ScopedEnvVar, lock_process_global};
+
+    #[test]
+    fn residency_refresh_env_keeps_an_operator_value() {
+        let _guard = lock_process_global();
+        {
+            let _unset = ScopedEnvVar::unset(METAL_RESIDENCY_REFRESH_INTERVAL_ENV);
+            assert!(set_metal_residency_refresh_env(1000));
+            assert_eq!(
+                std::env::var(METAL_RESIDENCY_REFRESH_INTERVAL_ENV).as_deref(),
+                Ok("1000")
+            );
+        }
+        let _set = ScopedEnvVar::set(METAL_RESIDENCY_REFRESH_INTERVAL_ENV, "0");
+        assert!(!set_metal_residency_refresh_env(1000));
+        assert_eq!(
+            std::env::var(METAL_RESIDENCY_REFRESH_INTERVAL_ENV).as_deref(),
+            Ok("0")
+        );
+    }
     use crate::{MlxArray, argmax};
 
     #[test]

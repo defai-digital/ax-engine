@@ -1298,6 +1298,39 @@ pub(crate) fn should_raise_metal_buffer_byte_cap_for(
     auto_enabled && neural_accelerator_active && model_family == "qwen4_exp"
 }
 
+/// How often MLX re-requests residency of the wired allocations when
+/// `AX_MLX_RESIDENCY_REFRESH` is on. The penalty of a dropped residency was
+/// measured to start between 1 and 3 seconds of idle on the MacBook Pro M5
+/// Max 128 GB; 250 ms and 1,000 ms remove it equally.
+pub(crate) const RESIDENCY_REFRESH_INTERVAL_MS: u32 = 1000;
+
+/// Sets MLX's residency refresh interval for the process
+/// ([`crate::fastpath::residency_refresh_enabled`]). MLX reads the variable
+/// once at Metal device init, so this shares the timing rule of
+/// [`maybe_raise_metal_buffer_caps`], which calls it.
+fn maybe_refresh_metal_residency() {
+    let Some(interval_ms) =
+        residency_refresh_interval_for(crate::fastpath::residency_refresh_enabled())
+    else {
+        return;
+    };
+    let applied = mlx_sys::set_metal_residency_refresh_env(interval_ms);
+    tracing::info!(
+        target = "ax_engine_mlx",
+        applied,
+        interval_ms,
+        "asked MLX to keep wired allocations GPU-resident while idle. \
+         AX_MLX_RESIDENCY_REFRESH=0 to disable; a pre-set \
+         MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS wins."
+    );
+}
+
+/// The interval AX asks MLX for, or `None` when the switch is off and MLX's
+/// own default (no refresh) stays.
+fn residency_refresh_interval_for(enabled: bool) -> Option<u32> {
+    enabled.then_some(RESIDENCY_REFRESH_INTERVAL_MS)
+}
+
 /// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping
 /// host graph build with GPU execution on MoE-class checkpoints
 /// (`docs/performance/gather-qmm-async-serialization.md`).
@@ -1316,6 +1349,7 @@ pub(crate) fn should_raise_metal_buffer_byte_cap_for(
 pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
     static DECIDED: OnceLock<()> = OnceLock::new();
     DECIDED.get_or_init(|| {
+        maybe_refresh_metal_residency();
         let model_family = artifacts.manifest().model_family.as_str();
         let na_active = crate::hardware::neural_accelerator_active();
         // Resolve the M5+ skinny-NAX gate (version + metallib probe) at load,

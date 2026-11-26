@@ -248,6 +248,24 @@ This scan and the two probes of the paired rows use different request
 wrappers, so their 127 and 1,492-token figures are close but not the same
 measurement.
 
+### First text after the server sat idle
+
+[first-text-after-idle.jsonl](first-text-after-idle.jsonl) holds the first
+text of one request after 0, 3, 10, 30 and 60 seconds without any request,
+for AX Engine with its residency refresh on and off and for oMLX
+([what changed](../../../docs/performance/idle-residency-refresh-2026-11-26.md)).
+
+- One server at a time, one run per configuration, three warmup requests,
+  then seven completions with `max_tokens` 1 and `temperature` 0 whose
+  prompts differ in their first line. `idle_seconds_before_request` is the
+  sleep before each of the seven; `first_text_ms` lists them in order.
+- The M5 Max rows use the 1,492-token prompt of the by-length scan, the
+  M4 Pro rows its 413-token prompt. Servers followed one another after 15
+  to 20 seconds, not 150: the comparison is between the requests of one
+  server, and the back-to-back requests of all servers of a model agree.
+- AX Engine was built from the source of commit `b39f5dc1`, which adds the
+  refresh.
+
 ## Replay
 
 Stage the binaries and packs using the

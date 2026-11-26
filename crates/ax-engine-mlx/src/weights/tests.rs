@@ -326,6 +326,12 @@ fn auto_buffer_caps_exclude_qwen3_5_family() {
 }
 
 #[test]
+fn residency_refresh_asks_for_one_second_and_the_kill_switch_asks_for_nothing() {
+    assert_eq!(residency_refresh_interval_for(true), Some(1000));
+    assert_eq!(residency_refresh_interval_for(false), None);
+}
+
+#[test]
 fn flash_next_raises_only_the_byte_cap_on_neural_accelerator_hosts() {
     assert!(should_raise_metal_buffer_byte_cap_for(
         true,

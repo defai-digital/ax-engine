@@ -300,6 +300,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_QWEN_SPLIT_FFN_PREFILL_COMPILE", shipped: "off", class: SwitchClass::NonNumeric("scheduling") },
     SwitchRow { env: "AX_MLX_GEMMA4_PACKED_FFN_COMPILE_P128", shipped: "off", class: SwitchClass::Token("gemma4_p128_packed") },
     SwitchRow { env: "AX_MLX_AUTO_BUFFER_CAPS", shipped: "on", class: SwitchClass::NonNumeric("cache") },
+    SwitchRow { env: "AX_MLX_RESIDENCY_REFRESH", shipped: "on", class: SwitchClass::NonNumeric("placement") },
     SwitchRow { env: "AX_MLX_MOE_ROUTER_FUSED_METAL", shipped: "off", class: SwitchClass::Token("moe_router") },
     SwitchRow { env: "AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL", shipped: "off", class: SwitchClass::Token("la_whole_layer") },
     SwitchRow { env: "AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL", shipped: "off", class: SwitchClass::Token("moe_deep_expert") },
