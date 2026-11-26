@@ -63,7 +63,8 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 [Text requests without a tokenizer copy](docs/performance/server-tokenizer-shared-2026-11-26.md) ·
 [Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md) ·
 [Flash Next long prompts on the tensor units](docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md) ·
-[Flash Next routed experts in 64-row tiles](docs/performance/flash-next-moe-gather-tiles-2026-11-26.md).
+[Flash Next routed experts in 64-row tiles](docs/performance/flash-next-moe-gather-tiles-2026-11-26.md) ·
+[27B DFlash2 tree rows by output length](docs/performance/qwen38-27b-dflash2-tree-rows-2026-11-26.md).
 
 <!-- qwen38-m5-modes:begin -->
 
