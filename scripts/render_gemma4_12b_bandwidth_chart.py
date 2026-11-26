@@ -10,6 +10,11 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX_LIGHT, AX_MID, AX, AX_DARK, LLAMA, LLAMA_DARK
+
 import argparse
 import html
 from pathlib import Path
@@ -21,10 +26,10 @@ PEAK_GBS = 577.0
 
 # (label, weights_gb, decode_tok_s, effective_bw_gbs, pct_peak, fill, stroke)
 ROWS = [
-    ("AX upstream artifact", 10.98, 45.4, 498, 86, "#64748b", "#334155"),
-    ("AX re-quantized FFN", 6.74, 67.5, 455, 79, "#2eaf5f", "#176c37"),
-    ("llama.cpp depth 512", 7.38, 58.7, 433, 75, "#f97316", "#c2410c"),
-    ("llama.cpp depth 0", 7.38, 57.1, 421, 73, "#f97316", "#c2410c"),
+    ("AX upstream artifact", 10.98, 45.4, 498, 86, AX_LIGHT, AX_MID),
+    ("AX re-quantized FFN", 6.74, 67.5, 455, 79, AX, AX_DARK),
+    ("llama.cpp depth 512", 7.38, 58.7, 433, 75, LLAMA, LLAMA_DARK),
+    ("llama.cpp depth 0", 7.38, 57.1, 421, 73, LLAMA, LLAMA_DARK),
 ]
 
 # Chart dimensions
@@ -141,9 +146,9 @@ def render() -> str:
     legend_y = HEIGHT - 22
     legend_x = LEFT
     for lbl, clr, stroke in (
-        ("diagnostic upstream artifact", "#64748b", "#334155"),
-        ("AX re-quantized artifact", "#2eaf5f", "#176c37"),
-        ("llama.cpp used bandwidth", "#f97316", "#c2410c"),
+        ("diagnostic upstream artifact", AX_LIGHT, AX_MID),
+        ("AX re-quantized artifact", AX, AX_DARK),
+        ("llama.cpp used bandwidth", LLAMA, LLAMA_DARK),
     ):
         parts += [
             f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2"'

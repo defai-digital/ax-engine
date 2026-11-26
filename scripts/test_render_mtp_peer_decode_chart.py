@@ -56,7 +56,12 @@ class MtpPeerDecodeChartTests(unittest.TestCase):
     def test_render_is_deterministic(self) -> None:
         svg = mod.render_svg(self.peers, self.reference)
         self.assertEqual(svg, mod.render_svg(self.peers, self.reference))
-        for color in ("#2eaf5f", "#f2b705", "#3a7bd5", mod.REFERENCE_COLOR):
+        for color in (
+            mod.PEERS["ax_engine"][2],
+            mod.PEERS["mtplx"][2],
+            mod.PEERS["omlx"][2],
+            mod.REFERENCE_COLOR,
+        ):
             self.assertEqual(svg.count(color), 1)
         self.assertIn("31.05", svg)
         self.assertIn("12.78", svg)

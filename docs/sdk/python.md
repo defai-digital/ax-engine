@@ -18,7 +18,7 @@ It is intentionally thin:
 The current preview package provides:
 
 - `Session(...)`
-- fail-closed host validation for pre-M2-Max Macs
+- native MLX host validation for Apple Silicon M2 or newer on macOS 26 or later
 - `Session.runtime()`
 - `Session.generate(...)`
 - `Session.generate_text(...)`
@@ -29,30 +29,30 @@ The current preview package provides:
 - `Session.stream_text(...)`
 - text-first chat convenience through `ChatMessage`,
   `Session.chat(...)`, `Session.submit_chat(...)`, and
-  `Session.stream_chat(...)`
+  `Session.stream_chat(...)`, with built-in prompt formats for supported
+  model families
 - backend-resolution metadata such as `selected_backend`, `support_tier`, and
   `resolution_policy`, plus host and Metal-toolchain diagnostics
 - explicit MLX artifact selection through `mlx_model_artifacts_dir`
 - delegated `mlx-lm` text compatibility through `mlx_lm_server_url`
 - llama.cpp wiring through `llama_cli_path`,
   `llama_model_path`, or `llama_server_url`
-- `download_model(repo_id, dest=None, *, force=False)` — download an mlx-community
-  model and auto-generate its `model-manifest.json`
+- `download_model(repo_id, dest=None, *, force=False, revision=None)` acquires
+  a Hugging Face snapshot and generates its `model-manifest.json`
 - LangChain integration via `ax_engine.langchain` — `AXEngineChatModel` and
   `AXEngineLLM` backed by the OpenAI-compatible server endpoints
 
 The current preview package does not yet provide:
 
 - text tokenization or decoding helpers
-- automatic model-aware chat templating
+- a public API for arbitrary checkpoint-supplied chat templates
 - transport-level streaming APIs
 
 ## Getting a Model
 
-`download_model()` is the fastest path from nothing to a running LLM session.
-It downloads LLM weights through `mlx-lm`, resolves the MLX-LM cache snapshot, and
-auto-generates the required `model-manifest.json` via
-`ax-engine-bench generate-manifest` (if installed) or `cargo run` (dev build):
+`download_model()` fetches a Hugging Face snapshot through `huggingface-hub`
+and generates the required `model-manifest.json` with the bundled or installed
+`ax-engine-bench`, or Cargo in a source checkout:
 
 ```python
 from ax_engine import download_model
@@ -61,29 +61,18 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # path is ready to pass directly to Session(mlx_model_artifacts_dir=...)
 ```
 
-Install `mlx-lm` first, or install the current Python package with the download
-extra:
-`python -m pip install --upgrade "ax-engine[download]>=8.0.6,<9"`.
+Install the Python download extra:
+`python -m pip install --upgrade "ax-engine[download]>=8.1.0,<9"`.
 
-The source-tree script uses the same `mlx-lm` download path and can emit a
+The source-tree script uses the same Hub download path and can emit a
 machine-readable summary for automation:
 
 ```text
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
 ```
 
-Embedding model downloads are intentionally outside ax-engine. Download
-embedding artifacts manually and pass the local model directory.
-
-For raw HuggingFace checkpoints (not from mlx-community), convert with
-`mlx_lm.convert` first — ax-engine detects unsanitized hybrid-model weights at
-load time and raises a hard error:
-
-```bash
-pip install mlx-lm
-mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
-ax-engine-bench generate-manifest /path/to/dest
-```
+The same helper acquires supported public embedding models. For a local raw
+checkpoint, see [manifest generation](../GETTING-STARTED.md#manifest-generation).
 
 ## Install
 
@@ -98,15 +87,14 @@ Requires Python 3.12+, macOS 26.2 or later, and Apple Silicon (M5 or later
 recommended, M3–M4 supported, M2 best-effort). Homebrew is optional. Install
 Python 3.13 using the macOS installer from
 [python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
-create the virtual environment with that interpreter. Python 3.12–3.14 work;
-the `download` extra does not yet install on 3.15 (MLX has no 3.15 wheels).
-Use `python3.13` explicitly, not the macOS-bundled `python3` (3.9):
+create the virtual environment with that interpreter. Use `python3.13`
+explicitly:
 
 ```text
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine>=8.0.6,<9"
+python -m pip install --upgrade "ax-engine>=8.1.0,<9"
 ```
 
 If you already have a virtual environment using an older Python, create a

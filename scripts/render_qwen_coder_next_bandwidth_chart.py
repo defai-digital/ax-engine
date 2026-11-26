@@ -31,6 +31,11 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, AX_DARK, MLX, MLX_DARK, LLAMA, LLAMA_DARK
+
 import argparse
 import html
 from pathlib import Path
@@ -42,9 +47,9 @@ PEAK_GBS = 577.0
 
 # (key, label, quant, bytes_per_token_gb, decode_tok_s, fill, stroke)
 POINTS = [
-    ("ax", "AX Engine v6.8.2 (2026-07-11)", "MLX 4-bit + fused expert block", 1.9648, 105.7, "#2eaf5f", "#176c37"),
-    ("mlx", "mlx-lm 0.31.3", "MLX 4-bit", 1.9648, 99.2, "#f2b705", "#9a6a00"),
-    ("llama", "llama.cpp b9700", "Q4_K_M", 2.8275, 85.5, "#f97316", "#c2410c"),
+    ("ax", "AX Engine v6.8.2 (2026-07-11)", "MLX 4-bit + fused expert block", 1.9648, 105.7, AX, AX_DARK),
+    ("mlx", "mlx-lm 0.31.3", "MLX 4-bit", 1.9648, 99.2, MLX, MLX_DARK),
+    ("llama", "llama.cpp b9700", "Q4_K_M", 2.8275, 85.5, LLAMA, LLAMA_DARK),
 ]
 
 # Axis domains
@@ -177,7 +182,7 @@ def render() -> str:
     parts.append(
         '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"'
         ' markerHeight="7" orient="auto-start-reverse">'
-        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/></marker></defs>'
+        f'<path d="M 0 0 L 10 5 L 0 10 z" fill="{LLAMA_DARK}"/></marker></defs>'
     )
 
     ax_pt = POINTS[0]
@@ -208,11 +213,11 @@ def render() -> str:
     ay = fy(150)
     parts.append(
         f'<line x1="{mlx_x + 4:.1f}" y1="{ay:.1f}" x2="{llama_x - 9:.1f}"'
-        f' y2="{ay:.1f}" stroke="#c2410c" stroke-width="1.4" marker-end="url(#arrow)"/>'
+        f' y2="{ay:.1f}" stroke="{LLAMA_DARK}" stroke-width="1.4" marker-end="url(#arrow)"/>'
     )
     parts.append(
         f'<text x="{(mlx_x + llama_x) / 2:.1f}" y="{ay - 6:.1f}" text-anchor="middle"'
-        f' font-family="{FONT}" font-size="10" font-weight="700" fill="#c2410c">'
+        f' font-family="{FONT}" font-size="10" font-weight="700" fill="{LLAMA_DARK}">'
         f"Q4_K_M reads 1.44× the bytes/token</text>"
     )
 
@@ -221,16 +226,16 @@ def render() -> str:
     midy = (fy(ax_pt[4]) + fy(mlx_pt[4])) / 2
     parts.append(
         f'<path d="M {bx + 6:.1f} {fy(ax_pt[4]):.1f} H {bx:.1f} V {fy(mlx_pt[4]):.1f}'
-        f' H {bx + 6:.1f}" fill="none" stroke="#176c37" stroke-width="1.4"/>'
+        f' H {bx + 6:.1f}" fill="none" stroke="{AX_DARK}" stroke-width="1.4"/>'
     )
     parts.append(
         f'<text x="{bx - 4:.1f}" y="{midy - 3:.1f}" text-anchor="end"'
-        f' font-family="{FONT}" font-size="10" font-weight="700" fill="#176c37">'
+        f' font-family="{FONT}" font-size="10" font-weight="700" fill="{AX_DARK}">'
         f"+6.6% decode</text>"
     )
     parts.append(
         f'<text x="{bx - 4:.1f}" y="{midy + 9:.1f}" text-anchor="end"'
-        f' font-family="{FONT}" font-size="9" fill="#176c37">same weights, AX kernels</text>'
+        f' font-family="{FONT}" font-size="9" fill="{AX_DARK}">same weights, AX kernels</text>'
     )
 
     # Point label offsets: AX above the pair, mlx-lm below it, llama to the right.

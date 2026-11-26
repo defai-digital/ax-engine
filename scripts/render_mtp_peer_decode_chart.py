@@ -11,6 +11,11 @@ the committed figure cannot drift from the artifact.
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, AX_DARK, MTPLX, MTPLX_DARK, OMLX, OMLX_DARK, MLX, MLX_DARK
+
 import argparse
 import json
 import math
@@ -31,12 +36,12 @@ OUTPUT_SVG = REPO_ROOT / "docs" / "assets" / "perf-mtp-peer-decode-m4-pro-2026-0
 
 # engine key -> (friendly name, config line, bar color, text color)
 PEERS = {
-    "ax_engine": ("AX Engine", "MTP depth 3", "#2eaf5f", "#176c37"),
-    "mtplx": ("MTPLX", "MTP depth 3 · sustained", "#f2b705", "#9a6a00"),
-    "omlx": ("OMLX", "Lightning MTP depth 1 · imported sidecar", "#3a7bd5", "#235a99"),
+    "ax_engine": ("AX Engine", "MTP depth 3", AX, AX_DARK),
+    "mtplx": ("MTPLX", "MTP depth 3 · sustained", MTPLX, MTPLX_DARK),
+    "omlx": ("OMLX", "Lightning MTP depth 1 · imported sidecar", OMLX, OMLX_DARK),
 }
-REFERENCE_COLOR = "#9aa6a0"
-REFERENCE_TEXT = "#5a6a62"
+REFERENCE_COLOR = MLX
+REFERENCE_TEXT = MLX_DARK
 
 
 class Peer(NamedTuple):
@@ -182,7 +187,7 @@ def render_svg(peers: list[Peer], reference: Peer | None) -> str:
         )
         parts.append(
             f'<text x="24" y="{row_top + 33}" font-size="11" '
-            f'fill="#5a6a62">{_escape(row.config)}</text>'
+            f'fill="{MLX_DARK}">{_escape(row.config)}</text>'
         )
         bar_w = x_for(row.decode_tok_s) - plot_left
         parts.append(

@@ -3,7 +3,6 @@
 Status: signed GUI release tooling; public availability is verified separately
 from runtime publication using `verify-public` below.
 Scope: macOS 26.2 or later, Apple Silicon arm64.
-Last reviewed: 2026-10-26.
 Owner: AX Engine maintainers.
 Related: [native app](MACOS-APP.md), [installation guide](GETTING-STARTED.md).
 
@@ -147,9 +146,9 @@ and never caches the mutable root pointer or installer.
 The local canonical deployment wrapper exposes these tools through
 `.internal/deploy/deploy --gui`: `build`, `package`, `verify`,
 `prepare-downloads`, `verify-downloads`, `gateway`, `publish`, and `verify-public`.
-CLI/PyPI/formula publication remains unchanged. Native Sparkle updates use the
-same release channel; see [macOS app updates](MACOS-UPDATES.md) for first-release
-activation, signing and validation. Manual DMG/curl/Cask upgrades remain supported.
+Native Sparkle updates use the same release channel. See
+[macOS app updates](MACOS-UPDATES.md) for signing and validation.
+Manual DMG/curl/Cask upgrades remain supported.
 
 ## Validation
 

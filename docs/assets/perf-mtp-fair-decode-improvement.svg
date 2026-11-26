@@ -17,22 +17,22 @@
 <text x="64" y="86.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">100%</text>
 <line x1="72" y1="258.4" x2="866" y2="258.4" stroke="#111827" stroke-opacity="0.45" stroke-width="1.2"/>
 <text x="270.5" y="306" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27B</text>
-<rect x="194.5" y="246.2" width="44.0" height="12.1" rx="3" fill="#f97316" fill-opacity="0.78"/>
+<rect x="194.5" y="246.2" width="44.0" height="12.1" rx="3" fill="#37b67c" fill-opacity="0.78"/>
 <text x="216.5" y="240.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">6.9%</text>
-<rect x="248.5" y="246.1" width="44.0" height="12.3" rx="3" fill="#eab308" fill-opacity="0.78"/>
+<rect x="248.5" y="246.1" width="44.0" height="12.3" rx="3" fill="#0b5d36" fill-opacity="0.78"/>
 <text x="270.5" y="240.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">7.0%</text>
 <rect x="302.5" y="258.2" width="44.0" height="1.0" rx="3" fill="#7c3aed" fill-opacity="0.78"/>
 <text x="324.5" y="252.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.1%</text>
 <text x="667.5" y="306" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35B-A3B</text>
-<rect x="591.5" y="146.0" width="44.0" height="112.3" rx="3" fill="#f97316" fill-opacity="0.78"/>
+<rect x="591.5" y="146.0" width="44.0" height="112.3" rx="3" fill="#37b67c" fill-opacity="0.78"/>
 <text x="613.5" y="140.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">63.7%</text>
-<rect x="645.5" y="147.2" width="44.0" height="111.2" rx="3" fill="#eab308" fill-opacity="0.78"/>
+<rect x="645.5" y="147.2" width="44.0" height="111.2" rx="3" fill="#0b5d36" fill-opacity="0.78"/>
 <text x="667.5" y="141.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">63.0%</text>
 <rect x="699.5" y="258.4" width="44.0" height="1.0" rx="3" fill="#dc2626" fill-opacity="0.78"/>
 <text x="721.5" y="273.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">-0.4%</text>
-<rect x="72.0" y="333" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.78"/>
+<rect x="72.0" y="333" width="10" height="10" rx="2" fill="#37b67c" fill-opacity="0.78"/>
 <text x="86.0" y="342" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP vs MTPLX</text>
-<rect x="282.0" y="333" width="10" height="10" rx="2" fill="#eab308" fill-opacity="0.78"/>
+<rect x="282.0" y="333" width="10" height="10" rx="2" fill="#0b5d36" fill-opacity="0.78"/>
 <text x="296.0" y="342" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP+ngram vs MTPLX</text>
 <rect x="492.0" y="333" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.78"/>
 <text x="506.0" y="342" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">ngram vs AX MTP</text>

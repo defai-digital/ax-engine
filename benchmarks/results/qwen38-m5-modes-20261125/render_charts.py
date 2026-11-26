@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""Render the public M5 greedy mode tables and charts from the serving receipt."""
+"""Render the public M5 greedy mode tables and charts from the serving receipt.
+
+Needs matplotlib. `python render_charts.py --check` fails when the README
+tables or SVG charts differ from this receipt.
+"""
 
 import argparse
-from html import escape
 import json
-import math
+import sys
 from pathlib import Path
 from statistics import median
 
 CAMPAIGN = Path(__file__).resolve().parent
 ROOT = CAMPAIGN.parents[2]
+sys.path.insert(0, str(CAMPAIGN))
+sys.path.insert(0, str(ROOT / "scripts"))
+from chart_palette import M5_ENGINE_COLORS  # noqa: E402
+from chart_style import bar_chart  # noqa: E402
 BEGIN = "<!-- qwen38-m5-modes:begin -->"
 END = "<!-- qwen38-m5-modes:end -->"
-MODEL_NAMES = {"dense": "Qwen 3.8 27B", "flash": "Qwen 3.8 Flash Next"}
-METRICS = (
-    ("decode_tok_s", "Decode · output tok/s", 10),
-    ("prefill_tok_s", "Effective prefill · input tok/s", 100),
-)
+MODEL_ORDER = ("flash", "dense")
+MODEL_NAMES = {"flash": "Qwen 3.8 Flash Next", "dense": "Qwen 3.8 27B"}
+MODES = ("direct", "dflash2")
+MODE_CATEGORIES = ["Direct greedy", "DFlash2"]
 ENGINE_NAMES = {
     "ax-engine": "AX Engine",
     "splash": "Splash",
@@ -56,57 +62,46 @@ def first_text(row, size):
     return f"{median(probes):.2f}" if probes else "—"
 
 
-def render(model, rows, versions):
-    bottom = 159 + 31 * len(rows)
-    height = bottom + 55
-    width = 900
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
-        f'<title id="title">{MODEL_NAMES[model]} AXQ MXFP4 on M5 Max</title>',
-        '<desc id="desc">A comparison of single-request decode and effective prompt prefill. '
-        'The engine labels identify each version and greedy mode. Zero indicates '
-        'the tested configuration did not complete the workload.</desc>',
-        f'<rect x="0.5" y="0.5" width="{width-1}" height="{height-1}" rx="16" '
-        'fill="#f7f9fc" stroke="#d8e2ef"/>',
-        '<g font-family="system-ui, sans-serif" fill="#172840">',
-        f'<text x="26" y="37" font-size="23" font-weight="700">{MODEL_NAMES[model]} AXQ MXFP4</text>',
-        '<text x="26" y="62" font-size="14" fill="#425674">'
-        'MacBook Pro M5 Max 128 GB · One active streaming request · Greedy sampling</text>',
-        '<text x="26" y="109" font-size="16" font-weight="700">Engine and decoding mode</text>',
-    ]
-    for index, row in enumerate(rows):
-        y = 160 + 31 * index
-        parts.append(f'<text x="26" y="{y + 4}" font-size="13">{escape(label(row, versions))}</text>')
-    for index, (key, title, step) in enumerate(METRICS):
-        x = 270 + 320 * index
-        scale = max(step, math.ceil(max(row[key] for row in rows) / (4 * step)) * step)
-        parts.append(f'<text x="{x}" y="109" font-size="16" font-weight="700">{title}</text>')
-        for tick in range(5):
-            grid = x + 61 * tick
-            parts.append(
-                f'<line x1="{grid}" x2="{grid}" y1="140" y2="{bottom}" stroke="#d7e0ea"/>'
-                f'<text x="{grid}" y="133" text-anchor="middle" font-size="11" '
-                f'fill="#425674">{tick * scale}</text>'
-            )
-        for item, row in enumerate(rows):
-            y = 160 + 31 * item
-            bar = 61 * row[key] / scale
-            color = "#514388" if row["mode"] == "dflash2" else "#176b63"
-            if bar:
-                parts.append(
-                    f'<rect x="{x}" y="{y - 9}" width="{bar:.2f}" height="18" rx="3" fill="{color}"/>'
-                )
-            parts.append(
-                f'<text x="{x + bar + 7:.2f}" y="{y + 4}" font-size="12" font-weight="600">'
-                f'{rate(row[key])}</text>'
-            )
-    parts += [
-        f'<text x="26" y="{bottom + 27}" font-size="12" fill="#425674">'
-        'Prefill uses the first-text latency difference between two input sizes. Zero means incomplete.</text>',
-        '</g></svg>',
-    ]
-    return "\n".join(parts) + "\n"
+def render(model, rows, path):
+    by_engine = {}
+    for row in rows:
+        by_engine.setdefault(row["engine"], {})[row["mode"]] = row
+    engines = list(by_engine)
+    series = [(ENGINE_NAMES[engine], M5_ENGINE_COLORS[engine]) for engine in engines]
+
+    def panel(metric, title):
+        values, suffix = [], []
+        for engine in engines:
+            mode_values, mode_suffix = [], []
+            for mode in MODES:
+                row = by_engine[engine].get(mode)
+                if row is None:
+                    mode_values.append(None)
+                    mode_suffix.append(None)
+                else:
+                    mode_values.append(row[metric])
+                    mode_suffix.append("†" if row.get("session") == "paired-rerun" else None)
+            values.append(mode_values)
+            suffix.append(mode_suffix)
+        return {"title": title, "categories": MODE_CATEGORIES, "values": values, "suffix": suffix,
+                "missing": "not run"}
+
+    name = MODEL_NAMES[model]
+    bar_chart(
+        path,
+        title=f"{name} AXQ MXFP4",
+        subtitle="MacBook Pro M5 Max 128 GB · one active streaming request · greedy",
+        series=series,
+        panels=[panel("decode_tok_s", "Decode"), panel("prefill_tok_s", "Effective prefill")],
+        xlabel="Tokens per second · each panel has its own scale",
+        note="† Median of three interleaved runs. Zero means that configuration did not finish.",
+        share_scale=False,
+        fmt=lambda value: "0" if not value else f"{value:,.2f}",
+        legend_columns=4,
+        description=f"{name} decode and effective prefill by engine and greedy mode on M5 Max. "
+                    "Versions are in the README table.",
+    )
+    return path.read_text()
 
 
 def tables(versions, grouped):
@@ -115,7 +110,7 @@ def tables(versions, grouped):
         name = MODEL_NAMES[model]
         chart = figure_name(model)
         parts += [
-            f"### {name} MXFP4",
+            f"#### {name} MXFP4",   # under the README's per-machine heading
             "",
             f"![{name} decode and effective prefill by engine version and mode on M5 Max.](docs/assets/{chart})",
             "",
@@ -143,16 +138,18 @@ def main():
     records = [json.loads(line) for line in (CAMPAIGN / "results.jsonl").read_text().splitlines()]
     grouped = {
         model: [row for row in records if row["model"] == model and row["engine"] in ENGINE_NAMES]
-        for model in MODEL_NAMES
+        for model in MODEL_ORDER
     }
     for model, rows in grouped.items():
-        chart = render(model, rows, versions)
         path = ROOT / "docs/assets" / figure_name(model)
         if args.check:
+            probe = path.with_suffix(".check.svg")
+            chart = render(model, rows, probe)
+            probe.unlink()
             if path.read_text() != chart:
                 parser.error(f"{path.name} differs from the recorded metrics")
         else:
-            path.write_text(chart)
+            render(model, rows, path)
     readme = ROOT / "README.md"
     original = readme.read_text()
     start, end = original.index(BEGIN), original.index(END) + len(END)

@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX_LIGHT, MTPLX, MTPLX_DARK, AX, AX_DARK, AX_MID
+
 import argparse
 import html
 import json
@@ -55,12 +60,12 @@ VERSIONS_FOOTNOTE = (
     "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.2.2"
 )
 ENGINE_COLORS = {
-    "ax_direct": "#d97706",
-    "mtplx": "#14532d",
-    "mtplx_tuned": "#0f766e",
-    "ax_engine": "#f97316",
-    "ax_engine_ngram": "#eab308",
-    "ax_engine_tuned": "#2563eb",
+    "ax_direct": AX_LIGHT,
+    "mtplx": MTPLX,
+    "mtplx_tuned": MTPLX_DARK,
+    "ax_engine": AX,
+    "ax_engine_ngram": AX_DARK,
+    "ax_engine_tuned": AX_MID,
 }
 ENGINE_ORDER = [
     "ax_direct",

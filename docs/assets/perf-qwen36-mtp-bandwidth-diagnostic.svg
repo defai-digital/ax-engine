@@ -22,28 +22,28 @@
 <line x1="445.0" y1="96" x2="445.0" y2="238" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="5 4"/>
 <text x="450.0" y="116" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" font-weight="700" fill="#dc2626">100% physical reference</text>
 <text x="198" y="140" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v6.13.3</text>
-<rect x="210" y="124" width="386.3" height="22" rx="4" fill="#2eaf5f" fill-opacity="0.82"/>
-<line x1="596.3" y1="124" x2="596.3" y2="146" stroke="#176c37" stroke-width="1.4"/>
+<rect x="210" y="124" width="386.3" height="22" rx="4" fill="#37b67c" fill-opacity="0.82"/>
+<line x1="596.3" y1="124" x2="596.3" y2="146" stroke="#0b5d36" stroke-width="1.4"/>
 <text x="588.3" y="140" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">164%</text>
 <text x="720" y="140" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="400" fill="#374151">949 GB/s</text>
 <text x="840" y="140" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">56.1 tok/s</text>
 <text x="198" y="174" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX v2.1.0</text>
-<rect x="210" y="158" width="412.2" height="22" rx="4" fill="#f2b705" fill-opacity="0.82"/>
-<line x1="622.2" y1="158" x2="622.2" y2="180" stroke="#9a6a00" stroke-width="1.4"/>
+<rect x="210" y="158" width="412.2" height="22" rx="4" fill="#d4537e" fill-opacity="0.82"/>
+<line x1="622.2" y1="158" x2="622.2" y2="180" stroke="#8e2348" stroke-width="1.4"/>
 <text x="614.2" y="174" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">175%</text>
 <text x="720" y="174" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">1012 GB/s</text>
 <text x="840" y="174" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">59.9 tok/s</text>
 <text x="198" y="208" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">lightning-mlx v0.6.10</text>
-<rect x="210" y="192" width="394.4" height="22" rx="4" fill="#2563eb" fill-opacity="0.82"/>
-<line x1="604.4" y1="192" x2="604.4" y2="214" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="210" y="192" width="394.4" height="22" rx="4" fill="#0f766e" fill-opacity="0.82"/>
+<line x1="604.4" y1="192" x2="604.4" y2="214" stroke="#134e4a" stroke-width="1.4"/>
 <text x="596.4" y="208" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">168%</text>
 <text x="720" y="208" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="400" fill="#374151">968 GB/s</text>
 <text x="840" y="208" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">57.3 tok/s</text>
-<rect x="36" y="273" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.82" stroke="#176c37"/>
+<rect x="36" y="273" width="10" height="10" rx="2" fill="#37b67c" fill-opacity="0.82" stroke="#0b5d36"/>
 <text x="50" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v6.13.3</text>
-<rect x="166" y="273" width="10" height="10" rx="2" fill="#f2b705" fill-opacity="0.82" stroke="#9a6a00"/>
+<rect x="166" y="273" width="10" height="10" rx="2" fill="#d4537e" fill-opacity="0.82" stroke="#8e2348"/>
 <text x="180" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX v2.1.0</text>
-<rect x="296" y="273" width="10" height="10" rx="2" fill="#2563eb" fill-opacity="0.82" stroke="#1d4ed8"/>
+<rect x="296" y="273" width="10" height="10" rx="2" fill="#0f766e" fill-opacity="0.82" stroke="#134e4a"/>
 <text x="310" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">lightning-mlx v0.6.10</text>
 <text x="36" y="308" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">Percentages can exceed 100% because MTP can commit multiple output tokens per target verifier pass.</text>
 </svg>

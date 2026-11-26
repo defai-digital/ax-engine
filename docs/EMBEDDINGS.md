@@ -12,7 +12,8 @@ telemetry.
   same corpus in one batched call; this is a *general* observation, not
   an ax-engine vs `mlx-lm` claim.
 - **Three equivalent batched entry points:**
-  - Python: `session.embed_batch_array(list_of_sentences, ...)` returns a
+  - Python: `session.embed_batch_array(batch_token_ids, ...)` accepts
+    one token-ID list per input and returns a
     NumPy `(B, H)` `float32` ndarray. Zero-copy view via
     `np.frombuffer`; suitable for `faiss.Index.add` / HNSW / sklearn
     pipelines.
@@ -30,15 +31,15 @@ telemetry.
 Qwen3-Embedding 0.6B, 4B and 8B accept the AutomatosX AXQ MXFP4 and MXFP8
 packs through the native MLX embedding path. Per-tensor quantization metadata
 is authoritative: protected affine weights can coexist with MX weights.
-Use explicit format aliases, for example:
+An anonymously downloadable example for the native CLI is:
 
 ```bash
-ax-engine download qwen3-embedding-0.6b:axq-mxfp4
-ax-engine download qwen3-embedding-8b:axq-mxfp8
-ax-engine download embeddinggemma-2:axq-mxfp4
-ax-engine download embeddinggemma-2:axq-mxfp8
-ax-engine download embeddinggemma-300m:8bit
+ax-engine download mlx-community/embeddinggemma-300m-8bit
 ```
+
+The embedding format aliases in the Python CLI map to specific model
+repositories. Check snapshot availability before using them, or pass a cached
+or prepared model directory to the runtime. See [supported embedding models](SUPPORTED-MODELS.md).
 
 The HTTP text path follows each tokenizer’s embedding contract: Gemma retains
 its BOS postprocessor and Qwen appends EOS. The records endpoint applies the
@@ -243,10 +244,10 @@ specific release requires a stricter or looser gate.
 
 ```python
 # slow
-embeddings = [session.embed_bytes(ids) for ids in sentences]
+embeddings = [session.embed_bytes(ids) for ids in batch_token_ids]
 
 # fast — same corpus, ~2-3x throughput
-embeddings = session.embed_batch_array(sentences)   # NumPy (B, H)
+embeddings = session.embed_batch_array(batch_token_ids)   # NumPy (B, H)
 ```
 
 Why the loop is slow:

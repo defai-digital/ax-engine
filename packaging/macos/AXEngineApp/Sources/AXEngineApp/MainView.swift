@@ -195,11 +195,18 @@ private struct Sidebar: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("AX").font(.system(size: 12, weight: .heavy)).foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(LinearGradient(colors: [Brand.accent, Brand.boost], startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .accessibilityHidden(true)
+            Group {
+                if let logo = Brand.logo {
+                    Image(nsImage: logo).resizable().scaledToFit()
+                } else {
+                    Text("AX").font(.system(size: 12, weight: .heavy)).foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(LinearGradient(colors: [Brand.accent, Brand.boost], startPoint: .topLeading, endPoint: .bottomTrailing),
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+            .frame(width: 30, height: 30)
+            .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text("AX Engine").font(.system(size: 14, weight: .bold)).foregroundStyle(Brand.text1)
                 Text(HostInfo.summary).font(.system(size: 11)).foregroundStyle(Brand.text3).lineLimit(1).truncationMode(.tail)

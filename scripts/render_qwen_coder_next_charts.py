@@ -16,6 +16,11 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import LLAMA, LLAMA_DARK, MLX, MLX_DARK, AX, AX_DARK
+
 import argparse
 import html
 import json
@@ -43,9 +48,9 @@ TOP = 86
 BOTTOM = 316
 
 SERIES = [
-    ("llama_cpp_metal", "llama.cpp Metal", "#f97316", "#c2410c"),
-    ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
-    ("ax_engine_mlx", "AX Engine native MLX", "#2eaf5f", "#176c37"),
+    ("llama_cpp_metal", "llama.cpp Metal", LLAMA, LLAMA_DARK),
+    ("mlx_lm", "mlx-lm 0.31.3", MLX, MLX_DARK),
+    ("ax_engine_mlx", "AX Engine native MLX", AX, AX_DARK),
 ]
 
 METRICS = [
