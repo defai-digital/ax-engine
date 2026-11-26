@@ -15,7 +15,7 @@ boundaries.
 
 ## What hardware does AX Engine support?
 
-AX Engine runs on Apple Silicon Macs with macOS 26 (Tahoe) or later.
+Prebuilt AX Engine packages require Apple Silicon and macOS 26.2 or later.
 
 | Chip tier | Chips | What to expect |
 | --- | --- | --- |
@@ -36,7 +36,7 @@ short-to-moderate context — not for multi-model residency or 27B/35B stacks.
 
 | Machine | Memory | Best fit |
 | --- | ---: | --- |
-| Mac mini M4 (base) | 16 GB | One compact chat model (e.g. Qwen 3.5 9B AXQ / OptiQ 4-bit), embeddings, or other small packs |
+| Mac mini M4 (base) | 16 GB | One compact chat model (e.g. Qwen 3.5 9B 4-bit), embeddings, or other small packs |
 | MacBook Air / Pro M3–M4 with 16–24 GB | 16–24 GB | Same light single-model use |
 
 A Mac mini M4 with 16 GB used `ax-engine serve` for each Qwen 3.5 9B pack
@@ -54,9 +54,8 @@ Prefer **4-bit** for headroom; 6-bit 9B works but leaves little free memory.
 Good starting downloads on 16 GB:
 
 ```text
-ax-engine download ax-qwen3.5-9b          # OptiQ 4-bit MTP (catalog default)
-# or AXQ 4-bit from https://huggingface.co/AutomatosX/models
-ax-engine serve <model-dir-or-alias> --port 31418
+ax-engine download qwen3.5-9b             # public mlx-community 4-bit pack
+ax-engine serve qwen3.5-9b --offline --port 31418
 ```
 
 Skip multi-model (`load_mode=add`), large coding packs, and Qwen 3.6 27B/35B
@@ -91,7 +90,7 @@ but the better local setup is to match the model to the workflow.
 
 | Role | Recommended model | Setup | App | Why |
 | --- | --- | --- | --- | --- |
-| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | MXFP4 MTP pack, 16K-32K. M5 Max 128 GB (primary), M4 Pro 64 GB (supported) | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; MXFP4 SKU qualification pending; historical 6-bit speeds do not transfer |
+| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | MXFP4 MTP pack, 16K-32K. M5 Max 128 GB (primary), M4 Pro 64 GB (supported) | [AX Engine for macOS](MACOS-APP.md) | Primary optimization target with MXFP4 SKU qualification pending |
 | Secondary dense / MoE | Qwen 3.6 27B or 35B-A3B | 27B 4/6-bit; 35B A3B 4-bit, 16K-32K | AX server / SDK | Certified secondary families; 3.6 holds the published 8h soak |
 | Coding specialist | Tiel Coder 35B A3B MXFP4 MTP | AX Code managed default; Cyber-Tiel alternate | [ax-code](https://github.com/defai-digital/ax-code) | MoE coding packs; **194.88** completion tok/s on M5 Max. Not the Engine 27B table. |
 | Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |
@@ -106,12 +105,12 @@ Coding agent (via AX Code):
 Tiel Coder 35B A3B MXFP4 MTP (managed default)
 
 Secondary dense:
-qwen3.6-27b:axq when you need the 3.6 soak path
+Use your existing Qwen 3.6 27B AXQ model directory for the historical soak configuration.
 ```
 
 Optional secondary stacks (same 128 GB class; one large model at a time).
-Secondary families are outside the managed AutomatosX download catalog, so
-fetch them by raw repo id and serve with their legacy aliases:
+Download these community examples by exact Hugging Face repository ID and
+serve the resolved local directory:
 
 ```text
 Research / enterprise Llama:
@@ -142,9 +141,8 @@ ax-engine download mlx-community/gpt-oss-120b-MXFP4-Q4  # prefer 128 GB+
 
 Client positioning:
 
-- **Safe / high-ROI path**: Gemma 4 in
-  [ax-studio](https://github.com/defai-digital/ax-studio) for chatbot +
-  Qwen3.6 for agent tasks.
+- **Chat and agent workloads** can use Gemma 4 for chat in the
+  [macOS app](MACOS-APP.md) and Qwen 3.6 for agent tasks.
 - **Higher-return path**: add Qwen3-Coder-Next as the dedicated local coding
   specialist in [ax-code](https://github.com/defai-digital/ax-code).
 - **Research / EU / open reasoner**: Llama, Mistral, and GPT-OSS download
@@ -254,10 +252,10 @@ direct path and the N-gram path on the same prompt/decode shape.
   parallelized. AX now uses a 2048-token long-prefill specialization to match
   `mlx_lm` chunk geometry; remaining gaps should be investigated with
   `AX_MLX_LINEAR_ATTENTION_PROFILE=1` before changing runtime defaults.
-- **Raw HuggingFace weights**: ax-engine loads MLX community pre-sanitized
-  weights. For hybrid architectures such as Qwen3.5 and Qwen3-Next, loading an
-  unsanitized checkpoint raises a hard error at load time. Convert first with
-  `mlx_lm.convert`, or download a pre-sanitized model from mlx-community.
+- **Raw Hugging Face weights** can load for supported architectures with a
+  valid manifest. AX Engine applies supported weight transforms at load time
+  and validates the resulting layout. Keep the checkpoint in one consistent
+  layout to avoid errors from partial conversion.
 - **N-gram acceleration rows**: effective-throughput measurements, not raw
   model-kernel speedups. The hit rate is prompt- and output-pattern dependent.
   Coding-shaped workloads with repeated local structure are the intended

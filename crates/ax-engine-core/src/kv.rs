@@ -12,9 +12,9 @@ fn kv_diag_enabled() -> bool {
 }
 
 macro_rules! kv_diag {
-    ($($arg:tt)*) => {
+    ($message:literal) => {
         if kv_diag_enabled() {
-            eprintln!("[KV_DIAG] {}", format_args!($($arg)*));
+            eprintln!("[KV_DIAG] {}", $message);
         }
     };
 }
@@ -266,13 +266,6 @@ impl KvManager {
             .block_tables
             .get(&request_id)
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
-        kv_diag!(
-            "lookup_prefix(request={}): prompt_tokens.len={} target.logical_token_count={} cached_blocks_total={}",
-            request_id.0,
-            prompt_tokens.len(),
-            target_table.logical_token_count,
-            self.cached_blocks.len()
-        );
         if target_table.logical_token_count > 0 || self.prefix_reuse_disabled.contains(&request_id)
         {
             kv_diag!("lookup_prefix: EARLY MISS (target has logical tokens or reuse is disabled)");
@@ -284,12 +277,7 @@ impl KvManager {
 
         let live_match = self.lookup_live_prefix(request_id, prompt_tokens)?;
         let cached_match = self.lookup_cached_prefix(prompt_tokens)?;
-        kv_diag!(
-            "lookup_prefix result: live_matched_tokens={} cached_matched_tokens={}",
-            live_match.matched_token_count,
-            cached_match.matched_token_count
-        );
-
+        kv_diag!("lookup_prefix: complete");
         if cached_match.matched_token_count > live_match.matched_token_count {
             Ok(cached_match)
         } else {
@@ -689,7 +677,6 @@ impl KvManager {
     }
 
     pub fn free(&mut self, request_id: RequestId) -> Result<FreeResult, KvManagerError> {
-        kv_diag!("free(request={}) called", request_id.0);
         let table = self
             .block_tables
             .get(&request_id)
@@ -700,13 +687,6 @@ impl KvManager {
             .get(&request_id)
             .cloned()
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
-        kv_diag!(
-            "free(request={}): table.full_block_count={} table.logical_token_count={} prompt_tokens.len={}",
-            request_id.0,
-            table.full_block_count,
-            table.logical_token_count,
-            prompt_tokens.len()
-        );
         // Validate the whole release set before any mutation: promotion bumps
         // refcounts and inserts cache entries, and erroring after it would
         // leave a promoted entry co-owning blocks of a request that stays
@@ -948,15 +928,7 @@ impl KvManager {
             * self.config.block_size_tokens;
         let materialized_full_token_count = table.full_block_count * self.config.block_size_tokens;
         let cached_token_count = prompt_full_token_count.min(materialized_full_token_count);
-        kv_diag!(
-            "promote_prompt_prefix_to_cache: prompt_full_tokens={} materialized_full_tokens={} cached_tokens={} block_size={}",
-            prompt_full_token_count,
-            materialized_full_token_count,
-            cached_token_count,
-            self.config.block_size_tokens
-        );
         if cached_token_count == 0 {
-            kv_diag!("promote: EARLY EXIT (cached_token_count == 0)");
             return Ok(());
         }
 
@@ -965,8 +937,6 @@ impl KvManager {
         let block_keys = self.full_block_keys(prompt_tokens, cached_block_count)?;
 
         let block_size_tokens = self.config.block_size_tokens as usize;
-        let mut newly_inserted = 0u32;
-        let mut touched_existing = 0u32;
         for (block_index, ((cache_key, parent_block_hash), block_id)) in block_keys
             .into_iter()
             .zip(table.block_ids.iter().copied())
@@ -979,7 +949,6 @@ impl KvManager {
             if let Some(entry) = self.cached_blocks.get_mut(&cache_key) {
                 if entry.block_tokens.as_slice() == block_tokens {
                     entry.last_touch_tick = touch_tick;
-                    touched_existing += 1;
                 } else {
                     break;
                 }
@@ -1008,14 +977,8 @@ impl KvManager {
                     last_touch_tick: touch_tick,
                 },
             );
-            newly_inserted += 1;
         }
-        kv_diag!(
-            "promote: COMPLETE newly_inserted={} touched_existing={} total_cached_blocks_now={}",
-            newly_inserted,
-            touched_existing,
-            self.cached_blocks.len()
-        );
+        kv_diag!("promote_prompt_prefix_to_cache: complete");
         Ok(())
     }
 

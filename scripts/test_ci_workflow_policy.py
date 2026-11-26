@@ -89,13 +89,46 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         )
 
     def test_aggregate_ci_gate_fails_on_non_successful_needs(self) -> None:
-        workflow = CI_WORKFLOW.read_text()
+        _, aggregate = CI_WORKFLOW.read_text().split("\n  ci:\n", 1)
 
-        self.assertIn("contains(needs.*.result, 'failure')", workflow)
-        self.assertIn("contains(needs.*.result, 'cancelled')", workflow)
-        self.assertIn("contains(needs.*.result, 'skipped')", workflow)
+        self.assertIn("    if: ${{ !cancelled() }}\n", aggregate)
+        self.assertIn("contains(needs.*.result, 'failure')", aggregate)
+        self.assertIn("contains(needs.*.result, 'cancelled')", aggregate)
+        self.assertIn("contains(needs.*.result, 'skipped')", aggregate)
         self.assertIn(
             "One or more CI gates failed, were cancelled, or were skipped.",
+            aggregate,
+        )
+        self.assertLess(
+            aggregate.index("Report CI gate status"),
+            aggregate.index("Fail if any CI gate"),
+        )
+
+    def test_aggregate_ci_gate_includes_all_validation_jobs(self) -> None:
+        jobs, aggregate = CI_WORKFLOW.read_text().split("\n  ci:\n", 1)
+        job_ids = {
+            line.strip().removesuffix(":")
+            for line in jobs.split("jobs:\n", 1)[1].splitlines()
+            if line.startswith("  ") and not line.startswith("   ") and line.endswith(":")
+        }
+        dependencies = aggregate.split("    needs:\n", 1)[1].split("    if:", 1)[0]
+        self.assertEqual(
+            job_ids,
+            {line.removeprefix("      - ") for line in dependencies.splitlines()},
+        )
+        for job_id in job_ids:
+            self.assertIn(f"needs.{job_id}.result", aggregate)
+
+    def test_default_branch_ci_runs_have_separate_concurrency_groups(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
+        self.assertIn(
+            "group: ${{ github.workflow }}-${{ github.ref }}-"
+            "${{ github.ref_name == github.event.repository.default_branch && github.run_id || 'latest' }}",
+            workflow,
+        )
+        self.assertIn(
+            "cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}",
             workflow,
         )
 

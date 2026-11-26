@@ -48,12 +48,12 @@ Clients then use the machine’s LAN IP (or the advertised URL), still on
 | Runtime probe | `GET http://127.0.0.1:31418/v1/runtime` |
 
 Do **not** point AX Engine clients at **18080** unless you intentionally front
-Engine with [AX Serving](https://github.com/defai-digital/ax-serving).
+Engine with [AX Serving](AX-SERVING.md).
 
 ## AX Serving (separate product)
 
-[AX Serving](https://github.com/defai-digital/ax-serving) is the fleet /
-control-plane product. Its **defaults are not Engine’s**.
+[AX Serving](AX-SERVING.md) is the commercial fleet routing and orchestration
+product.
 
 | Process (AX Serving) | Default | Role |
 | --- | --- | --- |
@@ -80,8 +80,7 @@ App / SDK  ──►  ax-serving-api :18080     (Serving public API)
 | AX Serving public gateway | **18080** |
 | AX Serving internal control plane | **19090** |
 
-Migration and CUDA ownership: [AX Serving](AX-SERVING.md) ·
-[ax-serving repo](https://github.com/defai-digital/ax-serving).
+See [AX Serving migration notes](AX-SERVING.md#migration) for CUDA fleet deployments.
 
 ## Common delegated peers (Engine adapters)
 

@@ -83,8 +83,9 @@ It has no separate published reference answer; its comparison uses an
 independent manual visual transcription. It was tested with global-only
 and dynamic-tile preprocessing.
 
-[MarathonDocBench](https://huggingface.co/datasets/baidu/MarathonDocBench)
-provides page images and ground-truth annotations. The tested revision is
+[Baidu's MarathonDocBench benchmark](https://github.com/baidu/Unlimited-OCR)
+provides page images and ground-truth annotations. The tested revision of
+`baidu/MarathonDocBench` is
 `fa05fccbe82ee6ec628006a1d58bb153954c3ee3`. Four English pages from different
 documents were selected before inference, taking the first eligible page
 per document in lexicographic document/page order. Eligibility required

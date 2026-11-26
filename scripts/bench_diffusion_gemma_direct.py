@@ -14,6 +14,11 @@ DiffusionGemma direct-mode metric.
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, AX_DARK
+
 import argparse
 import hashlib
 import json
@@ -55,8 +60,8 @@ LEFT = 64
 RIGHT = 640
 TOP = 86
 BOTTOM = 316
-AX_COLOR = "#2eaf5f"
-AX_DARK = "#176c37"
+AX_COLOR = AX
+AX_DARK = AX_DARK
 RED = "#dc2626"
 AX_ENGINE_VERSION_LABEL = "AX Engine v6.8.2"
 

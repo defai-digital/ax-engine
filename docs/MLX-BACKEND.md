@@ -26,19 +26,23 @@ The admitted runtime is the exact PyPI MLX 0.32.4 wheel pinned by `mlx.version`.
 The build rejects a different header or dylib version. Admission evidence is in
 [the MLX 0.32.4 record](performance/mlx-0.32.4-admission-2026-10-16.md).
 
-### Running an unreleased MLX locally
+<a id="running-an-unreleased-mlx-locally"></a>
 
-The full set of M5+ NAX verify kernels needs MLX 0.32.5 (commit `914732419`),
-which is not on PyPI yet. On the pinned wheel, AX's own port of the MX-format
+### Testing a newer MLX build locally
+
+Upstream publishes MLX 0.32.5 on PyPI. AX Engine releases still use the
+admitted 0.32.4 pin. The M5+ NAX verifier experiments used a source build of
+MLX 0.32.5 at commit `914732419`. On the pinned wheel, AX's port of the MX-format
 `qmv_nax` kernel (`AX_MLX_MTP_VERIFY_QMM_NAX_PORT`) covers MXFP4/MXFP8 verify
-projections; the affine `qmv_nax` and native verify SDPA paths stay off. To use them on your own M5 or later Mac (macOS 26.2+, Xcode
-installed), build MLX from source and link AX against it:
+projections. To reproduce the affine `qmv_nax` and native verify SDPA
+experiments on M5 or later with macOS 26.2+ and Xcode, build that MLX revision
+from source and link AX against it:
 
 ```sh
 scripts/build-mlx-source.sh            # default commit 914732419; --commit <sha> for another
 # then, with the paths the script prints:
 export MLX_LIB_DIR=... MLX_INCLUDE_DIR=... AX_MLX_VERSION_OVERRIDE=1
-cargo build --release
+bash scripts/cargo-pinned.sh build --release -p ax-engine-bench
 target/release/ax-engine-bench doctor --json   # nax_verify_kernels.active, native_sdpa_active
 ```
 

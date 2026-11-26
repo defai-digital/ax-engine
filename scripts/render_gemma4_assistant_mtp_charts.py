@@ -20,6 +20,11 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX_LIGHT, AX, AX_DARK
+
 import argparse
 import html
 import json
@@ -41,7 +46,7 @@ ENGINE_LABELS = {
     ENGINE_MTP: "AX assistant MTP",
     ENGINE_NGRAM: "AX assistant MTP+n-gram",
 }
-ENGINE_COLORS = {ENGINE_DIRECT: "#d97706", ENGINE_MTP: "#2eaf5f", ENGINE_NGRAM: "#137a3d"}
+ENGINE_COLORS = {ENGINE_DIRECT: AX_LIGHT, ENGINE_MTP: AX, ENGINE_NGRAM: AX_DARK}
 
 MODELS = [
     ("12b-4bit-ffn4", "Gemma 4 12B 4-bit-FFN"),

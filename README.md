@@ -1,39 +1,35 @@
+<div align="center">
+
+<img src="docs/images/ax-engine-banner.svg" alt="" width="100%">
+
 # AX Engine
 
-**Using NVIDIA GPUs on Linux?** Use the CUDA edition,
-[AX Engine for SGLang (`ax-engine-sglang`)](https://github.com/defai-digital/ax-engine-sglang#quick-start).
-For fleet routing and orchestration, use
-[AX Serving](https://github.com/defai-digital/ax-serving).
+[![CI](https://img.shields.io/github/actions/workflow/status/defai-digital/ax-engine/ci.yml?branch=main&label=CI)](https://github.com/defai-digital/ax-engine/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ax-engine?label=PyPI)](https://pypi.org/project/ax-engine/)
+[![macOS](https://img.shields.io/badge/macOS-arm64-000000?logo=apple&logoColor=white)](#install-ax-engine-for-macos)
+[![MLX](https://img.shields.io/badge/MLX-000000?logo=apple&logoColor=white)](docs/MLX-BACKEND.md)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**. The Qwen 3.8 27B and Flash Next product scope is
-**MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
-The generic pinned selectors load MXFP4 MTP packs; the Qwen 3.8 27B MXFP8
-pack is a catalog Candidate and Flash Next MXFP8 remains an explicit preview.
-Standalone affine 4-bit and 8-bit and non-MTP variants for these two models
-are unsupported. MTP execution remains explicit opt-in until its gates pass.
-Install the macOS app with one curl command to download models, chat and serve
-OpenAI-compatible endpoints locally.
+</div>
 
-Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+AX Engine runs AI models locally on Apple Silicon with MLX. Use the macOS app
+to download models, chat, and serve models through an OpenAI-compatible API.
 
-The default pack is `qwen3.8-27b:axq`
-([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
-@ `b2c5354f779e430d0c1733143db848a72b71c16e`). Additional Qwen, Gemma, GLM, and
-other certified families stay supported; they are not the first-run or
-qualification center. Super-class Qwen 3.8 (2.4T) is experimental only.
+[Install for macOS](#install-ax-engine-for-macos) · [Supported models](#models) · [Performance](#performance) · [Documentation](docs/README.md)
 
-Browse AutomatosX serve-ready chat / coding / embedding snapshots in the
-[AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
-Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper,
-MiniCPM-V, and others) are documented under
-[Supported Models](docs/SUPPORTED-MODELS.md).
-
-[Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/ax-engine-macos-catalog.png">
+  <img src="docs/images/ax-engine-macos-preview.gif" width="620" alt="AX Engine for macOS mockups with sample data showing Home, Models, Playground, Compare, API and Logs, System, and Settings.">
+</picture>
 
 ## Performance
 
-**MacBook Pro M5 Max 128 GB · Qwen 3.8 AXQ MXFP4 · One active request.**
+Results are grouped by machine, then by model: Qwen 3.8 Flash Next,
+then Qwen 3.8 27B. Both published packs here are AXQ MXFP4.
+
+### MacBook Pro M5 Max 128 GB
+
+**Qwen 3.8 AXQ MXFP4 · One active request.**
 Each model uses a pinned pack and the same requests across engines.
 The 27B DFlash2 rows use identical drafter weights.
 
@@ -43,18 +39,34 @@ short and a long input, so it moves when either probe moves; the two
 latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
-On the 27B, AX Engine's DFlash2 decode is ahead of Splash on this
-64-token harness (111.0 against 109.2 tok/s) and behind it on prefill
-(first text 1.69 against 1.22 s at 1,492 input tokens) and on 256-token
-outputs. On Flash Next, decode is level with oMLX; first text is ahead at
-127 to 128 and at 2,233 input tokens, level at 1,492, and 2 to 12% behind
-from about 3,000 to 13,000 tokens.
+On Flash Next, decode is level with oMLX; first text is ahead at 127 to
+128 and at 2,233 input tokens, level at 1,492, and 2 to 12% behind from
+about 3,000 to 13,000 tokens. On the 27B, AX Engine's DFlash2 decode is
+ahead of Splash on this 64-token harness (111.0 against 109.2 tok/s) and
+behind it on prefill (first text 1.69 against 1.22 s at 1,492 input
+tokens) and on 256-token outputs.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
 [Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
 
-### Qwen 3.8 27B MXFP4
+#### Qwen 3.8 Flash Next MXFP4
+
+![Qwen 3.8 Flash Next decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-modes.svg)
+
+| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
+| --- | ---: | ---: | ---: | ---: |
+| AX Engine 8.1.0+071e5477 (Direct greedy) † | 59.36 | 2837.63 | 0.22 | 0.70 |
+| oMLX 0.8.2 (Direct greedy) † | 59.39 | 4016.76 | 0.36 | 0.71 |
+| mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
+| MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
+| TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
+| ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
+| Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
+
+† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
+
+#### Qwen 3.8 27B MXFP4
 
 ![Qwen 3.8 27B decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-27b-m5-modes.svg)
 
@@ -70,22 +82,6 @@ from about 3,000 to 13,000 tokens.
 | TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
 | TensorFold 1.3.4 (DFlash2) | 0 | 0 | — | — |
 | ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
-
-† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
-
-### Qwen 3.8 Flash Next MXFP4
-
-![Qwen 3.8 Flash Next decode and effective prefill by engine version and mode on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-modes.svg)
-
-| Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
-| --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+071e5477 (Direct greedy) † | 59.36 | 2837.63 | 0.22 | 0.70 |
-| oMLX 0.8.2 (Direct greedy) † | 59.39 | 4016.76 | 0.36 | 0.71 |
-| mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
-| MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
-| TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
-| ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
-| Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
 
 † Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
@@ -163,9 +159,10 @@ still depend on memory capacity and workload; see the
   OCR, and Whisper transcription/translation run through repo-owned MLX graphs
   with capability-gated OpenAI endpoints (checkpoint-authoritative; see media
   table below)
-- **Clear fleet boundary** — AX Engine owns local Apple Silicon inference;
-  [AX Serving](docs/AX-SERVING.md) owns fleet orchestration and NVIDIA/CUDA
-  workers
+- **Clear fleet boundary** — AX Engine owns local Apple Silicon inference.
+  [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start)
+  owns Linux CUDA inference.
+  [AX Serving](docs/AX-SERVING.md) owns fleet orchestration.
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
@@ -179,14 +176,17 @@ thread. `ax-engine-core` admits the request, plans a decode-first batch, and
 owns the paged KV ledger. `ax-engine-mlx` runs the graph, including DFlash2
 block drafting for eligible greedy Qwen text, MTP, n-gram acceleration,
 expert paging, and NAX attention on M5. Optional `mlx_lm.server` and llama.cpp
-adapters stay on the compatibility route.
+adapters stay on the compatibility route. Linux CUDA inference is
+[AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start).
+[AX Serving](docs/AX-SERVING.md) owns fleet routing.
 Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 ## Install AX Engine for macOS
 
 Use the curl installer on **Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort), macOS 26.2 or newer**.
-It installs **AX Engine.app with its native inference runtime bundled**. You do
-not need Homebrew, Python, Xcode or a Hugging Face account for public models.
+It installs **AX Engine.app**, the native SwiftUI desktop app with the Rust/MLX
+inference runtime bundled. The app runs independently of Python, Homebrew, and
+Xcode and downloads public models directly.
 Quit AX Engine before installing or upgrading, then run in Terminal:
 
 ```bash
@@ -208,8 +208,10 @@ establish model qualification or memory fit.
 
 ### Update or verify the app
 
-Quit AX Engine and run the same curl command again to update to the latest
-stable GUI release. Automatic app updates are not available yet.
+For AX Engine 8.1.0 or later, choose **AX Engine → Check for Updates…**.
+Automatic checks are opt-in under **Settings → General → App updates**.
+You choose when to download and install. The curl installer also upgrades an
+existing app after it quits. See the [macOS update guide](docs/MACOS-UPDATES.md).
 
 To download and verify the release without installing it:
 
@@ -225,24 +227,28 @@ for usage and [distribution guide](docs/MACOS-DISTRIBUTION.md) for release verif
 
 ## Advanced: CLI and Python installation
 
-The curl command above is the end-user app installation path. The channels below
-are for shell automation, direct API serving or Python development; they do not
-install the GUI app. Native CLI packages require Apple Silicon (M5 or later recommended; M3–M4 supported; M2 best-effort)
-and macOS 26.2 or later.
-
 | Goal | Channel |
 | --- | --- |
-| Python SDK and CLI in one environment | [pip](#install-with-pip-no-homebrew-needed) |
+| Download models, chat, and start a local server from the desktop | [macOS app via curl](#install-ax-engine-for-macos) |
+| Import `ax_engine` for in-process inference or use Python integrations | [Python wheel via pip](#install-with-pip-no-homebrew-needed) |
+| Call a running AX Engine server from any language | [OpenAI-compatible HTTP client](docs/API-COMPATIBILITY.md) |
 | CLI/server without Homebrew or the Python SDK | [Standalone archive](#standalone-download-no-homebrew-no-python-sdk) |
 | CLI/server managed by Homebrew | [Homebrew](#homebrew) |
 
+Native CLI packages require Apple Silicon (M5 or later recommended, M3–M4
+supported, M2 best-effort) and macOS 26.2 or later.
+
 ### Install with pip (no Homebrew needed)
+
+The PyPI wheel lets a Python project pin the [Python SDK](docs/sdk/python.md)
+and bundled runtime in its virtual environment. Use it for in-process inference,
+Python integrations such as LangChain, or automation that needs the bundled CLI
+and server. An HTTP-only client can connect directly to a running server.
 
 1. Install Python from the official macOS installer: open
    [python.org/downloads/macos](https://www.python.org/downloads/macos/),
    download the **Python 3.13** installer (any 3.13.x), run it, then **quit and
-   reopen Terminal**. Python 3.12 through 3.14 work; 3.15 does not yet work with
-   the `download` extra because MLX publishes no 3.15 wheels.
+   reopen Terminal**. The wheel requires Python 3.12 or later.
 2. Check the version. Use `python3.13` explicitly: the `python3` that ships with
    macOS is 3.9, cannot install AX Engine, and may open an Xcode Command Line
    Tools prompt.
@@ -257,7 +263,7 @@ and macOS 26.2 or later.
    python3.13 -m venv "$HOME/.venvs/ax-engine"
    source "$HOME/.venvs/ax-engine/bin/activate"
    python -m pip install --upgrade pip
-   python -m pip install --upgrade "ax-engine[download]>=8.0.6,<9"
+   python -m pip install --upgrade "ax-engine>=8.1.0,<9"
    ax-engine doctor
    ```
 
@@ -271,6 +277,8 @@ and macOS 26.2 or later.
 The wheel provides the Python package (`import ax_engine`), the `ax-engine` and
 `ax-engine-server` commands, and the bench binary used by diagnostics. It
 bundles the MLX runtime; Xcode and the Metal Toolchain are not needed.
+Install the optional `download` extra to use the wheel's Python downloader
+or model-preparation helpers. See the [Python SDK](docs/sdk/python.md#getting-a-model).
 `pip install` printing `No matching distribution found` almost always means an
 old Python (3.9 is the usual culprit) or macOS older than 26 — see
 [Python installation troubleshooting](docs/GETTING-STARTED.md#python-installation-troubleshooting).
@@ -295,10 +303,9 @@ export PATH="$HOME/.local/ax-engine:$PATH"
 ax-engine doctor
 ```
 
-Serving a model directory you already have needs nothing else. Downloading
-models by alias (`ax-engine serve qwen3.8-27b:axq`) also needs Python 3.12+ and
-`huggingface-hub`: follow
-[Model download helpers](docs/GETTING-STARTED.md#model-download-helpers).
+The standalone archive includes the native downloader for public Hugging Face
+models and aliases such as `qwen3.8-27b:axq`. For Python-based MTP preparation,
+see [model download helpers](docs/GETTING-STARTED.md#model-download-helpers).
 
 ### Homebrew
 
@@ -309,12 +316,9 @@ ax-engine doctor
 
 The self-contained release formula installs the release's pinned
 `libmlx.dylib`, `libjaccl.dylib`, and precompiled `mlx.metallib`; it does not
-build MLX from source. Native inference from a ready local model directory
-needs no Python, Xcode, or Metal Toolchain. Model aliases and preparation
-helpers use Python 3.12+; online downloads also require `huggingface-hub`.
-Follow the
-[model download helpers](docs/GETTING-STARTED.md#model-download-helpers) setup
-before downloading or serving an alias.
+build MLX from source. Native inference and public model downloads work
+without Python, Xcode, or the Metal Toolchain. Python-based MTP packaging uses
+[model download helpers](docs/GETTING-STARTED.md#model-download-helpers).
 
 If more than one install channel is present, `which -a ax-engine` lists every
 copy; keep one channel per shell. See [Getting Started](docs/GETTING-STARTED.md)
@@ -340,7 +344,7 @@ curl http://127.0.0.1:31418/v1/chat/completions \
   -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
 ```
 
-**Option C — coding model** (resolve + serve; Tiel Coder 35B-A3B is a
+**Coding model** (resolve + serve; Tiel Coder 35B-A3B is a
 development MXFP4 MTP pack, about 22 GB):
 
 ```bash
@@ -357,73 +361,47 @@ Python wheel, source builds, and troubleshooting:
 
 ## Models
 
-### Public AutomatosX model downloads
+AX Engine supports multiple model families for chat, coding, embeddings, and
+media workflows. See the [supported model catalog](docs/SUPPORTED-MODELS.md).
 
-`ax-engine download --list` prints the curated public
-[AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical).
-The GUI shows the runtime catalog in **Models → Catalog**, completed models in
-**Your Models**, and current downloads in **Downloads**. Downloads are public,
-unrestricted AutomatosX packs only; no Hugging Face account or token is needed.
-Download other models independently and use the CLI with a local model path.
-Local models remain accessible when the Hub is unavailable. Qwen 3.8 27B AXQ (MXFP4 MTP pack),
-Qwen 3.6, Qwen 3.5, and Gemma 4 variants published there (plain 4-bit/6-bit,
-QAT, OptiQ, AXQ where available) are first-class serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron
-Omni, Unlimited-OCR, Whisper, MiniCPM-V) use the repo-owned runtime via serve
-aliases, presets, or manual model directories; they are not all AutomatosX-managed
-packages. Full matrix:
-[Supported Models](docs/SUPPORTED-MODELS.md).
+### Qwen 3.8 pack status
 
-**Qwen 3.8 Super-class (2.4T) is experimental only, not a production target.**
-Those packs can technically load through the SSD expert-stream path
-(`--stream-experts`, default `auto`), but local inference is too slow even at
-2-bit to recommend or certify. **Start local serving on Qwen 3.8 27B AXQ
-MXFP4 MTP** (`qwen3.8-27b:axq`).
+The default pack is `qwen3.8-27b:axq`
+([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
+@ `b2c5354f779e430d0c1733143db848a72b71c16e`).
 
-**Recommended starting packages** (serve-ready, match published benches):
+**Qwen 3.8 27B AXQ status:** Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
-| Goal | Alias / family | Why |
+The format policy for Qwen 3.8 27B and Flash Next covers
+**MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
+The generic aliases select the pinned MXFP4 MTP packs. Qwen 3.8 27B MXFP8
+is a catalog Candidate, and Flash Next MXFP8 remains an explicit preview.
+MTP execution requires explicit opt-in. See the [format policy](docs/QWEN38-FORMAT-POLICY.md).
+
+### Downloadable models
+
+Open **Models → Catalog** in the app or run `ax-engine download --list` to see
+the catalog shipped with your runtime. Choose **All models** in the app to
+browse community entries with runtime presets. The downloader fetches public,
+unrestricted Hugging Face repositories anonymously. A catalog entry can remain
+listed when its Hub snapshot is unavailable.
+
+| Use | CLI alias | Public package |
 | --- | --- | --- |
-| Default dense chat + MTP | `qwen3.8-27b:axq` (pinned AXQ MXFP4 MTP) | Qwen 3.8 27B; MXFP4 with MTP sidecar, qualification pending |
-| MoE chat + MTP | `ax-qwen3.6-35b-a3b` (4-bit or 6-bit MTP) | Qwen 3.6 MoE pack |
-| Dense chat + MTP (3.6) | `ax-qwen3.6-27b` (6-bit MTP preferred) | Secondary dense Qwen 3.6 pack |
-| AXQ evaluation candidate | `qwen3.6-27b:axq` (pinned 6-bit) | Qwen 3.6 27B AXQ candidate; explicit until its checkpoint certification gates pass |
-| Vision MoE Instruct AXQ | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-4bit` | Qwen3-VL 30B-A3B Instruct AXQ packs; candidate, no MTP |
-| Holo3 GUI-agent AXQ | `holo3-35b` / `holo3-35b:axq` | Qwen3.5-class 35B-A3B MoE; Tier 1 certified text path; no MTP |
-| Ornith coding AXQ | `ornith-35b` / `ornith-35b:axq` | Qwen3.5-class 35B-A3B MoE coding agent; Tier 1 AXQ; no MTP |
-| Ornith 1.5 MTP | `ornith-1.5-35b:axq` | Qwen3.5-class 35B-A3B MoE with HF per-expert MTP sidecar; development pack |
-| Tiel coding MTP | `tiel-coder-35b:axq` / `cyber-tiel-coder-35b:axq` | Qwen3.5-class 35B-A3B MoE MXFP4 packs; native HF per-expert MTP mode; development, unqualified |
-| GPT-OSS AXQ | `gpt-oss-20b:axq` / `gpt-oss-120b:axq` | AutomatosX AXQ; bare aliases stay mlx-community MXFP4-Q4 |
-| Nemotron 3 Nano AXQ | `nemotron-3-nano` / `nemotron-3-nano:axq` | `nemotron_h` 30B-A3B; development AXQ |
-| Muse-Glimmer image-text AXQ | `muse-glimmer-30b` / `muse-glimmer-30b:axq` | Meta dense 30B image-text agent; ATEM chat; development AXQ; no MTP |
-| Multimodal chat + MTP | `ax-gemma4-12b` / 26B / 31B Assistant-MTP | Image/audio/video + assistant draft package |
-| Coding agent | `ax-qwen3-coder-next` | Coding-focused MoE; multi-model friendly |
-| Embeddings | `ax-embeddinggemma-300m` or Qwen3-Embedding aliases | Batched ingest scale in [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
+| Compact chat on a 16 GB Mac | `qwen3.5-9b` | [Qwen 3.5 9B 4-bit (community)](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit) |
+| General chat | `qwen3.8-27b:axq` | [Qwen 3.8 27B MXFP4 MTP](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP) |
+| Large-memory MoE | `qwen3.8-flash-next:axq` | [Qwen 3.8 Flash Next MXFP4 MTP](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP) |
+| Coding | `tiel-coder-35b:axq` | [Tiel Coder development pack](https://huggingface.co/AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP) |
 
-Repositories ending in `-MTP` or `-Assistant-MTP` already contain the prepared
-sidecar or assistant artifacts and `model-manifest.json`. Download them with
-the standard flow; do **not** run `download-mtp` afterward.
+If a snapshot is unavailable, use another public model that fits your Mac
+or serve an existing local model directory. Bundled MTP sidecars and assistant
+weights are used as supplied by the pack. See the
+[public AutomatosX collection](https://huggingface.co/AutomatosX/models) and
+[CLI acquisition options](docs/CLI.md#ax-engine).
 
-| Family | Role | Supported AutomatosX snapshots |
-| --- | --- | --- |
-| Qwen 3.5 9B | Chat / agent | [`AX-Qwen3.5-9B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP) |
-| Qwen 3.6 27B | Chat / agent / multimodal | [`AX-Qwen3.6-27B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP)<br>AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP) |
-| Qwen 3.8 27B | Chat / agent / multimodal | Default selector `qwen3.8-27b:axq` for [`AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP). Explicit MXFP8 MTP Candidate via `qwen3.8-27b:mxfp8`. |
-| Qwen 3.6 35B-A3B | Chat / agent / multimodal | [`AX-Qwen3.6-35B-A3B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP) |
-| Qwen3-VL 30B-A3B Instruct | Vision chat (image/video) | AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit) (no MTP) |
-| Holo3 35B-A3B | GUI agent (text path) | Certified AXQ: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit) (no MTP) |
-| Ornith 1.0 35B | Coding agent | Certified AXQ: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit) (no MTP) |
-| Tiel 35B-A3B | Coding agent | Development MXFP4 MTP: [`Tiel Coder`](https://huggingface.co/AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP) / [`Cyber Tiel Coder`](https://huggingface.co/AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP); native MTP mode, no checkpoint or speed certification |
-| GPT-OSS 20B / 120B | Open reasoner | Bare aliases: mlx-community MXFP4-Q4. AXQ: [`20B-6bit`](https://huggingface.co/AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit) / [`120B-6bit`](https://huggingface.co/AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit) |
-| Nemotron 3 Nano 30B-A3B | Hybrid chat | AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit) |
-| Muse-Glimmer 30B | Image-text agent | AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit) (no MTP) |
-| Gemma 4 12B | Chat / multimodal | [`AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP)<br>[`AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP)<br>[`AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP) |
-| Gemma 4 26B-A4B | Chat / agent / multimodal | [`AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP)<br>[`AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP)<br>[`AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP) |
-| Gemma 4 31B | Chat / agent / multimodal | [`AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP)<br>[`AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP)<br>[`AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP`](https://huggingface.co/AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP) |
-| Qwen3-Coder-Next | Coding agent | [`AX-Qwen3-Coder-Next-MLX-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit)<br>[`AX-Qwen3-Coder-Next-MLX-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit) |
-| DiffusionGemma 26B-A4B | Diffusion language model | [`AX-DiffusionGemma-26B-A4B-IT-MLX-4bit`](https://huggingface.co/AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit) |
-| EmbeddingGemma 300M | Embeddings | [`AX-EmbeddingGemma-300M-MLX-8bit`](https://huggingface.co/AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit) |
-| Qwen3-Embedding 0.6B | Embeddings | [`AX-Qwen3-Embedding-0.6B-MLX-8bit`](https://huggingface.co/AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit) |
-| Qwen3-Embedding 4B / 8B | Embeddings | [`AX-Qwen3-Embedding-4B-MLX-4bit-DWQ`](https://huggingface.co/AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ)<br>[`AX-Qwen3-Embedding-8B-MLX-4bit-DWQ`](https://huggingface.co/AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ) |
+**Qwen 3.8 Super-class (2.4T) is experimental.** Its packs can load through
+SSD expert streaming, but current throughput evidence is insufficient for
+a recommendation.
 
 Native multimodal and speech support is checkpoint-authoritative: AX advertises
 only modalities whose required tower tensors are present in
@@ -468,6 +446,7 @@ Aliases, hardware sizing and qualification records are in the
 One process can keep several **allowlisted** models loaded and route each
 request by `model` (OpenAI, gRPC, Ollama, Anthropic). Add mode is limited to
 Qwen 3.8 27B MXFP4, Qwen 3.5 9B, Qwen 3.6 27B/35B, Qwen3-Coder-Next,
+Qwen3-Next 80B-A3B,
 Gemma 4 12B/26B/31B, EmbeddingGemma 300M/2 and Qwen3-Embedding 0.6B–8B.
 AutomatosX `AX-` package names resolve to the same targets. Each model owns its own session and scheduler while a process
 arbiter fair-rotates Metal turns (no fused cross-model batch).
@@ -573,7 +552,7 @@ Auth, streaming, embeddings, Ollama-shaped routes:
 | Models and MTP packages | [Supported Models](docs/SUPPORTED-MODELS.md) · [MTP Docs](docs/mtp/README.md) |
 | Hardware / FAQ | [FAQ](docs/FAQ.md) |
 | Full performance tables | [Performance Results](docs/PERFORMANCE-RESULTS.md) |
-| Serving peer (newest) | [Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
+| Current Qwen 3.8 peer benchmarks | [M5 comparison and reproduction](benchmarks/results/qwen38-m5-modes-20261125/README.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
 | Linux CUDA inference | [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start) |
@@ -584,16 +563,15 @@ Auth, streaming, embeddings, Ollama-shaped routes:
 ## Development
 
 ```bash
-cargo build --workspace
-cargo test --quiet
-cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt --check
+bash scripts/cargo-pinned.sh build --workspace
+bash scripts/cargo-pinned.sh test --quiet --no-fail-fast
+bash scripts/cargo-pinned.sh fmt --check
 maturin develop
-python -m unittest discover -s python/tests -v
+python -m pytest python/tests
 ```
 
-Crate layout and conventions: [AGENTS.md](AGENTS.md) ·
-[Architecture](docs/ARCHITECTURE.md).
+See the [source build guide](docs/GETTING-STARTED.md#source),
+[contribution guide](CONTRIBUTING.md), and [architecture](docs/ARCHITECTURE.md).
 
 ## Limitations
 
@@ -614,6 +592,14 @@ generally not accepted — open an issue first. See [CONTRIBUTING.md](CONTRIBUTI
 - Website: [automatosx.com](https://automatosx.com)
 - Discord: [Join us](https://discord.gg/MECsKdA6zF)
 - Email: [enquiry@defai.digital](mailto:enquiry@defai.digital)
+
+## NVIDIA and fleet deployments
+
+- For **Linux CUDA inference**, use
+  [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start).
+- For **fleet routing and orchestration**, see [AX Serving](docs/AX-SERVING.md),
+  our commercial product. [Contact us](mailto:enquiry@defai.digital) for access
+  and deployment options.
 
 ## Acknowledgments
 

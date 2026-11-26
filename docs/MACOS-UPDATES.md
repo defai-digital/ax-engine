@@ -1,7 +1,7 @@
 # macOS app updates
 
-AX Engine includes a native updater in builds that ship Sparkle. Use **AX Engine →
-Check for Updates…**, or **Settings → Updates**. Automatic checks are opt-in. A
+The published AX Engine 8.1.0 app includes the Sparkle updater. Use **AX Engine →
+Check for Updates…**, or **Settings → General → App updates**. Automatic checks are opt-in. A
 check contacts the AX Engine download service; it sends no conversations, model
 files or usage analytics. Downloads and installation require user action.
 
@@ -12,10 +12,9 @@ running. Accepted restarts wait for cleanup; attached services keep running.
 Models, settings and conversations are outside the application bundle and are
 preserved. Development builds cannot update themselves.
 
-The already published v8.0.0 and earlier apps do not contain this updater. Install
-the first updater-enabled release with the existing curl installer or DMG; later
-releases can be installed from the app. The source change alone does not publish
-an update feed or upgrade an installed application.
+To upgrade an earlier app, use the [curl installer](MACOS-APP.md#install-and-update)
+or the signed DMG. Installed updater-enabled builds check the
+[public appcast](https://download.automatosx.com/ax-engine-desktop/appcast.xml).
 
 ## Release integration
 
@@ -38,8 +37,7 @@ must never enter the repository or release artifacts.
 canonical `appcast.xml`. Inventory v2 binds that feed alongside the existing
 Minisign-signed release assets. Historical v1 inventories remain verifiable.
 
-Before publishing the first updater-enabled release, deploy the download gateway
-with the `appcast.xml` route using the existing GUI gateway workflow. The route
+The download gateway serves updates through its `appcast.xml` route. The route
 resolves the current version from the atomic `latest.json` pointer and redirects
 to its immutable feed. A missing feed fails closed. All assets must pass anonymous
 readback before cutover; failure of the updater alias after cutover restores the
@@ -47,10 +45,8 @@ previous pointer. Rollback prevents new discovery; it does not revoke an archive
 already downloaded by a client. Never replace assets for a published version.
 
 The canonical GUI `publish` and `verify-public` operations verify the updater
-alias as well as the immutable feed and DMG. The initial release must pass these
-gates before its updater-enabled app is offered to users. Before that publication,
-a local release-style candidate checking the public URL will receive a feed error;
-use the loopback integration fixture below for local installation tests.
+alias as well as the immutable feed and DMG. Use the loopback integration
+fixture below to test local candidate upgrades.
 
 ## Validation
 

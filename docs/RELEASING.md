@@ -20,12 +20,13 @@ minimum version for the documented features so the commands resolve while the
 new release is being prepared. Run the canonical publisher from a clean checkout:
 
 ```bash
-# Draft notes first (required for real publishes — not empty gh --generate-notes)
-cp docs/releases/TEMPLATE.md /tmp/ax-engine-notes-v6.9.0.md
-# edit /tmp/ax-engine-notes-v6.9.0.md — see docs/releases/README.md
+# Replace vX.Y.Z with the version prepared in the clean checkout.
+TAG=vX.Y.Z
+NOTES=$(mktemp)
+cp docs/releases/TEMPLATE.md "$NOTES"
+# Edit "$NOTES" using docs/releases/README.md.
 
-scripts/publish-github-release.sh v6.9.0 \
-  --notes-file /tmp/ax-engine-notes-v6.9.0.md
+scripts/publish-github-release.sh "$TAG" --notes-file "$NOTES"
 ```
 
 **Release notes policy:** GitHub Releases are the sole public changelog. Do not
@@ -165,7 +166,7 @@ GitHub's **Latest** badge away from the current public release. After any
 historical publish, re-pin Latest explicitly:
 
 ```bash
-gh release edit v6.11.1 --latest   # replace with the real current release tag
+gh release edit vX.Y.Z --latest   # replace with the current stable release tag
 gh api repos/defai-digital/ax-engine/releases/latest --jq .tag_name
 ```
 
