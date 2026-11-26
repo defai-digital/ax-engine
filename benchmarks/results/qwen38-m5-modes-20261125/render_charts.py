@@ -35,8 +35,9 @@ ENGINE_NAMES = {
 MODE_NAMES = {"direct": "Direct greedy", "dflash2": "DFlash2"}
 RERUN_MARK = " †"
 RERUN_NOTE = (
-    "† Median of three runs interleaved with the neighbouring † rows in one later session "
-    "on the same day; the other rows are single runs from the original session. See the "
+    "† Median of three runs interleaved with the neighbouring † rows, with 150 seconds of "
+    "rest before each run, in one later session on the same day; the other rows are single "
+    "runs from the original session. See the "
     "[campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun)."
 )
 

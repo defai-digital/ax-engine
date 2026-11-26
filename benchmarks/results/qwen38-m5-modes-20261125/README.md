@@ -143,6 +143,36 @@ that field.
   this session (AX Engine 1.64 to 1.69 s, Splash 1.19 to 1.22 s).
 - The 256-token comparison quoted above was not repeated.
 
+### Every † row again, with rest before each arm
+
+All six † rows were then measured once more with AX Engine built from
+commit `c688907a6` (default settings), which attends long Flash Next
+prompts with one masked dense call per sparse-attention layer. The earlier
+reruns left 30 seconds between arms. Here the host rested 150 seconds
+before every arm: on this laptop a scan started right after another one
+read 0.83 s where a rested one reads 0.70 s.
+
+Three rounds per model. Flash Next: AX Engine, then oMLX. 27B: AX Engine
+direct, oMLX direct, AX Engine DFlash2, Splash DFlash2. The eighteen
+per-run records are the rows of [paired-rerun.jsonl](paired-rerun.jsonl)
+with `"rerun": 5` and `"rest_seconds_before_arm": 150`; the README tables
+and charts show their medians.
+
+- Flash Next decode: 59.50, 59.38 and 59.56 against 59.39, 59.51 and 59.25
+  tok/s for oMLX. Still a tie.
+- Flash Next first text at 1,492 input tokens: 0.70 to 0.72 s (median
+  0.705) against 0.71 s (median 0.708); at 127 and 128: 0.22 against
+  0.36 s. The masked dense call does not run at these lengths.
+- 27B direct greedy: 35.33, 35.19 and 35.31 against 34.56, 34.48 and 34.59
+  tok/s for oMLX; first text at 1,492 input tokens 1.63 against 1.51 s.
+- 27B DFlash2: 111.09, 111.66 and 111.51 against 109.08, 109.42 and 109.25
+  tok/s for Splash; first text at 1,492 input tokens 1.64 against 1.19 s,
+  effective prefill 967 against 1,330.
+- Against the 30-second reruns the decode rates and the direct first-text
+  latencies moved by less than 0.5%. The two DFlash2 long probes read 0.03
+  to 0.05 s faster, for both engines alike (effective prefill 936 to 967
+  and 1,286 to 1,330).
+
 ### Flash Next first text by input length
 
 [first-text-by-length.jsonl](first-text-by-length.jsonl) holds a scan of
