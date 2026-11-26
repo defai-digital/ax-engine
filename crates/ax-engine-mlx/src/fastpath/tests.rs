@@ -3723,6 +3723,10 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     qsa_batched.qsa_batched_attention = false;
     push("qsa_batched=0", qsa_batched);
 
+    let mut qsa_masked_dense = base;
+    qsa_masked_dense.qsa_masked_dense = false;
+    push("qsa_masked_dense=0", qsa_masked_dense);
+
     let mut gd_streaming = base;
     gd_streaming.gd_streaming = true;
     push("gd_streaming", gd_streaming);

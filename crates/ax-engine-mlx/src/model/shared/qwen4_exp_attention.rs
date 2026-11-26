@@ -12,10 +12,10 @@
 //! state only after the rest of the step succeeds.
 
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype,
-    concatenate, contiguous, greater_equal, maximum, multiply, reshape, rms_norm,
+    MlxArray, MlxClosure, MlxDtype, ScaledDotProductAttentionMask, add, arange, astype, clip,
+    concatenate, contiguous, greater_equal, maximum, multiply, put_along_axis, reshape, rms_norm,
     scaled_dot_product_attention, scaled_dot_product_attention_with_mask, slice, split, take,
-    transpose,
+    transpose, where_cond, zeros,
 };
 use thiserror::Error;
 
@@ -662,21 +662,33 @@ impl Qwen4ExpAttention {
 
         let attn = match &selection {
             Some(selection) => {
-                // Indexed attention reads the selected rows in place; it
-                // declines decode/verifier rows, multi-batch calls and
-                // geometries it was not compiled for, and the gathered path
-                // below then runs unchanged.
-                let indexed = super::qwen4_exp_attention_indexed::attend_selected_indexed(
-                    &queries,
-                    &staged_keys,
-                    &staged_values,
+                // A chunk the masked dense call covers goes straight to
+                // `attend_selected`: that call is the faster of the two
+                // relaxed paths wherever it applies. Elsewhere indexed
+                // attention reads the selected rows in place; it declines
+                // decode/verifier rows, multi-batch calls and geometries it
+                // was not compiled for, and the gathered path below then
+                // runs unchanged.
+                let masked = masked_dense_takes(
                     selection,
-                    cfg.query_heads,
-                    cfg.kv_heads,
-                    cfg.head_dim,
-                    self.indexer.config().compress_ratio() as i32,
-                    cfg.scale,
-                )?;
+                    seq,
+                    i64::try_from(staged_keys.token_count()).unwrap_or(i64::MAX),
+                );
+                let indexed = if masked {
+                    None
+                } else {
+                    super::qwen4_exp_attention_indexed::attend_selected_indexed(
+                        &queries,
+                        &staged_keys,
+                        &staged_values,
+                        selection,
+                        cfg.query_heads,
+                        cfg.kv_heads,
+                        cfg.head_dim,
+                        self.indexer.config().compress_ratio() as i32,
+                        cfg.scale,
+                    )?
+                };
                 match indexed {
                     Some(attn) => attn,
                     None => {
@@ -961,9 +973,7 @@ fn attend_selected(
         return Err(Qwen4ExpAttentionError::InvalidScalar("kv history segments"));
     }
     let device_rows = selection.device_multi_query();
-    let batched = (selection.device_tokens().is_none() || device_rows)
-        && seq >= BATCHED_ATTENTION_MIN_QUERIES
-        && batched_attention_enabled();
+    let batched = selected_chunk_is_batched(selection, seq);
     // Device rows are already on the GPU. Compact them to the host gather
     // layout (valid prefix, then -1) so a sub-batch is a slice, not a copy
     // back to the host. Lengths stay the closed-form segment sizes.
@@ -975,7 +985,9 @@ fn attend_selected(
         } else {
             None
         };
+    let masked_dense = masked_dense_takes(selection, seq, i64::from(tokens));
     let paired = if batched
+        && !masked_dense
         && batch == 1
         && queries.dtype() == MlxDtype::Bfloat16
         && qwen4_exp_attention_gather::enabled()
@@ -1042,6 +1054,18 @@ fn attend_selected(
                     None,
                 )
             };
+            if masked_dense {
+                batch_out.push(attend_selected_masked_dense(
+                    &q_b,
+                    &k_b,
+                    &v_b,
+                    selection,
+                    b as usize,
+                    compact.as_ref(),
+                    cfg,
+                )?);
+                continue;
+            }
             batch_out.push(attend_selected_batched(
                 &q_b,
                 BatchedKv {
@@ -1272,6 +1296,244 @@ fn sub_batch_cap_width(cap: usize, per_token: usize, initial: usize, window_max:
     (cap / bytes_per_row).clamp(1, initial)
 }
 
+/// `[queries, padded]` int32 token indices of the query rows in `rows`: each
+/// row's selected tokens first, then `-1`. `padded` is the longest selected
+/// list among those rows. Device selections are sliced from `compact`; host
+/// selections are copied from their index lists.
+fn selected_index_tile(
+    selection: &QsaSelection,
+    batch_index: usize,
+    rows: std::ops::Range<usize>,
+    padded: usize,
+    compact: Option<&MlxArray>,
+) -> Result<MlxArray> {
+    let invalid = || Qwen4ExpAttentionError::InvalidScalar("selected token count");
+    let width = rows.len();
+    let width_i = i32::try_from(width).map_err(|_| invalid())?;
+    let padded_i = i32::try_from(padded).map_err(|_| invalid())?;
+    if let Some(compact) = compact {
+        let batch = i32::try_from(batch_index).map_err(|_| invalid())?;
+        let start = i32::try_from(rows.start).map_err(|_| invalid())?;
+        let end = i32::try_from(rows.end).map_err(|_| invalid())?;
+        return Ok(reshape(
+            &slice(
+                compact,
+                &[batch, start, 0],
+                &[batch + 1, end, padded_i],
+                &[1, 1, 1],
+                None,
+            ),
+            &[width_i, padded_i],
+            None,
+        ));
+    }
+    let mut indices = vec![-1_i32; width * padded];
+    for (row, s) in rows.enumerate() {
+        let chosen = selection.tokens_for_query(batch_index, s);
+        if chosen.is_empty() || chosen.len() > padded {
+            return Err(invalid());
+        }
+        indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
+    }
+    Ok(MlxArray::from_raw_data(
+        indices.as_ptr().cast(),
+        std::mem::size_of_val(indices.as_slice()),
+        &[width_i, padded_i],
+        MlxDtype::Int32,
+    ))
+}
+
+/// A masked dense call needs at least this many query rows: below it the
+/// padded sub-batches are as fast, and verifier windows and decode steps
+/// keep their own kernels.
+pub(crate) const MASKED_DENSE_MIN_QUERIES: i64 = 64;
+/// Longest history a masked dense call reads. Its cost grows with the
+/// history and the padded sub-batches' cost does not; past this length they
+/// win.
+pub(crate) const MASKED_DENSE_MAX_TOKENS: i64 = 32_768;
+/// Up to this history any chunk of [`MASKED_DENSE_MIN_QUERIES`] rows is
+/// cheaper masked; longer histories need a chunk of
+/// [`MASKED_DENSE_LONG_HISTORY_MIN_QUERIES`] rows to pay for flattening them.
+const MASKED_DENSE_SHORT_HISTORY_TOKENS: i64 = 8_192;
+const MASKED_DENSE_LONG_HISTORY_MIN_QUERIES: i64 = 512;
+
+/// Whether a chunk of `queries` rows over a `tokens`-long history is cheaper
+/// as one masked dense call than as padded sub-batches.
+///
+/// One layer with the production geometry (24 query heads, 2 KV heads, head
+/// dim 256, 2,051 selected tokens) on a MacBook Pro M5 Max 128 GB, masked
+/// dense against padded sub-batches in ms: 2,048 rows over 4,096 tokens 6.0
+/// against 61.2, over 32,768 tokens 46.7 against 66.8 and over 65,536 tokens
+/// 97.2 against 71.0; 64 rows over 8,192 tokens 1.5 against 2.9 and over
+/// 32,768 tokens 3.2 against 2.1.
+///
+/// These bounds are for Neural Accelerator hosts, the only ones the switch
+/// applies to. On a Mac mini M4 Pro 64 GB the same kernel is about six times
+/// slower and the masked call already loses at 32,768 tokens (298 against
+/// 196 ms; 70 against 176 at 8,192), so a host without the accelerator
+/// needs a lower history bound before it is enabled there.
+fn masked_dense_covers(queries: i64, tokens: i64) -> bool {
+    queries >= MASKED_DENSE_MIN_QUERIES
+        && tokens <= MASKED_DENSE_MAX_TOKENS
+        && (tokens <= MASKED_DENSE_SHORT_HISTORY_TOKENS
+            || queries >= MASKED_DENSE_LONG_HISTORY_MIN_QUERIES)
+}
+
+/// Whether a selected chunk attends in batches (padded sub-batches or one
+/// masked dense call) rather than one gather and attention call per query.
+fn selected_chunk_is_batched(selection: &QsaSelection, queries: i32) -> bool {
+    (selection.device_tokens().is_none() || selection.device_multi_query())
+        && queries >= BATCHED_ATTENTION_MIN_QUERIES
+        && batched_attention_enabled()
+}
+
+/// Whether a selected chunk of `queries` rows over a `tokens`-long history
+/// attends through the masked dense call.
+fn masked_dense_takes(selection: &QsaSelection, queries: i32, tokens: i64) -> bool {
+    selected_chunk_is_batched(selection, queries)
+        && masked_dense_enabled()
+        && masked_dense_covers(i64::from(queries), tokens)
+}
+
+fn masked_dense_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = MASKED_DENSE_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_masked_dense_prefill_enabled()
+}
+
+#[cfg(test)]
+thread_local! {
+    static MASKED_DENSE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// Masked dense calls made on this thread, so a test can tell the path
+    /// ran from a silent fall-through to the padded sub-batches.
+    static MASKED_DENSE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Masked dense calls made on this thread.
+#[cfg(test)]
+pub(crate) fn masked_dense_calls_for_test() -> u64 {
+    MASKED_DENSE_CALLS.with(std::cell::Cell::get)
+}
+
+/// Run `action` with masked dense prefill attention forced on or off on this thread.
+#[cfg(test)]
+pub(crate) fn with_masked_dense<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MASKED_DENSE_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(MASKED_DENSE_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Attend a chunk of selected queries as one dense call over the whole
+/// history, with a mask that keeps each query's own selected tokens.
+///
+/// The padded sub-batches copy every query's selected K/V rows (about 2,051
+/// rows of two heads for each of up to 2,048 queries) and then attend one
+/// query per batch entry, which MLX runs on its single-query kernel. Here
+/// nothing is copied per query: K and V stay `[1, kv_heads, tokens, dim]`,
+/// the queries stay `[1, q_heads, queries, dim]`, and a `[queries, tokens]`
+/// boolean mask carries the selection into MLX's multi-query kernel, the one
+/// the dense short-context path already uses.
+///
+/// Softmax runs over exactly the tokens the query selected, as in the padded
+/// call; masked tokens contribute exact zeros. The kernel sums in cache order
+/// instead of selection order and reduces in different groups, so the result
+/// differs from the padded call in rounding. One row's output does not depend
+/// on the other rows of the call. It can depend on the length of the history
+/// the call reads, as the dense short-context path does: MLX's kernel groups
+/// the last, partial block of keys differently.
+///
+/// A row must list a token at most once, which the indexer guarantees
+/// (distinct blocks, then the tail past them): the mask cannot weight a
+/// repeated token twice, as a gathered copy would.
+fn attend_selected_masked_dense(
+    q_b: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    selection: &QsaSelection,
+    batch_index: usize,
+    compact: Option<&MlxArray>,
+    cfg: Qwen4ExpAttentionConfig,
+) -> Result<MlxArray> {
+    let invalid = || Qwen4ExpAttentionError::InvalidScalar("selected token count");
+    let seq = q_b.shape()[2];
+    let tokens = keys.shape()[1];
+    let queries = usize::try_from(seq).map_err(|_| invalid())?;
+    let mut padded = 0usize;
+    for s in 0..queries {
+        let len = selection.selected_len(batch_index, s);
+        if len == 0 {
+            return Err(invalid());
+        }
+        padded = padded.max(len);
+        // Host lists are checked here; device rows come from the selection
+        // kernel and are clamped below instead of read back.
+        if compact.is_none()
+            && selection
+                .tokens_for_query(batch_index, s)
+                .iter()
+                .any(|&token| token < 0 || token >= tokens)
+        {
+            return Err(invalid());
+        }
+    }
+    let indices = selected_index_tile(selection, batch_index, 0..queries, padded, compact)?;
+    // Padding lands in one extra column past the history, dropped below, so
+    // a `-1` never marks a real token. The clamp keeps an index past the
+    // history, which no selection should hold, inside that column too.
+    let valid = greater_equal(&indices, &int32_scalar(0), None);
+    let past = int32_scalar(tokens);
+    let columns = clip(
+        &where_cond(&valid, &indices, &past, None),
+        &int32_scalar(0),
+        &past,
+        None,
+    );
+    let keep = MlxArray::from_raw_data([1_u8].as_ptr(), 1, &[1, 1], MlxDtype::Bool);
+    let marked = put_along_axis(
+        &zeros(&[seq, tokens + 1], MlxDtype::Bool, None),
+        &columns,
+        &keep,
+        1,
+        None,
+    );
+    let mask = reshape(
+        &slice(&marked, &[0, 0], &[seq, tokens], &[1, 1], None),
+        &[1, 1, seq, tokens],
+        None,
+    );
+    #[cfg(test)]
+    crate::model::qwen4_exp::profiling::mark("qsa_da_mask", &[&mask]);
+    let keys = contiguous(&transpose(keys, &[0, 2, 1, 3], None), None);
+    let values = contiguous(&transpose(values, &[0, 2, 1, 3], None), None);
+    #[cfg(test)]
+    crate::model::qwen4_exp::profiling::mark("qsa_da_layout", &[&keys, &values]);
+    let attended = scaled_dot_product_attention_with_mask(
+        &contiguous(q_b, None),
+        &keys,
+        &values,
+        cfg.scale,
+        ScaledDotProductAttentionMask::Array(&mask),
+        None,
+    );
+    #[cfg(test)]
+    {
+        crate::model::qwen4_exp::profiling::mark("qsa_da_sdpa", &[&attended]);
+        MASKED_DENSE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    }
+    Ok(attended)
+}
+
+#[cfg(test)]
+#[path = "qwen4_exp_attention_masked_dense_tests.rs"]
+mod masked_dense_tests;
+
 struct BatchedKv<'a> {
     keys: &'a MlxArray,
     values: &'a MlxArray,
@@ -1350,38 +1612,7 @@ fn attend_selected_batched(
         let width_i = width as i32;
         let padded_i = i32::try_from(padded)
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
-        let indices = if let Some(compact) = compact {
-            let batch = i32::try_from(batch_index)
-                .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
-            reshape(
-                &slice(
-                    compact,
-                    &[batch, start as i32, 0],
-                    &[batch + 1, end as i32, padded_i],
-                    &[1, 1, 1],
-                    None,
-                ),
-                &[width_i, padded_i],
-                None,
-            )
-        } else {
-            let mut indices = vec![-1_i32; width * padded];
-            for (row, s) in (start..end).enumerate() {
-                let chosen = selection.tokens_for_query(batch_index, s);
-                if chosen.is_empty() {
-                    return Err(Qwen4ExpAttentionError::InvalidScalar(
-                        "selected token count",
-                    ));
-                }
-                indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
-            }
-            MlxArray::from_raw_data(
-                indices.as_ptr().cast(),
-                std::mem::size_of_val(indices.as_slice()),
-                &[width_i, padded_i],
-                MlxDtype::Int32,
-            )
-        };
+        let indices = selected_index_tile(selection, batch_index, start..end, padded, compact)?;
         let valid = greater_equal(&indices, &int32_scalar(0), None);
         let (k_sel, v_sel) = kv
             .paired
