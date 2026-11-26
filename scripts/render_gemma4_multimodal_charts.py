@@ -2,6 +2,11 @@
 """Render Gemma 4 12B multimodal benchmark charts for the README."""
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, AX_DARK, LLAMA, LLAMA_DARK
+
 import argparse
 import html
 import json
@@ -391,9 +396,9 @@ def render_bar_chart(
         parts.extend(
             [
                 f'<rect x="{bar_x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" height="{bar_h:.1f}" '
-                'rx="4" fill="#2eaf5f" fill-opacity="0.28" stroke="#176c37" stroke-width="1.6"/>',
+                f'rx="4" fill="{AX}" fill-opacity="0.28" stroke="{AX_DARK}" stroke-width="1.6"/>',
                 f'<line x1="{bar_x:.1f}" y1="{y:.1f}" x2="{bar_x + bar_width:.1f}" y2="{y:.1f}" '
-                'stroke="#176c37" stroke-width="2"/>',
+                f'stroke="{AX_DARK}" stroke-width="2"/>',
                 f'<line x1="{bar_center:.1f}" y1="{err_max_y:.1f}" x2="{bar_center:.1f}" '
                 f'y2="{err_min_y:.1f}" stroke="#111827" stroke-width="1.2"/>',
                 f'<line x1="{bar_center - 8:.1f}" y1="{err_max_y:.1f}" x2="{bar_center + 8:.1f}" '
@@ -456,8 +461,8 @@ def render_peer_comparison_chart(
     bar_w = max(10, min(24, (group_w - bar_gap) / 2))
     engine_order = ("peer", "ax")
     colors = {
-        "peer": ("#f59e0b", "#b45309", "llama.cpp"),
-        "ax": ("#2eaf5f", "#176c37", "AX Engine"),
+        "peer": (LLAMA, LLAMA_DARK, "llama.cpp"),
+        "ax": (AX, AX_DARK, "AX Engine"),
     }
 
     parts = [

@@ -10,6 +10,11 @@ SVG drifts from the source tables.
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, MTPLX, AX_DARK, MTPLX_DARK
+
 import argparse
 import math
 import sys
@@ -20,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DOC = REPO_ROOT / "docs" / "performance" / "tiel-vs-mtplx-2026-09-20.md"
 OUTPUT_SVG = REPO_ROOT / "docs" / "assets" / "perf-tiel-vs-mtplx-2026-09-20.svg"
 
-AX_COLOR = "#2eaf5f"
-MTPLX_COLOR = "#f2b705"
+AX_COLOR = AX
+MTPLX_COLOR = MTPLX
 
 # Machine short label used in the source table -> friendly label for the chart.
 MACHINE_LABELS = {
@@ -200,7 +205,7 @@ def render_svg(cells: list[Cell]) -> str:
         )
         parts.append(
             f'<text x="{ax_w + plot_left + 5:.1f}" y="{ax_y + bar_height - 3}" '
-            f'font-size="10.5" fill="#176c37">{cell.ax_tok_s:.2f}</text>'
+            f'font-size="10.5" fill="{AX_DARK}">{cell.ax_tok_s:.2f}</text>'
         )
         parts.append(
             f'<rect x="{plot_left}" y="{mt_y}" width="{mt_w:.1f}" height="{bar_height}" '
@@ -208,7 +213,7 @@ def render_svg(cells: list[Cell]) -> str:
         )
         parts.append(
             f'<text x="{mt_w + plot_left + 5:.1f}" y="{mt_y + bar_height - 3}" '
-            f'font-size="10.5" fill="#9a6a00">{cell.mtplx_tok_s:.2f}</text>'
+            f'font-size="10.5" fill="{MTPLX_DARK}">{cell.mtplx_tok_s:.2f}</text>'
         )
 
     parts.append(

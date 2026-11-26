@@ -24,6 +24,11 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import LLAMA, LLAMA_DARK, AX, AX_DARK
+
 import argparse
 import html
 import json
@@ -57,8 +62,8 @@ LLAMA_CPP_VERSION = "b9820"
 # existing direct-comparison section in render_readme_performance_charts.py.
 # llama.cpp first, AX second — consistent with the README table column order.
 SERIES = [
-    ("llama_cpp_metal", "llama.cpp Metal", "#f97316", "#c2410c"),
-    ("ax_engine_mlx", "AX Engine (native MLX)", "#2eaf5f", "#176c37"),
+    ("llama_cpp_metal", "llama.cpp Metal", LLAMA, LLAMA_DARK),
+    ("ax_engine_mlx", "AX Engine (native MLX)", AX, AX_DARK),
 ]
 
 # (metric key, slug, title, unit, lower_is_better)

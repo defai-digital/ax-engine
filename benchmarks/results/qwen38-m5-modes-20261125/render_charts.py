@@ -12,16 +12,17 @@ from pathlib import Path
 from statistics import median
 
 CAMPAIGN = Path(__file__).resolve().parent
-sys.path.insert(0, str(CAMPAIGN))
-from chart_style import bar_chart  # noqa: E402
-
 ROOT = CAMPAIGN.parents[2]
+sys.path.insert(0, str(CAMPAIGN))
+sys.path.insert(0, str(ROOT / "scripts"))
+from chart_palette import M5_ENGINE_COLORS  # noqa: E402
+from chart_style import bar_chart  # noqa: E402
 BEGIN = "<!-- qwen38-m5-modes:begin -->"
 END = "<!-- qwen38-m5-modes:end -->"
 MODEL_ORDER = ("flash", "dense")
 MODEL_NAMES = {"flash": "Qwen 3.8 Flash Next", "dense": "Qwen 3.8 27B"}
 MODES = ("direct", "dflash2")
-SERIES = [("Direct greedy", "#176b63"), ("DFlash2", "#514388")]
+MODE_CATEGORIES = ["Direct greedy", "DFlash2"]
 ENGINE_NAMES = {
     "ax-engine": "AX Engine",
     "splash": "Splash",
@@ -65,13 +66,13 @@ def render(model, rows, path):
     for row in rows:
         by_engine.setdefault(row["engine"], {})[row["mode"]] = row
     engines = list(by_engine)
-    categories = [ENGINE_NAMES[engine] for engine in engines]
+    series = [(ENGINE_NAMES[engine], M5_ENGINE_COLORS[engine]) for engine in engines]
 
     def panel(metric, title):
         values, suffix = [], []
-        for mode in MODES:
+        for engine in engines:
             mode_values, mode_suffix = [], []
-            for engine in engines:
+            for mode in MODES:
                 row = by_engine[engine].get(mode)
                 if row is None:
                     mode_values.append(None)
@@ -81,7 +82,7 @@ def render(model, rows, path):
                     mode_suffix.append("†" if row.get("session") == "paired-rerun" else None)
             values.append(mode_values)
             suffix.append(mode_suffix)
-        return {"title": title, "categories": categories, "values": values, "suffix": suffix,
+        return {"title": title, "categories": MODE_CATEGORIES, "values": values, "suffix": suffix,
                 "missing": "not run"}
 
     name = MODEL_NAMES[model]
@@ -89,13 +90,13 @@ def render(model, rows, path):
         path,
         title=f"{name} AXQ MXFP4",
         subtitle="MacBook Pro M5 Max 128 GB · one active streaming request · greedy",
-        series=SERIES,
+        series=series,
         panels=[panel("decode_tok_s", "Decode"), panel("prefill_tok_s", "Effective prefill")],
         xlabel="Tokens per second · each panel has its own scale",
         note="† Median of three interleaved runs. Zero means that configuration did not finish.",
         share_scale=False,
         fmt=lambda value: "0" if not value else f"{value:,.2f}",
-        legend_columns=2,
+        legend_columns=4,
         description=f"{name} decode and effective prefill by engine and greedy mode on M5 Max. "
                     "Versions are in the README table.",
     )

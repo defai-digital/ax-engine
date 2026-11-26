@@ -20,27 +20,27 @@
   <text x="690" y="344" text-anchor="middle" fill="#64748b" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="11">150 tok/s</text>
 
   <text x="40" y="109" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">qwen3.6-27b-6bit</text>
-  <rect x="190" y="90" width="140.3" height="25" rx="4" fill="#2563eb"/>
+  <rect x="190" y="90" width="140.3" height="25" rx="4" fill="#37b67c"/>
   <text x="342" y="108" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700">42.1</text>
 
   <text x="40" y="149" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">qwen3.6-35b-a3b</text>
-  <rect x="190" y="130" width="471.7" height="25" rx="4" fill="#0f766e"/>
+  <rect x="190" y="130" width="471.7" height="25" rx="4" fill="#37b67c"/>
   <text x="674" y="148" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700">141.5</text>
 
   <text x="40" y="189" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">gemma-4-12b</text>
-  <rect x="190" y="170" width="207.3" height="25" rx="4" fill="#d97706"/>
+  <rect x="190" y="170" width="207.3" height="25" rx="4" fill="#37b67c"/>
   <text x="409" y="188" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700">62.2</text>
 
   <text x="40" y="229" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">gemma-4-26b</text>
-  <rect x="190" y="210" width="376.3" height="25" rx="4" fill="#dc2626"/>
+  <rect x="190" y="210" width="376.3" height="25" rx="4" fill="#37b67c"/>
   <text x="578" y="228" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700">112.9</text>
 
   <text x="40" y="269" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">gemma-4-31b</text>
-  <rect x="190" y="250" width="93.7" height="25" rx="4" fill="#7c3aed"/>
+  <rect x="190" y="250" width="93.7" height="25" rx="4" fill="#37b67c"/>
   <text x="296" y="268" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700">28.1</text>
 
   <text x="40" y="309" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">glm-4.7-flash</text>
-  <rect x="190" y="290" width="305.0" height="25" rx="4" fill="#475569"/>
+  <rect x="190" y="290" width="305.0" height="25" rx="4" fill="#37b67c"/>
   <text x="507" y="308" fill="#111827" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700">91.5</text>
 
   <text x="40" y="374" fill="#64748b" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="11">Source: benchmarks/results/speculative/mtp-6bit/2026-06-22-six-model-mtp-peer-check</text>

@@ -16,8 +16,8 @@
 <text x="72" y="127.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">187.5</text>
 <line x1="82" y1="82.0" x2="550" y2="82.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="72" y="86.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">250.0</text>
-<rect x="94.0" y="121.9" width="56.0" height="126.1" rx="4" fill="#2eaf5f" fill-opacity="0.28" stroke="#176c37" stroke-width="1.6"/>
-<line x1="94.0" y1="121.9" x2="150.0" y2="121.9" stroke="#176c37" stroke-width="2"/>
+<rect x="94.0" y="121.9" width="56.0" height="126.1" rx="4" fill="#37b67c" fill-opacity="0.28" stroke="#0b5d36" stroke-width="1.6"/>
+<line x1="94.0" y1="121.9" x2="150.0" y2="121.9" stroke="#0b5d36" stroke-width="2"/>
 <line x1="122.0" y1="121.9" x2="122.0" y2="122.2" stroke="#111827" stroke-width="1.2"/>
 <line x1="114.0" y1="121.9" x2="130.0" y2="121.9" stroke="#111827" stroke-width="1.2"/>
 <line x1="114.0" y1="122.2" x2="130.0" y2="122.2" stroke="#111827" stroke-width="1.2"/>
