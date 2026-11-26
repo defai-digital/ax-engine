@@ -27,6 +27,11 @@ Direct greedy is now ahead of oMLX on all three measures. The lead at
 is below each of oMLX's (1.507 to 1.513 s). Splash's prefill lead on
 DFlash2 stands.
 
+A rerun on 2026-11-26, after the server stopped copying the tokenizer for
+every request ([note](server-tokenizer-shared-2026-11-26.md)), reads 0.16 s
+at 127 to 128 tokens and 1.487 to 1.491 s at 1,492 against oMLX's 1.510 s:
+a lead of 20 ms. Decode is unchanged (35.46 against 34.68 tok/s).
+
 ## What the split was
 
 The gated-delta layers carry recurrent state that cannot be trimmed, so a

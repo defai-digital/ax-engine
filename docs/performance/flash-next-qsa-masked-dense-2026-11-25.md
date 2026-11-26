@@ -34,12 +34,33 @@ AX Engine, oMLX, AX Engine, with 150 seconds of rest before each:
 | 9,123 | 4.935 | 4.574 | 5.006 | +8 to +9% |
 | 13,023 | 7.255 | 6.573 | 7.307 | +10 to +11% |
 
-AX Engine was built from commit `c688907a6` with default settings. The
-per-prompt records are
+AX Engine was built from commit `c688907a6` with default settings. An
+earlier scan of the same kind, on a build that differed only outside the
+default path, read within 0.07 s of these at every length.
+
+The same scan on 2026-11-26, with AX Engine built from commit `02ab4a08a`,
+which no longer copies the tokenizer for every request
+([note](server-tokenizer-shared-2026-11-26.md)):
+
+| Input tokens | AX Engine, first run (s) | oMLX 0.8.2 (s) | AX Engine, second run (s) | AX Engine against oMLX |
+| ---: | ---: | ---: | ---: | ---: |
+| 36 | 0.166 | 0.164 | 0.163 | −1 to +1% |
+| 127 | 0.206 | 0.351 | 0.201 | −41 to −43% |
+| 231 | 0.226 | 0.225 | 0.225 | 0% |
+| 413 | 0.296 | 0.292 | 0.292 | 0 to +1% |
+| 803 | 0.440 | 0.429 | 0.436 | +2 to +3% |
+| 1,492 | 0.689 | 0.689 | 0.689 | 0% |
+| 2,233 | 1.134 | 1.325 | 1.127 | −14 to −15% |
+| 2,961 | 1.455 | 1.420 | 1.462 | +2 to +3% |
+| 4,443 | 2.263 | 2.169 | 2.275 | +4 to +5% |
+| 6,523 | 3.384 | 3.192 | 3.386 | +6% |
+| 9,123 | 4.908 | 4.517 | 4.960 | +9 to +10% |
+| 13,023 | 7.203 | 6.431 | 7.217 | +12% |
+
+Its per-prompt records are
 [first-text-by-length.jsonl](../../benchmarks/results/qwen38-m5-modes-20261125/first-text-by-length.jsonl),
-and the README chart is drawn from them. An earlier scan of the same
-kind, on a build that differed only outside the default path, read within
-0.07 s of these at every length.
+and the README chart is drawn from them. The short prompts moved by the
+10 ms the copy took; the long ones did not move against oMLX.
 
 Up to 2,233 tokens the change does nothing, and those rows are the
 previous note's result measured again. From 2,961 tokens AX Engine was 26

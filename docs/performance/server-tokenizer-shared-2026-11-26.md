@@ -30,6 +30,10 @@ vocabulary map and the drop of the model.
 `EngineTokenizer` holds the tokenizer behind an `Arc`, so a clone shares
 it. Nothing mutates a cached tokenizer.
 
+The upstream BPE model keeps a word cache that every copy started empty.
+It now persists across requests. It is bounded, only fills, and takes its
+lock without waiting, so concurrent requests do not queue on it.
+
 ## Measurements
 
 MacBook Pro M5 Max 128 GB, Flash Next, medians:
@@ -47,6 +51,25 @@ Mac mini M4 Pro 64 GB, 27B:
 | --- | ---: | ---: |
 | `/v1/tokenize`, short prompt | 10.9 ms | 0.19 ms |
 | Streamed completion, first text, 36 input tokens | 448 ms | 437 ms |
+
+Rested paired reruns on the M5 Max against oMLX 0.8.2, first text in
+seconds
+([records](../../benchmarks/results/qwen38-m5-modes-20261125/README.md#every--row-after-the-shared-tokenizer)):
+
+| | Before | After | oMLX |
+| --- | ---: | ---: | ---: |
+| Flash Next, 36 input tokens | 0.174 | 0.165 | 0.164 |
+| Flash Next, 231 | 0.237 | 0.226 | 0.225 |
+| Flash Next, 413 | 0.308 | 0.294 | 0.292 |
+| Flash Next, 803 | 0.451 | 0.438 | 0.429 |
+| Flash Next, 1,492 | 0.702 | 0.689 | 0.689 |
+| 27B, 1,492 | 1.501 | 1.490 | 1.510 |
+
+The "before" Flash Next column is a scan of commit `df8c86ecf` in the same
+protocol earlier the same day; the 27B row compares reruns 8 and 9. From 2,961
+tokens up Flash Next stays 3 to 12% behind oMLX; that gap is in the
+sparse-attention layers
+([note](flash-next-qsa-masked-dense-2026-11-25.md#what-is-left)).
 
 ## Reproduce
 
