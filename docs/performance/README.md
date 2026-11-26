@@ -11,6 +11,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
 | Current MLX runtime admission | [MLX 0.32.4 admission](mlx-0.32.4-admission-2026-10-16.md) |
+| Text requests: one shared tokenizer instead of a copy per request, first text 10 to 12 ms earlier at every prompt length | [Cause, change, measurements on M5 Max and M4 Pro](server-tokenizer-shared-2026-11-26.md) |
 | First request after the server sat idle: wired weights kept GPU-resident, 1.5 to 0.74 s for a 1,492-token Flash Next prompt on M5 Max, level with oMLX | [Cause, switch, measurements on M5 Max and M4 Pro, limits](idle-residency-refresh-2026-11-26.md) |
 | Qwen 3.8 27B: greedy prompts without the block-boundary split and MLX's gated-delta recurrence on M5 and later, direct first text ahead of oMLX (0.17 against 0.22 s at 127 tokens, 1.50 against 1.51 s at 1,492), tile rule for M3/M4 | [Measurements on M5 Max and M4 Pro, logit-level comparison of the recurrence, replay cost and what is left](qwen38-27b-prefill-schedule-2026-11-25.md) |
 | Qwen 3.8 on M5 Max: DFlash2 draft-tree verify, MX-format NAX rows, Flash Next decode and prefill kernels | [Paired results against the leading peers, root causes, switches and limits](qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) |
