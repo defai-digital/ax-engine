@@ -253,7 +253,9 @@ Two things for whoever merges this:
   activation inside the first kernel, which oMLX also does, changes its
   4.2 ms by less than 0.1 ms. The gain is in how the kernel tiles the rows
   of one expert and streams its weights, so the next step is a sorted
-  gather kernel of AX Engine's own.
+  gather kernel of AX Engine's own:
+  [done the same day](flash-next-moe-gather-tiles-2026-11-26.md), which
+  puts AX Engine ahead of oMLX from 127 to 13,023 tokens.
 - **Block selection** still grows with the history: 15 to 36 ms for the
   indexer and 8 to 17 ms for the block scores per 2,048-token block at
   13,023 tokens (12 layers), because the partial sort that picks the 512

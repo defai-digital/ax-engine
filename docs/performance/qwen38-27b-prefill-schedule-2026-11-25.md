@@ -189,7 +189,14 @@ the ignored test `qwen_linear_prefill_logits_dump`.
 - The direct lead at 1,492 tokens is under 1%. The remaining per-layer
   costs measured in the gated-delta layers are a copy that un-interleaves
   the packed projection and FP32 casts around the gate kernel, about 1 ms
-  per layer together.
+  per layer together. The copy alone, timed on 2026-11-26 in front of the
+  convolution it feeds, adds 0.18 ms per layer at 1,492 rows and 0.30 ms at
+  2,048: about 9 ms over the 48 gated-delta layers, 0.6% of first text.
+  Removing it needs a convolution that reads the packed layout, because the
+  default prefill path runs MLX's `conv1d` on a contiguous input.
+- DFlash2 tree rows: 16 rows decode 1 to 6% faster than the default 8 at
+  64 to 256 output tokens on seven prompts, but change the greedy text
+  ([note](qwen38-27b-dflash2-tree-rows-2026-11-26.md)).
 - Sampled requests: keeping the final-row logits in the end-of-prompt
   state would let them skip the split too.
 - A graded evaluation of the MLX recurrence with hard items, generations

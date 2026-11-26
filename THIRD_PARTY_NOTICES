@@ -14,6 +14,12 @@ Used in: crates/ax-engine-mlx/src/model/shared/verify_qmm_mx_nax.metal
 `dequantize_fp_x4` helper, the NAX fragment mma/layout helpers from
 `steel/gemm/nax.h`, and the E8M0 conversion from `fp8.h`).
 
+Used in: crates/ax-engine-mlx/src/model/shared/gather_qmm_mx_nax.metal
+(a port of the sorted NAX MX-format gather quantized matmul
+`fp_gather_qmm_rhs_nax` and the `QuantizedBlockLoader` paths it uses from
+`fp_quantized_nax.h`, `schedule_row_tile` from `utils.h`, and the NAX fragment
+load, store and loop layout from `steel/gemm/nax.h`).
+
 MIT License
 
 Copyright © 2023 Apple Inc.

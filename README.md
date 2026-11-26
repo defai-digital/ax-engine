@@ -39,12 +39,11 @@ short and a long input, so it moves when either probe moves; the two
 latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
-On Flash Next, decode is level with oMLX; first text is ahead at 127 to
-128 and at 2,233 input tokens, level (within 1%) at 36, 231, 1,492 and
-2,961, 1 to 3% behind at 413 and 803, and 4 to 5% behind from 4,443 to
-13,023 tokens in a scan that runs the lengths back to back (1 to 2% with
-rest before each length: AX Engine draws more GPU power there and the host
-throttles it sooner). On
+On Flash Next, decode is level with oMLX; first text is ahead at every
+input length from 127 to 13,023 tokens (by 1 to 7%, and by 21 and 46% at
+2,233 and 127) and 3 ms behind at 36 tokens, in a scan that runs the
+lengths back to back; with rest before each length it is 3 to 8% ahead from
+2,961 to 13,023 tokens. On
 the 27B, direct greedy is ahead of oMLX on decode (35.5 against 34.7 tok/s)
 and on first text: 0.16 against 0.22 s at 127 to 128 input tokens, and 1.49
 against 1.51 s at 1,492, where each of the six AX Engine probes is below
@@ -63,7 +62,9 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 [First request after idle](docs/performance/idle-residency-refresh-2026-11-26.md) ·
 [Text requests without a tokenizer copy](docs/performance/server-tokenizer-shared-2026-11-26.md) ·
 [Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md) ·
-[Flash Next long prompts on the tensor units](docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md).
+[Flash Next long prompts on the tensor units](docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md) ·
+[Flash Next routed experts in 64-row tiles](docs/performance/flash-next-moe-gather-tiles-2026-11-26.md) ·
+[27B DFlash2 tree rows by output length](docs/performance/qwen38-27b-dflash2-tree-rows-2026-11-26.md).
 
 <!-- qwen38-m5-modes:begin -->
 
@@ -83,24 +84,24 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 
 † Median of three runs interleaved with the neighbouring † rows, with 150 seconds of rest before each run, in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
-**First text by input length**, one cold direct greedy request. The servers ran one after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before each; the AX Engine column is the mean of its two runs. Lower is better. [Measurements and method](docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md).
+**First text by input length**, one cold direct greedy request. The servers ran one after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before each; the AX Engine column is the mean of its two runs. Lower is better. [Measurements and method](docs/performance/flash-next-moe-gather-tiles-2026-11-26.md).
 
 ![Qwen 3.8 Flash Next cold first text by input length on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-first-text-by-length.svg)
 
-| Input tokens | AX Engine 8.1.0+7a876708 (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
+| Input tokens | AX Engine 8.1.0+8108ac93 (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
 | ---: | ---: | ---: | ---: |
-| 36 | 0.167 | 0.165 | +1% |
-| 127 | 0.205 | 0.353 | −42% |
-| 231 | 0.226 | 0.224 | +1% |
-| 413 | 0.296 | 0.292 | +2% |
-| 803 | 0.440 | 0.429 | +3% |
-| 1,492 | 0.686 | 0.690 | −1% |
-| 2,233 | 1.108 | 1.326 | −16% |
-| 2,961 | 1.422 | 1.421 | +0% |
-| 4,443 | 2.282 | 2.176 | +5% |
-| 6,523 | 3.346 | 3.208 | +4% |
-| 9,123 | 4.675 | 4.497 | +4% |
-| 13,023 | 6.745 | 6.443 | +5% |
+| 36 | 0.168 | 0.165 | +2% |
+| 127 | 0.189 | 0.350 | −46% |
+| 231 | 0.219 | 0.232 | −6% |
+| 413 | 0.285 | 0.291 | −2% |
+| 803 | 0.416 | 0.432 | −4% |
+| 1,492 | 0.642 | 0.692 | −7% |
+| 2,233 | 1.046 | 1.327 | −21% |
+| 2,961 | 1.350 | 1.421 | −5% |
+| 4,443 | 2.102 | 2.170 | −3% |
+| 6,523 | 3.087 | 3.191 | −3% |
+| 9,123 | 4.405 | 4.522 | −3% |
+| 13,023 | 6.352 | 6.441 | −1% |
 
 #### Qwen 3.8 27B MXFP4
 
