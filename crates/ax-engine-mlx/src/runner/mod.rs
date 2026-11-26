@@ -9650,18 +9650,20 @@ impl MlxRunner {
             hardware.silicon_generation,
             self.cfg.layer_count,
         );
-        // Qwen hybrid prompts changed their cold schedule on 2026-11-25: a
-        // greedy prompt no longer stops at its last block boundary
-        // (`prompt_end_state_replaces_boundary`). A disk snapshot written
-        // before that must miss.
+        // Qwen hybrid prompts changed their cold arithmetic on 2026-11-25:
+        // a greedy prompt no longer stops at its last block boundary
+        // (`prompt_end_state_replaces_boundary`), and on M5 and later the
+        // prefill recurrence runs MLX's kernel by default. A disk snapshot
+        // written before either change must miss; the epoch is 3 because
+        // builds between the two changes wrote epoch 2.
         let base = if self.cfg.linear_attention.is_some() && !self.flash_next_exact_prefix_only() {
             let schedule = if crate::fastpath::prefix_end_state_only_enabled()
                 && !crate::fastpath::prefix_restore_value_enabled()
                 && !crate::fastpath::prefix_semantic_cuts_enabled()
             {
-                "2"
+                "3"
             } else {
-                "2-split"
+                "3-split"
             };
             format!("{base};linear_prefill={schedule}")
         } else {

@@ -179,10 +179,9 @@ pub struct EngineSessionConfig {
     /// packs that cannot fit in unified memory are paged; smaller Flash-class
     /// packs stay resident.
     pub mlx_stream_experts: MlxStreamExpertsMode,
-    /// Process-level numerics preset. `Exact` changes nothing. `Fast` opts
-    /// into relaxed indexed QSA prefill on Flash Next and, on M5 and later,
-    /// MLX's gated-delta prefill recurrence on the Qwen hybrids, unless the
-    /// env sets those switches. Not a per-request option.
+    /// Process-level Flash Next numerics preset. `Exact` changes nothing.
+    /// `Fast` opts into relaxed indexed QSA prefill unless the env sets that
+    /// switch. Not a per-request option.
     pub mlx_numerics: MlxNumericsMode,
     /// Fair multi-prefill progress (design Track B / PR3). Default **OFF**.
     /// When true, text prefills are interleave-capped under residual budget.

@@ -12851,9 +12851,9 @@ fn linear_prefill_disk_snapshots_carry_the_schedule_epoch() {
         && !crate::fastpath::prefix_restore_value_enabled()
         && !crate::fastpath::prefix_semantic_cuts_enabled()
     {
-        ";linear_prefill=2"
+        ";linear_prefill=3"
     } else {
-        ";linear_prefill=2-split"
+        ";linear_prefill=3-split"
     };
     assert!(
         signature.contains(schedule)

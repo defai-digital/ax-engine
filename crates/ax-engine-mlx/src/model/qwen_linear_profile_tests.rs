@@ -211,3 +211,69 @@ fn qwen_linear_prefill_module_latency() {
         );
     }
 }
+
+/// Writes the next-token logits of real prompts, one `<index>.f32` file of
+/// little-endian `f32` per prompt, so two processes that differ in one switch
+/// can be compared logit by logit.
+///
+/// `AX_QWEN_LOGITS_IDS_FILE` is a JSON list of token-id lists and
+/// `AX_QWEN_LOGITS_OUT` the output directory. Each prompt runs the schedule
+/// of an uncached serving prefill: chunks of `AX_QWEN_PROFILE_CHUNK` rows
+/// (default 1,024), the last one producing the logits. With
+/// `AX_QWEN_LOGITS_SPLIT=1` the prompt instead stops at its last 16-token
+/// boundary the way the boundary-snapshot schedule does: all rows before the
+/// boundary but one, that row alone, then the rest.
+#[test]
+#[ignore = "requires AX_QWEN_PROFILE_PACK, AX_QWEN_LOGITS_IDS_FILE and AX_QWEN_LOGITS_OUT"]
+fn qwen_linear_prefill_logits_dump() {
+    let root = PathBuf::from(std::env::var_os("AX_QWEN_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let prompts: Vec<Vec<u32>> = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("AX_QWEN_LOGITS_IDS_FILE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let out = PathBuf::from(std::env::var_os("AX_QWEN_LOGITS_OUT").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let chunk = env_usize("AX_QWEN_PROFILE_CHUNK").unwrap_or(1024).max(1);
+    let split = env_usize("AX_QWEN_LOGITS_SPLIT") == Some(1);
+
+    for (index, ids) in prompts.iter().enumerate() {
+        mlx_sys::clear_cache();
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+        let cache_only = |rows: &[u32], cache: &mut MlxKVCache| {
+            for part in rows.chunks(chunk) {
+                let offset = cache.seq_len();
+                let hidden = forward_cache_only(&cfg, &weights, part, cache, offset);
+                cache.advance(part.len());
+                eval_with_cache(&hidden, cache);
+            }
+        };
+        let boundary = ids.len() / 16 * 16;
+        let tail_start = if split && boundary > 1 && boundary < ids.len() {
+            cache_only(&ids[..boundary - 1], &mut cache);
+            cache_only(&ids[boundary - 1..boundary], &mut cache);
+            boundary
+        } else {
+            let last_chunk = (ids.len() - 1) / chunk * chunk;
+            cache_only(&ids[..last_chunk], &mut cache);
+            last_chunk
+        };
+        let offset = cache.seq_len();
+        let logits = forward(&cfg, &weights, &ids[tail_start..], &mut cache, offset);
+        let logits = astype(&logits, MlxDtype::Float32, None);
+        eval_with_cache(&logits, &cache);
+        let bytes: Vec<u8> = logits
+            .data_f32()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        std::fs::write(out.join(format!("{index}.f32")), bytes).unwrap();
+        families::qwen3_linear::clear_qwen_prefill_pending_ffn();
+        eprintln!(
+            "qwen_logits prompt={index} tokens={} split={split}",
+            ids.len()
+        );
+    }
+}
