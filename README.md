@@ -33,8 +33,6 @@ download models, chat and serve OpenAI-compatible endpoints locally.
 
 </details>
 
-[View the full-size model catalog screenshot](docs/images/ax-engine-macos-catalog.png)
-
 The Qwen 3.8 27B and Flash Next product scope is
 **MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
 The generic pinned selectors load MXFP4 MTP packs; the Qwen 3.8 27B MXFP8
