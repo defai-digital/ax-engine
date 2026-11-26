@@ -190,6 +190,11 @@ Two things for whoever merges this:
 
 ## What is left
 
+Since 2026-11-26 histories of 4,096 tokens and more are attended by
+[a kernel on the tensor units](flash-next-qsa-tensor-unit-2026-11-26.md),
+whose cost does not grow with the prompt; the masked dense call serves
+the shorter ones. The first item below describes the state before it.
+
 - **Long prompts.** In the rested scan of 2026-11-26 each further token
   costs AX Engine 0.55, 0.54, 0.60 and 0.58 ms over the four stretches
   from 2,961 to 13,023 tokens, against 0.51, 0.49, 0.51 and 0.49 ms for
