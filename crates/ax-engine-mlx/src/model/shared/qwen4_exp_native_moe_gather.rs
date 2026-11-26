@@ -3,7 +3,7 @@
 //!
 //! MLX's sorted gather sizes its row tiles by the pairs per expert of the
 //! whole stack, which makes them 32 rows for a Flash Next prefill. Real
-//! routing concentrates on a fraction of the experts (84 to 330 of 512 per
+//! routing concentrates on a fraction of the experts (84 to 327 of 512 per
 //! layer over a 2,047-row chunk of the benchmark prompt), and every tile of a
 //! busy expert dequantizes that expert's weights again.
 //!

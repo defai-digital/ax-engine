@@ -251,14 +251,15 @@ tables and charts show their medians.
 
 [first-text-by-length.jsonl](first-text-by-length.jsonl) holds a scan of
 cold first text over twelve input lengths from 36 to 13,023 tokens.
-AX Engine was built from commit `7a8767085` with default settings, which
-attends histories of 4,096 tokens and more with
-[the tensor-unit kernel](../../../docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md)
-(rerun 10; only this file was measured again, the paired rows do not reach
-the kernel). Earlier scans, of commit `02ab4a08a` (the build of rerun 9)
-and of commit `c688907a6` before the shared tokenizer, are in the file's
-history and in
-[the note on the masked dense call](../../../docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
+AX Engine was built from commit `8108ac93c` with default settings, which
+run the routed expert projections of a prefill in
+[64-row tiles](../../../docs/performance/flash-next-moe-gather-tiles-2026-11-26.md)
+(rerun 11; only this file was measured again). Earlier scans are in the
+file's history and in the notes on
+[the tensor-unit sparse attention](../../../docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md)
+(commit `7a8767085`, rerun 10) and on
+[the masked dense call](../../../docs/performance/flash-next-qsa-masked-dense-2026-11-25.md)
+(commits `02ab4a08a` and `c688907a6`).
 
 - Each server ran alone and the three ran one after another: AX Engine,
   oMLX, AX Engine (`run_order` 1 to 3), with 150 seconds of rest before
