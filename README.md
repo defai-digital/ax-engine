@@ -48,8 +48,15 @@ in which each of the six AX Engine probes is below each of oMLX's. AX
 Engine's DFlash2 decode is ahead of Splash on this three-prompt, 64-token
 harness (114.1 against 108.9 tok/s) and behind it on prefill (first text
 1.50 against 1.19 s at 1,492 input tokens) and on 256-token outputs.
+These probes follow warmup requests without a pause. A request that
+arrives after the server sat idle for 3 to 60 seconds takes 0.73 to 0.74 s
+to first text for the 1,492-token Flash Next prompt (oMLX: 0.74 to 0.75 s)
+and 1.54 to 1.55 s on the 27B (oMLX: 1.54 to 1.56 s); before AX Engine kept
+the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
+1.73 s.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
 [27B first text without the block-boundary split](docs/performance/qwen38-27b-prefill-schedule-2026-11-25.md) ·
+[First request after idle](docs/performance/idle-residency-refresh-2026-11-26.md) ·
 [Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->

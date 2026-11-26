@@ -1309,18 +1309,26 @@ pub(crate) const RESIDENCY_REFRESH_INTERVAL_MS: u32 = 1000;
 /// once at Metal device init, so this shares the timing rule of
 /// [`maybe_raise_metal_buffer_caps`], which calls it.
 fn maybe_refresh_metal_residency() {
-    if !crate::fastpath::residency_refresh_enabled() {
+    let Some(interval_ms) =
+        residency_refresh_interval_for(crate::fastpath::residency_refresh_enabled())
+    else {
         return;
-    }
-    let applied = mlx_sys::set_metal_residency_refresh_env(RESIDENCY_REFRESH_INTERVAL_MS);
+    };
+    let applied = mlx_sys::set_metal_residency_refresh_env(interval_ms);
     tracing::info!(
         target = "ax_engine_mlx",
         applied,
-        interval_ms = RESIDENCY_REFRESH_INTERVAL_MS,
+        interval_ms,
         "asked MLX to keep wired allocations GPU-resident while idle. \
          AX_MLX_RESIDENCY_REFRESH=0 to disable; a pre-set \
          MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS wins."
     );
+}
+
+/// The interval AX asks MLX for, or `None` when the switch is off and MLX's
+/// own default (no refresh) stays.
+fn residency_refresh_interval_for(enabled: bool) -> Option<u32> {
+    enabled.then_some(RESIDENCY_REFRESH_INTERVAL_MS)
 }
 
 /// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping

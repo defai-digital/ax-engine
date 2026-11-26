@@ -157,6 +157,18 @@ working set plus 4 GiB and is capped at `RAM - os reserve`), and `GET
 `memory_plan.wired_shortfall_bytes` for later sampling. The kernel applies that
 sysctl process-wide, needs root, and resets it on reboot; AX cannot set it.
 
+macOS drops the GPU residency of wired allocations after a few seconds
+without GPU work, although MLX's residency request stands, and the first
+request after a pause then waits for the weights to become resident again
+(0.5 to 0.9 s for Flash Next on a MacBook Pro M5 Max 128 GB). The loader
+therefore sets MLX's `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS` to 1000 before
+the first GPU op, so MLX re-requests residency once a second.
+`AX_MLX_RESIDENCY_REFRESH=0` turns that off, and a value of the MLX variable
+already in the environment wins in both directions. On a host short of
+memory the refresh works against the system's reclaim; turn it off there.
+See the
+[idle residency note](performance/idle-residency-refresh-2026-11-26.md).
+
 ### Chunked prefill
 
 Process prompt in 2048-token windows by default (configurable). Between each
@@ -376,6 +388,7 @@ what the kill switch restores.
 | Variable | Default | Effect |
 |---|---|---|
 | `AX_MLX_PRICED_MEMORY` | on (unset is on) | Auto placement is decided by the priced memory plan: non-expert weights, KV cache, GDN/QSA state, prefill scratch, and runtime reserves are priced separately from the expert weights and the never-resident n-gram table. `0`, `false`, `no`, or `off` restores the legacy 48 GiB fixed-headroom formula (and the flat prefill-scratch estimate that came with it). Placement only: the same weights and kernels run either way. |
+| `AX_MLX_RESIDENCY_REFRESH` | on (unset is on) | Sets MLX's `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS` to `1000` before the first GPU op, so the wired weights stay GPU-resident while the server is idle and the first request after a pause does not wait for them. `0` leaves MLX's default (no refresh). A value of the MLX variable already in the environment wins, including `0`. Arithmetic is unaffected. |
 | `AX_MLX_WIRED_LIMIT_SCALE` | unset (working-set sized, `0.9` floor) | Explicit wired-limit share of Metal's `recommendedMaxWorkingSetSize`, clamped to `0.0..=1.0` (`0` leaves the weights unwired). When unset, the runner wires `0.9x` unless the priced plan says the pack needs more, in which case it wires the smallest share that covers the working set, up to `1.0x`. Setting it pins the historical behaviour exactly and also disables the Tiel auto-no-wire policy. Wiring only: placement, kernels and output are unchanged. |
 | `AX_STREAM_EXPERT_CACHE_BYTES` | unset (no operator byte cap) | Explicit byte budget for resident expert layer stacks. A positive integer wins over the priced plan's remainder; blank, zero, and unparsable values mean "no byte cap", leaving `AX_STREAM_EXPERT_LAYERS` as the only limit. Placement only. |
 | `AX_MLX_MEMORY_CEILING_BYTES` | unset (derived from host RAM) | Explicit load-admission ceiling in bytes. When RAM is known the value is clamped to `RAM - 4 GiB` so an override can never page the kernel out; when RAM is unknown it is used as is. Blank, zero, and unparsable values keep the derived ceiling. Placement only. |

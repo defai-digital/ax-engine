@@ -6926,9 +6926,13 @@ env_flag_default_on!(
     /// the switch on, the loader sets MLX's
     /// `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS` to
     /// [`crate::weights::RESIDENCY_REFRESH_INTERVAL_MS`] before the first GPU
-    /// op, and the same request takes 0.72 s after any idle time. A value
-    /// already in the environment wins, including `0`, which leaves MLX's
-    /// refresh off. Arithmetic is unaffected.
+    /// op, and the same request takes 0.73 to 0.74 s after 3 to 60 s of
+    /// idle. A value of the MLX variable already in the environment wins
+    /// over this switch in both directions: `0` there leaves the refresh
+    /// off, and a positive value keeps it on under
+    /// `AX_MLX_RESIDENCY_REFRESH=0`. MLX refreshes every residency set of
+    /// the process, so on a host short of memory this works against the
+    /// system's reclaim. Arithmetic is unaffected.
     residency_refresh_enabled,
     "AX_MLX_RESIDENCY_REFRESH"
 );
