@@ -23,10 +23,15 @@ download models, chat and serve OpenAI-compatible endpoints locally.
 
 [Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
 
+<details open>
+<summary>macOS app design preview (illustrative data)</summary>
+
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/ax-engine-macos-catalog.png">
-  <img src="docs/images/ax-engine-macos-preview.gif" width="540" alt="AX Engine for macOS showing the Qwen 3.8 model catalog and local API settings.">
+  <img src="docs/images/ax-engine-macos-preview.gif" width="620" alt="AX Engine for macOS preview showing Home, Models, Playground, Compare, API and Logs, System, and Settings.">
 </picture>
+
+</details>
 
 [View the full-size model catalog screenshot](docs/images/ax-engine-macos-catalog.png)
 
