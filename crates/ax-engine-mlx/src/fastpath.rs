@@ -6913,6 +6913,27 @@ pub(crate) fn should_gemma4_packed_ffn_compile_p128_for(
 }
 
 env_flag_default_on!(
+    /// `AX_MLX_RESIDENCY_REFRESH` — keep the wired weights GPU-resident
+    /// while the server is idle.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_RESIDENCY_REFRESH=0`).
+    ///
+    /// macOS drops the residency of wired Metal allocations after a few
+    /// seconds without GPU work, although MLX's request stands. The next
+    /// request then waits for the weights to become resident again: on the
+    /// MacBook Pro M5 Max 128 GB a 1,492-token Flash Next request takes
+    /// 0.69 s back to back and 1.2 to 1.5 s after 3 to 40 s of idle. With
+    /// the switch on, the loader sets MLX's
+    /// `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS` to
+    /// [`crate::weights::RESIDENCY_REFRESH_INTERVAL_MS`] before the first GPU
+    /// op, and the same request takes 0.72 s after any idle time. A value
+    /// already in the environment wins, including `0`, which leaves MLX's
+    /// refresh off. Arithmetic is unaffected.
+    residency_refresh_enabled,
+    "AX_MLX_RESIDENCY_REFRESH"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_AUTO_BUFFER_CAPS` — auto-raise MLX Metal command-buffer caps
     /// for many-large-tensor (MoE-class) checkpoints.
     ///
