@@ -2779,6 +2779,41 @@ mod tests {
         qwen4_exp_fused::reset_registry_for_test();
     }
 
+    /// With the prefill-width switch on, the gate stretch runs at prefill
+    /// width and reproduces the eager bits, on a closure that serves one row
+    /// count, another, and the first again.
+    #[test]
+    fn qsa_gate_matches_eager_at_prefill_rows() {
+        qwen4_exp_fused::reset_registry_for_test();
+        let floor = qwen4_exp_fused::PREFILL_FUSE_MIN_ROWS;
+        for rows in [floor, 97, floor] {
+            let shape = [1, rows, 32];
+            let attention = adversarial_gate_input(&shape, MlxDtype::Bfloat16, 0);
+            let gate = adversarial_gate_input(&shape, MlxDtype::Bfloat16, 5);
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, rows)
+            };
+            let before = qwen4_exp_fused::applied_for_test(Stretch::QsaGate);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                let _prefill = qwen4_exp_fused::force_prefill_rows_for_test(true);
+                gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, rows)
+            };
+            assert!(
+                qwen4_exp_fused::applied_for_test(Stretch::QsaGate) > before,
+                "rows {rows}: QsaGate never applied"
+            );
+            assert_eq!(
+                f32_value_bits(&fused),
+                f32_value_bits(&eager),
+                "rows {rows}: fused diverged"
+            );
+        }
+        assert!(!qwen4_exp_fused::tombstoned_for_test(Stretch::QsaGate));
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
     /// Rows past the fuse cap never apply the stretch and still get the eager
     /// result.
     #[test]

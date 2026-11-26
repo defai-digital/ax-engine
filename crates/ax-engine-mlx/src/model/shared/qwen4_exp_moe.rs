@@ -2001,6 +2001,69 @@ mod tests {
         }
     }
 
+    /// With the prefill-width switch on, a prefill-width MoE forward runs its
+    /// compiled tails and reproduces the eager bits. The registry is not
+    /// cleared between row counts, so each closure serves one row count,
+    /// another, and the first again.
+    #[test]
+    fn moe_forward_fused_matches_eager_at_prefill_rows() {
+        let (module, _) = build_resident_module();
+        let floor = qwen4_exp_fused::PREFILL_FUSE_MIN_ROWS;
+        qwen4_exp_fused::reset_registry_for_test();
+        for rows in [floor, 97, floor] {
+            let values: Vec<f32> = (0..rows * 16)
+                .map(|i| (((i * 29) % 53) as f32 - 26.0) / 9.0)
+                .collect();
+            let input = reshape(&MlxArray::from_f32_slice(&values), &[1, rows, 16], None);
+            let eager_bits = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                widened_bits(
+                    &module
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                )
+            };
+            let swiglu_before = qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu);
+            let tails_before =
+                [Stretch::MoeCombine, Stretch::MoeRouteTail].map(qwen4_exp_fused::applied_for_test);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                let _prefill = qwen4_exp_fused::force_prefill_rows_for_test(true);
+                module
+                    .forward(&input, ProjectionBatchPolicy::Shared)
+                    .unwrap()
+            };
+            assert_eq!(
+                widened_bits(&fused),
+                eager_bits,
+                "rows {rows}: fused MoE forward diverged"
+            );
+            assert!(
+                qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu) - swiglu_before >= 2,
+                "rows {rows}: both SwiGLU stretches must apply"
+            );
+            for (stretch, before) in [Stretch::MoeCombine, Stretch::MoeRouteTail]
+                .into_iter()
+                .zip(tails_before)
+            {
+                assert!(
+                    qwen4_exp_fused::applied_for_test(stretch) > before,
+                    "rows {rows}: {stretch:?} must apply"
+                );
+            }
+            for stretch in [
+                Stretch::MoeSwiglu,
+                Stretch::MoeCombine,
+                Stretch::MoeRouteTail,
+            ] {
+                assert!(
+                    !qwen4_exp_fused::tombstoned_for_test(stretch),
+                    "{stretch:?}"
+                );
+            }
+        }
+    }
+
     /// End-to-end: the public MoE forward must be bit identical under every
     /// fusion mode, the counters must prove both stretches ran (routed +
     /// shared swiglu, one combine per processed row group), rows past the

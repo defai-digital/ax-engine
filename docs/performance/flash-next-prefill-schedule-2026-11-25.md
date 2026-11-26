@@ -118,6 +118,10 @@ none of their forwards crosses one of those row counts differently.
 
 ## What is left
 
+A later change the same day closed the 1,492-token gap described below by
+running the compiled elementwise stretches in prefill forwards:
+[measurements](flash-next-prefill-fused-stretches-2026-11-25.md).
+
 - **Beyond the dense attention budget.** Up to 2,051 tokens of context the
   sparse-attention layers attend densely. Past that, every row selects 512
   key blocks and attends over gathered keys, which costs about 0.45 to

@@ -7025,6 +7025,51 @@ mod tests {
         }
     }
 
+    /// With the prefill-width switch on, both rotary stretches run at
+    /// prefill width and reproduce the eager bits, on closures that serve one
+    /// row count, another, and the first again.
+    #[test]
+    fn qsa_rope_stretches_match_eager_at_prefill_rows() {
+        qwen4_exp_fused::reset_registry_for_test();
+        reset_rope_cache_for_test();
+        let floor = qwen4_exp_fused::PREFILL_FUSE_MIN_ROWS;
+        for (seq_axis, offset) in [(2i32, 0i32), (1, 4093)] {
+            for rows in [floor, 97, floor] {
+                let shape = if seq_axis == 2 {
+                    [1, 4, rows, 256]
+                } else {
+                    [1, rows, 4, 256]
+                };
+                let x = rotary_input(&shape, MlxDtype::Bfloat16);
+                let tables = real_tables(&x, 64, offset, seq_axis);
+                let label = format!("axis {seq_axis} rows {rows}");
+                let eager = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    apply_rotary_trig_split(&x, 64, &tables, seq_axis)
+                };
+                let before =
+                    [Stretch::QsaRopeLo, Stretch::QsaRopeHi].map(qwen4_exp_fused::applied_for_test);
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    let _prefill = qwen4_exp_fused::force_prefill_rows_for_test(true);
+                    apply_rotary_trig_split(&x, 64, &tables, seq_axis)
+                };
+                for (stretch, before) in [Stretch::QsaRopeLo, Stretch::QsaRopeHi]
+                    .into_iter()
+                    .zip(before)
+                {
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(stretch) > before,
+                        "{label}: {stretch:?} never applied"
+                    );
+                    assert!(!qwen4_exp_fused::tombstoned_for_test(stretch));
+                }
+                assert_rope_bits(&fused, &eager, &format!("{label}: fused diverged"));
+            }
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
     /// Rows past the fuse cap never apply either stretch and still get the
     /// eager result.
     #[test]
