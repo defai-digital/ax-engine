@@ -326,6 +326,18 @@ impl QsaConfig {
         self.token_budget as usize + self.compress_ratio as usize - 1
     }
 
+    /// Longest context (cached tokens plus the chunk) at which a prefill
+    /// chunk of `rows` queries still fits the monolithic index-score
+    /// workspace: one f32 per query head, query and complete block. A longer
+    /// context makes [`ensure_score_workspace`] refuse the chunk.
+    pub(crate) fn monolithic_score_context_limit(self, rows: usize) -> usize {
+        let per_block = rows
+            .max(1)
+            .saturating_mul(self.query_heads as usize)
+            .saturating_mul(std::mem::size_of::<f32>());
+        (QSA_SCORE_WORKSPACE_LIMIT / per_block).saturating_mul(self.compress_ratio as usize)
+    }
+
     /// Longest context for which every query keeps every visible token: block
     /// `i` is complete once `4 * (i + 1)` tokens are visible, so up to
     /// `block_topk` complete blocks plus a partial tail always fit the budget.
@@ -3808,6 +3820,22 @@ mod tests {
 
     fn media(prompt: Vec<[i32; 3]>, delta: i32) -> std::sync::Arc<Qwen4ExpMediaPositions> {
         std::sync::Arc::new(Qwen4ExpMediaPositions::new(prompt, delta, &[11, 11, 10]).unwrap())
+    }
+
+    #[test]
+    fn monolithic_score_context_limit_is_where_the_workspace_check_starts_refusing() {
+        let cfg = QsaConfig::new(4, 1, 128, 64, 4, 2048, 2560, 1e-6, 10_000.0).unwrap();
+        for rows in [512usize, 1024, 2048] {
+            let limit = cfg.monolithic_score_context_limit(rows);
+            let blocks = |tokens: usize| tokens / cfg.compress_ratio();
+            assert!(ensure_score_workspace(1, rows as i32, 4, blocks(limit)).is_ok());
+            assert!(
+                ensure_score_workspace(1, rows as i32, 4, blocks(limit + cfg.compress_ratio()))
+                    .is_err()
+            );
+        }
+        assert_eq!(cfg.monolithic_score_context_limit(2048), 32_768);
+        assert_eq!(cfg.monolithic_score_context_limit(512), 131_072);
     }
 
     #[test]

@@ -44,7 +44,8 @@ RERUN_NOTE = (
 def label(row, versions):
     key = row["engine"]
     mark = RERUN_MARK if row.get("session") == "paired-rerun" else ""
-    return f"{ENGINE_NAMES[key]} {versions[key]} ({MODE_NAMES[row['mode']]}){mark}"
+    version = row.get("engine_version", versions[key])
+    return f"{ENGINE_NAMES[key]} {version} ({MODE_NAMES[row['mode']]}){mark}"
 
 
 def figure_name(model):

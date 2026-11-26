@@ -10,6 +10,26 @@ use ax_engine_core::{
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Only a loaded Flash Next trunk widens the long-prompt chunk, and a Flash
+/// Next runner captures inside a prompt only when it can restore there.
+#[test]
+fn long_prompt_chunk_and_interior_captures_follow_the_family() {
+    let (mut runner, artifacts) = tiny_linear_dflash_runner(1);
+    runner.cfg.model_family = "qwen3_next".into();
+    assert_eq!(runner.prefill_chunk_for_remaining(2048, 0, 4096), 512);
+    assert_eq!(runner.prefill_chunk_for_remaining(2048, 0, 2047), 2048);
+    assert!(!runner.flash_next_exact_prefix_only());
+    // The family name alone, without the trunk and its index geometry, keeps
+    // the clamp.
+    runner.cfg.model_family = "qwen4_exp".into();
+    assert_eq!(runner.prefill_chunk_for_remaining(2048, 0, 4096), 512);
+    runner.mtp_requested = false;
+    assert!(runner.flash_next_exact_prefix_only());
+    runner.mtp_requested = true;
+    assert!(!runner.flash_next_exact_prefix_only());
+    fs::remove_dir_all(artifacts.root_dir()).unwrap();
+}
+
 #[test]
 fn flash_next_prefix_admission_pins_only_complete_greedy_snapshots() {
     use ax_engine_core::{

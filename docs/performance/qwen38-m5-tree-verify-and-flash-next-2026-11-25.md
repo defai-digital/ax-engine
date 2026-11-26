@@ -170,9 +170,9 @@ tail. What remains is mostly at a floor this engine shares with its peer:
   reaches at 0.32.4; a source build of MLX 914732419 measured no prefill
   gain (1.108 against 1.100 s at 1,492 tokens).
 
-Not done: capturing the block-boundary state inside one forward so the
-tail needs no second forward; deferring snapshot serialization past the
-first token; a pipelined recurrence.
+Not done here: a pipelined recurrence. The split at the block boundary and
+its snapshot were followed up the same day in
+[Flash Next prefill schedule](flash-next-prefill-schedule-2026-11-25.md).
 
 ## Reproduce
 
