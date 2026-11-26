@@ -222,7 +222,10 @@ fn qwen_linear_prefill_module_latency() {
 /// (default 1,024), the last one producing the logits. With
 /// `AX_QWEN_LOGITS_SPLIT=1` the prompt instead stops at its last 16-token
 /// boundary the way the boundary-snapshot schedule does: all rows before the
-/// boundary but one, that row alone, then the rest.
+/// boundary but one, that row alone, then the rest. With
+/// `AX_QWEN_LOGITS_LAST_ROW_STEP=1` the last prompt row runs as a forward of
+/// its own after the chunks, the schedule of families that keep the
+/// reference n-1 split.
 #[test]
 #[ignore = "requires AX_QWEN_PROFILE_PACK, AX_QWEN_LOGITS_IDS_FILE and AX_QWEN_LOGITS_OUT"]
 fn qwen_linear_prefill_logits_dump() {
@@ -238,6 +241,7 @@ fn qwen_linear_prefill_logits_dump() {
     std::fs::create_dir_all(&out).unwrap();
     let chunk = env_usize("AX_QWEN_PROFILE_CHUNK").unwrap_or(1024).max(1);
     let split = env_usize("AX_QWEN_LOGITS_SPLIT") == Some(1);
+    let last_row_step = env_usize("AX_QWEN_LOGITS_LAST_ROW_STEP") == Some(1);
 
     for (index, ids) in prompts.iter().enumerate() {
         mlx_sys::clear_cache();
@@ -255,6 +259,9 @@ fn qwen_linear_prefill_logits_dump() {
             cache_only(&ids[..boundary - 1], &mut cache);
             cache_only(&ids[boundary - 1..boundary], &mut cache);
             boundary
+        } else if last_row_step && ids.len() > 1 {
+            cache_only(&ids[..ids.len() - 1], &mut cache);
+            ids.len() - 1
         } else {
             let last_chunk = (ids.len() - 1) / chunk * chunk;
             cache_only(&ids[..last_chunk], &mut cache);
@@ -272,7 +279,7 @@ fn qwen_linear_prefill_logits_dump() {
         std::fs::write(out.join(format!("{index}.f32")), bytes).unwrap();
         families::qwen3_linear::clear_qwen_prefill_pending_ffn();
         eprintln!(
-            "qwen_logits prompt={index} tokens={} split={split}",
+            "qwen_logits prompt={index} tokens={} split={split} last_row_step={last_row_step}",
             ids.len()
         );
     }
