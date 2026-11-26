@@ -9650,10 +9650,9 @@ impl MlxRunner {
             hardware.silicon_generation,
             self.cfg.layer_count,
         );
-        // Qwen hybrid prompts changed their cold arithmetic on 2026-11-25:
-        // a greedy prompt no longer stops at its last block boundary
-        // (`prompt_end_state_replaces_boundary`), and on M5 and later the
-        // prefill recurrence runs MLX's kernel. A disk snapshot written
+        // Qwen hybrid prompts changed their cold schedule on 2026-11-25: a
+        // greedy prompt no longer stops at its last block boundary
+        // (`prompt_end_state_replaces_boundary`). A disk snapshot written
         // before that must miss.
         let base = if self.cfg.linear_attention.is_some() && !self.flash_next_exact_prefix_only() {
             let schedule = if crate::fastpath::prefix_end_state_only_enabled()
