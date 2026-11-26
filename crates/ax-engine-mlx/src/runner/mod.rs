@@ -3293,6 +3293,31 @@ impl MlxRunner {
                 ),
             }
         }
+        // Flash Next sorted expert gather port, where it may run: compile the
+        // gate/up and the down specialization and check each against MLX's
+        // gather before the first prefill does.
+        if crate::model::shared::qwen4_exp_native_moe_gather::prefill_warmup_applies(
+            weights.qwen4_exp.is_some(),
+            crate::fastpath::load_kernel_warmup_enabled(),
+        ) {
+            let warm_started = std::time::Instant::now();
+            match crate::model::shared::qwen4_exp_native_moe_gather::warm_prefill_kernels(
+                cfg.hidden_size as i32,
+                cfg.moe_expert_intermediate_size as i32,
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+            ) {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed the Flash Next sorted expert gather port at model load"
+                ),
+                Err(error) => tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "sorted expert gather warm-up failed; the routed experts stay on MLX's gather"
+                ),
+            }
+        }
         // Flash Next indexed QSA prefill kernel. It is opt-in
         // (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`), so with the switch off
         // nothing is compiled. The kernel template is the model geometry

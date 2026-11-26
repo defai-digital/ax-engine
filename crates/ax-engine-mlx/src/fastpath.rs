@@ -6677,6 +6677,24 @@ pub(crate) fn flash_next_moe_prefill_sum_enabled() -> bool {
     flash_next_moe_prefill_sum_allowed() && crate::hardware::neural_accelerator_active()
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_MOE_GATHER_NAX_PREFILL` — run the routed expert
+    /// projections of a sorted Flash Next prefill gather through AX's port of
+    /// MLX's tensor-unit gather kernel with 64-row tiles, where MLX takes
+    /// 32-row tiles. The port accumulates in MLX's order, reproduces it bit
+    /// for bit and is self-checked against it before first use. Kill switch
+    /// only: the kernel applies on Neural Accelerator hosts (see
+    /// [`flash_next_moe_gather_nax_prefill_enabled`]).
+    flash_next_moe_gather_nax_prefill_allowed,
+    "AX_MLX_FLASH_NEXT_MOE_GATHER_NAX_PREFILL"
+);
+
+/// Hardware and kill-switch predicate for the Flash Next sorted expert
+/// gather port.
+pub(crate) fn flash_next_moe_gather_nax_prefill_enabled() -> bool {
+    flash_next_moe_gather_nax_prefill_allowed() && crate::hardware::neural_accelerator_active()
+}
+
 /// Hardware and kill-switch predicate for the Flash Next prefill gather
 /// padding.
 pub(crate) fn flash_next_moe_prefill_pad_enabled() -> bool {

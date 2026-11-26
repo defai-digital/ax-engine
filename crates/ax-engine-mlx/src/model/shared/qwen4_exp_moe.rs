@@ -15,6 +15,7 @@ use mlx_sys::{
 use super::mlp::{SwitchGatherInputs, switch_gather_inputs, top_k_by_argpartition};
 use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_gdn::{FusedProjections, projection_policy};
+use super::qwen4_exp_native_moe_gather::SortedGather;
 use super::qwen4_exp_native_moe_sum;
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_gather, qw_with_policy, squeeze_switch_singleton};
@@ -63,6 +64,44 @@ fn batched_gather_padding(pairs: i32, experts: i32) -> i32 {
         0
     } else {
         target - pairs
+    }
+}
+
+/// True when MLX's sorted gather of `pairs` (row, expert) pairs over a stack
+/// of `experts` runs its batched expert kernel (`GatherQMM::eval_gpu`, MLX
+/// 0.32.4), the kernel AX's tensor-unit port reproduces bit for bit.
+fn mlx_batches_sorted_gather(pairs: i32, experts: i32) -> bool {
+    experts > 0 && pairs >= 16 && pairs / experts >= BATCHED_GATHER_PAIRS_PER_EXPERT
+}
+
+/// Gate, up, SwiGLU and down of a sorted gather through AX's tensor-unit
+/// port, as `[pairs, 1, hidden]`, or `None` to stay on MLX's gather.
+fn ported_projections(
+    gathered: &SwitchGatherInputs,
+    experts: &ResolvedExperts<'_>,
+    rows: i32,
+) -> Option<MlxArray> {
+    let plan = SortedGather::plan(
+        &gathered.indices,
+        &gathered.x,
+        [experts.gate(), experts.up(), experts.down()],
+    )?;
+    let gate = plan.project(&gathered.x, experts.gate())?;
+    let up = plan.project(&gathered.x, experts.up())?;
+    let activated = swiglu(&gate, &up, rows, ROUTED_SWIGLU_STAGES);
+    let down = plan.project(&activated, experts.down())?;
+    dump_routed_projections(&gate, &up);
+    Some(down)
+}
+
+/// Test dump of the routed gate and up projections, on the path that built
+/// them.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn dump_routed_projections(gate: &MlxArray, up: &MlxArray) {
+    #[cfg(test)]
+    {
+        crate::model::qwen4_exp::profiling::dump("moe_gate", &[gate]);
+        crate::model::qwen4_exp::profiling::dump("moe_up", &[up]);
     }
 }
 
@@ -148,6 +187,9 @@ pub(crate) struct Qwen4ExpMoe {
     prefill_expert_sort: bool,
     /// Pad a short sorted prefill gather up to MLX's batched expert kernel.
     prefill_gather_padding: bool,
+    /// Run a sorted prefill gather MLX would batch through AX's tensor-unit
+    /// port.
+    prefill_gather_port: bool,
     /// The expert router and the shared-expert router as one fused weight for
     /// one-row decode; both read the layer input.
     fused_routers: Option<FusedProjections>,
@@ -423,6 +465,7 @@ impl Qwen4ExpMoe {
                 .is_some_and(|v| v == "1"),
             prefill_expert_sort: crate::fastpath::flash_next_prefill_expert_sort_enabled(),
             prefill_gather_padding: crate::fastpath::flash_next_moe_prefill_pad_enabled(),
+            prefill_gather_port: crate::fastpath::flash_next_moe_gather_nax_prefill_enabled(),
         })
     }
 
@@ -759,15 +802,34 @@ impl Qwen4ExpMoe {
         } else {
             0
         };
-        let (gather_x, gather_indices) = if padding > 0 {
-            pad_sorted_gather(&gathered.x, &gathered.indices, padding, stack)
+        // AX's tensor-unit port stands in for MLX's batched expert kernel
+        // only: a gather MLX would run one pair at a time stays there. A row
+        // of the batched kernel does not depend on the rows around it, so the
+        // port needs no padding to equal the padded gather's real rows.
+        let ported = if sorted
+            && self.prefill_gather_port
+            && (padding > 0 || mlx_batches_sorted_gather(pairs, stack))
+        {
+            ported_projections(&gathered, experts, rows)
         } else {
-            (gathered.x.clone(), gathered.indices.clone())
+            None
         };
-        let gate = qw_gather(&gather_x, experts.gate(), &gather_indices, sorted);
-        let up = qw_gather(&gather_x, experts.up(), &gather_indices, sorted);
-        let activated = swiglu(&gate, &up, rows, ROUTED_SWIGLU_STAGES);
-        let down_gathered = qw_gather(&activated, experts.down(), &gather_indices, sorted);
+        let (down_gathered, padding) = match ported {
+            Some(down_gathered) => (down_gathered, 0),
+            None => {
+                let (gather_x, gather_indices) = if padding > 0 {
+                    pad_sorted_gather(&gathered.x, &gathered.indices, padding, stack)
+                } else {
+                    (gathered.x.clone(), gathered.indices.clone())
+                };
+                let gate = qw_gather(&gather_x, experts.gate(), &gather_indices, sorted);
+                let up = qw_gather(&gather_x, experts.up(), &gather_indices, sorted);
+                let activated = swiglu(&gate, &up, rows, ROUTED_SWIGLU_STAGES);
+                let down_gathered = qw_gather(&activated, experts.down(), &gather_indices, sorted);
+                dump_routed_projections(&gate, &up);
+                (down_gathered, padding)
+            }
+        };
         // The routed-sum kernel reads the sorted rows through the inverse
         // order, padding included, so it takes the gather output as it is.
         let routed = gathered.inv_order.as_ref().and_then(|inverse| {
@@ -839,8 +901,6 @@ impl Qwen4ExpMoe {
         #[cfg(test)]
         {
             for (stage, array) in [
-                ("moe_gate", &gate),
-                ("moe_up", &up),
                 ("moe_down", &down),
                 ("moe_shared_gate", &shared_gate),
                 ("moe_shared_up", &shared_up),
@@ -1455,6 +1515,93 @@ mod tests {
             max_abs <= scale * 2.0e-2,
             "padded prefill gather drifted: {max_abs} of {scale}"
         );
+    }
+
+    /// A sorted prefill gather through AX's tensor-unit port equals MLX's
+    /// batched gather bit for bit: once where the gather qualifies as it is
+    /// (200 pairs over 8 experts) and once where MLX needs the padding the
+    /// port goes without (128 pairs over 64 experts).
+    #[test]
+    fn ported_prefill_gather_matches_the_batched_gather_bit_for_bit() {
+        if !crate::hardware::neural_accelerator_active() {
+            return;
+        }
+        for (experts, tokens) in [(8, 100i32), (64, 64)] {
+            let mut module = Qwen4ExpMoe::new(
+                128,
+                64,
+                32,
+                experts,
+                2,
+                true,
+                Qwen4ExpMoeWeights {
+                    router: bf16_dense(experts as i32, 128, 3),
+                    experts: Qwen4ExpExpertWeights::Resident(Box::new(Qwen4ExpResidentExperts {
+                        gate: mxfp4_stack(experts as i32, 64, 128, 11),
+                        up: mxfp4_stack(experts as i32, 64, 128, 23),
+                        down: mxfp4_stack(experts as i32, 128, 64, 37),
+                    })),
+                    shared_gate: bf16_dense(32, 128, 41),
+                    shared_up: bf16_dense(32, 128, 43),
+                    shared_down: bf16_dense(128, 32, 47),
+                    shared_router: bf16_dense(1, 128, 53),
+                },
+            )
+            .unwrap();
+            let values: Vec<f32> = (0..tokens * 128)
+                .map(|i| (((i * 37) % 101) as f32 - 50.0) / 40.0)
+                .collect();
+            let input = astype(
+                &reshape(&MlxArray::from_f32_slice(&values), &[1, tokens, 128], None),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            // The comparison is empty if the port declines these stacks.
+            if let Qwen4ExpExpertWeights::Resident(resident) = &module.weights.experts {
+                let pairs = MlxArray::from_raw_data(
+                    [0u32; 16].as_ptr().cast(),
+                    64,
+                    &[16],
+                    MlxDtype::Uint32,
+                );
+                let x = astype(
+                    &reshape(
+                        &MlxArray::from_f32_slice(&[0.5; 16 * 128]),
+                        &[16, 1, 128],
+                        None,
+                    ),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                assert!(
+                    SortedGather::plan(&pairs, &x, [&resident.gate, &resident.up, &resident.down])
+                        .is_some(),
+                    "the port declined the test stacks"
+                );
+            }
+            module.prefill_expert_sort = true;
+            module.prefill_gather_padding = true;
+            module.prefill_gather_port = false;
+            let stock = module
+                .forward(&input, ProjectionBatchPolicy::Shared)
+                .unwrap();
+            module.prefill_gather_port = true;
+            let ported = module
+                .forward(&input, ProjectionBatchPolicy::Shared)
+                .unwrap();
+            let (stock, ported) = (
+                astype(&stock, MlxDtype::Float32, None),
+                astype(&ported, MlxDtype::Float32, None),
+            );
+            eval(&[&stock, &ported]);
+            assert_eq!(ported.shape(), stock.shape());
+            let (a, b) = (ported.data_f32(), stock.data_f32());
+            assert!(b.iter().any(|v| *v != 0.0), "the gather produced no signal");
+            assert!(
+                a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                "ported prefill gather differs at {experts} experts, {tokens} tokens"
+            );
+        }
     }
 
     /// The block MTP verifier retains batched MoE output, so a window whose
