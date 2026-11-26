@@ -1,13 +1,13 @@
 # AX Engine Docs
 
+Learn how to install AX Engine, run local inference on Apple Silicon, connect
+applications, and measure performance.
+
 Qwen 3.8 27B and Flash Next target **MLX AXQ MXFP4 / MXFP8 with MTP**, and
 Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
 (ADR-050). The 27B MXFP8 pack is a catalog Candidate. Flash Next MXFP8
 admission is pending. Historical receipts apply to their recorded format.
 See [format policy](QWEN38-FORMAT-POLICY.md).
-
-Task-first documentation for AX Engine: install, serve, integrate, measure, and
-extend the Mac-first Apple Silicon inference runtime.
 
 ## How To Read These Docs
 

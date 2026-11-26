@@ -12,37 +12,15 @@
 
 </div>
 
-AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**. Install the macOS app with one curl command to
-download models, chat and serve OpenAI-compatible endpoints locally.
+AX Engine runs AI models locally on Apple Silicon with MLX. Use the macOS app
+to download models, chat, and serve models through an OpenAI-compatible API.
 
-[Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
+[Install for macOS](#install-ax-engine-for-macos) · [Supported models](#models) · [Performance](#performance) · [Documentation](docs/README.md)
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/ax-engine-macos-catalog.png">
   <img src="docs/images/ax-engine-macos-preview.gif" width="620" alt="AX Engine for macOS mockups with sample data showing Home, Models, Playground, Compare, API and Logs, System, and Settings.">
 </picture>
-
-The Qwen 3.8 27B and Flash Next product scope is
-**MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
-The generic pinned selectors load MXFP4 MTP packs; the Qwen 3.8 27B MXFP8
-pack is a catalog Candidate and Flash Next MXFP8 remains an explicit preview.
-Standalone affine 4-bit and 8-bit and non-MTP variants for these two models
-are unsupported. MTP execution remains explicit opt-in until its gates pass.
-
-Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
-
-The default pack is `qwen3.8-27b:axq`
-([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
-@ `b2c5354f779e430d0c1733143db848a72b71c16e`). Additional Qwen, Gemma, GLM, and
-other certified families stay supported; they are not the first-run or
-qualification center. Super-class Qwen 3.8 (2.4T) is experimental only.
-
-Browse AutomatosX serve-ready chat / coding / embedding snapshots in the
-[AutomatosX model collection on Hugging Face](https://huggingface.co/AutomatosX/models).
-Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper,
-MiniCPM-V, and others) are documented under
-[Supported Models](docs/SUPPORTED-MODELS.md).
 
 ## Performance
 
@@ -380,6 +358,23 @@ Python wheel, source builds, and troubleshooting:
 [Getting Started](docs/GETTING-STARTED.md).
 
 ## Models
+
+AX Engine supports multiple model families for chat, coding, embeddings, and
+media workflows. See the [supported model catalog](docs/SUPPORTED-MODELS.md).
+
+### Qwen 3.8 pack status
+
+The default pack is `qwen3.8-27b:axq`
+([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
+@ `b2c5354f779e430d0c1733143db848a72b71c16e`).
+
+**Qwen 3.8 27B AXQ status:** Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+
+The format policy for Qwen 3.8 27B and Flash Next covers
+**MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
+The generic aliases select the pinned MXFP4 MTP packs. Qwen 3.8 27B MXFP8
+is a catalog Candidate, and Flash Next MXFP8 remains an explicit preview.
+MTP execution requires explicit opt-in. See the [format policy](docs/QWEN38-FORMAT-POLICY.md).
 
 ### Public AutomatosX model downloads
 

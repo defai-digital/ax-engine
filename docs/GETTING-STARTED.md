@@ -1,23 +1,22 @@
 # Getting Started
 
+AX Engine runs AI models locally on Apple Silicon with MLX. It includes a
+native macOS app, an OpenAI-compatible server, SDKs, and benchmark tools.
+M5 and later are the primary hardware tier. Mac mini M4 Pro 64 GB remains a
+supported check host.
+
 Qwen 3.8 27B and Flash Next target **MLX AXQ MXFP4 / MXFP8 with MTP**, and
 Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
 (ADR-050). The 27B MXFP8 pack is a catalog Candidate. Flash Next MXFP8
 admission is pending. Historical receipts apply to their recorded format.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
-AX Engine is a Mac-first inference runtime **optimized first for Qwen 3.8 27B
-AXQ** (`qwen3.8-27b:axq`, the pinned MXFP4 MTP pack), with a local server,
-SDK bindings, and benchmark tooling. M5 and later are the primary hardware
-target. Mac mini M4 Pro 64 GB remains a supported check host. The **31.05
-tok/s** and **76.90 tok/s** MTP figures are the retired affine 6-bit campaign
-from 2026-09. They do not measure the current MXFP4 pack. MTP stays explicit
-opt-in, and MTP Tier 2 is pending. Other Certified families stay supported;
-they are not the first-run path. The repo-owned MLX runtime is the product
-path, and delegated compatibility paths keep the same AX surface for broader
-model coverage.
+The first-run CLI example uses `qwen3.8-27b:axq`, the pinned Qwen 3.8 27B
+MXFP4 MTP pack. The historical MTP figures of **31.05 tok/s** and **76.90 tok/s**
+apply to the retired affine 6-bit campaign from September 2026. MTP requires
+explicit opt-in.
 
-Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+**Qwen 3.8 27B AXQ status:** Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Fleet orchestration and NVIDIA/CUDA worker integration are provided by the
 separate [AX Serving](AX-SERVING.md) product.
