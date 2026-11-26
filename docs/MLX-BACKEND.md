@@ -55,27 +55,31 @@ against the `mlx.version` pin, not against a source build.
 
 ### MLX GDN prefill
 
-On M5 and later, shared Qwen hybrid prefill (Qwen 3.5/3.8 dense and MoE
-packs) runs its gated-delta recurrence through the published MLX gated-delta
-operation. It applies to 128–2048-token calls with 128-dimensional key/value
-heads and supported head pairs. Other shapes, single-token decode, and short
-MTP verifier windows use the AX path. The dedicated Flash Next GDN path is
-separate. `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=0` restores AX's sequential
-recurrence; `=1` turns the MLX operation on for M3/M4/M2 hosts, where it is
-off by default.
+Shared Qwen hybrid prefill (Qwen 3.5/3.8 dense and MoE packs) can run its
+gated-delta recurrence through the published MLX gated-delta operation instead
+of AX's sequential recurrence. It applies to 128–2048-token calls with
+128-dimensional key/value heads and supported head pairs. Other shapes,
+single-token decode, and short MTP verifier windows use the AX path. The
+dedicated Flash Next GDN path is separate.
+
+The operation is off under the default `exact` numerics preset.
+`--mlx-numerics fast` turns it on for M5 and later;
+`AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1` turns it on for any host and `=0`
+keeps it off under `fast`.
 
 The adapter preserves FP32 decay and recurrent state and returns the original
 activation dtype. Chunked MLX arithmetic differs numerically from AX's
 sequential recurrence (unit tests bound the difference at 5e-5 in FP32 and
-5e-4 in BF16), so a host that deviates from its default carries a
-numerics-tier token (`qwen_gdn_mlx` or `qwen_gdn_mlx=0`). A warm reply still
-equals the cold reply: both runs call the same recurrence on the same rows.
+5e-4 in BF16), so a process that runs it carries the numerics-tier token
+`qwen_gdn_mlx`. A warm reply still equals the cold reply: both runs call the
+same recurrence on the same rows.
 
 On the MacBook Pro M5 Max 128 GB with Qwen 3.8 27B MXFP4, a 1,496-row prefill
 takes 1,473 ms with the MLX operation and 1,534 ms with the sequential
-recurrence, and effective prefill rises from 976 to 1,017 tok/s with decode
-unchanged. The six benchmark prompts produce the same text either way. Longer
-generations were not compared token for token.
+recurrence. Of the three distinct 64-token greedy replies of the benchmark,
+two are the same either way and one differs; the sequential recurrence gives
+the reply of the previous release on all three. Which of the two replies is
+better was not evaluated, which is why the operation is an opt-in.
 
 See the [GDN prefill experiment](performance/mlx-gdn-prefill-2026-10-03.md)
 for reproducible kernel measurements and their limits.
@@ -400,7 +404,7 @@ what the kill switch restores.
 | `AX_MLX_DFLASH2_SELECTOR` | on | Picks each DFlash2 draft token with the checkpoint's trained candidate selector: each position's top-k logits are rescored by a low-rank pair score against the previous pick, as the drafter's reference runtime does. On the M5 Max 27B suite it accepts 2.9% more tokens per round for 0.3 ms more per round (decode +2.4%, prose +3.7%). Drafts only choose which rows the target verifies. `0` restores the plain argmax. |
 | `AX_MLX_DFLASH2_FUSED_CONV` | on | Runs the DFlash2 drafter's grouped dynamic convolution as one Metal kernel instead of a chain of slice, multiply and add ops; same values as the op chain (tested), about 0.2 ms per draft on the M5 Max. `0` restores the op chain. |
 | `AX_MLX_PREFIX_LIVE_SNAPSHOT` | on | On linear-attention models (Qwen 3.5/3.8 hybrids), the in-memory prefix store keeps a clone of the live cache instead of serializing it, and stores the end-of-prompt state for exact greedy replays. A hit then skips the deserialize and the partial-block replay (25K-token replay TTFT 39 ms instead of 190-270 ms on the M5 Max). The disk mirror still serializes. `0` restores serialized snapshots. |
-| `AX_MLX_PREFIX_END_STATE_ONLY` | on | On linear-attention models with live snapshots, a text-only greedy request keeps the end of an unaligned prompt as its end-of-prompt state alone: the cold prefill runs the uncached schedule instead of stopping at the last block boundary to capture a snapshot there (55 to 106 ms of first-token latency on the M5 Max with Qwen 3.8 27B), and a replay restores the end-of-prompt state or a grid rung, never that boundary. A replay that misses the end-of-prompt state recomputes from the rung below. Requests that sample or use logits processors keep the boundary snapshot. `0` restores the boundary split for every request. See [KV cache](KV-CACHE.md#exact-replay-on-linear-attention-models). |
+| `AX_MLX_PREFIX_END_STATE_ONLY` | on | On linear-attention models with live snapshots, a text-only greedy request keeps the end of an unaligned prompt as its end-of-prompt state alone: the cold prefill runs the uncached schedule instead of stopping at the last block boundary to capture a snapshot there (55 to 106 ms of first-token latency on the M5 Max with Qwen 3.8 27B), and a replay restores the end-of-prompt state or a grid rung, never that boundary. A replay that misses the end-of-prompt state recomputes from the rung below. Requests that sample or use logits processors keep the boundary snapshot, and so does a prompt that ends 1 to 7 tokens past a multiple of 32 on a host without the Neural Accelerator (M3, M4, M2), where the split is the cheaper schedule. `0` restores the boundary split for every request. See [KV cache](KV-CACHE.md#exact-replay-on-linear-attention-models). |
 | `AX_MLX_FLASH_NEXT_LONG_PROMPT_WIDE_CHUNK` | on (M5+) | A Flash Next prompt of 2,048 tokens or more keeps the 2,048-token prefill chunk instead of the 512-token long-prompt clamp while the whole prompt fits the index-score workspace at that chunk (32,768 tokens). Each forward streams every routed expert stack once, about 0.2 s whatever the row count, so fewer forwards are cheaper: on the M5 Max first text of a 2,233-token prompt went from 1.60 s to 1.35 s, of a 4,443-token prompt from 3.93 s to 3.56 s and of a 31,223-token prompt from 36.9 s to 33.3 s ([measurements](performance/flash-next-prefill-schedule-2026-11-25.md)). Longer prompts, expert streaming, the two-sequence prefill split and hosts without a Neural Accelerator keep the clamp. The chunk changes how rows are batched, so `0` is a numerics-tier token (`flash_next_wide_chunk=0`). |
 | `AX_MLX_MTP_VERIFY_QMM_NAX_STOCK_MIN_ROWS` | 6 | On M5 or later (macOS 26.2+) with MLX 0.32.5 or newer, verify projections of at least this many rows (up to 8) use stock NAX QMM instead of AX's verify kernels. MXFP4/MXFP8 heads 100K or wider and affine 8-bit keep AX's kernels. `0` keeps AX's kernels for every row count. Inert on other hosts and older MLX. See [the 914732419 record](performance/mlx-nax-914732419-2026-11-02.md). |
 | `AX_MLX_MTP_VERIFY_QMM_NAX_PORT` | on | On M5 or later (macOS 26.2+) when the linked MLX has no `qmv_nax` (the pinned 0.32.4 wheel), MXFP4/MXFP8 verify projections of 6-16 rows use AX's port of MLX 914732419's `fp_qmv_nax` ([ADR-053 notice](../THIRD_PARTY_NOTICES)) after a passing load-time probe against stock QMM, and the DFlash2 window uses the NAX round cost. Affine projections keep AX's kernels. `0` turns the port off. Inert on M4 and earlier and when stock `qmv_nax` is present. |
@@ -434,10 +438,12 @@ policy does not change MTP defaults or DFlash2 discovery.
 
 `ax-engine-server --mlx-numerics` selects a process-level numerics preset.
 `exact` (the default) changes no switch. `fast` turns on
-`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` for Flash Next when that variable is
-unset. An explicit environment value wins, including `0`, empty, and junk, so
-`fast` cannot override an operator who pinned the gathered path. There is no
-per-request option. The choice is logged at startup and returned as
+`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` for Flash Next and, on M5 and later,
+`AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` for the Qwen hybrids
+([MLX GDN prefill](#mlx-gdn-prefill)), each when its variable is unset. An
+explicit environment value wins, including `0`, empty, and junk, so `fast`
+cannot override an operator who pinned a path. There is no per-request
+option. The choice is logged at startup and returned as
 `mlx_numerics` from `GET /v1/memory`.
 
 Indexed QSA prefill is relaxed, not bit-exact: it attends the same selected

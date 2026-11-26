@@ -221,9 +221,11 @@ pub struct ServerArgs {
     #[arg(long = "mlx-mtp-policy", default_value = "auto", value_parser = parse_mlx_mtp_policy)]
     pub mlx_mtp_policy: ax_engine_sdk::MlxMtpPolicy,
 
-    /// Flash Next numerics preset. `exact` (default) leaves every switch at
-    /// its shipped value. `fast` opts into relaxed indexed QSA prefill unless
-    /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` is set explicitly. One process,
+    /// Numerics preset. `exact` (default) leaves every switch at its shipped
+    /// value. `fast` opts into relaxed indexed QSA prefill on Flash Next and,
+    /// on M5 and later, MLX's gated-delta prefill recurrence on the Qwen
+    /// hybrids, unless `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` or
+    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` is set explicitly. One process,
     /// one preset; there is no per-request override.
     #[arg(long = "mlx-numerics", default_value = "exact", value_parser = parse_mlx_numerics_mode)]
     pub mlx_numerics: ax_engine_sdk::MlxNumericsMode,

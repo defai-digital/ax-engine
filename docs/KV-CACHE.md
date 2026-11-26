@@ -315,9 +315,9 @@ Its replay restores the end-of-prompt state, or, when that state is missing,
 floors onto a grid rung like any other warm restore; it never starts from a
 block boundary, including one a sampled request stored, because its cold run
 did not compute the partial block as a step of its own. Which schedule a
-request takes depends only on the request and the model, so its warm run
-always repeats its cold run. Requests that sample or use logits processors
-keep the split and the boundary replay described above.
+request takes depends only on the request, the model and the host, so its
+warm run always repeats its cold run. Requests that sample or use logits
+processors keep the split and the boundary replay described above.
 
 The split cost a single-row step plus a forward of 1 to 15 rows on every cold
 unaligned prompt. On the MacBook Pro M5 Max 128 GB with Qwen 3.8 27B MXFP4,
@@ -331,6 +331,27 @@ cold first-token time of a greedy request:
 | 131 | 229 ms | 216 ms | 217 ms |
 | 257 | 338 ms | 329 ms | 339 ms |
 | 1,498 | 1,609 ms | 1,516 ms | 1,502 ms |
+
+Hosts without the Neural Accelerator (M3, M4, M2) keep the split for a prompt
+that ends 1 to 7 tokens past a multiple of 32. MLX's quantized matmul works in
+32-row tiles there and a partly filled tile costs a whole one, so the split,
+whose head ends on the tile, is the cheaper schedule for those prompts. On the
+Mac mini M4 Pro 64 GB with the same pack:
+
+| Prompt tokens | Boundary split | Shipped schedule | Schedule taken |
+|---:|---:|---:|---|
+| 17 | 379 ms | 264 ms | end-of-prompt state only |
+| 31 | 573 ms | 271 ms | end-of-prompt state only |
+| 33 | 388 ms | 388 ms | boundary split |
+| 63 | 824 ms | 513 ms | end-of-prompt state only |
+| 97 | 932 ms | 887 ms | boundary split |
+| 127 | 1,352 ms | 1,049 ms | end-of-prompt state only |
+| 143 | 1,374 ms | 1,266 ms | end-of-prompt state only |
+| 257 | 2,166 ms | 2,108 ms | boundary split |
+
+Rows that take the split differ only by run-to-run variation (that host
+carried other work during the measurement). Without the rule the unsplit
+schedule read 495 ms at 33 tokens and 2,253 ms at 257.
 
 The cost of this choice is the replay that misses the end-of-prompt state: a
 greedy prompt whose state was evicted, or one that changes only its last 1 to
@@ -463,8 +484,8 @@ signature bytes and the v4 key bytes stay the same as before the tier existed.
 A process running `exact` therefore still hits a snapshot it wrote under the
 default switches, and a snapshot written with any of those switches changed
 misses in both L1 and on disk. `--mlx-numerics fast` turns indexed QSA prefill
-on unless the environment sets that switch, which is itself a non-default
-tier.
+and, on M5 and later, the MLX gated-delta prefill recurrence on unless the
+environment sets those switches, which is itself a non-default tier.
 
 Telemetry: `ax_mlx_prefix_cache_semantic_cut_snapshots` counts stored
 semantic cuts, and the value path reports each decision separately as

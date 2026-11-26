@@ -654,13 +654,15 @@ profile, and the resolved posture is reported in route metadata as
 **Serving mode** on its Server page and in Settings › Runtime
 (`docs/MACOS-APP.md`).
 
-`--mlx-numerics {exact,fast}` is a process-level Flash Next numerics preset.
+`--mlx-numerics {exact,fast}` is a process-level numerics preset.
 `exact` is the default and changes nothing. `fast` turns on relaxed indexed
-QSA prefill (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) unless that variable is
-set in the environment, in which case the environment wins, including an
-explicit `0`. There is no per-request override. One process has one preset:
-the indexed-prefill decision is cached on first read, so a second session in
-the same process cannot switch tiers after the model has loaded. The preset
+QSA prefill for Flash Next (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) and, on
+M5 and later, MLX's gated-delta prefill recurrence for the Qwen hybrids
+(`AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX`), each unless its variable is set in
+the environment, in which case the environment wins, including an explicit
+`0`. There is no per-request override. One process has one preset: each
+decision is cached on first read, so a second session in the same process
+cannot switch tiers after the model has loaded. The preset
 is logged at startup and reported as `mlx_numerics` on `GET /v1/memory`.
 
 `fast` is not bit-exact with `exact`. The indexed kernel attends the same
