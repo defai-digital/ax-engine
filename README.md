@@ -41,11 +41,15 @@ not complete the workload.
 
 On Flash Next, decode is level with oMLX; first text is ahead at 127 to
 128 and at 2,233 input tokens, level at 1,492, and 2 to 11% behind from
-about 3,000 to 13,000 tokens. On the 27B, AX Engine's DFlash2 decode is
-ahead of Splash on this 64-token harness (111.5 against 109.3 tok/s) and
-behind it on prefill (first text 1.64 against 1.19 s at 1,492 input
-tokens) and on 256-token outputs.
+about 3,000 to 13,000 tokens. On the 27B, direct greedy decode is 2%
+ahead of oMLX and first text is ahead at 127 to 128 input tokens (0.18
+against 0.22 s) and 3% behind at 1,492 (1.57 against 1.52 s; 1.51 s with
+`--mlx-numerics fast`). AX Engine's DFlash2 decode is ahead of Splash on
+this three-prompt, 64-token harness (116.5 against 108.9 tok/s) and behind
+it on prefill (first text 1.58 against 1.19 s at 1,492 input tokens) and
+on 256-token outputs.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
+[27B first text without the block-boundary split](docs/performance/qwen38-27b-prefill-schedule-2026-11-25.md) ·
 [Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
@@ -91,10 +95,10 @@ tokens) and on 256-token outputs.
 
 | Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
 | --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+c688907a (Direct greedy) † | 35.31 | 974.34 | 0.23 | 1.63 |
-| AX Engine 8.1.0+c688907a (DFlash2) † | 111.51 | 967.37 | 0.23 | 1.64 |
-| Splash 1.7.0 (DFlash2) † | 109.25 | 1330.06 | 0.17 | 1.19 |
-| oMLX 0.8.2 (Direct greedy) † | 34.56 | 1058.69 | 0.22 | 1.51 |
+| AX Engine 8.1.0+0e642449 (Direct greedy) † | 35.39 | 981.56 | 0.18 | 1.57 |
+| AX Engine 8.1.0+0e642449 (DFlash2) † | 116.45 | 972.60 | 0.18 | 1.58 |
+| Splash 1.7.0 (DFlash2) † | 108.91 | 1324.27 | 0.17 | 1.19 |
+| oMLX 0.8.2 (Direct greedy) † | 34.56 | 1055.23 | 0.22 | 1.52 |
 | oMLX 0.8.2 (DFlash2) | 40.02 | 1027.14 | 0.30 | 1.65 |
 | mlx-lm 0.32.0 (Direct greedy) | 31.92 | 857.92 | 0.24 | 1.83 |
 | MTPLX 2.12.3 (Direct greedy) | 31.18 | 800.05 | 0.24 | 1.94 |

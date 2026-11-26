@@ -332,6 +332,10 @@ cold first-token time of a greedy request:
 | 257 | 338 ms | 329 ms | 339 ms |
 | 1,498 | 1,609 ms | 1,516 ms | 1,502 ms |
 
+The 1,498-token row was measured with `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1`
+in all three columns; with the default recurrence the end-of-prompt-only
+schedule reads 1,547 ms there.
+
 Hosts without the Neural Accelerator (M3, M4, M2) keep the split for a prompt
 that ends 1 to 7 tokens past a multiple of 32. MLX's quantized matmul works in
 32-row tiles there and a partly filled tile costs a whole one, so the split,

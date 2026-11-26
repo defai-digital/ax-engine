@@ -173,6 +173,54 @@ and charts show their medians.
   to 0.05 s faster, for both engines alike (effective prefill 936 to 967
   and 1,286 to 1,330).
 
+### 27B rows after the greedy prefill schedule change
+
+The four 27B † rows were measured again after AX Engine stopped splitting a
+greedy prompt at its last 16-token block boundary
+([what changed](../../../docs/performance/qwen38-27b-prefill-schedule-2026-11-25.md)).
+Two campaigns of three rounds each, in the order AX Engine direct, oMLX
+direct, AX Engine DFlash2, Splash DFlash2, with 150 seconds of rest before
+every arm. The Flash Next rows were not rerun and stay at commit
+`c688907a6`.
+
+`"rerun": 7` is AX Engine at commit `0e642449e` with default settings; the
+README table and chart show its medians.
+
+- Direct greedy: 35.39, 35.39 and 35.29 against 34.56, 34.55 and 34.64
+  tok/s for oMLX. First text at 127 and 128 input tokens 0.17 to 0.18 s
+  (median 0.176) against 0.22 s; at 1,492 input tokens 1.57 against
+  1.52 s (medians 1.566 and 1.517). It was 0.23 and 1.63 s in the previous
+  rerun.
+- DFlash2: 116.45, 116.26 and 116.65 against 108.96, 108.91 and 108.68
+  tok/s for Splash. First text at 127 and 128 input tokens 0.18 against
+  0.17 s; at 1,492 input tokens 1.58 against 1.19 s (medians 1.581 and
+  1.195); effective prefill 973 against 1,324.
+- The DFlash2 median moved from 111.5 to 116.5 tok/s on two of the three
+  prompts. The second decodes at 134 to 136 tok/s where it decoded at 126
+  to 127, with the same reply. The third decodes at 89 to 91 where it
+  decoded at 83 to 86, and its reply changed: the three DFlash2 replies
+  now equal the three direct replies of the same build. The decode path
+  was not changed in this work. The prefill leaves slightly different
+  state, and the cause of the higher rates on these two prompts was not
+  traced further; three prompts do not make this a general decode gain.
+- Two of the three direct replies equal oMLX's. The second changed with
+  the schedule: it is the reply of the previous release with the prefix
+  cache off, which the split schedule did not reproduce.
+
+`"rerun": 6` is AX Engine at commit `414607619`, where MLX's gated-delta
+prefill recurrence was on by default on this host. It is the configuration
+that `--mlx-numerics fast` selects from commit `0e642449e` on, and is not
+shown in the README table.
+
+- Direct greedy: 35.34, 35.22 and 35.37 against 34.59, 34.55 and 34.53
+  tok/s for oMLX; first text at 1,492 input tokens 1.51 against 1.52 s
+  (medians 1.512 and 1.518), effective prefill 1,021 against 1,056.
+- DFlash2: 113.93, 113.79 and 113.80 against 109.28, 108.89 and 108.72
+  tok/s for Splash; first text at 1,492 input tokens 1.51 against 1.19 s.
+- The third direct reply differs from the sequential recurrence's in this
+  configuration. Which reply is better was not evaluated, so the
+  recurrence became an opt-in.
+
 ### Flash Next first text by input length
 
 [first-text-by-length.jsonl](first-text-by-length.jsonl) holds a scan of
