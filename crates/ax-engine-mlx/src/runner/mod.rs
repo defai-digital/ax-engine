@@ -9425,7 +9425,12 @@ impl MlxRunner {
             && !crate::fastpath::prefix_semantic_cuts_enabled()
             && text_only
             // The restore recognizes such a request by its prompt length.
-            && ctx.is_some()
+            && ctx.is_some_and(|ctx| {
+                !unsplit_prompt_pays_a_partial_tile(
+                    ctx.prompt_len as usize,
+                    crate::hardware::neural_accelerator_active(),
+                )
+            })
             && prefill_output_token_cacheable(ctx, sampling)
             && self.live_prefix_snapshot_eligible(cache)
     }
@@ -20075,6 +20080,23 @@ fn extend_prompt_prefix_tokens(
         state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
     }
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
+}
+
+/// Whether running a prompt without the block-boundary split would cost more
+/// than the split on this host.
+///
+/// Without the Neural Accelerator, MLX's quantized matmul works in 32-row
+/// tiles and a partly filled tile costs a whole one (about 240 ms across the
+/// Qwen 3.8 27B on the Mac mini M4 Pro 64 GB). A prompt that ends 1 to 7 rows
+/// past a tile boundary is cheaper split there: the head ends on the tile and
+/// the short tail forward costs less than the extra tile (33 tokens: 389 ms
+/// split, 495 ms unsplit; 257 tokens: 2,103 against 2,253 ms). From 8 rows on
+/// the unsplit forward wins. On M5 and later the unsplit forward wins at
+/// every length measured.
+fn unsplit_prompt_pays_a_partial_tile(prompt_len: usize, neural_accelerator: bool) -> bool {
+    const QMM_TILE_ROWS: usize = 32;
+    const SHORT_TAIL_ROWS: usize = 7;
+    !neural_accelerator && (1..=SHORT_TAIL_ROWS).contains(&(prompt_len % QMM_TILE_ROWS))
 }
 
 /// Select a cold-grid restore boundary, or require a full scheduler-prefix replay.

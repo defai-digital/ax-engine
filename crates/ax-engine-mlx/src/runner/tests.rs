@@ -12642,8 +12642,10 @@ fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
     {
         return;
     }
-    const BLOCK: u32 = 4;
-    const SHARED: usize = 28;
+    // Lengths 8 or more rows past a 32-row tile, so every host runs them unsplit
+    // (`unsplit_prompt_pays_a_partial_tile`).
+    const BLOCK: u32 = 16;
+    const SHARED: usize = 48;
     let prompt = |len: usize, tail: u32| -> Vec<u32> {
         (0..len as u32)
             .map(|i| {
@@ -12724,9 +12726,10 @@ fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
         lens.sort_unstable();
         lens
     };
-    let first = prompt(30, 0);
-    let edited = prompt(30, 3);
-    let one_token_tail = prompt(29, 5);
+    const LEN: usize = 62;
+    let first = prompt(LEN, 0);
+    let edited = prompt(LEN, 3);
+    let one_token_tail = prompt(SHARED + 1, 5);
 
     // The schedule of a greedy cold run is the uncached one, and only the
     // end-of-prompt state is kept.
@@ -12736,7 +12739,7 @@ fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
     let (cold_token, cold_cache, cold) = run(&runner, 0, &first, true);
     assert_eq!(cold_token, reference_token);
     assert_eq!(cold_cache, reference_cache);
-    assert_eq!(stored(&runner), [30]);
+    assert_eq!(stored(&runner), [LEN]);
     assert_eq!(cold.stores, 1);
     assert_eq!(cold.blocked_trim_failure, 0);
 
@@ -12744,7 +12747,7 @@ fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
     let (warm_token, warm_cache, warm) = run(&runner, SHARED, &first, true);
     assert_eq!(warm_token, cold_token);
     assert_eq!(warm_cache, cold_cache);
-    assert_eq!((warm.hits, warm.reused_tokens), (1, 30));
+    assert_eq!((warm.hits, warm.reused_tokens), (1, LEN as u32));
 
     // An edited tail has no end state; it recomputes like its cold run.
     let fresh = new_runner(1024, true);
@@ -12781,14 +12784,14 @@ fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
     // Where the last grid rung is the block boundary, the rung is still
     // captured, and a follow-up turn restores it.
     const RUNG: usize = 1024;
-    let long = prompt(RUNG + 2, 0);
-    let followup = prompt(RUNG + 17, 0);
+    let long = prompt(RUNG + 10, 0);
+    let followup = prompt(RUNG + 26, 0);
     let (long_token, long_cache, _) = run(&uncached, 0, &long, true);
     let (followup_cold_token, followup_cold_cache, _) = run(&uncached, 0, &followup, true);
     let gridded = new_runner(1024, true);
     let (token, cache, _) = run(&gridded, 0, &long, true);
     assert_eq!((token, &cache), (long_token, &long_cache));
-    assert_eq!(stored(&gridded), [RUNG, RUNG + 2]);
+    assert_eq!(stored(&gridded), [RUNG, RUNG + 10]);
     let (token, cache, telemetry) = run(&gridded, RUNG, &followup, true);
     assert_eq!((telemetry.hits, telemetry.reused_tokens), (1, RUNG as u32));
     assert_eq!(token, followup_cold_token);
@@ -12858,4 +12861,26 @@ fn linear_prefill_disk_snapshots_carry_the_schedule_epoch() {
             && signature.matches(";linear_prefill=").count() == 1,
         "{signature}"
     );
+}
+
+#[test]
+fn hosts_without_the_neural_accelerator_keep_the_split_just_past_a_matmul_tile() {
+    for (len, accelerated, split) in [
+        (33, false, true),
+        (39, false, true),
+        (40, false, false),
+        (63, false, false),
+        (64, false, false),
+        (127, false, false),
+        (257, false, true),
+        (1498, false, false),
+        (33, true, false),
+        (257, true, false),
+    ] {
+        assert_eq!(
+            unsplit_prompt_pays_a_partial_tile(len, accelerated),
+            split,
+            "{len} tokens, accelerated={accelerated}"
+        );
+    }
 }
