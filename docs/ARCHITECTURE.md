@@ -185,8 +185,8 @@ AX does not treat YAML or JSON as a runtime graph language. Model-provided data
 must not name arbitrary functions, enable uncertified fast paths, or assert its
 own support tier. This keeps new model onboarding data-driven where semantics
 are declarative without moving correctness-critical execution logic out of
-compiled, testable code. See
-[ADR-023](../.internal/adr/ADR-023-DATA-DRIVEN-MODEL-DESCRIPTORS.md).
+compiled, testable code. See the
+[model support policy](MODEL-SUPPORT-POLICY.md) for admission criteria.
 
 Native sessions bind `EngineCore::set_generation_kind` from the manifest so the
 scheduler plans `DenoiseStep` for DiffusionGemma after prefill. Runners emit

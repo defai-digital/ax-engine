@@ -29,13 +29,8 @@ See `examples/go/go.mod` for a working example.
 
 ## Install
 
-Once published:
-
-```bash
-go get github.com/ax-engine/ax-engine-go
-```
-
-From the repository root (local development):
+Use the local module with the `replace` directive above. Build the
+examples from the repository root:
 
 ```bash
 cd examples/go && go build ./...
@@ -88,13 +83,16 @@ client := axengine.NewClient(&axengine.ClientOptions{
 
 ```go
 // GET /health
-resp, err := client.Health(ctx)
+health, err := client.Health(ctx)
 
 // GET /v1/runtime (ax-engine server info)
 info, err := client.Runtime(ctx)
 
+// GET /v1/models (loaded model registry)
+models, err := client.Models(ctx)
+
 // Native ax-engine generate (token-based)
-resp, err := client.Generate(ctx, axengine.PreviewGenerateRequest{
+generation, err := client.Generate(ctx, axengine.PreviewGenerateRequest{
     InputTokens:     []int{1, 2, 3},
     MaxOutputTokens: axengine.Ptr(32),
 })
@@ -103,22 +101,27 @@ resp, err := client.Generate(ctx, axengine.PreviewGenerateRequest{
 report, err := client.Submit(ctx, req)
 snap,   err := client.RequestSnapshot(ctx, report.RequestID)
 step,   err := client.Step(ctx)
-snap,   err := client.Cancel(ctx, report.RequestID)
+cancelled, err := client.Cancel(ctx, report.RequestID)
+
+// Multi-model management
+modelStep, err := client.StepModel(ctx, modelID)
+loaded,   err := client.LoadModel(ctx, loadRequest)
+unloaded, err := client.UnloadModel(ctx, unloadRequest)
 
 // OpenAI-compatible
-resp, err := client.Completion(ctx, axengine.OpenAiCompletionRequest{
+completion, err := client.Completion(ctx, axengine.OpenAiCompletionRequest{
     Prompt:    "Hello from Go",
     MaxTokens: axengine.Ptr(64),
 })
 
-resp, err := client.ChatCompletion(ctx, axengine.OpenAiChatCompletionRequest{
+chat, err := client.ChatCompletion(ctx, axengine.OpenAiChatCompletionRequest{
     Messages: []axengine.OpenAiChatMessage{
         {Role: "user", Content: "Hello!"},
     },
     MaxTokens: axengine.Ptr(64),
 })
 
-resp, err := client.Embeddings(ctx, axengine.OpenAiEmbeddingRequest{
+embeddings, err := client.Embeddings(ctx, axengine.OpenAiEmbeddingRequest{
     Input:     []int{1, 2, 3},
     Pooling:   axengine.Ptr("last"),
     Normalize: axengine.Ptr(true),
@@ -127,9 +130,10 @@ resp, err := client.Embeddings(ctx, axengine.OpenAiEmbeddingRequest{
 
 ### Streaming
 
-Both streaming methods return a data channel and an error channel. The data
-channel is closed when the stream ends; the error channel carries at most one
-error.
+`StreamGenerate`, `StreamCompletion`, and `StreamChatCompletion` return a
+data channel and an error channel. The data channel closes when the stream
+ends. The error channel carries at most one error. Cancel the context if
+you stop reading before the stream ends.
 
 ```go
 // Streaming chat

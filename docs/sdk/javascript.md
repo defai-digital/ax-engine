@@ -1,7 +1,8 @@
 # JavaScript / TypeScript SDK
 
-`sdk/javascript` is the JavaScript and TypeScript SDK for AX Engine,
-published as `@ax-engine/sdk`.
+`sdk/javascript` contains the JavaScript and TypeScript SDK for AX Engine.
+Install it from a checkout and import it as `@ax-engine/sdk`. Node.js 24+
+is the supported Node runtime.
 
 It is intentionally thin:
 
@@ -19,18 +20,19 @@ The current package provides:
 - JSON helpers for:
   `health()`, `runtime()`, `models()`, `generate()`, `submit()`,
   `requestSnapshot()`, `cancel()`, `step()`, and `embeddings()`
+- loaded-model management with `loadModel()` and `unloadModel()`
 - OpenAI-compatible helpers through `completion()` and `chatCompletion()`
 - SSE streaming through `streamGenerate()`, `streamCompletion()`, and
   `streamChatCompletion()`
-- LangChain integration via `@ax-engine/sdk/langchain` — `ChatAXEngine` and
-  `AXEngineLLM` backed by the OpenAI-compatible server endpoints
+- tool calling on compatible models with `tools` and `tool_choice` in chat
+  requests, or `bindTools()` on the LangChain chat adapter
+- LangChain integration via `@ax-engine/sdk/langchain` with `ChatAXEngine`
+  and `AXEngineLLM` backed by the OpenAI-compatible server endpoints
 
 It does not yet provide:
 
 - tokenizer utilities
 - model-aware chat templating
-- a published npm release workflow
-- tool/function calling helpers
 
 The package source is plain ESM JavaScript plus checked-in `.d.ts` files. This
 keeps the runtime dependency-free while still supporting TypeScript consumers.

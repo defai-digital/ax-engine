@@ -11,6 +11,11 @@ rendered as zero-height bars. No timestamps, no randomness.
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, MTPLX, OMLX, MLX
+
 import json
 from pathlib import Path
 
@@ -26,10 +31,10 @@ LANE_LABELS = {
     "mlx_lm": "mlx-lm 0.31.3",
 }
 LANE_COLORS = {
-    "ax_engine": "#176c37",
-    "mtplx": "#9a6a00",
-    "omlx": "#1f5f8b",
-    "mlx_lm": "#6b7a72",
+    "ax_engine": AX,
+    "mtplx": MTPLX,
+    "omlx": OMLX,
+    "mlx_lm": MLX,
 }
 
 

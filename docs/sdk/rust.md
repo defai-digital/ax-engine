@@ -106,7 +106,6 @@ max_batch_tokens:         2048
 backend_policy:           MlxOnly
 resolved_backend:         MlxPreview
 mlx_disable_ngram_acceleration: false
-mlx_kv_compression:       disabled
 ```
 
 `PreviewSessionConfigRequest` is the high-level builder form used by the
@@ -188,30 +187,34 @@ co-decoding or holding KV alongside later work on the same session.
 For running multiple requests concurrently on the MLX path:
 
 ```rust
-// 1. Submit one or more requests
-let id1 = session.submit_generate(request1)?;
-let id2 = session.submit_generate(request2)?;
+use ax_engine_sdk::SessionRequestState;
 
-// 2. Drive the engine step by step
-loop {
-    let report = session.step_report()?;
-    // inspect report.requests for per-request state
-    if all_done { break; }
+let first = session.submit_generate(request1)?;
+let second = session.submit_generate(request2)?;
+
+while [first, second].iter().any(|&id| {
+    session.request_report(id).is_some_and(|report| {
+        !matches!(
+            report.state,
+            SessionRequestState::Finished | SessionRequestState::Cancelled | SessionRequestState::Failed
+        )
+    })
+}) {
+    session.step_report()?;
 }
 
-// 3. Attach a stream to an already-submitted request
-let mut stream = session.stream_request(id1)?;
-
-// 4. Cancel
-session.cancel_request(id2)?;
+let first_result = session.request_report(first);
+let second_result = session.request_report(second);
 ```
 
 `submit_generate` admits the request to the engine and returns its ID.
-`step_report()` calls `EngineCore::step()` once and returns an `EngineStepReport`
-covering all active requests. `stream_request()` attaches a `GenerateStream`
-to an already-submitted request. Only the MLX path supports this pattern;
-calling `step` or `stream_request` with a delegated backend returns
-`EngineSessionError::LlamaCppDoesNotSupportLifecycle`.
+`step_report()` advances the active requests and returns an
+`EngineStepReport`. Read each request's state through `request_report(id)`.
+Use `cancel_request(id)` to stop a live request, or use `stream_generate()`
+to submit and stream one request through the iterator API.
+
+For the llama.cpp server path, `submit_generate()` and `step_report()` manage
+delegated request streams. `step()` is the MLX scheduler primitive.
 
 ### Embeddings (MLX only)
 
@@ -414,20 +417,9 @@ boundaries through keys such as
 `ax_mlx_gemma4_unified_audio_inputs`,
 `ax_mlx_gemma4_unified_video_inputs`, and
 `ax_mlx_gemma4_unified_prefix_cache_disabled`.
-Helper methods:
-
-| Method | Key read |
-|---|---|
-| `kv_compression_active()` | `ax_mlx_kv_compression_status` |
-| `kv_compression_preset_code()` | `ax_mlx_kv_compression_preset` |
-| `kv_capacity_kib()` | `ax_mlx_kv_capacity_kib` |
-| `linear_state_layers()` | `ax_mlx_kv_linear_state_layers` |
-
-The full set of available keys is defined by the constant arrays in
-`crates/ax-engine-core/src/scheduler.rs`:
-`ROUTE_DECISION_AX_MLX_KV_KEYS`, `ROUTE_DECISION_AX_MLX_MODEL_KEYS`,
-`ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS`,
-`ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS`.
+The public `ROUTE_DECISION_AX_MLX_KV_KEYS` and
+`ROUTE_DECISION_AX_MLX_MODEL_KEYS` arrays in
+`crates/ax-engine-core/src/scheduler.rs` list the named KV and model fields.
 
 ---
 
@@ -453,8 +445,8 @@ to import `ax-engine-core` to handle session errors.
 |---|---|---|---|
 | `generate` | Yes | Yes | Yes |
 | `stream_generate` | Yes | Yes | Yes |
-| `submit_generate` + `step_report` | Yes | No | Yes (no `step`) |
-| `stream_request` (attach to submitted) | Yes | No | No |
+| `submit_generate` + `step_report` | Yes | No | HTTP server path |
+| `step` (MLX scheduler) | Yes | No | No |
 | `embed` / `embed_batch` | Yes | No | No |
 | `transcribe_audio` (Whisper) | Yes | No | No |
 | Deterministic mode | Yes | No | No |
@@ -468,7 +460,7 @@ to import `ax-engine-core` to handle session errors.
 
 Set `GenerateSampling.json_schema_strict = true` with `json_schema` to require
 native MLX grammar enforcement. Unsupported constraints or compilation errors
-return `SessionError::InvalidJsonConstraint` before assigning a request ID or
+return `EngineSessionError::InvalidJsonConstraint` before admitting the request or
 enqueueing work. Delegated backends reject this strict mode explicitly.
 
 `prepare_json_constraint()` returns `JsonConstraintStatus::Disabled`, `Enforced`,

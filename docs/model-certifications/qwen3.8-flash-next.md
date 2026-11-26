@@ -282,7 +282,7 @@ not qualify model quality, long contexts, performance or MTP-S/P/D. The
 older 47-file pack receipts below remain historical and do not bind the
 15 changed trunk shards in this revision.
 
-[Current-HEAD validation](../../benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-head-validation/README.md)
+[October 5, 2026 validation](../../benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-head-validation/README.md)
 rebinds the same pack to a server built from clean source `7efa5516` on the
 same Mac Studio M2 Ultra, 192 GiB, internal SSD. The functional controls repeat
 unchanged. The frozen 105-item QA cohort passes 101/105 in both direct and
@@ -300,7 +300,8 @@ draft acceptance (client-side timings, single host, no reference baseline), so
 MTP is not accelerating this pack and no speedup is claimed. These controls do
 not qualify model quality, performance, memory or MTP-S/P/D. Their performance
 figures (prefill and decode) predate the prefill and decode changes; the
-[release gates](#direct-default-release-gates-2026-10-05) supersede them.
+[release gates on the larger host](#direct-default-release-gates-on-the-larger-host-2026-10-05)
+supersede them.
 
 To run the explicit experimental route after downloading the pinned pack:
 

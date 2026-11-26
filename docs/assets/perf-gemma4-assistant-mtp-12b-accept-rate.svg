@@ -22,37 +22,37 @@
 <line x1="64" y1="111.9" x2="560" y2="111.9" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>
 <text x="568" y="106.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626" data-label="highest median">highest: 99.0%</text>
 <text x="146.7" y="398" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
-<circle cx="134.4" cy="129.9" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="137.5" cy="133.7" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="140.5" cy="126.4" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="143.6" cy="123.3" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<line x1="146.7" y1="123.3" x2="146.7" y2="133.7" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<line x1="134.4" y1="123.3" x2="158.9" y2="123.3" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<line x1="134.4" y1="133.7" x2="158.9" y2="133.7" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<rect x="129.7" y="125.6" width="34.0" height="5.2" rx="2" fill="#2eaf5f" fill-opacity="0.18" stroke="#2eaf5f" stroke-opacity="0.9" stroke-width="1.8"/>
-<line x1="129.7" y1="128.1" x2="163.7" y2="128.1" stroke="#2eaf5f" stroke-opacity="0.96" stroke-width="2.6"/>
+<circle cx="134.4" cy="129.9" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="137.5" cy="133.7" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="140.5" cy="126.4" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="143.6" cy="123.3" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<line x1="146.7" y1="123.3" x2="146.7" y2="133.7" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<line x1="134.4" y1="123.3" x2="158.9" y2="123.3" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<line x1="134.4" y1="133.7" x2="158.9" y2="133.7" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<rect x="129.7" y="125.6" width="34.0" height="5.2" rx="2" fill="#37b67c" fill-opacity="0.18" stroke="#37b67c" stroke-opacity="0.9" stroke-width="1.8"/>
+<line x1="129.7" y1="128.1" x2="163.7" y2="128.1" stroke="#37b67c" stroke-opacity="0.96" stroke-width="2.6"/>
 <text x="169.7" y="132.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">98.4%</text>
 <text x="312.0" y="398" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
-<circle cx="299.8" cy="122.9" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="302.8" cy="133.0" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="305.9" cy="100.8" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="308.9" cy="86.0" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<line x1="312.0" y1="86.0" x2="312.0" y2="133.0" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<line x1="299.8" y1="86.0" x2="324.2" y2="86.0" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<line x1="299.8" y1="133.0" x2="324.2" y2="133.0" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<rect x="295.0" y="97.1" width="34.0" height="28.3" rx="2" fill="#2eaf5f" fill-opacity="0.18" stroke="#2eaf5f" stroke-opacity="0.9" stroke-width="1.8"/>
-<line x1="295.0" y1="111.9" x2="329.0" y2="111.9" stroke="#2eaf5f" stroke-opacity="0.96" stroke-width="2.6"/>
+<circle cx="299.8" cy="122.9" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="302.8" cy="133.0" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="305.9" cy="100.8" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="308.9" cy="86.0" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<line x1="312.0" y1="86.0" x2="312.0" y2="133.0" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<line x1="299.8" y1="86.0" x2="324.2" y2="86.0" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<line x1="299.8" y1="133.0" x2="324.2" y2="133.0" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<rect x="295.0" y="97.1" width="34.0" height="28.3" rx="2" fill="#37b67c" fill-opacity="0.18" stroke="#37b67c" stroke-opacity="0.9" stroke-width="1.8"/>
+<line x1="295.0" y1="111.9" x2="329.0" y2="111.9" stroke="#37b67c" stroke-opacity="0.96" stroke-width="2.6"/>
 <text x="335.0" y="115.9" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">99.0%</text>
 <text x="477.3" y="398" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
-<circle cx="465.1" cy="203.0" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="468.2" cy="122.8" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<circle cx="471.2" cy="173.1" r="1.45" fill="#2eaf5f" fill-opacity="0.46"/>
-<line x1="477.3" y1="122.8" x2="477.3" y2="203.0" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<line x1="465.1" y1="122.8" x2="489.6" y2="122.8" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<line x1="465.1" y1="203.0" x2="489.6" y2="203.0" stroke="#2eaf5f" stroke-opacity="0.86" stroke-width="1.8"/>
-<rect x="460.3" y="147.9" width="34.0" height="40.1" rx="2" fill="#2eaf5f" fill-opacity="0.18" stroke="#2eaf5f" stroke-opacity="0.9" stroke-width="1.8"/>
-<line x1="460.3" y1="173.1" x2="494.3" y2="173.1" stroke="#2eaf5f" stroke-opacity="0.96" stroke-width="2.6"/>
+<circle cx="465.1" cy="203.0" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="468.2" cy="122.8" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<circle cx="471.2" cy="173.1" r="1.45" fill="#37b67c" fill-opacity="0.46"/>
+<line x1="477.3" y1="122.8" x2="477.3" y2="203.0" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<line x1="465.1" y1="122.8" x2="489.6" y2="122.8" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<line x1="465.1" y1="203.0" x2="489.6" y2="203.0" stroke="#37b67c" stroke-opacity="0.86" stroke-width="1.8"/>
+<rect x="460.3" y="147.9" width="34.0" height="40.1" rx="2" fill="#37b67c" fill-opacity="0.18" stroke="#37b67c" stroke-opacity="0.9" stroke-width="1.8"/>
+<line x1="460.3" y1="173.1" x2="494.3" y2="173.1" stroke="#37b67c" stroke-opacity="0.96" stroke-width="2.6"/>
 <text x="500.3" y="177.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">96.7%</text>
-<rect x="64.0" y="433" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.72"/>
+<rect x="64.0" y="433" width="10" height="10" rx="2" fill="#37b67c" fill-opacity="0.72"/>
 <text x="78.0" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX assistant MTP</text>
 </svg>

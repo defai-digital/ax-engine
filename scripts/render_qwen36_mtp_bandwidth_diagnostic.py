@@ -12,6 +12,11 @@ multiple committed tokens per target verifier cycle.
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import AX, AX_DARK, MTPLX, MTPLX_DARK, LIGHTNING, LIGHTNING_DARK
+
 import argparse
 import html
 import json
@@ -51,9 +56,9 @@ LEGACY_ENGINE_LABELS = {
 ENGINE_ORDER = ("ax_engine", "mtplx", "lightning_mlx")
 TARGET_ORDER = ("Qwen3.6 27B 4-bit", "Qwen3.6 35B-A3B 4-bit")
 ENGINE_COLORS = {
-    "ax_engine": ("#2eaf5f", "#176c37"),
-    "mtplx": ("#f2b705", "#9a6a00"),
-    "lightning_mlx": ("#2563eb", "#1d4ed8"),
+    "ax_engine": (AX, AX_DARK),
+    "mtplx": (MTPLX, MTPLX_DARK),
+    "lightning_mlx": (LIGHTNING, LIGHTNING_DARK),
 }
 
 WIDTH = 940

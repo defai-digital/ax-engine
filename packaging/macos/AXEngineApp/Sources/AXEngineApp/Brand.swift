@@ -49,9 +49,8 @@ enum Brand {
         static let code = SwiftUI.Font.system(size: 12.5, design: .monospaced)
         static let stat = SwiftUI.Font.system(size: 19, weight: .semibold).monospacedDigit()
     }
-    static var logo: NSImage? {
+    @MainActor static let logo: NSImage? =
         Bundle.main.url(forResource: "AppIcon", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
-    }
 
     static func tint(_ kind: ServerStatusKind) -> Color {
         switch kind {

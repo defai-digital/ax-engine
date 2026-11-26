@@ -233,6 +233,7 @@ allowlist, not “any downloaded model”:
 | --- | --- |
 | Qwen 3.5 9B, Qwen 3.6 27B / 35B | Manifest family + architecture signature must match the requested `model_id` |
 | Qwen3-Coder-Next | Same manifest-authoritative check (`qwen3_next` 512-expert signature) |
+| Qwen3-Next 80B-A3B | Manifest-authoritative check for its own `qwen3_next` architecture signature |
 | Gemma 4 12B / 26B / 31B | Same manifest-authoritative check |
 | EmbeddingGemma 300M / 2, Qwen3-Embedding 0.6B / 4B / 8B | Embedding co-residency: serve `/v1/chat/completions` and `/v1/embeddings` from one process, routed by `model` |
 
@@ -249,8 +250,8 @@ Routing, memory preflight, idle eviction, and arbiter behavior:
 
 ## Getting Model Artifacts
 
-AX Engine requires pre-sanitized MLX safetensors plus a `model-manifest.json`.
-Two recommended sources:
+AX Engine loads supported safetensors with a `model-manifest.json` and applies
+weight transforms where the architecture requires them. Two model sources:
 
 - [AutomatosX](https://huggingface.co/AutomatosX) — AX-branded packs built for
   this engine. Chat packs bundle the speculative-decode extras in one repo
@@ -261,18 +262,17 @@ Two recommended sources:
   per-tensor quantization; current MX embedding packs cover EmbeddingGemma 2 and
   Qwen3-Embedding 0.6B/4B/8B. EmbeddingGemma 300M has a pinned upstream fallback
   because its legacy AutomatosX repository was unavailable during review.
-  Other packs include Qwen3-VL 30B-A3B Instruct AXQ. The
-  managed catalog contains all 29 public repositories in the organization;
-  every currently published Qwen 3.5, Qwen 3.6, Gemma 4, and Qwen3-VL 30B
-  AXQ variant is represented. The AXQ Qwen 3.6 27B and Qwen3-VL 30B
-  snapshots are explicitly labeled `candidate` until their checkpoint
-  certification gates pass.
+  The managed catalog reflects aliases shipped with the runtime. Some aliases
+  refer to snapshots that are no longer public. See the
+  [live AutomatosX collection](https://huggingface.co/AutomatosX/models)
+  for public downloads. The AXQ Qwen 3.6 27B and Qwen3-VL 30B snapshots are
+  labeled `candidate` pending their checkpoint certification gates.
 - [mlx-community](https://huggingface.co/mlx-community) — community MLX
-  snapshots, already converted and validated. **Not shown in the managed
-  download catalog**: their aliases below are serve conveniences and `serve`
-  can acquire the exact repo automatically; use an explicit raw `org/repo`
-  form for a separate download. Two-repo MTP packaging uses the
-  `download-mtp` flow below.
+  snapshots. AX Engine lists entries with runtime presets under
+  **Models → Catalog → All models** and in `community_targets` in
+  `ax-engine download --list --json`. Other public repositories can be
+  acquired by exact `org/repo` ID. Runtime admission validates each model when
+  it loads. Two-repository MTP packaging uses the `download-mtp` flow below.
 
 `ax-engine download`, `download_model()`, and `scripts/download_model.py`
 download weights and auto-generate the manifest when a repo does not ship one.
@@ -288,22 +288,16 @@ ax-engine download --list
 Download by managed alias:
 
 ```text
-ax-engine download ax-qwen3.5-9b --json
-ax-engine download ax-qwen3.6-35b --json
-ax-engine download ax-qwen3.6-27b --json
-ax-engine download ax-gemma4-12b --json
-ax-engine download ax-gemma4-31b --json
-ax-engine download ax-qwen3-coder-next --json
-ax-engine download ax-embeddinggemma-300m --json
-ax-engine download ax-qwen3-embedding-4b --json
+ax-engine download qwen3.8-27b:axq --json
+ax-engine download qwen3.8-flash-next:axq --json
+ax-engine download tiel-coder-35b:axq --json
 ```
 
 Download and serve in one command:
 
 ```text
-ax-engine serve ax-qwen3.6-35b --port 31418
-ax-engine serve ax-qwen3-coder-next --port 31418
-ax-engine serve qwen3.6-27b:axq --port 31418
+ax-engine serve qwen3.8-27b:axq --port 31418
+ax-engine serve qwen3.5-9b --port 31418
 ```
 
 `serve` resolves the exact matching Hub cache snapshot first and downloads it
@@ -323,7 +317,7 @@ ax-engine download mlx-community/gpt-oss-20b-MXFP4-Q4 --json
 Copy a snapshot to an explicit directory only when needed:
 
 ```text
-ax-engine download ax-qwen3.6-35b --dest /Volumes/Models/ax-qwen3.6-35b
+ax-engine download qwen3.8-27b:axq --dest /path/to/models/qwen3.8-27b
 ```
 
 Python SDK:
@@ -334,10 +328,8 @@ from ax_engine import download_model
 path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
 ```
 
-Built-in aliases. The AutomatosX tables are the managed download catalog; the
-mlx-community-backed tables are **serve aliases** — they resolve the exact
-cache snapshot and acquire it when missing, while separate downloads use the
-raw repo id form:
+The following tables map built-in aliases to repositories. Use exact
+`org/repo` IDs to download community checkpoints independently of aliases.
 
 **Serve aliases — primary productivity (Gemma / Qwen / GLM)**
 

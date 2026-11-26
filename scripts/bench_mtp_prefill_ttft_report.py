@@ -20,6 +20,11 @@ Usage:
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import MTPLX, AX, AX_DARK
+
 import argparse
 import html
 import json
@@ -39,9 +44,9 @@ ENGINE_LABELS = {
 }
 VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · AX Engine v5.2.2"
 ENGINE_COLORS = {
-    "mtplx": "#14532d",
-    "ax_engine": "#f97316",
-    "ax_engine_ngram": "#eab308",
+    "mtplx": MTPLX,
+    "ax_engine": AX,
+    "ax_engine_ngram": AX_DARK,
 }
 ENGINE_ORDER = [
     "mtplx",

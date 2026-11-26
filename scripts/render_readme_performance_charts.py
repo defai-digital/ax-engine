@@ -3,6 +3,27 @@
 
 from __future__ import annotations
 
+import sys as _chart_sys
+from pathlib import Path as _ChartPath
+_chart_sys.path.insert(0, str(_ChartPath(__file__).resolve().parent))
+from chart_palette import (
+    AX,
+    AX_DARK,
+    AX_DEEPER,
+    AX_LIGHT,
+    AX_MID,
+    LIGHTNING,
+    LIGHTNING_DARK,
+    MLX,
+    MLX_DARK,
+    MTPLX,
+    MTPLX_DARK,
+    OMLX,
+    OMLX_DARK,
+    REFERENCE,
+    REFERENCE_DARK,
+)
+
 import argparse
 import importlib.util
 import json
@@ -62,9 +83,9 @@ PROMPT_TOKENS = (128, 512, 2048)
 AX_ENGINE_CHART_LABEL = f"AX Engine v{AX_ENGINE_VERSION}"
 
 SERIES = [
-    ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
-    ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", "#137a3d", "#0b4f28"),
+    ("mlx_lm", "mlx-lm 0.31.3", MLX, MLX_DARK),
+    ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, AX, AX_DARK),
+    ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", AX_DARK, AX_DEEPER),
 ]
 
 
@@ -281,10 +302,10 @@ MTP_LEFT = 52
 MTP_RIGHT = 354
 MTP_TOP = 50
 MTP_BOTTOM = 168
-MTP_AX_COLOR = "#2eaf5f"
-MTP_AX_DOT = "#176c37"
-MTP_MTPLX_COLOR = "#f2b705"
-MTP_MTPLX_DOT = "#9a6a00"
+MTP_AX_COLOR = AX
+MTP_AX_DOT = AX_DARK
+MTP_MTPLX_COLOR = MTPLX
+MTP_MTPLX_DOT = MTPLX_DARK
 
 MTP_CHART_OUTPUTS = {
     ("speed", "tok_s"): "perf-mtp-speed-tok-s.svg",
@@ -332,10 +353,10 @@ MTP_6BIT_RIGHT = 1008.0
 MTP_6BIT_TOP = 68.0
 MTP_6BIT_BOTTOM = 768.0
 MTP_6BIT_LABEL_X = 72
-MTP_6BIT_DIRECT_COLOR = "#2eaf5f"
-MTP_6BIT_DIRECT_TEXT = "#176c37"
-MTP_6BIT_MTP_COLOR = "#c084fc"
-MTP_6BIT_MTP_TEXT = "#7e22ce"
+MTP_6BIT_DIRECT_COLOR = AX_LIGHT
+MTP_6BIT_DIRECT_TEXT = AX_MID
+MTP_6BIT_MTP_COLOR = AX
+MTP_6BIT_MTP_TEXT = AX_DARK
 MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
@@ -360,14 +381,14 @@ EMBEDDING_CHART_LEFT = 360.0
 EMBEDDING_CHART_RIGHT = 1012.0
 EMBEDDING_CHART_TOP = 82.0
 EMBEDDING_CHART_ROW_GAP = 30.0
-EMBEDDING_CHART_POSITIVE = "#2eaf5f"
-EMBEDDING_CHART_POSITIVE_TEXT = "#176c37"
+EMBEDDING_CHART_POSITIVE = AX
+EMBEDDING_CHART_POSITIVE_TEXT = AX_DARK
 EMBEDDING_CHART_NEGATIVE = "#dc2626"
 EMBEDDING_CHART_NEGATIVE_TEXT = "#991b1b"
-EMBEDDING_BOX_REFERENCE_COLOR = "#f2b705"
-EMBEDDING_BOX_REFERENCE_DOT_COLOR = "#9a6a00"
-EMBEDDING_BOX_AX_COLOR = "#2eaf5f"
-EMBEDDING_BOX_AX_DOT_COLOR = "#176c37"
+EMBEDDING_BOX_REFERENCE_COLOR = MLX
+EMBEDDING_BOX_REFERENCE_DOT_COLOR = MLX_DARK
+EMBEDDING_BOX_AX_COLOR = AX
+EMBEDDING_BOX_AX_DOT_COLOR = AX_DARK
 
 # ---------------------------------------------------------------------------
 # N-gram chart constants (shared by all three ngram charts)
@@ -381,21 +402,21 @@ NGRAM_TOP = 56
 NGRAM_BOTTOM = 228
 
 NGRAM_OPPORTUNITY_SERIES: list[tuple[str, str, str, str]] = [
-    ("ax_direct", "ax direct", "#86efac", "#16a34a"),
-    ("ax_ngram", "ax + n-gram", "#2eaf5f", "#176c37"),
-    ("lightning", "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("ax_direct", "ax direct", AX_LIGHT, AX_MID),
+    ("ax_ngram", "ax + n-gram", AX, AX_DARK),
+    ("lightning", "lightning (temp=0.6)", LIGHTNING, LIGHTNING_DARK),
     ("oracle", "oracle (bound)", "#d1d5db", "#6b7280"),
 ]
 
 NGRAM_TOKS_SERIES: list[tuple[str, str, str, str]] = [
-    ("ax_direct", "ax direct", "#86efac", "#16a34a"),
-    ("ax_ngram", "ax + n-gram", "#2eaf5f", "#176c37"),
-    ("lightning", "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("ax_direct", "ax direct", AX_LIGHT, AX_MID),
+    ("ax_ngram", "ax + n-gram", AX, AX_DARK),
+    ("lightning", "lightning (temp=0.6)", LIGHTNING, LIGHTNING_DARK),
 ]
 
 NGRAM_ACCEPT_SERIES: list[tuple[str, str, str, str]] = [
-    ("ax_ngram", "ax n-gram", "#2eaf5f", "#176c37"),
-    ("lightning", "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("ax_ngram", "ax n-gram", AX, AX_DARK),
+    ("lightning", "lightning (temp=0.6)", LIGHTNING, LIGHTNING_DARK),
 ]
 
 NGRAM_OPPORTUNITY_CATEGORIES: list[tuple[str, str]] = [
@@ -1842,9 +1863,9 @@ MTP_PEER_TOP = 112.0
 MTP_PEER_ROW_GAP = 118.0
 MTP_PEER_BAR_H = 20.0
 MTP_PEER_COLORS = {
-    "ax_engine": "#2eaf5f",
-    "mtplx": "#f2b705",
-    "lightning_mlx": "#2563eb",
+    "ax_engine": AX,
+    "mtplx": MTPLX,
+    "lightning_mlx": LIGHTNING,
 }
 MTP_PEER_SCHEMA = "ax.qwen36_mtp_matrix.summary.v2"
 MTP_PEER_ENGINES = tuple(MTP_PEER_COLORS)
@@ -2772,8 +2793,8 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
 
         for bi, (val, color, dot_color) in enumerate(
             [
-                (d_val, "#86efac", "#16a34a"),
-                (n_val, "#2eaf5f", "#176c37"),
+                (d_val, AX_LIGHT, AX_MID),
+                (n_val, AX, AX_DARK),
             ]
         ):
             bx = bar0 + bi * (bar_w + bar_gap)
@@ -2800,14 +2821,14 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
             speedup = n_val / d_val
             sy = fy(n_val) - 13
             lines.append(
-                f'<text x="{group_center:.1f}" y="{sy:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" font-weight="700" fill="#176c37">{speedup:.2f}×</text>'
+                f'<text x="{group_center:.1f}" y="{sy:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" font-weight="700" fill="{AX_DARK}">{speedup:.2f}×</text>'
             )
 
     ly = BOTTOM + 32
     for li, (label, color, dot_color) in enumerate(
         [
-            ("ax direct", "#86efac", "#16a34a"),
-            ("ax + n-gram", "#2eaf5f", "#176c37"),
+            ("ax direct", AX_LIGHT, AX_MID),
+            ("ax + n-gram", AX, AX_DARK),
         ]
     ):
         lx = LEFT + li * 120
@@ -2892,8 +2913,8 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
 
     group_step = plot_w / n_models
     bar_series = [
-        (ax_vals, "#2eaf5f", "#176c37", "ax n-gram"),
-        (lt_vals, "#f2b705", "#9a6a00", "lightning"),
+        (ax_vals, AX, AX_DARK, "ax n-gram"),
+        (lt_vals, LIGHTNING, LIGHTNING_DARK, "lightning"),
     ][:n_bars]
 
     for gi, slug in enumerate(models):
@@ -3477,10 +3498,11 @@ DECODE_BANDWIDTH_TOP = 118.0
 DECODE_BANDWIDTH_ROW_GAP = 30.0
 DECODE_BANDWIDTH_HOST_GAP = 34.0
 DECODE_BANDWIDTH_COLORS = {
-    "spec": ("#9ca3af", "#374151"),
-    "direct": ("#2eaf5f", "#176c37"),
-    "mtp": ("#3b82f6", "#1d4ed8"),
-    "ax": ("#c084fc", "#7e22ce"),
+    "spec": (REFERENCE, REFERENCE_DARK),
+    "ax_engine": (AX, AX_DARK),
+    "mtplx": (MTPLX, MTPLX_DARK),
+    "omlx": (OMLX, OMLX_DARK),
+    "mlx_lm": (MLX, MLX_DARK),
 }
 
 
@@ -3586,7 +3608,7 @@ def render_decode_bandwidth_chart(artifact: dict[str, Any], source_label: str) -
         rows = [("Apple published bandwidth", "spec", spec, None)]
         for runtime in host.get("runtimes", []):
             tok_s = float(runtime["decode_tok_s"])
-            kind = "ax" if runtime.get("key") == "ax_engine" else str(runtime.get("kind", "mtp"))
+            kind = str(runtime.get("key") or runtime.get("kind") or "mtp")
             rows.append((str(runtime["label"]), kind, tok_s * bytes_per_token / 1e9, tok_s))
         for label, kind, gb_s, tok_s in rows:
             percent = gb_s / spec * 100.0

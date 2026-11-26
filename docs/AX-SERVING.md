@@ -1,8 +1,13 @@
-# NVIDIA Serving Moved To AX Serving
+# AX Serving
 
-AX Engine owns local Apple Silicon inference. NVIDIA/CUDA worker integration,
-heterogeneous routing, runtime qualification, and Dynamo connectivity now live
-in [AX Serving](https://github.com/defai-digital/ax-serving).
+AX Serving is a commercial product for fleet routing and orchestration.
+It handles request admission and routing across inference systems, including
+Apple Silicon and NVIDIA/CUDA deployments.
+[Contact us](mailto:enquiry@defai.digital) for access, deployment options, or
+migration guidance.
+
+For Linux CUDA inference, use
+[AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start).
 
 **Ports:** Engine defaults to **`127.0.0.1:31418`**. AX Serving’s public
 gateway defaults to **`127.0.0.1:18080`**. Do not mix them. Full map:
@@ -23,12 +28,6 @@ remains in AX Engine.
 | Worker compatibility identity | `integrations/nvidia/compatibility-manifest.schema.json` |
 | Readiness, smoke, and soak gates | AX Serving NVIDIA qualification scripts and CI |
 | CUDA OCI image | AX Serving NVIDIA runtime container target |
-
-Use the
-[full migration guide](https://github.com/defai-digital/ax-serving/blob/main/docs/migrations/ax-engine-cuda-to-ax-serving.md)
-for configuration mapping, rollout order, and rollback guidance. The
-[Dynamo integration guide](https://github.com/defai-digital/ax-serving/blob/main/docs/integrations/nvidia/DYNAMO.md)
-documents adapter configuration and operational contracts.
 
 Requests that still send former CUDA-only OpenAI extensions to AX Engine fail
 with an explicit migration error instead of being silently ignored or routed
