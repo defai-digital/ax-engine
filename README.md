@@ -40,12 +40,13 @@ latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
 On Flash Next, decode is level with oMLX; first text is ahead at 127 to
-128 input tokens, level at 1,492 and behind from about 3,000 tokens up. On
-the 27B, AX Engine's DFlash2 decode is ahead of Splash on this 64-token
-harness (111.0 against 109.2 tok/s) and behind it on prefill (first text
-1.69 against 1.22 s at 1,492 input tokens) and on 256-token outputs.
+128 and at 2,233 input tokens, level at 1,492, and 2 to 11% behind from
+about 3,000 to 13,000 tokens. On the 27B, AX Engine's DFlash2 decode is
+ahead of Splash on this 64-token harness (111.5 against 109.3 tok/s) and
+behind it on prefill (first text 1.64 against 1.19 s at 1,492 input
+tokens) and on 256-token outputs.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
-[Flash Next first text by prompt length](docs/performance/flash-next-prefill-fused-stretches-2026-11-25.md).
+[Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
 
@@ -55,15 +56,34 @@ harness (111.0 against 109.2 tok/s) and behind it on prefill (first text
 
 | Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
 | --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+071e5477 (Direct greedy) † | 59.36 | 2837.63 | 0.22 | 0.70 |
-| oMLX 0.8.2 (Direct greedy) † | 59.39 | 4016.76 | 0.36 | 0.71 |
+| AX Engine 8.1.0+c688907a (Direct greedy) † | 59.50 | 2833.74 | 0.22 | 0.71 |
+| oMLX 0.8.2 (Direct greedy) † | 59.39 | 3989.89 | 0.36 | 0.71 |
 | mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
 | MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
 | TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
 | ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
 | Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
 
-† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
+† Median of three runs interleaved with the neighbouring † rows, with 150 seconds of rest before each run, in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
+
+**First text by input length**, one cold direct greedy request. The servers ran one after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before each; the AX Engine column is the mean of its two runs. Lower is better. [Measurements and method](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
+
+![Qwen 3.8 Flash Next cold first text by input length on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-first-text-by-length.svg)
+
+| Input tokens | AX Engine 8.1.0+c688907a (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
+| ---: | ---: | ---: | ---: |
+| 36 | 0.174 | 0.164 | +6% |
+| 127 | 0.215 | 0.349 | −38% |
+| 231 | 0.236 | 0.225 | +5% |
+| 413 | 0.306 | 0.291 | +5% |
+| 803 | 0.450 | 0.441 | +2% |
+| 1,492 | 0.706 | 0.698 | +1% |
+| 2,233 | 1.174 | 1.335 | −12% |
+| 2,961 | 1.462 | 1.437 | +2% |
+| 4,443 | 2.284 | 2.195 | +4% |
+| 6,523 | 3.408 | 3.218 | +6% |
+| 9,123 | 4.970 | 4.574 | +9% |
+| 13,023 | 7.281 | 6.573 | +11% |
 
 #### Qwen 3.8 27B MXFP4
 
@@ -71,10 +91,10 @@ harness (111.0 against 109.2 tok/s) and behind it on prefill (first text
 
 | Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
 | --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+071e5477 (Direct greedy) † | 35.30 | 971.16 | 0.23 | 1.63 |
-| AX Engine 8.1.0+071e5477 (DFlash2) † | 111.00 | 935.61 | 0.23 | 1.69 |
-| Splash 1.7.0 (DFlash2) † | 109.16 | 1285.85 | 0.17 | 1.22 |
-| oMLX 0.8.2 (Direct greedy) † | 34.49 | 1057.93 | 0.22 | 1.51 |
+| AX Engine 8.1.0+c688907a (Direct greedy) † | 35.31 | 974.34 | 0.23 | 1.63 |
+| AX Engine 8.1.0+c688907a (DFlash2) † | 111.51 | 967.37 | 0.23 | 1.64 |
+| Splash 1.7.0 (DFlash2) † | 109.25 | 1330.06 | 0.17 | 1.19 |
+| oMLX 0.8.2 (Direct greedy) † | 34.56 | 1058.69 | 0.22 | 1.51 |
 | oMLX 0.8.2 (DFlash2) | 40.02 | 1027.14 | 0.30 | 1.65 |
 | mlx-lm 0.32.0 (Direct greedy) | 31.92 | 857.92 | 0.24 | 1.83 |
 | MTPLX 2.12.3 (Direct greedy) | 31.18 | 800.05 | 0.24 | 1.94 |
@@ -82,7 +102,7 @@ harness (111.0 against 109.2 tok/s) and behind it on prefill (first text
 | TensorFold 1.3.4 (DFlash2) | 0 | 0 | — | — |
 | ds4 19b3f501 (Direct greedy) | 0 | 0 | — | — |
 
-† Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
+† Median of three runs interleaved with the neighbouring † rows, with 150 seconds of rest before each run, in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
 <!-- qwen38-m5-modes:end -->
 

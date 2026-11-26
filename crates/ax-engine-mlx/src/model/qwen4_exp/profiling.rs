@@ -1888,8 +1888,50 @@ fn flash_next_last_row_logits_match_the_full_projection() {
     );
 }
 
-/// Greedy identity of the indexed QSA prefill arm against the gathered arm on
-/// the real pack.
+/// The attention path the real-pack comparisons below run against the padded
+/// sub-batches ("gathered" arm). `AX_FLASH_NEXT_DRIFT_CANDIDATE=masked_dense`
+/// selects masked dense prefill attention; unset, the indexed kernel.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateArm {
+    Indexed,
+    MaskedDense,
+}
+
+#[cfg(test)]
+impl CandidateArm {
+    fn from_env() -> Self {
+        match std::env::var("AX_FLASH_NEXT_DRIFT_CANDIDATE").as_deref() {
+            Ok("masked_dense") => Self::MaskedDense,
+            Ok("indexed") | Err(_) => Self::Indexed,
+            Ok(other) => panic!("unknown AX_FLASH_NEXT_DRIFT_CANDIDATE {other:?}"),
+        }
+    }
+
+    /// Run `action` on the candidate path, or on the padded sub-batches with
+    /// both candidates off.
+    fn with<T>(self, candidate: bool, action: impl FnOnce() -> T) -> T {
+        use crate::model::shared::qwen4_exp_attention::with_masked_dense;
+        use crate::model::shared::qwen4_exp_attention_indexed::with_indexed_attention;
+
+        with_indexed_attention(candidate && self == Self::Indexed, || {
+            with_masked_dense(candidate && self == Self::MaskedDense, action)
+        })
+    }
+
+    /// Calls this thread has made on the candidate path.
+    fn dispatches(self) -> u64 {
+        match self {
+            Self::Indexed => crate::model::shared::qwen4_exp_attention_indexed::dispatch_count(),
+            Self::MaskedDense => {
+                crate::model::shared::qwen4_exp_attention::masked_dense_calls_for_test()
+            }
+        }
+    }
+}
+
+/// Greedy identity of the candidate QSA prefill arm ([`CandidateArm`], the
+/// indexed kernel by default) against the gathered arm on the real pack.
 ///
 /// The indexed kernel is not bit-identical to fused SDPA (different reduction
 /// order and online rescaling), so the contract is behavioural: the same
@@ -1905,7 +1947,6 @@ fn flash_next_last_row_logits_match_the_full_projection() {
 #[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS"]
 fn flash_next_indexed_prefill_keeps_greedy_tokens_on_real_pack() {
     use crate::model::ModelConfig;
-    use crate::model::shared::qwen4_exp_attention_indexed::with_indexed_attention;
     use ax_engine_core::NativeModelArtifacts;
     use std::path::PathBuf;
 
@@ -1952,8 +1993,9 @@ fn flash_next_indexed_prefill_keeps_greedy_tokens_on_real_pack() {
         ids: Vec<u32>,
         state: Vec<u8>,
     }
+    let candidate = CandidateArm::from_env();
     let run = |indexed: bool| -> Arm {
-        with_indexed_attention(indexed, || {
+        candidate.with(indexed, || {
             let mut state = Qwen4ExpState::new(trunk, owner);
             let mut logits = None;
             for (offset, end) in chunk_ranges(prompt_len, 1024) {
@@ -2030,7 +2072,7 @@ fn flash_next_indexed_prefill_keeps_greedy_tokens_on_real_pack() {
     let (gbest, gval, gmargin) = top(&gathered.boundary);
     let (ibest, ival, imargin) = top(&indexed.boundary);
     eprintln!(
-        "INDEXED_GREEDY prompt_tokens={prompt_len} decode_steps={decode_steps} ids_equal={} state_bytes_equal={} prefill_logit_delta={prefill_delta:.6} final_logit_delta={max_logit_delta:.6} gathered_top={gbest}:{gval:.6}(+{gmargin:.6}) indexed_top={ibest}:{ival:.6}(+{imargin:.6})",
+        "INDEXED_GREEDY candidate={candidate:?} prompt_tokens={prompt_len} decode_steps={decode_steps} ids_equal={} state_bytes_equal={} prefill_logit_delta={prefill_delta:.6} final_logit_delta={max_logit_delta:.6} gathered_top={gbest}:{gval:.6}(+{gmargin:.6}) indexed_top={ibest}:{ival:.6}(+{imargin:.6})",
         first_mismatch.is_none(),
         gathered.state == indexed.state,
     );
@@ -2068,15 +2110,13 @@ fn flash_next_indexed_prefill_keeps_greedy_tokens_on_real_pack() {
 #[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS(_FILE)"]
 fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
     use crate::model::ModelConfig;
-    use crate::model::shared::qwen4_exp_attention_indexed::{
-        dispatch_count, with_indexed_attention,
-    };
     use ax_engine_core::NativeModelArtifacts;
     use std::path::PathBuf;
 
     /// One bf16 rounding step is 2^-8 relative, so two reduction orders can
     /// only disagree by about that much; anything far above it came from
-    /// reading different rows.
+    /// reading different rows. The ceiling covers one step up to a magnitude
+    /// of 4; a larger element may move by one step of its own.
     const ATTENTION_DRIFT_CEILING: f32 = 2e-2;
 
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
@@ -2262,6 +2302,8 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
         Qwen4ExpState::new(trunk, owner),
         Qwen4ExpState::new(trunk, owner),
     ];
+    let candidate = CandidateArm::from_env();
+    eprintln!("INDEXED_DRIFT_CANDIDATE {candidate:?}");
     let mut drifts: Vec<Drift> = Vec::new();
     let mut chunk_logits: Vec<(usize, Vec<f32>, Vec<f32>)> = Vec::new();
     let mut dispatches_total = 0u64;
@@ -2270,9 +2312,9 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
         let mut logits: [Vec<f32>; 2] = [Vec::new(), Vec::new()];
         let mut dispatched = [0u64; 2];
         for (arm, indexed) in [(0usize, false), (1usize, true)] {
-            let before = dispatch_count();
+            let before = candidate.dispatches();
             begin_attention_capture();
-            let output = with_indexed_attention(indexed, || {
+            let output = candidate.with(indexed, || {
                 forward_with_rows(
                     trunk,
                     &tokens[offset..end],
@@ -2283,7 +2325,7 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
                 )
                 .unwrap()
             });
-            dispatched[arm] = dispatch_count().saturating_sub(before);
+            dispatched[arm] = candidate.dispatches().saturating_sub(before);
             captured[arm] = take_attention_capture();
             logits[arm] = last_logits(&output.logits);
             states[arm] = output.state;
@@ -2306,7 +2348,9 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
             );
             drifts.push(drift(gathered, indexed));
         }
-        if dispatched[1] == 0 {
+        // The control holds only until the candidate first runs: after that
+        // the two arms carry different states into every later chunk.
+        if dispatched[1] == 0 && dispatches_total == 0 {
             for sample in drifts.iter().filter(|d| d.chunk_offset == offset) {
                 assert_eq!(
                     sample.differing, 0,
@@ -2314,7 +2358,7 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
                     sample.layer
                 );
             }
-        } else {
+        } else if dispatched[1] != 0 {
             assert_eq!(
                 dispatched[0], 0,
                 "chunk {offset}: the gathered arm dispatched the indexed kernel"
@@ -2535,9 +2579,16 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
             first.max_abs,
             first.max_abs_at,
         );
+        // One bf16 step at the element's own magnitude is rounding at any
+        // size: the absolute ceiling alone would reject a single step on a
+        // value of 4 or more.
+        let one_step = first.max_abs_at.map_or(0.0, |(_, left, right)| {
+            let magnitude = left.abs().max(right.abs()).max(f32::MIN_POSITIVE);
+            2f32.powf(magnitude.log2().floor() - 7.0)
+        });
         assert!(
-            first.max_abs <= ATTENTION_DRIFT_CEILING,
-            "layer {:?} chunk {}: one attention element moved by {:.6} (ceiling {ATTENTION_DRIFT_CEILING}) at {:?}",
+            first.max_abs <= ATTENTION_DRIFT_CEILING.max(one_step),
+            "layer {:?} chunk {}: one attention element moved by {:.6} (ceiling {ATTENTION_DRIFT_CEILING}, one bf16 step {one_step}) at {:?}",
             first.layer,
             first.chunk_offset,
             first.max_abs,

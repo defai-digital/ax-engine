@@ -6322,6 +6322,40 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_MASKED_DENSE_PREFILL` — attend a Flash Next
+    /// prefill chunk whose queries select their tokens as one dense attention
+    /// call over the whole K/V history, with a `[queries, tokens]` boolean
+    /// mask that keeps each query's own selection, instead of copying every
+    /// query's selected K/V rows into padded sub-batches
+    /// (`AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION`) and attending one query per
+    /// batch entry.
+    ///
+    /// Each query still attends to exactly its own selected tokens. Nothing
+    /// is copied per query, and MLX runs its multi-query attention kernel,
+    /// the one the dense short-context path uses. On the MacBook Pro M5 Max
+    /// 128 GB one layer of a 2,048-query chunk over 4,096 tokens fell from
+    /// 61 ms to 6 ms. The cost grows with the history, so the call is used
+    /// for chunks of 64 or more queries up to 8,192 tokens of history and
+    /// for chunks of 512 or more up to 32,768; other chunks, verifier
+    /// windows and decode keep their paths.
+    ///
+    /// The kernel sums in cache order and in different groups, so the result
+    /// differs from the padded call in rounding: the kill is a numerics-tier
+    /// token. Kill switch only: the call applies on Neural Accelerator hosts
+    /// (M5 and later), where it was measured end to end (see
+    /// [`flash_next_qsa_masked_dense_prefill_enabled`]).
+    /// **Default: ON**; `0` restores the padded sub-batches.
+    flash_next_qsa_masked_dense_prefill_allowed,
+    "AX_MLX_FLASH_NEXT_QSA_MASKED_DENSE_PREFILL"
+);
+
+/// Hardware and kill-switch predicate for masked dense Flash Next QSA
+/// prefill attention.
+pub(crate) fn flash_next_qsa_masked_dense_prefill_enabled() -> bool {
+    flash_next_qsa_masked_dense_prefill_allowed() && crate::hardware::neural_accelerator_active()
+}
+
+env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER` — gather one Flash Next QSA
     /// prefill sub-batch's selected K/V rows straight into the
     /// `[queries, kv_heads, selected, head_dim]` layout the masked SDPA call
@@ -6366,6 +6400,11 @@ env_flag!(
 /// softmax rescaling differ: it is not bit-identical to MLX's fused SDPA.
 /// Decode, verifier windows, multi-batch calls and unsupported geometries
 /// keep the gathered path. Set `=1` to opt in; `=0` restores today's path.
+///
+/// A chunk that masked dense attention covers
+/// (`AX_MLX_FLASH_NEXT_QSA_MASKED_DENSE_PREFILL`, on by default on M5 and
+/// later) takes that call instead, which is the faster of the two; the
+/// indexed kernel then serves the chunks it does not cover.
 ///
 /// An explicit environment value wins, including `0`, empty, and junk.
 /// When the variable is unset, the process numerics preset `fast` opts in
@@ -7946,6 +7985,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `moe_prefill_pad=0` — short sorted Flash Next prefill gathers stay on the per-pair kernel
 /// - `flash_next_wide_chunk=0` — long Flash Next prompts prefill in 512-token chunks
 /// - `qsa_batched=0` — padded max-length QSA SDPA off (different reduction)
+/// - `qsa_masked_dense=0` — selected QSA prefill chunks attend in padded sub-batches
 /// - `gd_streaming` / `gd_tile_512` / `gd_chunkwise` — GatedDelta prefill route
 /// - `gd_decode_metal=0` — singleton GatedDelta decode leaves the Metal kernel
 /// - `single_2048` / `prefill_chunk=1536` / `prefill_chunk=1280` —
@@ -8053,6 +8093,7 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) prefill_expert_sort: bool,
     pub(crate) moe_prefill_pad: bool,
     pub(crate) flash_next_wide_chunk: bool,
+    pub(crate) qsa_masked_dense: bool,
     pub(crate) gd_streaming: bool,
     pub(crate) gd_tile_512: bool,
     pub(crate) gd_chunkwise: bool,
@@ -8210,6 +8251,7 @@ impl Default for NumericsTierSwitches {
             prefill_expert_sort: true,
             moe_prefill_pad: true,
             flash_next_wide_chunk: true,
+            qsa_masked_dense: true,
             gd_streaming: false,
             gd_tile_512: false,
             gd_chunkwise: false,
@@ -8370,6 +8412,9 @@ impl NumericsTierSwitches {
             exact_lm_head_window: exact_lm_head_window_invariant_enabled(),
             dual_qmm_swiglu_metal: qwen_prefill_dual_qmm_swiglu_metal_enabled(),
             qsa_batched_attention: flash_next_qsa_batched_attention_enabled(),
+            // The kill only changes numerics where the masked call would run.
+            qsa_masked_dense: flash_next_qsa_masked_dense_prefill_allowed()
+                || !crate::hardware::neural_accelerator_active(),
             qsa_grouped_eval: model_family == "qwen4_exp" && flash_next_qsa_grouped_eval_enabled(),
             qsa_fused_gather: flash_next_qsa_fused_gather_enabled(),
             invariant_qmv_bf16_q4: invariant_qmv_bf16_q4_enabled(),
@@ -8715,6 +8760,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if !switches.qsa_batched_attention {
         tokens.push("qsa_batched=0".to_string());
+    }
+    if !switches.qsa_masked_dense {
+        tokens.push("qsa_masked_dense=0".to_string());
     }
     if switches.qsa_grouped_eval {
         tokens.push("qsa_grouped_eval".to_string());

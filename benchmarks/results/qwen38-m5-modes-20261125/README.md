@@ -143,6 +143,61 @@ that field.
   this session (AX Engine 1.64 to 1.69 s, Splash 1.19 to 1.22 s).
 - The 256-token comparison quoted above was not repeated.
 
+### Every † row again, with rest before each arm
+
+All six † rows were then measured once more with AX Engine built from
+commit `c688907a6` (default settings), which attends long Flash Next
+prompts with one masked dense call per sparse-attention layer. The earlier
+reruns left 30 seconds between arms. Here the host rested 150 seconds
+before every arm: on this laptop a scan started right after another one
+read 0.83 s where a rested one reads 0.70 s.
+
+Three rounds per model. Flash Next: AX Engine, then oMLX. 27B: AX Engine
+direct, oMLX direct, AX Engine DFlash2, Splash DFlash2. The eighteen
+per-run records are the rows of [paired-rerun.jsonl](paired-rerun.jsonl)
+with `"rerun": 5` and `"rest_seconds_before_arm": 150`; the README tables
+and charts show their medians.
+
+- Flash Next decode: 59.50, 59.38 and 59.56 against 59.39, 59.51 and 59.25
+  tok/s for oMLX. Still a tie.
+- Flash Next first text at 1,492 input tokens: 0.70 to 0.72 s (median
+  0.705) against 0.71 s (median 0.708); at 127 and 128: 0.22 against
+  0.36 s. The masked dense call does not run at these lengths.
+- 27B direct greedy: 35.33, 35.19 and 35.31 against 34.56, 34.48 and 34.59
+  tok/s for oMLX; first text at 1,492 input tokens 1.63 against 1.51 s.
+- 27B DFlash2: 111.09, 111.66 and 111.51 against 109.08, 109.42 and 109.25
+  tok/s for Splash; first text at 1,492 input tokens 1.64 against 1.19 s,
+  effective prefill 967 against 1,330.
+- Against the 30-second reruns the decode rates and the direct first-text
+  latencies moved by less than 0.5%. The two DFlash2 long probes read 0.03
+  to 0.05 s faster, for both engines alike (effective prefill 936 to 967
+  and 1,286 to 1,330).
+
+### Flash Next first text by input length
+
+[first-text-by-length.jsonl](first-text-by-length.jsonl) holds a scan of
+cold first text over twelve input lengths from 36 to 13,023 tokens, after
+AX Engine began to attend long prompts with one masked dense call per
+sparse-attention layer
+([what changed](../../../docs/performance/flash-next-qsa-masked-dense-2026-11-25.md)).
+AX Engine was built from commit `c688907a6` with default settings.
+
+- Each server ran alone and the three ran one after another: AX Engine,
+  oMLX, AX Engine (`run_order` 1 to 3), with 150 seconds of rest before
+  each (`rest_seconds_before_run`).
+- A server takes three warmup requests, then three completions per length
+  with `max_tokens` 1 and `temperature` 0. The prompts of one length
+  differ in their first line, so no request can reuse a stored prefix.
+  `first_text_seconds` lists the three latencies.
+- AX Engine ran with MTP and n-gram acceleration disabled, oMLX with its
+  prompt cache off; both served one request at a time.
+- The README table and chart show, per engine and length, the mean over
+  that engine's runs of the run median.
+
+This scan and the two probes of the paired rows use different request
+wrappers, so their 127 and 1,492-token figures are close but not the same
+measurement.
+
 ## Replay
 
 Stage the binaries and packs using the
@@ -162,3 +217,7 @@ for model in dense flash; do
 done
 python "$campaign/render_charts.py" --check
 ```
+
+`render_charts.py` needs matplotlib 3.11.2 to reproduce the SVG files byte
+for byte. It draws with the shared [chart style](chart_style.py) and the
+engine colours of [`scripts/chart_palette.py`](../../../scripts/chart_palette.py).

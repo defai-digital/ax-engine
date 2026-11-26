@@ -35,10 +35,17 @@ ENGINE_NAMES = {
 MODE_NAMES = {"direct": "Direct greedy", "dflash2": "DFlash2"}
 RERUN_MARK = " †"
 RERUN_NOTE = (
-    "† Median of three runs interleaved with the neighbouring † rows in one later session "
-    "on the same day; the other rows are single runs from the original session. See the "
+    "† Median of three runs interleaved with the neighbouring † rows, with 150 seconds of "
+    "rest before each run, in one later session on the same day; the other rows are single "
+    "runs from the original session. See the "
     "[campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun)."
 )
+
+
+LENGTH_FIGURE = "perf-qwen38-flash-next-m5-first-text-by-length.svg"
+LENGTH_NOTE = "docs/performance/flash-next-qsa-masked-dense-2026-11-25.md"
+# Past this many input tokens Flash Next attends over selected key blocks.
+LENGTH_SPLIT = 2_500
 
 
 def label(row, versions):
@@ -104,7 +111,84 @@ def render(model, rows, path):
     return path.read_text()
 
 
-def tables(versions, grouped):
+def by_length(records):
+    """Per input length and engine: the mean over that engine's runs of the run median."""
+    runs = {}
+    for row in records:
+        per_engine = runs.setdefault(row["input_tokens"], {})
+        per_engine.setdefault(row["engine"], []).append(median(row["first_text_seconds"]))
+    return {
+        tokens: {engine: sum(values) / len(values) for engine, values in per_engine.items()}
+        for tokens, per_engine in sorted(runs.items())
+    }
+
+
+def length_engines(records):
+    """Engines of the length scan in first-run order, with the version each row recorded."""
+    return list({row["engine"]: row["engine_version"] for row in records}.items())
+
+
+def render_length(records, path):
+    lengths = by_length(records)
+    engines = [engine for engine, _ in length_engines(records)]
+
+    def panel(title, keep):
+        tokens = [count for count in lengths if keep(count)]
+        return {
+            "title": title,
+            "categories": [f"{count:,}" for count in tokens],
+            "values": [[lengths[count].get(engine) for count in tokens] for engine in engines],
+            "missing": "not run",
+        }
+
+    bar_chart(
+        path,
+        title="Qwen 3.8 Flash Next AXQ MXFP4 · first text by input length",
+        subtitle="MacBook Pro M5 Max 128 GB · one cold direct greedy request · rows are input tokens",
+        series=[(ENGINE_NAMES[engine], M5_ENGINE_COLORS[engine]) for engine in engines],
+        panels=[
+            panel(f"Up to {LENGTH_SPLIT:,} input tokens", lambda count: count <= LENGTH_SPLIT),
+            panel(f"More than {LENGTH_SPLIT:,} input tokens", lambda count: count > LENGTH_SPLIT),
+        ],
+        xlabel="Seconds to first text · lower is better · each panel has its own scale",
+        note="Servers ran one after another with 150 s of rest before each. "
+             "An engine measured twice shows the mean of its runs.",
+        share_scale=False,
+        fmt=lambda value: f"{value:.2f}",
+        legend_columns=4,
+        description="Qwen 3.8 Flash Next cold first-text latency by input length for AX Engine "
+                    "and oMLX on M5 Max. Versions are in the README table.",
+    )
+    return path.read_text()
+
+
+def length_table(records):
+    lengths = by_length(records)
+    engines = length_engines(records)
+    first, *others = [engine for engine, _ in engines]
+    head = [f"{ENGINE_NAMES[engine]} {version} (s)" for engine, version in engines]
+    head += [f"{ENGINE_NAMES[first]} against {ENGINE_NAMES[other]}" for other in others]
+    parts = [
+        "**First text by input length**, one cold direct greedy request. The servers ran one "
+        "after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before "
+        "each; the AX Engine column is the mean of its two runs. Lower is better. "
+        f"[Measurements and method]({LENGTH_NOTE}).",
+        "",
+        f"![Qwen 3.8 Flash Next cold first text by input length on M5 Max.](docs/assets/{LENGTH_FIGURE})",
+        "",
+        "| Input tokens | " + " | ".join(head) + " |",
+        "| ---: |" + " ---: |" * len(head),
+    ]
+    for tokens, seconds in lengths.items():
+        cells = [f"{seconds[engine]:.3f}" for engine, _ in engines]
+        for other in others:
+            change = 100 * (seconds[first] / seconds[other] - 1)
+            cells.append(f"{change:+.0f}%".replace("-", "−"))
+        parts.append(f"| {tokens:,} | " + " | ".join(cells) + " |")
+    return parts + [""]
+
+
+def tables(versions, grouped, lengths):
     parts = [BEGIN, ""]
     for model, rows in grouped.items():
         name = MODEL_NAMES[model]
@@ -126,6 +210,8 @@ def tables(versions, grouped):
         parts.append("")
         if any(row.get("session") == "paired-rerun" for row in rows):
             parts += [RERUN_NOTE, ""]
+        if model == "flash":
+            parts += length_table(lengths)
     return "\n".join(parts + [END])
 
 
@@ -140,20 +226,29 @@ def main():
         model: [row for row in records if row["model"] == model and row["engine"] in ENGINE_NAMES]
         for model in MODEL_ORDER
     }
-    for model, rows in grouped.items():
-        path = ROOT / "docs/assets" / figure_name(model)
+    lengths = [
+        json.loads(line)
+        for line in (CAMPAIGN / "first-text-by-length.jsonl").read_text().splitlines()
+    ]
+    charts = [
+        (figure_name(model), lambda path, model=model, rows=rows: render(model, rows, path))
+        for model, rows in grouped.items()
+    ]
+    charts.append((LENGTH_FIGURE, lambda path: render_length(lengths, path)))
+    for name, draw in charts:
+        path = ROOT / "docs/assets" / name
         if args.check:
             probe = path.with_suffix(".check.svg")
-            chart = render(model, rows, probe)
+            chart = draw(probe)
             probe.unlink()
             if path.read_text() != chart:
                 parser.error(f"{path.name} differs from the recorded metrics")
         else:
-            render(model, rows, path)
+            draw(path)
     readme = ROOT / "README.md"
     original = readme.read_text()
     start, end = original.index(BEGIN), original.index(END) + len(END)
-    generated = tables(versions, grouped)
+    generated = tables(versions, grouped, lengths)
     if args.check:
         if original[start:end] != generated:
             parser.error("README benchmark tables differ from the recorded metrics")
