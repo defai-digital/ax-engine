@@ -47,10 +47,10 @@ On the 27B, AX Engine's DFlash2 decode is ahead of Splash on this
 64-token harness (111.0 against 109.2 tok/s) and behind it on prefill
 (first text 1.69 against 1.22 s at 1,492 input tokens) and on 256-token
 outputs. On Flash Next, decode is level with oMLX; first text is ahead at
-127 to 128 input tokens, level at 1,492 and behind from about 3,000 tokens
-up.
+127 to 128 and at 2,233 input tokens, level at 1,492, and 2 to 12% behind
+from about 3,000 to 13,000 tokens.
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
-[Flash Next first text by prompt length](docs/performance/flash-next-prefill-fused-stretches-2026-11-25.md).
+[Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
 

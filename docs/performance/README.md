@@ -12,6 +12,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
 | Current MLX runtime admission | [MLX 0.32.4 admission](mlx-0.32.4-admission-2026-10-16.md) |
 | Qwen 3.8 on M5 Max: DFlash2 draft-tree verify, MX-format NAX rows, Flash Next decode and prefill kernels | [Paired results against the leading peers, root causes, switches and limits](qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) |
+| Flash Next on M5 Max: sparse attention past 2,051 tokens as one masked dense call, first text 20 to 39% faster from 3,000 to 9,000 tokens, rounding-level numerics change | [Measurements against oMLX by prompt length, numerics, switch and what is left](flash-next-qsa-masked-dense-2026-11-25.md) |
 | Flash Next on M5 Max: the compiled elementwise stretches at prefill width, bit-identical, first text level with oMLX at 1,492 tokens | [Measurements, closure and trace handling, switch and what is left](flash-next-prefill-fused-stretches-2026-11-25.md) |
 | Flash Next on M5 Max: prefill schedule without dead prefix captures, 2,048-token chunks on long prompts, first text by prompt length against oMLX | [Measurements, the capture that was not shipped, and what is left](flash-next-prefill-schedule-2026-11-25.md) |
 | M5+ NAX verify kernels with MLX 914732419 (0.32.5): QMM and SDPA hand-offs, DFlash2 window cost | [Measurements, knobs and build recipe](mlx-nax-914732419-2026-11-02.md) |
