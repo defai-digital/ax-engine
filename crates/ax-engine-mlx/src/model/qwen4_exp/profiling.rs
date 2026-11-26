@@ -1671,8 +1671,26 @@ fn flash_next_prefill_stage_profile() {
     let weights = crate::weights::load_weights(&artifacts).unwrap();
     let trunk = weights.qwen4_exp.as_ref().unwrap();
     let owner = cfg.compile_cache_identity;
-    let unsync = run_chunked_prefill(trunk, &tokens, owner, chunk_size, false);
-    let sync = run_chunked_prefill(trunk, &tokens, owner, chunk_size, true);
+    // Tests keep the tensor-unit QSA kernel off. `AX_FLASH_NEXT_PROFILE_TENSOR_UNIT=1`
+    // profiles the serving default of a Neural Accelerator host.
+    let tensor_unit = env_usize("AX_FLASH_NEXT_PROFILE_TENSOR_UNIT") == Some(1);
+    assert!(
+        !tensor_unit
+            || crate::model::shared::qwen4_exp_attention_indexed::tensor_unit_kernel_verified(),
+        "AX_FLASH_NEXT_PROFILE_TENSOR_UNIT needs a host where the kernel passes its self-test"
+    );
+    let run = |synchronized: bool| {
+        let action = || run_chunked_prefill(trunk, &tokens, owner, chunk_size, synchronized);
+        if tensor_unit {
+            crate::model::shared::qwen4_exp_attention_indexed::with_tensor_unit_attention(
+                true, action,
+            )
+        } else {
+            action()
+        }
+    };
+    let unsync = run(false);
+    let sync = run(true);
     assert!(
         sync.final_logits == unsync.final_logits,
         "synchronized prefill changed final chunk logits"
@@ -1715,6 +1733,7 @@ fn flash_next_prefill_stage_profile() {
         "host_control_capture": "outside forward timing and MLX counters; control host buffers retained during synchronized replay",
         "prompt_tokens": tokens.len(),
         "chunk_size": chunk_size,
+        "tensor_unit_attention": tensor_unit,
         "chunk_schedule": chunk_ranges(tokens.len(), chunk_size),
         "unsynchronized": {
             "seconds": unsync.seconds,

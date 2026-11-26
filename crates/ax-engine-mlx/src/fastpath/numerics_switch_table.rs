@@ -279,6 +279,7 @@ const NUMERICS_SWITCH_TABLE: &[SwitchRow] = &[
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_PAIRED_GATHER", shipped: "off", class: SwitchClass::ProvenExact("paired_gather_keeps_padding_order_and_segment_boundaries") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_GROUPED_EVAL", shipped: "off", class: SwitchClass::Token("qsa_grouped_eval") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL", shipped: "off", class: SwitchClass::Token("indexed") },
+    SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_INDEXED_NAX_PREFILL", shipped: "on (M5+)", class: SwitchClass::Token("qsa_indexed_nax=0") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES", shipped: "off", class: SwitchClass::ProvenExact("qsa_tiled_score_bits_match_monolithic") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK", shipped: "unset", class: SwitchClass::Token("chunk=8192") },
     SwitchRow { env: "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT", shipped: "on", class: SwitchClass::Token("expert_sort=0") },
@@ -831,6 +832,10 @@ fn apply_numerics_deviation(env: &str, switches: &mut NumericsTierSwitches) -> b
         }
         "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL" => {
             switches.indexed_prefill = true;
+            true
+        }
+        "AX_MLX_FLASH_NEXT_QSA_INDEXED_NAX_PREFILL" => {
+            switches.qsa_indexed_nax = false;
             true
         }
         "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES" => {

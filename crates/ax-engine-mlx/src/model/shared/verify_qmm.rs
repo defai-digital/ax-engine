@@ -487,7 +487,7 @@ pub(crate) fn mx_nax_port_active() -> bool {
 /// largest reference magnitude. A non-finite value on either side makes the
 /// difference infinite: `f32::max` drops NaN, so a plain fold would report a
 /// kernel that returns NaN as an exact match.
-fn max_abs_diff_and_scale(ported: &[f32], reference: &[f32]) -> (f32, f32) {
+pub(super) fn max_abs_diff_and_scale(ported: &[f32], reference: &[f32]) -> (f32, f32) {
     let mut diff = 0.0_f32;
     let mut scale = 0.0_f32;
     for (a, b) in ported.iter().zip(reference) {

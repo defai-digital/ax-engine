@@ -6410,6 +6410,37 @@ pub(crate) fn flash_next_qsa_masked_dense_prefill_enabled() -> bool {
 }
 
 env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_NAX_PREFILL` — attend a long-history
+    /// Flash Next QSA prefill chunk with the indexed kernel on the GPU tensor
+    /// units instead of the masked dense call or the padded sub-batches.
+    ///
+    /// The kernel reads each query's selected K/V rows in place, so its cost
+    /// follows the selection (about 2,051 rows) and not the history. On the
+    /// MacBook Pro M5 Max 128 GB one layer of a 2,048-query chunk takes 5.7
+    /// to 5.9 ms at any history, where the masked dense call takes 5.6 ms at
+    /// 4,096 tokens, 11.0 at 8,192 and 16.7 at 12,288. It serves chunks of 64
+    /// or more queries from 4,096 tokens of history up; shorter histories,
+    /// verifier windows and decode keep their paths.
+    ///
+    /// Softmax runs over the same selected rows with float32 scores and
+    /// accumulation and the output is rounded once. Against float64 attention
+    /// on the same bfloat16 inputs its output is the correctly rounded value
+    /// in 99.9% of elements (masked dense 23%, padded 58%), so it differs
+    /// from both in rounding; `0` restores them and is a numerics-tier token.
+    /// It applies on Neural Accelerator hosts only (see
+    /// [`flash_next_qsa_indexed_nax_prefill_enabled`]): the kernel is laid
+    /// out for the tensor units and must not run on another GPU.
+    flash_next_qsa_indexed_nax_prefill_allowed,
+    "AX_MLX_FLASH_NEXT_QSA_INDEXED_NAX_PREFILL"
+);
+
+/// Hardware and switch predicate for the tensor-unit indexed QSA prefill
+/// kernel.
+pub(crate) fn flash_next_qsa_indexed_nax_prefill_enabled() -> bool {
+    flash_next_qsa_indexed_nax_prefill_allowed() && crate::hardware::neural_accelerator_active()
+}
+
+env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_FUSED_GATHER` — gather one Flash Next QSA
     /// prefill sub-batch's selected K/V rows straight into the
     /// `[queries, kv_heads, selected, head_dim]` layout the masked SDPA call
@@ -8065,6 +8096,7 @@ pub(crate) fn memory_ceiling_override_env() -> Option<String> {
 /// - `flash_next_wide_chunk=0` — long Flash Next prompts prefill in 512-token chunks
 /// - `qsa_batched=0` — padded max-length QSA SDPA off (different reduction)
 /// - `qsa_masked_dense=0` — selected QSA prefill chunks attend in padded sub-batches
+/// - `qsa_indexed_nax=0` — long-history QSA prefill chunks leave the tensor-unit kernel
 /// - `gd_streaming` / `gd_tile_512` / `gd_chunkwise` — GatedDelta prefill route
 /// - `gd_decode_metal=0` — singleton GatedDelta decode leaves the Metal kernel
 /// - `single_2048` / `prefill_chunk=1536` / `prefill_chunk=1280` —
@@ -8174,6 +8206,9 @@ pub(crate) struct NumericsTierSwitches {
     pub(crate) moe_prefill_pad: bool,
     pub(crate) flash_next_wide_chunk: bool,
     pub(crate) qsa_masked_dense: bool,
+    /// Long-history QSA prefill chunks may attend with the tensor-unit
+    /// indexed kernel (`AX_MLX_FLASH_NEXT_QSA_INDEXED_NAX_PREFILL`).
+    pub(crate) qsa_indexed_nax: bool,
     pub(crate) gd_streaming: bool,
     pub(crate) gd_tile_512: bool,
     pub(crate) gd_chunkwise: bool,
@@ -8332,6 +8367,7 @@ impl Default for NumericsTierSwitches {
             moe_prefill_pad: true,
             flash_next_wide_chunk: true,
             qsa_masked_dense: true,
+            qsa_indexed_nax: true,
             gd_streaming: false,
             gd_tile_512: false,
             gd_chunkwise: false,
@@ -8494,6 +8530,11 @@ impl NumericsTierSwitches {
             qsa_batched_attention: flash_next_qsa_batched_attention_enabled(),
             // The kill only changes numerics where the masked call would run.
             qsa_masked_dense: flash_next_qsa_masked_dense_prefill_allowed()
+                || !crate::hardware::neural_accelerator_active(),
+            // The kill only changes numerics where the kernel would run. A
+            // failed kernel self-test also keeps the other paths, without a
+            // token: it is a property of the host, not a setting.
+            qsa_indexed_nax: flash_next_qsa_indexed_nax_prefill_allowed()
                 || !crate::hardware::neural_accelerator_active(),
             qsa_grouped_eval: model_family == "qwen4_exp" && flash_next_qsa_grouped_eval_enabled(),
             qsa_fused_gather: flash_next_qsa_fused_gather_enabled(),
@@ -8846,6 +8887,9 @@ pub(crate) fn numerics_tier_suffix(switches: &NumericsTierSwitches) -> String {
     }
     if !switches.qsa_masked_dense {
         tokens.push("qsa_masked_dense=0".to_string());
+    }
+    if !switches.qsa_indexed_nax {
+        tokens.push("qsa_indexed_nax=0".to_string());
     }
     if switches.qsa_grouped_eval {
         tokens.push("qsa_grouped_eval".to_string());
