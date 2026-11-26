@@ -55,31 +55,42 @@ against the `mlx.version` pin, not against a source build.
 
 ### MLX GDN prefill
 
-Shared Qwen hybrid prefill (Qwen 3.5/3.8 dense and MoE packs) can run its
-gated-delta recurrence through the published MLX gated-delta operation instead
-of AX's sequential recurrence. It applies to 128–2048-token calls with
-128-dimensional key/value heads and supported head pairs. Other shapes,
-single-token decode, and short MTP verifier windows use the AX path. The
-dedicated Flash Next GDN path is separate.
-
-The operation is off under the default `exact` numerics preset.
-`--mlx-numerics fast` turns it on for M5 and later;
-`AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1` turns it on for any host and `=0`
-keeps it off under `fast`.
+On M5 and later, shared Qwen hybrid prefill (Qwen 3.5/3.8 dense and MoE
+packs) runs its gated-delta recurrence through the published MLX gated-delta
+operation. It applies to 128–2048-token calls with 128-dimensional key/value
+heads and supported head pairs. Other shapes, single-token decode, and short
+MTP verifier windows use the AX path. The dedicated Flash Next GDN path is
+separate. `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=0` restores AX's sequential
+recurrence; `=1` turns the MLX operation on for M3/M4/M2 hosts, where it is
+off by default.
 
 The adapter preserves FP32 decay and recurrent state and returns the original
 activation dtype. Chunked MLX arithmetic differs numerically from AX's
 sequential recurrence (unit tests bound the difference at 5e-5 in FP32 and
-5e-4 in BF16), so a process that runs it carries the numerics-tier token
-`qwen_gdn_mlx`. A warm reply still equals the cold reply: both runs call the
-same recurrence on the same rows.
+5e-4 in BF16), so a host that deviates from its default carries a
+numerics-tier token (`qwen_gdn_mlx` or `qwen_gdn_mlx=0`). A warm reply still
+equals the cold reply: both runs call the same recurrence on the same rows.
 
 On the MacBook Pro M5 Max 128 GB with Qwen 3.8 27B MXFP4, a 1,496-row prefill
 takes 1,473 ms with the MLX operation and 1,534 ms with the sequential
-recurrence. Of the three distinct 64-token greedy replies of the benchmark,
-two are the same either way and one differs; the sequential recurrence gives
-the reply of the previous release on all three. Which of the two replies is
-better was not evaluated, which is why the operation is an opt-in.
+recurrence. How far the operation moves the model was measured on the
+next-token logits of 46 natural-text prompts (173 to 2,903 tokens), beside
+the prefill schedule change that ships with it:
+
+| Change | Top token kept | Largest logit difference, median / worst | KL, median / worst |
+|---|---:|---:|---:|
+| Prefill schedule only | 46 of 46 | 0.16 / 0.38 | 8.9e-5 / 1.9e-3 |
+| Recurrence only | 46 of 46 | 0.24 / 1.06 | 1.6e-4 / 2.5e-3 |
+
+The recurrence's largest differences sit on tokens ranked 18th or lower;
+among tokens above 0.1% probability its worst difference is 0.38, and the
+largest change of any token's probability is 0.030 for both changes. One of
+the three 64-token greedy replies of the benchmark differs from the
+sequential recurrence's. On 80 short scored questions behind natural-text
+contexts both recurrences answer all correctly with identical replies. No
+graded benchmark with hard items was run, and only the M5 Max was measured.
+See the
+[27B prefill schedule note](performance/qwen38-27b-prefill-schedule-2026-11-25.md).
 
 See the [GDN prefill experiment](performance/mlx-gdn-prefill-2026-10-03.md)
 for reproducible kernel measurements and their limits.
@@ -438,12 +449,10 @@ policy does not change MTP defaults or DFlash2 discovery.
 
 `ax-engine-server --mlx-numerics` selects a process-level numerics preset.
 `exact` (the default) changes no switch. `fast` turns on
-`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` for Flash Next and, on M5 and later,
-`AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` for the Qwen hybrids
-([MLX GDN prefill](#mlx-gdn-prefill)), each when its variable is unset. An
-explicit environment value wins, including `0`, empty, and junk, so `fast`
-cannot override an operator who pinned a path. There is no per-request
-option. The choice is logged at startup and returned as
+`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` for Flash Next when that variable is
+unset. An explicit environment value wins, including `0`, empty, and junk, so
+`fast` cannot override an operator who pinned the gathered path. There is no
+per-request option. The choice is logged at startup and returned as
 `mlx_numerics` from `GET /v1/memory`.
 
 Indexed QSA prefill is relaxed, not bit-exact: it attends the same selected

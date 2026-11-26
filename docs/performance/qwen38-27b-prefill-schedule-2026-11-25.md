@@ -14,17 +14,18 @@ a forward computes.
 Medians of three rested rounds on the M5 Max, default settings, against
 the previous build's rerun in the same harness:
 
-| 27B on M5 Max | Before | Now | Peer |
-| --- | ---: | ---: | ---: |
-| Direct greedy decode (tok/s) | 35.31 | 35.39 | 34.56 (oMLX) |
-| Direct first text, 127–128 input tokens (s) | 0.23 | 0.18 | 0.22 (oMLX) |
-| Direct first text, 1,492 input tokens (s) | 1.63 | 1.57 | 1.52 (oMLX) |
-| DFlash2 first text, 127–128 input tokens (s) | 0.23 | 0.18 | 0.17 (Splash) |
-| DFlash2 first text, 1,492 input tokens (s) | 1.64 | 1.58 | 1.19 (Splash) |
+| 27B on M5 Max | Before | Schedule change | With the MLX recurrence (now) | Peer |
+| --- | ---: | ---: | ---: | ---: |
+| Direct greedy decode (tok/s) | 35.31 | 35.39 | 35.46 | 34.67 (oMLX) |
+| Direct first text, 127–128 input tokens (s) | 0.23 | 0.18 | 0.17 | 0.22 (oMLX) |
+| Direct first text, 1,492 input tokens (s) | 1.63 | 1.57 | 1.50 | 1.51 (oMLX) |
+| DFlash2 first text, 127–128 input tokens (s) | 0.23 | 0.18 | 0.18 | 0.17 (Splash) |
+| DFlash2 first text, 1,492 input tokens (s) | 1.64 | 1.58 | 1.50 | 1.19 (Splash) |
 
-Short prompts are now ahead of oMLX. At 1,492 tokens the direct path is
-still 3% behind oMLX by default and level with it under
-`--mlx-numerics fast` (1.51 s). Splash's prefill lead on DFlash2 stands.
+Direct greedy is now ahead of oMLX on all three measures. The lead at
+1,492 tokens is 9 ms: each of the six AX Engine probes (1.497 to 1.501 s)
+is below each of oMLX's (1.507 to 1.513 s). Splash's prefill lead on
+DFlash2 stands.
 
 ## What the split was
 
@@ -84,10 +85,9 @@ MacBook Pro M5 Max 128 GB:
 | 257 | 338 ms | 329 ms | 339 ms |
 | 1,498 | 1,609 ms | 1,516 ms | 1,502 ms |
 
-The 1,498-token row was measured with MLX's gated-delta recurrence on (see
-below). With the default sequential recurrence the first cold request at
-that length reads 1,547 ms, and 1,492 ms under `--mlx-numerics fast`. The
-rows up to 127 tokens are below that recurrence's 128-row minimum.
+With `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=0` the first cold request at
+1,498 tokens reads 1,547 ms. The rows up to 127 tokens are below the MLX
+recurrence's 128-row minimum.
 
 Mac mini M4 Pro 64 GB, which carried other work during the measurement:
 
@@ -123,33 +123,69 @@ either configuration, so it gives no DFlash2 number there.
   one-token tails, follow-up turns, a greedy request after a sampled one
   stored a boundary snapshot, and a sampled request after a greedy one
   each equal their cold reply. Logits were not compared.
-- Against the previous build, one of the three 64-token benchmark replies
-  changed. The new reply is the one the previous release gives with the
-  prefix cache off, and the one oMLX gives. The split schedule did not
-  reproduce it.
+- The schedule change alone changes one of the three 64-token benchmark
+  replies (the second) against the previous build. The new reply is the
+  one the previous release gives with the prefix cache off, and the one
+  oMLX gives. The split schedule did not reproduce it.
 
-## MLX's gated-delta recurrence stays an opt-in
+## MLX's gated-delta recurrence on M5 and later
 
 MLX's chunked `gated_delta_update` takes a 1,496-row prefill from 1,534 to
-1,473 ms on the M5 Max. It was briefly on by default on M5 and later
-because the benchmark replies matched the sequential recurrence under the
-split schedule. Under the unsplit schedule one of the three replies
-differs from the sequential recurrence's, and no quality evaluation
-separates the two, so the default stays sequential:
+1,473 ms on the M5 Max. It rounds differently from AX's sequential
+recurrence, and under the unsplit schedule one of the three 64-token
+benchmark replies differs between the two. A changed reply says nothing
+about how far the model moved, so the next-token logits were compared
+directly: 46 natural-text prompts (raw prefixes of ten documentation and
+source files, 173 to 2,903 tokens, 57,124 tokens in all), the full
+248,320-entry vocabulary, each configuration in its own process. Two runs of
+one configuration are bit-identical.
 
-- `--mlx-numerics fast` selects the MLX recurrence on M5 and later, and
-  measured 35.34 tok/s and 1.51 s first text at 1,492 tokens against
-  oMLX's 34.55 and 1.52 (three rested rounds).
-- `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1` selects it on any host, and `=0`
-  keeps it off under `fast`.
+| Change | Top token kept | Largest logit difference, median / worst | KL, median / worst |
+| --- | ---: | ---: | ---: |
+| Schedule only (sequential recurrence, split against unsplit) | 46 of 46 | 0.16 / 0.38 | 8.9e-5 / 1.9e-3 |
+| Recurrence only (unsplit schedule) | 46 of 46 | 0.24 / 1.06 | 1.6e-4 / 2.5e-3 |
+| Schedule only (MLX recurrence) | 46 of 46 | 0.16 / 1.09 | 5.9e-5 / 2.1e-3 |
+
+- The bf16 model already moves by 0.16 to 0.38 logits when only the
+  chunking of the prefill changes. The recurrence moves it by about 1.5
+  times that at the median.
+- The recurrence's largest differences are on unlikely tokens: the
+  most-moved token is ranked 18th at best (median rank 2,487). Among tokens
+  above 0.1% probability its worst difference is 0.38 against the
+  schedule's 0.19, and the largest change of any token's probability is
+  0.030 for both.
+- A prompt that repeats one sentence hundreds of times is unstable under
+  either change. Cut in the middle of the repetition (27 cuts of the
+  benchmark's prefill prompts), the top token flips in 8 cases for the
+  schedule change and in 13 for the recurrence. The complete prompts, which
+  end in a question, agree in every configuration.
+
+A short scored set was run as well: 80 chat prompts, each a natural-text
+context of 300 to 1,800 tokens followed by a question with one answer (30
+two-digit sums, differences and products, 30 six-digit codes planted in
+the context, 20 capital cities), 24 output tokens. Both recurrences answer
+all 80 correctly and their 80 replies are token-identical. The set is at
+its ceiling, so it shows no difference on short answers and cannot detect a
+small one.
+
+On this evidence the recurrence is on by default where the Neural
+Accelerator is present. `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=0` restores the
+sequential recurrence and `=1` selects the MLX one on other hosts; either
+deviation carries a numerics-tier token. Limits: no graded benchmark with
+hard items was run, generations longer than 64 tokens were not compared,
+and only the M5 Max was measured. The logit comparison is reproducible with
+the ignored test `qwen_linear_prefill_logits_dump`.
 
 ## What is left
 
-- First text at 1,492 tokens, default settings: 1.57 against oMLX's
-  1.52 s. The remaining per-layer costs measured in the gated-delta layers
-  are a copy that un-interleaves the packed projection and FP32 casts
-  around the gate kernel, about 1 ms per layer together.
-- DFlash2 first text at 1,492 tokens: 1.58 against Splash's 1.19 s.
+- DFlash2 first text at 1,492 tokens: 1.50 against Splash's 1.19 s. Splash
+  runs part of its prefill on the Neural Engine; no change to the GPU path
+  measured so far reaches that.
+- The direct lead at 1,492 tokens is under 1%. The remaining per-layer
+  costs measured in the gated-delta layers are a copy that un-interleaves
+  the packed projection and FP32 casts around the gate kernel, about 1 ms
+  per layer together.
 - Sampled requests: keeping the final-row logits in the end-of-prompt
   state would let them skip the split too.
-- Long generations and logits-level comparisons were not run.
+- A graded evaluation of the MLX recurrence with hard items, generations
+  longer than 64 tokens, and M5 hosts other than the M5 Max.
