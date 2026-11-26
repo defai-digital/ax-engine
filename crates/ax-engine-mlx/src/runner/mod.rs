@@ -9424,6 +9424,8 @@ impl MlxRunner {
             && !crate::fastpath::prefix_restore_value_enabled()
             && !crate::fastpath::prefix_semantic_cuts_enabled()
             && text_only
+            // The restore recognizes such a request by its prompt length.
+            && ctx.is_some()
             && prefill_output_token_cacheable(ctx, sampling)
             && self.live_prefix_snapshot_eligible(cache)
     }
@@ -11680,7 +11682,12 @@ impl MlxRunner {
         let alignment_restricted = linear_attention || sliding_window || mla_attention;
         let exact_alignment_required = linear_attention;
         if exact_alignment_required && full_block_tokens != available_tokens {
-            let stores_before = telemetry.stores;
+            // The end-of-prompt state keeps this prompt, whether this call
+            // stores it or finds it resident.
+            let end_state_kept = prefill_completes_prompt
+                && media_key.is_empty()
+                && greedy_prefill_output_token.is_some()
+                && self.prompt_end_state_eligible(state, block_size_tokens);
             if prefill_completes_prompt
                 && media_key.is_empty()
                 && let Some(token) = greedy_prefill_output_token
@@ -11716,7 +11723,7 @@ impl MlxRunner {
             // A prompt kept by its end-of-prompt state alone
             // (`prompt_end_state_replaces_boundary`) has no boundary
             // snapshot to store and nothing was blocked.
-            if telemetry.stores == stores_before {
+            if !end_state_kept {
                 telemetry.record_blocked_trim_failure();
             }
             return telemetry;
