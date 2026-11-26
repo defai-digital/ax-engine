@@ -739,11 +739,9 @@ cargo run -p ax-engine-server -- \
   --port 31418
 ```
 
-NVIDIA/CUDA workers are served through
-[AX Serving](https://github.com/defai-digital/ax-serving). AX Engine no longer
-accepts the former vLLM or TensorRT support tiers and provider-specific flags.
-See [NVIDIA Serving Moved To AX Serving](AX-SERVING.md) for the ownership
-boundary and migration guide.
+For NVIDIA/CUDA fleet deployments, see [AX Serving](AX-SERVING.md).
+The [migration notes](AX-SERVING.md#migration) cover the former vLLM and
+TensorRT support tiers and provider-specific flags.
 
 The `llama.cpp` server route remains available for GGUF/non-MLX server-backed
 inference:

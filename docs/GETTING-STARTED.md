@@ -94,8 +94,9 @@ commands to PATH. See the [app guide](MACOS-APP.md) for usage.
 Homebrew, the standalone download, and the Python wheel are available for
 Apple Silicon. **Homebrew is optional.**
 
-NVIDIA/CUDA deployments use AX Serving and are not installed by the AX Engine
-Homebrew or Python package path.
+For Linux CUDA inference, use
+[AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start).
+For fleet deployments, see the commercial product [AX Serving](AX-SERVING.md).
 
 | Goal | Recommended channel |
 | --- | --- |
@@ -677,10 +678,9 @@ That route is explicit compatibility only. It is text-only, supports AX
 blocking and SSE text surfaces, and is not a repo-owned MLX performance claim.
 Streamed chunks are delegated text deltas, not AX-owned token/KV evidence.
 
-To serve NVIDIA/CUDA workers, deploy
-[AX Serving](https://github.com/defai-digital/ax-serving). AX Engine no longer
-accepts the former CUDA support tiers or provider-specific flags; see the
-[migration guide](AX-SERVING.md).
+For NVIDIA/CUDA fleet deployments, see [AX Serving](AX-SERVING.md).
+The [migration notes](AX-SERVING.md#migration) cover the former AX Engine CUDA
+support tiers and provider-specific flags.
 
 To run a checked-in scenario manifest through the current workload-contract
 path:

@@ -12,26 +12,16 @@
 
 </div>
 
-**Using NVIDIA GPUs on Linux?** Use the CUDA edition,
-[AX Engine for SGLang (`ax-engine-sglang`)](https://github.com/defai-digital/ax-engine-sglang#quick-start).
-For fleet routing and orchestration, use
-[AX Serving](https://github.com/defai-digital/ax-serving).
-
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
 for Qwen 3.8 27B AXQ**. Install the macOS app with one curl command to
 download models, chat and serve OpenAI-compatible endpoints locally.
 
 [Install for macOS](#install-ax-engine-for-macos) · [Performance](#performance) · [Documentation](docs/README.md)
 
-<details open>
-<summary>macOS app design preview (illustrative data)</summary>
-
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/ax-engine-macos-catalog.png">
-  <img src="docs/images/ax-engine-macos-preview.gif" width="620" alt="AX Engine for macOS preview showing Home, Models, Playground, Compare, API and Logs, System, and Settings.">
+  <img src="docs/images/ax-engine-macos-preview.gif" width="620" alt="AX Engine for macOS mockups with sample data showing Home, Models, Playground, Compare, API and Logs, System, and Settings.">
 </picture>
-
-</details>
 
 The Qwen 3.8 27B and Flash Next product scope is
 **MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**, plus affine 6-bit/group64 MTP.
@@ -648,6 +638,14 @@ generally not accepted — open an issue first. See [CONTRIBUTING.md](CONTRIBUTI
 - Website: [automatosx.com](https://automatosx.com)
 - Discord: [Join us](https://discord.gg/MECsKdA6zF)
 - Email: [enquiry@defai.digital](mailto:enquiry@defai.digital)
+
+## NVIDIA and fleet deployments
+
+- For **Linux CUDA inference**, use
+  [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start).
+- For **fleet routing and orchestration**, see [AX Serving](docs/AX-SERVING.md),
+  our commercial product. [Contact us](mailto:enquiry@defai.digital) for access
+  and deployment options.
 
 ## Acknowledgments
 

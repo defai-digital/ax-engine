@@ -49,7 +49,8 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving), [Ports](PORTS.md) |
 | Bind host, default port, Engine vs Serving | [Ports](PORTS.md) | [Server](SERVER.md), [AX Serving](AX-SERVING.md), [LAN Discovery](LAN-DISCOVERY.md) |
 | Run OpenClaw on local Qwen | [OpenClaw](OPENCLAW.md) | [Server](SERVER.md), [Supported Models](SUPPORTED-MODELS.md) |
-| Fleet / NVIDIA CUDA (AX Serving) | [AX Serving](AX-SERVING.md) | [Ports](PORTS.md), [ax-serving](https://github.com/defai-digital/ax-serving) |
+| Run inference on Linux with NVIDIA GPUs | [AX Engine for SGLang](https://github.com/defai-digital/ax-engine-sglang#quick-start) | |
+| Route and orchestrate an inference fleet | [AX Serving](AX-SERVING.md) (commercial) | [Ports](PORTS.md) |
 | Integrate from an app or agent | [SDK Docs](sdk/README.md) | [Server](SERVER.md), [Local Engine Clients](LOCAL-ENGINE-CLIENTS.md) |
 | Debug long context, prefix reuse, or KV | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
 | Change code safely | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
