@@ -97,21 +97,25 @@ about 180 ms.
 ## Numerics
 
 The masked call sums a query's keys in cache order and in different
-groups than the padded call, which summed them in selection order. Both
-accumulate in float32 and store bfloat16.
+groups than the padded call, which summed them in selection order.
 
-On the real pack, a 4,443-token prompt in 2,048-row chunks, against the
-padded sub-batches:
+On the real pack, in 2,048-row chunks, against the padded sub-batches:
+the 4,443-token prompt of the scan above and three code prompts (a source
+file with a question) of 3,838, 9,293 and 14,644 tokens.
 
 - The chunk below the 2,051-token budget is bit-identical (the path is
   not used).
-- In the first sparse-attention layer of the next chunk 13% of the output
-  elements differ, by at most one bfloat16 step (0.0156 at magnitude 2).
-- Later layers amplify that: the last row's logits differ by up to 1.7 at
-  the end of a chunk, with the same top token and a margin of 5.3 against
-  5.4. The existing indexed kernel (`--mlx-numerics fast`) moves the same
-  logits by up to 1.5 on this prompt.
-- 256 greedy tokens after that prompt are identical.
+- In the first sparse-attention layer of the next chunk 13 to 18% of the
+  output elements differ, none by more than one bfloat16 step (0.0156 at
+  magnitude 2, 0.031 at magnitude 4).
+- Later layers amplify that: the last row's logits differ by 0.4 to 1.7
+  at the end of a chunk, with the same top token at the end of every
+  chunk of all four prompts. The existing indexed kernel
+  (`--mlx-numerics fast`) moves the same logits by up to 1.5 on the first
+  prompt.
+- Greedy tokens after the prompt: 256 identical after the first prompt
+  and 64 identical after two of the code prompts. After the 9,293-token
+  one the two paths part at the 16th token.
 
 Eight other prompts of 3,249 to 14,732 tokens (source files with a
 question), 160 greedy tokens each, path off against on: two replies are
@@ -128,6 +132,14 @@ output.
 A row's result does not depend on the other rows of its chunk. On hosts
 without a Neural Accelerator it can depend on the length of the history
 the call reads, as the dense path below 2,052 tokens already does.
+
+A closer first layer does not buy closer text. On a Mac Studio M2 Ultra
+192 GB, where this path is not the default, the masked call differs from
+the padded one in 35 to 54% of first-layer elements, by up to ten
+bfloat16 steps. Casting queries, keys and values to float32 for the call
+brings that to 11 to 17% and one step, the level the M5 Max shows without
+the cast, and the last-row logits still move by 0.4 to 1.8, as before.
+The cast was not adopted.
 
 ## Switch and hosts
 
@@ -162,6 +174,11 @@ Two things for whoever merges this:
   grows with the history (6 ms per layer at 4,096 tokens, 12 at 8,192).
   The peer attends the selected keys in place with a kernel on the tensor
   units, whose cost does not depend on the history.
+  Attending per-tile unions of the selection instead does not get there:
+  neighbouring queries share too little. At 14,336 tokens of history the
+  16 queries of a tile select 6,142 distinct tokens on average and up to
+  9,504, against 2,051 each, so a tile would read about what the masked
+  call reads once it is padded to its widest.
 - **Up to 803 tokens** AX Engine is 0.01 to 0.02 s behind, as before,
   except at 127 tokens, where it is ahead.
 - **Hosts without a Neural Accelerator**, as above.

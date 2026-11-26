@@ -2115,7 +2115,8 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
 
     /// One bf16 rounding step is 2^-8 relative, so two reduction orders can
     /// only disagree by about that much; anything far above it came from
-    /// reading different rows.
+    /// reading different rows. The ceiling covers one step up to a magnitude
+    /// of 4; a larger element may move by one step of its own.
     const ATTENTION_DRIFT_CEILING: f32 = 2e-2;
 
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
@@ -2578,9 +2579,16 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
             first.max_abs,
             first.max_abs_at,
         );
+        // One bf16 step at the element's own magnitude is rounding at any
+        // size: the absolute ceiling alone would reject a single step on a
+        // value of 4 or more.
+        let one_step = first.max_abs_at.map_or(0.0, |(_, left, right)| {
+            let magnitude = left.abs().max(right.abs()).max(f32::MIN_POSITIVE);
+            2f32.powf(magnitude.log2().floor() - 7.0)
+        });
         assert!(
-            first.max_abs <= ATTENTION_DRIFT_CEILING,
-            "layer {:?} chunk {}: one attention element moved by {:.6} (ceiling {ATTENTION_DRIFT_CEILING}) at {:?}",
+            first.max_abs <= ATTENTION_DRIFT_CEILING.max(one_step),
+            "layer {:?} chunk {}: one attention element moved by {:.6} (ceiling {ATTENTION_DRIFT_CEILING}, one bf16 step {one_step}) at {:?}",
             first.layer,
             first.chunk_offset,
             first.max_abs,
