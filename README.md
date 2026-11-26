@@ -40,14 +40,15 @@ latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
 On Flash Next, decode is level with oMLX; first text is ahead at 127 to
-128 and at 2,233 input tokens, level at 1,492, and 2 to 11% behind from
-about 3,000 to 13,000 tokens. On the 27B, direct greedy is ahead of oMLX
-on decode (35.5 against 34.7 tok/s) and on first text: 0.17 against 0.22 s
-at 127 to 128 input tokens, and 1.50 against 1.51 s at 1,492, a narrow lead
-in which each of the six AX Engine probes is below each of oMLX's. AX
-Engine's DFlash2 decode is ahead of Splash on this three-prompt, 64-token
-harness (114.1 against 108.9 tok/s) and behind it on prefill (first text
-1.50 against 1.19 s at 1,492 input tokens) and on 256-token outputs.
+128 and at 2,233 input tokens, level (within 1%) at 36, 231, 413 and 1,492,
+2% behind at 803, and 3 to 12% behind from about 3,000 to 13,000 tokens. On
+the 27B, direct greedy is ahead of oMLX on decode (35.5 against 34.7 tok/s)
+and on first text: 0.16 against 0.22 s at 127 to 128 input tokens, and 1.49
+against 1.51 s at 1,492, where each of the six AX Engine probes is below
+each of oMLX's. AX Engine's DFlash2 decode is ahead of Splash on this
+three-prompt, 64-token harness (113.4 against 108.9 tok/s) and behind it on
+prefill (first text 1.49 against 1.20 s at 1,492 input tokens) and on
+256-token outputs.
 These probes follow warmup requests without a pause. A request that
 arrives after the server sat idle for 3 to 60 seconds takes 0.73 to 0.74 s
 to first text for the 1,492-token Flash Next prompt (oMLX: 0.74 to 0.75 s)
@@ -57,6 +58,7 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 [What changed and what is left](docs/performance/qwen38-m5-tree-verify-and-flash-next-2026-11-25.md) ·
 [27B first text without the block-boundary split](docs/performance/qwen38-27b-prefill-schedule-2026-11-25.md) ·
 [First request after idle](docs/performance/idle-residency-refresh-2026-11-26.md) ·
+[Text requests without a tokenizer copy](docs/performance/server-tokenizer-shared-2026-11-26.md) ·
 [Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
 
 <!-- qwen38-m5-modes:begin -->
@@ -67,8 +69,8 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 
 | Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
 | --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+c688907a (Direct greedy) † | 59.50 | 2833.74 | 0.22 | 0.71 |
-| oMLX 0.8.2 (Direct greedy) † | 59.39 | 3989.89 | 0.36 | 0.71 |
+| AX Engine 8.1.0+02ab4a08 (Direct greedy) † | 59.74 | 2841.18 | 0.21 | 0.69 |
+| oMLX 0.8.2 (Direct greedy) † | 59.60 | 4061.45 | 0.36 | 0.70 |
 | mlx-lm 0.32.0 (Direct greedy) | 0 | 0 | — | — |
 | MTPLX 2.12.3 (Direct greedy) | 0 | 0 | — | — |
 | TensorFold 1.3.4 (Direct greedy) | 0 | 0 | — | — |
@@ -81,20 +83,20 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 
 ![Qwen 3.8 Flash Next cold first text by input length on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-first-text-by-length.svg)
 
-| Input tokens | AX Engine 8.1.0+c688907a (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
+| Input tokens | AX Engine 8.1.0+02ab4a08 (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
 | ---: | ---: | ---: | ---: |
-| 36 | 0.174 | 0.164 | +6% |
-| 127 | 0.215 | 0.349 | −38% |
-| 231 | 0.236 | 0.225 | +5% |
-| 413 | 0.306 | 0.291 | +5% |
-| 803 | 0.450 | 0.441 | +2% |
-| 1,492 | 0.706 | 0.698 | +1% |
-| 2,233 | 1.174 | 1.335 | −12% |
-| 2,961 | 1.462 | 1.437 | +2% |
-| 4,443 | 2.284 | 2.195 | +4% |
-| 6,523 | 3.408 | 3.218 | +6% |
-| 9,123 | 4.970 | 4.574 | +9% |
-| 13,023 | 7.281 | 6.573 | +11% |
+| 36 | 0.165 | 0.164 | +0% |
+| 127 | 0.204 | 0.351 | −42% |
+| 231 | 0.226 | 0.225 | +0% |
+| 413 | 0.294 | 0.292 | +1% |
+| 803 | 0.438 | 0.429 | +2% |
+| 1,492 | 0.689 | 0.689 | +0% |
+| 2,233 | 1.131 | 1.325 | −15% |
+| 2,961 | 1.458 | 1.420 | +3% |
+| 4,443 | 2.269 | 2.169 | +5% |
+| 6,523 | 3.385 | 3.192 | +6% |
+| 9,123 | 4.934 | 4.517 | +9% |
+| 13,023 | 7.210 | 6.431 | +12% |
 
 #### Qwen 3.8 27B MXFP4
 
@@ -102,10 +104,10 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 
 | Engine and mode | Decode (output tok/s) | Effective prefill (input tok/s) | First text, 127–128 input tokens (s) | First text, 1,492 input tokens (s) |
 | --- | ---: | ---: | ---: | ---: |
-| AX Engine 8.1.0+df8c86ec (Direct greedy) † | 35.46 | 1028.25 | 0.17 | 1.50 |
-| AX Engine 8.1.0+df8c86ec (DFlash2) † | 114.09 | 1021.70 | 0.18 | 1.50 |
-| Splash 1.7.0 (DFlash2) † | 108.91 | 1330.50 | 0.17 | 1.19 |
-| oMLX 0.8.2 (Direct greedy) † | 34.67 | 1059.99 | 0.22 | 1.51 |
+| AX Engine 8.1.0+02ab4a08 (Direct greedy) † | 35.46 | 1028.41 | 0.16 | 1.49 |
+| AX Engine 8.1.0+02ab4a08 (DFlash2) † | 113.40 | 1023.89 | 0.16 | 1.49 |
+| Splash 1.7.0 (DFlash2) † | 108.93 | 1323.63 | 0.17 | 1.20 |
+| oMLX 0.8.2 (Direct greedy) † | 34.68 | 1060.18 | 0.22 | 1.51 |
 | oMLX 0.8.2 (DFlash2) | 40.02 | 1027.14 | 0.30 | 1.65 |
 | mlx-lm 0.32.0 (Direct greedy) | 31.92 | 857.92 | 0.24 | 1.83 |
 | MTPLX 2.12.3 (Direct greedy) | 31.18 | 800.05 | 0.24 | 1.94 |

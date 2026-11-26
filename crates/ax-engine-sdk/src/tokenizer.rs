@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use thiserror::Error;
@@ -35,11 +35,13 @@ pub enum EngineTokenizerError {
 /// rendered-prompt byte positions to token indices for semantic cut points.
 pub type EncodedTokenByteOffsets = (Vec<u32>, Vec<(usize, usize)>);
 
-/// Thin wrapper over `tokenizers::Tokenizer`. Cloned cheaply (the
-/// inner tokenizer is `Arc`-shared internally by the upstream crate).
+/// Thin wrapper over `tokenizers::Tokenizer`. A clone shares the inner
+/// tokenizer: `tokenizers::Tokenizer` clones by value, and copying the
+/// vocabulary and merge tables of a 248,320-entry Qwen tokenizer took about
+/// 10 ms for every request that asked the process cache for it.
 #[derive(Clone)]
 pub struct EngineTokenizer {
-    inner: Tokenizer,
+    inner: Arc<Tokenizer>,
     eos_token_id: Option<u32>,
     eos_token_ids: Vec<u32>,
     embedding_special_tokens: bool,
@@ -212,7 +214,7 @@ impl EngineTokenizer {
             });
 
         Ok(Self {
-            inner,
+            inner: Arc::new(inner),
             eos_token_id,
             eos_token_ids,
             embedding_special_tokens,
@@ -232,8 +234,8 @@ impl EngineTokenizer {
     /// and config files. Parsing a large `tokenizer.json` costs tens to hundreds of
     /// milliseconds; request-scoped callers (the HTTP server loads a
     /// tokenizer per request at several sites) should use this so only the
-    /// first request per model pays the parse. The returned value is a cheap
-    /// clone (the inner tokenizer is `Arc`-shared).
+    /// first request per model pays the parse. The returned value shares the
+    /// cached tokenizer.
     pub fn from_model_dir_cached(model_dir: &Path) -> Result<Self, EngineTokenizerError> {
         // The EOS ids come from config.json and generation_config.json, so
         // all three files' mtimes identify the cached value; a config-only
@@ -514,7 +516,7 @@ mod tests {
                 .expect("valid embedding tokenizer fixture"),
         ));
         let mut tokenizer = EngineTokenizer {
-            inner,
+            inner: Arc::new(inner),
             eos_token_id: Some(2),
             eos_token_ids: vec![2],
             embedding_special_tokens: true,
@@ -554,7 +556,7 @@ mod tests {
                 .expect("valid embedding tokenizer fixture"),
             vec![0, 2]
         );
-        tokenizer.inner.with_post_processor(Some(
+        Arc::make_mut(&mut tokenizer.inner).with_post_processor(Some(
             TemplateProcessing::builder()
                 .try_single("<bos> $A <eos>")
                 .expect("Gemma template")
@@ -604,6 +606,25 @@ mod tests {
                 .prepare_embedding_chunk(vec![3], Some(false))
                 .expect("valid embedding tokenizer fixture"),
             vec![3]
+        );
+    }
+
+    #[test]
+    fn a_clone_shares_the_inner_tokenizer() {
+        let inner =
+            Tokenizer::from_bytes(tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT).as_bytes())
+                .expect("valid tokenizer fixture");
+        let tokenizer = EngineTokenizer {
+            inner: Arc::new(inner),
+            eos_token_id: None,
+            eos_token_ids: Vec::new(),
+            embedding_special_tokens: false,
+        };
+        let clone = tokenizer.clone();
+        assert!(Arc::ptr_eq(&tokenizer.inner, &clone.inner));
+        assert_eq!(
+            clone.encode("hello", false).expect("clone encodes"),
+            tokenizer.encode("hello", false).expect("original encodes")
         );
     }
 
@@ -839,7 +860,7 @@ mod tests {
         let json = tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT);
         let raw = Tokenizer::from_bytes(json.as_bytes()).expect("tokenizer");
         let tokenizer = EngineTokenizer {
-            inner: raw.clone(),
+            inner: Arc::new(raw.clone()),
             eos_token_id: None,
             eos_token_ids: Vec::new(),
             embedding_special_tokens: false,

@@ -34,12 +34,33 @@ AX Engine, oMLX, AX Engine, with 150 seconds of rest before each:
 | 9,123 | 4.935 | 4.574 | 5.006 | +8 to +9% |
 | 13,023 | 7.255 | 6.573 | 7.307 | +10 to +11% |
 
-AX Engine was built from commit `c688907a6` with default settings. The
-per-prompt records are
+AX Engine was built from commit `c688907a6` with default settings. An
+earlier scan of the same kind, on a build that differed only outside the
+default path, read within 0.07 s of these at every length.
+
+The same scan on 2026-11-26, with AX Engine built from commit `02ab4a08a`,
+which no longer copies the tokenizer for every request
+([note](server-tokenizer-shared-2026-11-26.md)):
+
+| Input tokens | AX Engine, first run (s) | oMLX 0.8.2 (s) | AX Engine, second run (s) | AX Engine against oMLX |
+| ---: | ---: | ---: | ---: | ---: |
+| 36 | 0.166 | 0.164 | 0.163 | −1 to +1% |
+| 127 | 0.206 | 0.351 | 0.201 | −41 to −43% |
+| 231 | 0.226 | 0.225 | 0.225 | 0% |
+| 413 | 0.296 | 0.292 | 0.292 | 0 to +1% |
+| 803 | 0.440 | 0.429 | 0.436 | +2 to +3% |
+| 1,492 | 0.689 | 0.689 | 0.689 | 0% |
+| 2,233 | 1.134 | 1.325 | 1.127 | −14 to −15% |
+| 2,961 | 1.455 | 1.420 | 1.462 | +2 to +3% |
+| 4,443 | 2.263 | 2.169 | 2.275 | +4 to +5% |
+| 6,523 | 3.384 | 3.192 | 3.386 | +6% |
+| 9,123 | 4.908 | 4.517 | 4.960 | +9 to +10% |
+| 13,023 | 7.203 | 6.431 | 7.217 | +12% |
+
+Its per-prompt records are
 [first-text-by-length.jsonl](../../benchmarks/results/qwen38-m5-modes-20261125/first-text-by-length.jsonl),
-and the README chart is drawn from them. An earlier scan of the same
-kind, on a build that differed only outside the default path, read within
-0.07 s of these at every length.
+and the README chart is drawn from them. The short prompts moved by the
+10 ms the copy took; the long ones did not move against oMLX.
 
 Up to 2,233 tokens the change does nothing, and those rows are the
 previous note's result measured again. From 2,961 tokens AX Engine was 26
@@ -169,11 +190,30 @@ Two things for whoever merges this:
 
 ## What is left
 
-- **Long prompts.** From 2,961 tokens each further token costs about 0.54
-  to 0.60 ms against 0.49 to 0.52 ms for oMLX. The masked call's share
-  grows with the history (6 ms per layer at 4,096 tokens, 12 at 8,192).
-  The peer attends the selected keys in place with a kernel on the tensor
-  units, whose cost does not depend on the history.
+- **Long prompts.** In the rested scan of 2026-11-26 each further token
+  costs AX Engine 0.55, 0.54, 0.60 and 0.58 ms over the four stretches
+  from 2,961 to 13,023 tokens, against 0.51, 0.49, 0.51 and 0.49 ms for
+  oMLX: 86 to 190 ms more per 2,048 tokens.
+  - Inside one 13,023-token request the six 2,047-row forwards take 895,
+    962, 1,016, 1,061, 1,108 and 1,154 ms on a cool host, each followed by
+    a one-row step of 17 to 18 ms that keeps the state at a 2,048-token
+    boundary independent of the prompt's length; the last 740 rows take
+    513 ms and the final step 20. The scan reads about 5% above their sum,
+    because it reaches this length after a minute of load.
+  - All of the growth is in the sparse-attention layers: a synchronized
+    stage profile puts the masked call at 67, 99, 133, 168 and 205 ms per
+    block (12 layers) for blocks two to six and the block selection at 15
+    to 58 ms, with the mixture and gated-delta stages flat.
+  - The peer attends the selected keys in place with a kernel on the
+    tensor units, whose cost does not depend on the history; its blocks
+    cost the same at every position. To match it, sparse attention and
+    selection together would have to stay near what they cost AX Engine in
+    the second block, at any history. The peer's kernel was not measured
+    in isolation.
+  - The one-row boundary steps are 108 ms of a 13,023-token request.
+    Folding them into the block changes which rows share a forward, which
+    is not a rounding-level change on this model (see the last-token
+    measurement below).
   Attending per-tile unions of the selection instead does not get there:
   neighbouring queries share too little. At 14,336 tokens of history the
   16 queries of a tile select 6,142 distinct tokens on average and up to
