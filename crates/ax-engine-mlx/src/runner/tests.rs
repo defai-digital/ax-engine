@@ -12635,6 +12635,13 @@ fn qwen_mtp_releases_verify_pages_before_committed_decode() {
 /// sampled request stored.
 #[test]
 fn greedy_unaligned_prompt_runs_unsplit_and_replays_from_its_end_state() {
+    // The switch-off and value-feature schedules keep the boundary split.
+    if !crate::fastpath::prefix_end_state_only_enabled()
+        || crate::fastpath::prefix_restore_value_enabled()
+        || crate::fastpath::prefix_semantic_cuts_enabled()
+    {
+        return;
+    }
     const BLOCK: u32 = 4;
     const SHARED: usize = 28;
     let prompt = |len: usize, tail: u32| -> Vec<u32> {
@@ -12837,7 +12844,10 @@ fn linear_prefill_disk_snapshots_carry_the_schedule_epoch() {
     let (runner, artifacts) = tiny_qwen_hybrid_runner();
     fs::remove_dir_all(artifacts.root_dir()).unwrap();
     let signature = runner.prefix_execution_signature();
-    let schedule = if crate::fastpath::prefix_end_state_only_enabled() {
+    let schedule = if crate::fastpath::prefix_end_state_only_enabled()
+        && !crate::fastpath::prefix_restore_value_enabled()
+        && !crate::fastpath::prefix_semantic_cuts_enabled()
+    {
         ";linear_prefill=2"
     } else {
         ";linear_prefill=2-split"

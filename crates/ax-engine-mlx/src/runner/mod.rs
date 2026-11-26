@@ -9417,8 +9417,12 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         text_only: bool,
     ) -> bool {
+        // The opt-in value features plan their own snapshot positions,
+        // the block boundary among them; they keep the split.
         crate::fastpath::prefix_end_state_only_enabled()
             && crate::fastpath::prefix_boundary_replay_enabled()
+            && !crate::fastpath::prefix_restore_value_enabled()
+            && !crate::fastpath::prefix_semantic_cuts_enabled()
             && text_only
             && prefill_output_token_cacheable(ctx, sampling)
             && self.live_prefix_snapshot_eligible(cache)
@@ -9645,7 +9649,10 @@ impl MlxRunner {
         // prefill recurrence runs MLX's kernel. A disk snapshot written
         // before that must miss.
         let base = if self.cfg.linear_attention.is_some() && !self.flash_next_exact_prefix_only() {
-            let schedule = if crate::fastpath::prefix_end_state_only_enabled() {
+            let schedule = if crate::fastpath::prefix_end_state_only_enabled()
+                && !crate::fastpath::prefix_restore_value_enabled()
+                && !crate::fastpath::prefix_semantic_cuts_enabled()
+            {
                 "2"
             } else {
                 "2-split"
