@@ -225,7 +225,9 @@ fn qwen_linear_prefill_module_latency() {
 /// boundary but one, that row alone, then the rest. With
 /// `AX_QWEN_LOGITS_LAST_ROW_STEP=1` the last prompt row runs as a forward of
 /// its own after the chunks, the schedule of families that keep the
-/// reference n-1 split.
+/// reference n-1 split. Tests keep the tensor-unit QSA kernel of Flash Next
+/// off; `AX_QWEN_LOGITS_TENSOR_UNIT=1` runs it as serving does on a Neural
+/// Accelerator host.
 #[test]
 #[ignore = "requires AX_QWEN_PROFILE_PACK, AX_QWEN_LOGITS_IDS_FILE and AX_QWEN_LOGITS_OUT"]
 fn qwen_linear_prefill_logits_dump() {
@@ -242,45 +244,79 @@ fn qwen_linear_prefill_logits_dump() {
     let chunk = env_usize("AX_QWEN_PROFILE_CHUNK").unwrap_or(1024).max(1);
     let split = env_usize("AX_QWEN_LOGITS_SPLIT") == Some(1);
     let last_row_step = env_usize("AX_QWEN_LOGITS_LAST_ROW_STEP") == Some(1);
+    let tensor_unit = env_usize("AX_QWEN_LOGITS_TENSOR_UNIT") == Some(1);
+    assert!(
+        !tensor_unit
+            || crate::model::shared::qwen4_exp_attention_indexed::tensor_unit_kernel_verified(),
+        "AX_QWEN_LOGITS_TENSOR_UNIT needs a host where the kernel passes its self-test"
+    );
 
-    for (index, ids) in prompts.iter().enumerate() {
-        mlx_sys::clear_cache();
-        let mut cache = MlxKVCache::new(cfg.layer_count);
-        let cache_only = |rows: &[u32], cache: &mut MlxKVCache| {
-            for part in rows.chunks(chunk) {
-                let offset = cache.seq_len();
-                let hidden = forward_cache_only(&cfg, &weights, part, cache, offset);
-                cache.advance(part.len());
-                eval_with_cache(&hidden, cache);
-            }
-        };
-        let boundary = ids.len() / 16 * 16;
-        let tail_start = if split && boundary > 1 && boundary < ids.len() {
-            cache_only(&ids[..boundary - 1], &mut cache);
-            cache_only(&ids[boundary - 1..boundary], &mut cache);
-            boundary
-        } else if last_row_step && ids.len() > 1 {
-            cache_only(&ids[..ids.len() - 1], &mut cache);
-            ids.len() - 1
-        } else {
-            let last_chunk = (ids.len() - 1) / chunk * chunk;
-            cache_only(&ids[..last_chunk], &mut cache);
-            last_chunk
-        };
-        let offset = cache.seq_len();
-        let logits = forward(&cfg, &weights, &ids[tail_start..], &mut cache, offset);
-        let logits = astype(&logits, MlxDtype::Float32, None);
-        eval_with_cache(&logits, &cache);
-        let bytes: Vec<u8> = logits
-            .data_f32()
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        std::fs::write(out.join(format!("{index}.f32")), bytes).unwrap();
-        families::qwen3_linear::clear_qwen_prefill_pending_ffn();
-        eprintln!(
-            "qwen_logits prompt={index} tokens={} split={split} last_row_step={last_row_step}",
-            ids.len()
-        );
+    let dump = || {
+        for (index, ids) in prompts.iter().enumerate() {
+            dump_prompt_logits(
+                &cfg,
+                &weights,
+                ids,
+                &out.join(format!("{index}.f32")),
+                chunk,
+                split,
+                last_row_step,
+            );
+            eprintln!(
+                "qwen_logits prompt={index} tokens={} split={split} last_row_step={last_row_step} \
+                 tensor_unit={tensor_unit}",
+                ids.len()
+            );
+        }
+    };
+    if tensor_unit {
+        crate::model::shared::qwen4_exp_attention_indexed::with_tensor_unit_attention(true, dump);
+    } else {
+        dump();
     }
+}
+
+fn dump_prompt_logits(
+    cfg: &ModelConfig,
+    weights: &crate::weights::ModelWeights,
+    ids: &[u32],
+    path: &std::path::Path,
+    chunk: usize,
+    split: bool,
+    last_row_step: bool,
+) {
+    mlx_sys::clear_cache();
+    let mut cache = MlxKVCache::new(cfg.layer_count);
+    let cache_only = |rows: &[u32], cache: &mut MlxKVCache| {
+        for part in rows.chunks(chunk) {
+            let offset = cache.seq_len();
+            let hidden = forward_cache_only(cfg, weights, part, cache, offset);
+            cache.advance(part.len());
+            eval_with_cache(&hidden, cache);
+        }
+    };
+    let boundary = ids.len() / 16 * 16;
+    let tail_start = if split && boundary > 1 && boundary < ids.len() {
+        cache_only(&ids[..boundary - 1], &mut cache);
+        cache_only(&ids[boundary - 1..boundary], &mut cache);
+        boundary
+    } else if last_row_step && ids.len() > 1 {
+        cache_only(&ids[..ids.len() - 1], &mut cache);
+        ids.len() - 1
+    } else {
+        let last_chunk = (ids.len() - 1) / chunk * chunk;
+        cache_only(&ids[..last_chunk], &mut cache);
+        last_chunk
+    };
+    let offset = cache.seq_len();
+    let logits = forward(cfg, weights, &ids[tail_start..], &mut cache, offset);
+    let logits = astype(&logits, MlxDtype::Float32, None);
+    eval_with_cache(&logits, &cache);
+    let bytes: Vec<u8> = logits
+        .data_f32()
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    std::fs::write(path, bytes).unwrap();
+    families::qwen3_linear::clear_qwen_prefill_pending_ffn();
 }

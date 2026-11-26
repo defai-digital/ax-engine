@@ -27,13 +27,22 @@
 //! online rescaling differ, so the result is not bit-identical to MLX's fused
 //! SDPA. That is why this path is opt-in
 //! (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`).
+//!
+//! A second kernel, `metal/kernels/flash_next_qsa_indexed_nax.metal`, takes
+//! the same buffers and runs the products on the GPU tensor units of Neural
+//! Accelerator hosts ([`IndexedKernel::TensorUnit`],
+//! `AX_MLX_FLASH_NEXT_QSA_INDEXED_NAX_PREFILL`). Its cost per query does not
+//! depend on the history, so it serves long histories, where the masked dense
+//! call's cost keeps growing.
 
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, LazyKernel, MlxArray, MlxDtype, contiguous, reshape,
     transpose, zeros,
 };
 
-use super::qwen4_exp_attention::{BATCHED_ATTENTION_MIN_QUERIES, Qwen4ExpAttentionError};
+use super::qwen4_exp_attention::{
+    BATCHED_ATTENTION_MIN_QUERIES, MASKED_DENSE_MIN_QUERIES, Qwen4ExpAttentionError,
+};
 use super::qwen4_exp_kv_history::KvHistory;
 use crate::qwen4_exp_qsa::QsaSelection;
 
@@ -61,6 +70,71 @@ static INDEXED: LazyKernel = LazyKernel::new(
     true,
 );
 
+/// Device code of the tensor-unit kernel: the same buffers as
+/// [`INDEXED_SOURCE`], with the products on the GPU tensor units.
+const INDEXED_NAX_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../metal/kernels/flash_next_qsa_indexed_nax.metal"
+));
+/// Supplies `ax_nax::frag_coord()`, the lane layout of a tensor-unit fragment.
+const INDEXED_NAX_HEADER: &str = include_str!("verify_qmm_mx_nax.metal");
+
+static INDEXED_NAX: LazyKernel = LazyKernel::new(
+    "ax_flash_next_qsa_indexed_nax_attention_v1",
+    &[
+        "q", "k_sealed", "k_tail", "v_sealed", "v_tail", "indices", "lengths", "scales", "params",
+    ],
+    &["out"],
+    INDEXED_NAX_SOURCE,
+    INDEXED_NAX_HEADER,
+    true,
+);
+
+/// Shortest history the tensor-unit kernel takes. On the MacBook Pro M5 Max
+/// 128 GB one layer of a 2,048-query chunk costs it 5.7 to 5.9 ms at any
+/// history, against 5.6 ms for the masked dense call at 4,096 tokens, 11.0 at
+/// 8,192 and 16.7 at 12,288. Below this bound the masked dense call is as
+/// fast or faster.
+pub(crate) const INDEXED_NAX_MIN_TOKENS: i32 = 4_096;
+
+/// Which device kernel attends a packed selection. Both read the buffers
+/// described in `metal/kernels/flash_next_qsa_indexed.metal`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexedKernel {
+    /// One simdgroup per query head, scalar dot products
+    /// (`flash_next_qsa_indexed.metal`). Any Apple GPU.
+    Scalar,
+    /// Two simdgroups per (query, kv head) on the GPU tensor units
+    /// (`flash_next_qsa_indexed_nax.metal`). Neural Accelerator hosts only:
+    /// its fragment layout is that of the tensor units, and on another GPU
+    /// the same code computes garbage.
+    TensorUnit,
+}
+
+impl IndexedKernel {
+    fn kernel(self) -> Option<&'static mlx_sys::MlxMetalKernel> {
+        match self {
+            Self::Scalar => INDEXED.get(),
+            Self::TensorUnit => INDEXED_NAX.get(),
+        }
+    }
+
+    /// Threads of one threadgroup, which is also the grid's x extent.
+    fn threadgroup_width(self, group: i32) -> i32 {
+        match self {
+            Self::Scalar => group * 32,
+            Self::TensorUnit => 64,
+        }
+    }
+
+    fn geometry_ok(self, q_heads: i32, kv_heads: i32, head_dim: i32, dtype: MlxDtype) -> bool {
+        match self {
+            Self::Scalar => kernel_geometry_ok(q_heads, kv_heads, head_dim, dtype),
+            Self::TensorUnit => tensor_unit_geometry_ok(q_heads, kv_heads, head_dim, dtype),
+        }
+    }
+}
+
 /// Selected rows one query may keep. This bounds the host-side packed index
 /// tile, not the kernel: the kernel walks each row once in selection order. A
 /// selection wider than this is one the gathered path serves instead, so a
@@ -81,10 +155,224 @@ fn enabled() -> bool {
     crate::fastpath::flash_next_qsa_indexed_prefill_enabled()
 }
 
+/// Whether the tensor-unit kernel may run: its switch, a Neural Accelerator
+/// host, and a kernel that passed [`tensor_unit_probe`] in this process.
+fn tensor_unit_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = TENSOR_UNIT_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    // Unit tests run the same forwards on every host, so they keep the
+    // kernel off unless they opt in with [`with_tensor_unit_attention`].
+    !cfg!(test)
+        && crate::fastpath::flash_next_qsa_indexed_nax_prefill_enabled()
+        && tensor_unit_probe_passed()
+}
+
+/// The probe's verdict, resolved once per process and logged. Any failure
+/// keeps the other attention paths (fail closed). Call it after Metal is
+/// initialized.
+fn tensor_unit_probe_passed() -> bool {
+    static PASSED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PASSED.get_or_init(|| {
+        let probe = tensor_unit_probe();
+        tracing::info!(
+            target: "ax_engine_mlx",
+            probe = ?probe,
+            active = probe.is_ok(),
+            "Flash Next tensor-unit QSA prefill kernel"
+        );
+        probe.is_ok()
+    })
+}
+
+/// Values `(k - 64) / 64` for a pseudo-random `k` in `0..128`: seven
+/// significant bits, so float16 and bfloat16 both hold them exactly.
+fn probe_values(len: usize, seed: u32) -> Vec<f32> {
+    (0..len)
+        .map(|index| {
+            let mixed = (index as u32)
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add(seed.wrapping_mul(40_503));
+            ((mixed >> 8) % 128) as f32 / 64.0 - 1.0
+        })
+        .collect()
+}
+
+/// Runs the tensor-unit kernel once on a small selection and compares it with
+/// attention computed on the host.
+///
+/// The kernel's fragment layout is that of the GPU tensor units. A host whose
+/// GPU lays fragments out differently compiles the same source and returns
+/// garbage, so the hardware check alone is not what admits the kernel: it
+/// has to reproduce this result. The probe uses the Flash Next geometry, and
+/// so compiles the pipeline that model's chunks reuse.
+fn tensor_unit_probe() -> std::result::Result<(), String> {
+    const Q_HEADS: i32 = 24;
+    const KV_HEADS: i32 = 2;
+    const DIM: i32 = 256;
+    const QUERIES: i32 = 3;
+    // Rows on both sides of a sealed prefix.
+    const SEALED: i32 = 48;
+    const ROWS: i32 = 80;
+    const SCALE: f32 = 0.25;
+    let dtype = MlxDtype::Bfloat16;
+    let kind = IndexedKernel::TensorUnit;
+    if kind.kernel().is_none() {
+        return Err("the kernel did not build".to_string());
+    }
+    let q = probe_values((QUERIES * Q_HEADS * DIM) as usize, 1);
+    let k = probe_values((ROWS * KV_HEADS * DIM) as usize, 2);
+    let v = probe_values((ROWS * KV_HEADS * DIM) as usize, 3);
+    // Query `s` keeps three in four of its first `50 + 15 s` rows: two tiles
+    // of 32 keys with a ragged second one, a different set for each query.
+    let chosen: Vec<Vec<i32>> = (0..QUERIES)
+        .map(|s| {
+            (0..50 + 15 * s)
+                .filter(|row| (row * 5 + s * 3) % 4 != 1)
+                .collect()
+        })
+        .collect();
+    let width = chosen.iter().map(Vec::len).max().unwrap_or(0);
+    let mut indices_data = vec![-1_i32; QUERIES as usize * width];
+    for (s, rows) in chosen.iter().enumerate() {
+        indices_data[s * width..s * width + rows.len()].copy_from_slice(rows);
+    }
+    let lengths_data: Vec<i32> = chosen.iter().map(|rows| rows.len() as i32).collect();
+    let array = |values: &[f32], shape: &[i32]| {
+        mlx_sys::astype(
+            &reshape(&MlxArray::from_f32_slice(values), shape, None),
+            dtype,
+            None,
+        )
+    };
+    let int_array = |values: &[i32], shape: &[i32]| {
+        MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(values),
+            shape,
+            MlxDtype::Int32,
+        )
+    };
+    let rows_of = |values: &[f32], from: i32, to: i32| {
+        let per_row = (KV_HEADS * DIM) as usize;
+        array(
+            &values[from as usize * per_row..to as usize * per_row],
+            &[to - from, KV_HEADS, DIM],
+        )
+    };
+    let segments = Segments {
+        sealed_rows: SEALED,
+        k_sealed: rows_of(&k, 0, SEALED),
+        k_tail: rows_of(&k, SEALED, ROWS),
+        v_sealed: rows_of(&v, 0, SEALED),
+        v_tail: rows_of(&v, SEALED, ROWS),
+    };
+    // The launch takes queries head-major, `[1, heads, queries, dim]`.
+    let queries = transpose(&array(&q, &[QUERIES, 1, Q_HEADS, DIM]), &[1, 2, 0, 3], None);
+    let out = launch_indexed(
+        kind,
+        &queries,
+        &segments,
+        &int_array(&indices_data, &[QUERIES, width as i32]),
+        &int_array(&lengths_data, &[QUERIES]),
+        Q_HEADS,
+        KV_HEADS,
+        DIM,
+        QUERIES,
+        ROWS,
+        width as i32,
+        SCALE,
+    )
+    .map_err(|error| format!("the launch failed: {error}"))?
+    .ok_or_else(|| "the launch declined the probe".to_string())?;
+    // `[1, heads, queries, dim]` back to query-major, like `q`.
+    let out = mlx_sys::astype(
+        &contiguous(&transpose(&out, &[2, 0, 1, 3], None), None),
+        MlxDtype::Float32,
+        None,
+    );
+    mlx_sys::try_eval(&[&out]).map_err(|error| format!("the evaluation failed: {error}"))?;
+
+    let dim = DIM as usize;
+    let group = (Q_HEADS / KV_HEADS) as usize;
+    let mut expected = vec![0.0_f32; q.len()];
+    for (s, rows) in chosen.iter().enumerate() {
+        for head in 0..Q_HEADS as usize {
+            let kv_head = head / group;
+            let at = |row: i32| (row as usize * KV_HEADS as usize + kv_head) * dim;
+            let query = &q[(s * Q_HEADS as usize + head) * dim..][..dim];
+            let scores: Vec<f64> = rows
+                .iter()
+                .map(|&row| {
+                    let key = &k[at(row)..][..dim];
+                    let dot: f64 = query
+                        .iter()
+                        .zip(key)
+                        .map(|(a, b)| f64::from(*a) * f64::from(*b))
+                        .sum();
+                    dot * f64::from(SCALE)
+                })
+                .collect();
+            let top = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let weights: Vec<f64> = scores.iter().map(|score| (score - top).exp()).collect();
+            let total: f64 = weights.iter().sum();
+            let target = &mut expected[(s * Q_HEADS as usize + head) * dim..][..dim];
+            for (d, slot) in target.iter_mut().enumerate() {
+                let sum: f64 = rows
+                    .iter()
+                    .zip(&weights)
+                    .map(|(&row, weight)| weight * f64::from(v[at(row) + d]))
+                    .sum();
+                *slot = (sum / total) as f32;
+            }
+        }
+    }
+    let actual = out.data_f32();
+    let (diff, scale) = super::verify_qmm::max_abs_diff_and_scale(actual, &expected);
+    // The output is rounded once to bfloat16, eight significant bits of
+    // values below 1. A wrong layout is orders of magnitude above this bound.
+    if actual.len() != expected.len() || !diff.is_finite() || diff > 0.01 * scale.max(1.0) {
+        return Err(format!(
+            "the kernel deviates from host attention: max diff {diff}, scale {scale}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! {
     static INDEXED_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static TENSOR_UNIT_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     static INDEXED_DISPATCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static TENSOR_UNIT_DISPATCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether a test may force the tensor-unit kernel on: this host has the
+/// tensor units and the kernel passed its self-test, as serving requires.
+#[cfg(test)]
+pub(crate) fn tensor_unit_kernel_verified() -> bool {
+    crate::hardware::neural_accelerator_active() && tensor_unit_probe_passed()
+}
+
+/// Run `action` with the tensor-unit kernel forced on or off on this thread.
+/// Force it on only where [`tensor_unit_kernel_verified`] holds.
+#[cfg(test)]
+pub(crate) fn with_tensor_unit_attention<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TENSOR_UNIT_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(TENSOR_UNIT_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Tensor-unit kernel dispatches issued on this thread so far.
+#[cfg(test)]
+pub(crate) fn tensor_unit_dispatch_count() -> u64 {
+    TENSOR_UNIT_DISPATCHES.with(std::cell::Cell::get)
 }
 
 /// Run `action` with the indexed path forced on or off on this thread.
@@ -141,6 +429,77 @@ pub(super) fn attend_selected_indexed(
     if !enabled() {
         return Ok(None);
     }
+    attend_selected_with(
+        IndexedKernel::Scalar,
+        queries,
+        keys,
+        values,
+        selection,
+        q_heads,
+        kv_heads,
+        head_dim,
+        compress_ratio,
+        scale,
+    )
+}
+
+/// Whether a chunk of `queries` rows over a `tokens`-long history goes to the
+/// tensor-unit kernel. A function of the chunk's shape alone, so a replay of
+/// the same chunk takes the same kernel. The query bound is the masked dense
+/// call's: verifier windows and decode steps keep their own kernels.
+pub(super) fn tensor_unit_takes(queries: i32, tokens: i64) -> bool {
+    i64::from(queries) >= MASKED_DENSE_MIN_QUERIES
+        && tokens >= i64::from(INDEXED_NAX_MIN_TOKENS)
+        && tensor_unit_enabled()
+}
+
+/// [`attend_selected_indexed`] on the GPU tensor units, for the chunks
+/// [`tensor_unit_takes`] admits. Returns `Ok(None)` when this path does not
+/// apply, and the caller keeps its other paths.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn attend_selected_tensor_unit(
+    queries: &MlxArray,
+    keys: &KvHistory,
+    values: &KvHistory,
+    selection: &QsaSelection,
+    q_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    compress_ratio: i32,
+    scale: f32,
+) -> Result<Option<MlxArray>> {
+    let seq = queries.shape().get(2).copied().unwrap_or(0);
+    let tokens = i64::try_from(keys.token_count()).unwrap_or(i64::MAX);
+    if !tensor_unit_takes(seq, tokens) {
+        return Ok(None);
+    }
+    attend_selected_with(
+        IndexedKernel::TensorUnit,
+        queries,
+        keys,
+        values,
+        selection,
+        q_heads,
+        kv_heads,
+        head_dim,
+        compress_ratio,
+        scale,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attend_selected_with(
+    kind: IndexedKernel,
+    queries: &MlxArray,
+    keys: &KvHistory,
+    values: &KvHistory,
+    selection: &QsaSelection,
+    q_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    compress_ratio: i32,
+    scale: f32,
+) -> Result<Option<MlxArray>> {
     // Decode and verifier windows keep their existing arms: this path is
     // admitted for prefill chunks only. A singleton device selection carries
     // one exact-length row rather than the per-query tile the kernel walks.
@@ -155,7 +514,7 @@ pub(super) fn attend_selected_indexed(
     if seq < BATCHED_ATTENTION_MIN_QUERIES || dim != head_dim || dim <= 0 {
         return Ok(None);
     }
-    if !kernel_geometry_ok(q_heads, kv_heads, dim, queries.dtype()) {
+    if !kind.geometry_ok(q_heads, kv_heads, dim, queries.dtype()) {
         return Ok(None);
     }
     if keys.token_count() != values.token_count() {
@@ -174,11 +533,8 @@ pub(super) fn attend_selected_indexed(
     let Some(packed) = pack_selection(selection, seq, total_rows, compress_ratio)? else {
         return Ok(None);
     };
-    let Some(kernel) = INDEXED.get() else {
-        return Ok(None);
-    };
     launch_indexed(
-        kernel,
+        kind,
         queries,
         &segments,
         &packed.indices,
@@ -201,7 +557,7 @@ pub(super) fn attend_selected_indexed(
 /// own geometry compiles exactly the pipeline production dispatches.
 #[allow(clippy::too_many_arguments)]
 fn launch_indexed(
-    kernel: &mlx_sys::MlxMetalKernel,
+    kind: IndexedKernel,
     queries: &MlxArray,
     segments: &Segments,
     indices: &MlxArray,
@@ -219,6 +575,14 @@ fn launch_indexed(
     if !indexed_offsets_fit(seq, total_rows, width, q_heads, kv_heads, head_dim) {
         return Ok(None);
     }
+    // The tensor-unit kernel points a padded slot at the first sealed row.
+    if kind == IndexedKernel::TensorUnit && segments.sealed_rows < 1 {
+        return Ok(None);
+    }
+    let Some(kernel) = kind.kernel() else {
+        return Ok(None);
+    };
+    let threads = kind.threadgroup_width(q_heads / kv_heads);
     let q_rows = contiguous(&transpose(queries, &[2, 1, 0, 3], None), None);
     let scale = MlxArray::from_raw_data(
         (&scale as *const f32).cast(),
@@ -276,8 +640,8 @@ fn launch_indexed(
             dtype: queries.dtype(),
         }],
         &template,
-        (q_heads / kv_heads * 32, seq, kv_heads),
-        (q_heads / kv_heads * 32, 1, 1),
+        (threads, seq, kv_heads),
+        (threads, 1, 1),
         None,
     ) {
         Ok(outputs) => outputs,
@@ -286,7 +650,11 @@ fn launch_indexed(
         Err(_) => return Ok(None),
     };
     #[cfg(test)]
-    INDEXED_DISPATCHES.with(|counter| counter.set(counter.get().saturating_add(1)));
+    match kind {
+        IndexedKernel::Scalar => &INDEXED_DISPATCHES,
+        IndexedKernel::TensorUnit => &TENSOR_UNIT_DISPATCHES,
+    }
+    .with(|counter| counter.set(counter.get().saturating_add(1)));
     let Some(out) = outputs.into_iter().next() else {
         return Ok(None);
     };
@@ -328,15 +696,52 @@ pub(crate) fn warm_indexed_prefill_kernel(
     if !enabled() {
         return Err("indexed QSA prefill warm-up skipped: the switch is off".to_string());
     }
-    if !kernel_geometry_ok(q_heads, kv_heads, head_dim, dtype) {
+    warm_kernel(IndexedKernel::Scalar, q_heads, kv_heads, head_dim, dtype)
+}
+
+/// Whether model load should compile the tensor-unit QSA prefill kernel:
+/// Flash Next packs only, with load-time warm-up on, where the kernel may run.
+pub(crate) fn tensor_unit_prefill_warmup_applies(qwen4_exp: bool, kernel_warmup: bool) -> bool {
+    qwen4_exp && kernel_warmup && tensor_unit_enabled()
+}
+
+/// Compile the tensor-unit pipeline once, at load, like
+/// [`warm_indexed_prefill_kernel`]. A geometry the kernel does not cover is
+/// an `Err` the caller logs; the request path then never dispatches it.
+pub(crate) fn warm_tensor_unit_prefill_kernel(
+    q_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    dtype: MlxDtype,
+) -> std::result::Result<(), String> {
+    if !tensor_unit_enabled() {
+        return Err("tensor-unit QSA prefill warm-up skipped: the kernel is off".to_string());
+    }
+    warm_kernel(
+        IndexedKernel::TensorUnit,
+        q_heads,
+        kv_heads,
+        head_dim,
+        dtype,
+    )
+}
+
+fn warm_kernel(
+    kind: IndexedKernel,
+    q_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+    dtype: MlxDtype,
+) -> std::result::Result<(), String> {
+    if !kind.geometry_ok(q_heads, kv_heads, head_dim, dtype) {
         return Err(format!(
             "indexed QSA prefill warm-up geometry is unsupported: q_heads={q_heads}, \
              kv_heads={kv_heads}, head_dim={head_dim}, dtype={dtype:?}"
         ));
     }
-    let Some(kernel) = INDEXED.get() else {
+    if kind.kernel().is_none() {
         return Err("indexed QSA prefill warm-up could not build the kernel".to_string());
-    };
+    }
     // The request path admits prefill chunks only, so the probe is the smallest
     // chunk-shaped window. Every query keeps one row: the kernel walks a single
     // index and writes one value row per query, which is enough to build and
@@ -371,7 +776,7 @@ pub(crate) fn warm_indexed_prefill_kernel(
     );
     let queries = zeros(&[1, q_heads, seq, head_dim], dtype, None);
     let out = launch_indexed(
-        kernel,
+        kind,
         &queries,
         &segments,
         &indices,
@@ -431,6 +836,22 @@ fn kernel_geometry_ok(q_heads: i32, kv_heads: i32, head_dim: i32, dtype: MlxDtyp
         dtype,
         MlxDtype::Float16 | MlxDtype::Bfloat16 | MlxDtype::Float32
     )
+}
+
+/// Geometry the tensor-unit kernel is laid out for: the query heads of one
+/// kv head fit a 16-row tile, and the head dimension is the 256 its lane
+/// layout assigns.
+///
+/// Only 16-bit activations are admitted. The tensor units take a 16-bit
+/// operand exactly and round a float32 one to fewer bits, so a float32
+/// request (measured: 1e-3 relative) keeps the paths that honour its width.
+fn tensor_unit_geometry_ok(q_heads: i32, kv_heads: i32, head_dim: i32, dtype: MlxDtype) -> bool {
+    if kv_heads < 1 || q_heads < 1 || q_heads % kv_heads != 0 {
+        return false;
+    }
+    (1..=16).contains(&(q_heads / kv_heads))
+        && head_dim == 256
+        && matches!(dtype, MlxDtype::Float16 | MlxDtype::Bfloat16)
 }
 
 /// K/V rows the kernel reads, split exactly like the history's segments.
@@ -1700,5 +2121,355 @@ mod tests {
         assert!(!selection_shape_ok(&[4, 5, 6, 9], 4));
         assert!(!selection_shape_ok(&[5, 6, 7, 8], 4));
         assert!(!selection_shape_ok(&[], 4));
+    }
+
+    // ---- Tensor-unit kernel (`flash_next_qsa_indexed_nax.metal`) ----
+
+    const TU_Q_HEADS: i32 = 24;
+    const TU_KV_HEADS: i32 = 2;
+    const TU_DIM: i32 = 256;
+
+    /// The tensor-unit kernel computes garbage on a GPU without tensor units,
+    /// so its numeric tests run on a real Neural Accelerator host only.
+    fn tensor_units_present() -> bool {
+        let present = crate::hardware::neural_accelerator_active();
+        if !present {
+            eprintln!("skipped: this host has no GPU tensor units");
+        }
+        present
+    }
+
+    #[test]
+    fn tensor_unit_probe_passes_where_the_tensor_units_are() {
+        if !tensor_units_present() {
+            return;
+        }
+        tensor_unit_probe().expect("the probe passes on a Neural Accelerator host");
+        assert!(tensor_unit_probe_passed());
+    }
+
+    #[test]
+    fn tensor_unit_probe_data_is_exact_in_16_bit_floats() {
+        let values = probe_values(4096, 7);
+        assert!(values.iter().all(|v| (-1.0..1.0).contains(v)));
+        assert!(values.iter().all(|v| (v * 64.0).fract() == 0.0));
+        assert!(values.iter().any(|v| *v < -0.9) && values.iter().any(|v| *v > 0.9));
+    }
+
+    /// A query at absolute position `visible - 1` keeps about a third of its
+    /// complete blocks, a different third per query, then its partial tail:
+    /// several 32-key tiles with a ragged last one.
+    fn tensor_unit_rows(visible: i32, salt: i32) -> Vec<i32> {
+        let complete = visible / RATIO;
+        let blocks: Vec<i32> = (0..complete)
+            .filter(|block| (block * 7 + salt) % 3 == 0)
+            .collect();
+        selected_rows_in_order(visible, &blocks, complete)
+    }
+
+    struct TensorUnitFixture {
+        queries: MlxArray,
+        keys: MlxArray,
+        values: MlxArray,
+        chosen: Vec<Vec<i32>>,
+        seq: i32,
+        q_heads: i32,
+    }
+
+    fn tensor_unit_fixture(seq: i32, rows: i32, dtype: MlxDtype) -> TensorUnitFixture {
+        tensor_unit_fixture_with_heads(seq, rows, dtype, TU_Q_HEADS)
+    }
+
+    fn tensor_unit_fixture_with_heads(
+        seq: i32,
+        rows: i32,
+        dtype: MlxDtype,
+        q_heads: i32,
+    ) -> TensorUnitFixture {
+        let q = data((seq * q_heads * TU_DIM) as usize, 11);
+        let k = data((rows * TU_KV_HEADS * TU_DIM) as usize, 12);
+        let v = data((rows * TU_KV_HEADS * TU_DIM) as usize, 13);
+        let cast =
+            |values: &[f32], shape: &[i32]| mlx_sys::astype(&array_f32(values, shape), dtype, None);
+        TensorUnitFixture {
+            queries: cast(&q, &[1, q_heads, seq, TU_DIM]),
+            keys: cast(&k, &[1, rows, TU_KV_HEADS, TU_DIM]),
+            values: cast(&v, &[1, rows, TU_KV_HEADS, TU_DIM]),
+            chosen: (0..seq)
+                .map(|s| tensor_unit_rows(rows - seq + s + 1, s))
+                .collect(),
+            seq,
+            q_heads,
+        }
+    }
+
+    /// Each query attended on its own over its gathered rows, in float32.
+    fn tensor_unit_reference(fixture: &TensorUnitFixture, scale: f32) -> MlxArray {
+        let widen = |array: &MlxArray| mlx_sys::astype(array, MlxDtype::Float32, None);
+        let (queries, keys, values) = (
+            widen(&fixture.queries),
+            widen(&fixture.keys),
+            widen(&fixture.values),
+        );
+        let mut rows = Vec::new();
+        for (s, chosen) in fixture.chosen.iter().enumerate() {
+            let idx = MlxArray::from_raw_data(
+                chosen.as_ptr().cast(),
+                std::mem::size_of_val(chosen.as_slice()),
+                &[chosen.len() as i32],
+                MlxDtype::Int32,
+            );
+            let q = slice(
+                &queries,
+                &[0, 0, s as i32, 0],
+                &[1, fixture.q_heads, s as i32 + 1, TU_DIM],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let k = transpose(&take(&keys, &idx, 1, None), &[0, 2, 1, 3], None);
+            let v = transpose(&take(&values, &idx, 1, None), &[0, 2, 1, 3], None);
+            rows.push(scaled_dot_product_attention(
+                &mlx_sys::contiguous(&q, None),
+                &mlx_sys::contiguous(&k, None),
+                &mlx_sys::contiguous(&v, None),
+                scale,
+                false,
+                None,
+            ));
+        }
+        let refs: Vec<&MlxArray> = rows.iter().collect();
+        mlx_sys::concatenate(&refs, 2, None)
+    }
+
+    fn tensor_unit_attention(
+        fixture: &TensorUnitFixture,
+        keys: &KvHistory,
+        values: &KvHistory,
+        selection: &QsaSelection,
+    ) -> Option<MlxArray> {
+        attend_selected_with(
+            IndexedKernel::TensorUnit,
+            &fixture.queries,
+            keys,
+            values,
+            selection,
+            fixture.q_heads,
+            TU_KV_HEADS,
+            TU_DIM,
+            RATIO,
+            1.0 / (TU_DIM as f32).sqrt(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn tensor_unit_attention_matches_the_gathered_definition() {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        if !tensor_units_present() {
+            return;
+        }
+        let scale = 1.0 / (TU_DIM as f32).sqrt();
+        // Output values are below 1 in magnitude and are rounded once to the
+        // activation dtype: 11 bits for float16, 8 for bfloat16.
+        for (dtype, atol) in [(MlxDtype::Float16, 1e-3), (MlxDtype::Bfloat16, 6e-3)] {
+            let fixture = tensor_unit_fixture(40, 611, dtype);
+            let expected = tensor_unit_reference(&fixture, scale);
+            let selection = QsaSelection::from_host_tokens(vec![fixture.chosen.clone()]);
+            let before = tensor_unit_dispatch_count();
+            let flat = tensor_unit_attention(
+                &fixture,
+                &KvHistory::from_flat(fixture.keys.clone()),
+                &KvHistory::from_flat(fixture.values.clone()),
+                &selection,
+            )
+            .expect("the tensor-unit kernel takes this chunk");
+            assert_eq!(tensor_unit_dispatch_count() - before, 1);
+            assert_eq!(flat.shape(), vec![1, TU_Q_HEADS, fixture.seq, TU_DIM]);
+            close(&flat, &expected, atol, 0.0, &format!("{dtype:?} flat"));
+
+            // The same rows behind a sealed prefix and a tail: selected rows
+            // on both sides of the boundary, bit-identical to the flat read.
+            let split = |array: &MlxArray| {
+                let rows = array.shape()[1];
+                let part = |from: i32, to: i32| {
+                    slice(
+                        array,
+                        &[0, from, 0, 0],
+                        &[1, to, TU_KV_HEADS, TU_DIM],
+                        &[1, 1, 1, 1],
+                        None,
+                    )
+                };
+                with_kv_segments(Some((1, 384)), || {
+                    KvHistory::empty()
+                        .append(&part(0, 384))
+                        .append(&part(384, rows))
+                })
+            };
+            let (keys, values) = (split(&fixture.keys), split(&fixture.values));
+            assert_eq!(keys.sealed_rows(), Some(384));
+            let segmented = tensor_unit_attention(&fixture, &keys, &values, &selection)
+                .expect("the tensor-unit kernel takes a segmented history");
+            close(&segmented, &flat, 0.0, 0.0, &format!("{dtype:?} segmented"));
+        }
+    }
+
+    #[test]
+    fn tensor_unit_attention_does_not_depend_on_the_other_queries_of_a_call() {
+        if !tensor_units_present() {
+            return;
+        }
+        let fixture = tensor_unit_fixture(48, 500, MlxDtype::Bfloat16);
+        let keys = KvHistory::from_flat(fixture.keys.clone());
+        let values = KvHistory::from_flat(fixture.values.clone());
+        let whole = tensor_unit_attention(
+            &fixture,
+            &keys,
+            &values,
+            &QsaSelection::from_host_tokens(vec![fixture.chosen.clone()]),
+        )
+        .expect("whole chunk");
+        // The last 20 queries alone, as a chunk of their own.
+        let tail = TensorUnitFixture {
+            queries: slice(
+                &fixture.queries,
+                &[0, 0, 28, 0],
+                &[1, TU_Q_HEADS, 48, TU_DIM],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            keys: fixture.keys.clone(),
+            values: fixture.values.clone(),
+            chosen: fixture.chosen[28..].to_vec(),
+            seq: 20,
+            q_heads: TU_Q_HEADS,
+        };
+        let alone = tensor_unit_attention(
+            &tail,
+            &keys,
+            &values,
+            &QsaSelection::from_host_tokens(vec![tail.chosen.clone()]),
+        )
+        .expect("tail chunk");
+        let expected = slice(
+            &whole,
+            &[0, 0, 28, 0],
+            &[1, TU_Q_HEADS, 48, TU_DIM],
+            &[1, 1, 1, 1],
+            None,
+        );
+        close(&alone, &expected, 0.0, 0.0, "tail rows");
+    }
+
+    #[test]
+    fn tensor_unit_attention_covers_small_and_full_head_groups() {
+        if !tensor_units_present() {
+            return;
+        }
+        let scale = 1.0 / (TU_DIM as f32).sqrt();
+        // Groups of 1, 5 and 16 query heads per key head: a tile with one
+        // row, one whose second half is empty, and a full one.
+        for q_heads in [2, 10, 32] {
+            let fixture = tensor_unit_fixture_with_heads(18, 207, MlxDtype::Float16, q_heads);
+            let expected = tensor_unit_reference(&fixture, scale);
+            let out = tensor_unit_attention(
+                &fixture,
+                &KvHistory::from_flat(fixture.keys.clone()),
+                &KvHistory::from_flat(fixture.values.clone()),
+                &QsaSelection::from_host_tokens(vec![fixture.chosen.clone()]),
+            )
+            .expect("the tensor-unit kernel takes this geometry");
+            assert_eq!(out.shape(), vec![1, q_heads, fixture.seq, TU_DIM]);
+            close(
+                &out,
+                &expected,
+                1e-3,
+                0.0,
+                &format!("{q_heads} query heads"),
+            );
+        }
+    }
+
+    #[test]
+    fn tensor_unit_attention_ignores_rows_outside_the_selection() {
+        if !tensor_units_present() {
+            return;
+        }
+        // No query selects the first block, whose first row is the one a
+        // padded slot reads with zero weight. Whatever finite values it
+        // holds must not change a bit of any output.
+        let mut fixture = tensor_unit_fixture(40, 333, MlxDtype::Bfloat16);
+        for rows in &mut fixture.chosen {
+            rows.retain(|&row| row >= RATIO);
+            assert!(!rows.is_empty());
+        }
+        let selection = QsaSelection::from_host_tokens(vec![fixture.chosen.clone()]);
+        let attend = |fixture: &TensorUnitFixture| {
+            tensor_unit_attention(
+                fixture,
+                &KvHistory::from_flat(fixture.keys.clone()),
+                &KvHistory::from_flat(fixture.values.clone()),
+                &selection,
+            )
+            .expect("the tensor-unit kernel takes this chunk")
+        };
+        let clean = attend(&fixture);
+        // The first row of a `[1, rows, kv_heads, dim]` array set to `value`.
+        let poison = |array: &MlxArray, value: f32| {
+            let rows = array.shape()[1];
+            let first = mlx_sys::astype(
+                &array_f32(
+                    &vec![value; (TU_KV_HEADS * TU_DIM) as usize],
+                    &[1, 1, TU_KV_HEADS, TU_DIM],
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let rest = slice(
+                array,
+                &[0, 1, 0, 0],
+                &[1, rows, TU_KV_HEADS, TU_DIM],
+                &[1, 1, 1, 1],
+                None,
+            );
+            mlx_sys::concatenate(&[&first, &rest], 1, None)
+        };
+        for (key, value) in [(3.0e4, -3.0e4), (-1.0e-3, 7.5)] {
+            fixture.keys = poison(&fixture.keys, key);
+            fixture.values = poison(&fixture.values, value);
+            let changed = attend(&fixture);
+            close(&changed, &clean, 0.0, 0.0, "row 0 rewritten");
+        }
+    }
+
+    #[test]
+    fn tensor_unit_kernel_admits_only_its_geometry_and_long_histories() {
+        assert!(tensor_unit_geometry_ok(24, 2, 256, MlxDtype::Bfloat16));
+        assert!(tensor_unit_geometry_ok(16, 1, 256, MlxDtype::Float16));
+        // The tensor units would round float32 operands.
+        assert!(!tensor_unit_geometry_ok(24, 2, 256, MlxDtype::Float32));
+        // 17 query heads per kv head do not fit a 16-row tile.
+        assert!(!tensor_unit_geometry_ok(34, 2, 256, MlxDtype::Bfloat16));
+        assert!(!tensor_unit_geometry_ok(24, 2, 128, MlxDtype::Bfloat16));
+        assert!(!tensor_unit_geometry_ok(24, 5, 256, MlxDtype::Bfloat16));
+        assert!(!tensor_unit_geometry_ok(24, 2, 256, MlxDtype::Int32));
+        assert_eq!(IndexedKernel::TensorUnit.threadgroup_width(12), 64);
+        assert_eq!(IndexedKernel::Scalar.threadgroup_width(12), 384);
+
+        let tokens = i64::from(INDEXED_NAX_MIN_TOKENS);
+        with_tensor_unit_attention(true, || {
+            assert!(tensor_unit_takes(2047, tokens));
+            // Past the masked dense call's longest history too.
+            assert!(tensor_unit_takes(MASKED_DENSE_MIN_QUERIES as i32, 400_000));
+            assert!(!tensor_unit_takes(2047, tokens - 1));
+            assert!(!tensor_unit_takes(
+                MASKED_DENSE_MIN_QUERIES as i32 - 1,
+                tokens
+            ));
+        });
+        with_tensor_unit_attention(false, || assert!(!tensor_unit_takes(2047, tokens)));
+        // Tests keep the kernel off unless they opt in.
+        assert!(!tensor_unit_takes(2047, tokens));
     }
 }

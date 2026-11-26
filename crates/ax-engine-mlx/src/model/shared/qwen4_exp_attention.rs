@@ -674,7 +674,24 @@ impl Qwen4ExpAttention {
                     seq,
                     i64::try_from(staged_keys.token_count()).unwrap_or(i64::MAX),
                 );
-                let indexed = if masked {
+                // On Neural Accelerator hosts a long history goes to the
+                // tensor-unit kernel first: its cost does not grow with the
+                // history, and past `INDEXED_NAX_MIN_TOKENS` it is the
+                // fastest of the three.
+                let tensor_unit = super::qwen4_exp_attention_indexed::attend_selected_tensor_unit(
+                    &queries,
+                    &staged_keys,
+                    &staged_values,
+                    selection,
+                    cfg.query_heads,
+                    cfg.kv_heads,
+                    cfg.head_dim,
+                    self.indexer.config().compress_ratio() as i32,
+                    cfg.scale,
+                )?;
+                let indexed = if tensor_unit.is_some() {
+                    tensor_unit
+                } else if masked {
                     None
                 } else {
                     super::qwen4_exp_attention_indexed::attend_selected_indexed(

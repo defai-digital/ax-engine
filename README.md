@@ -40,8 +40,11 @@ latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
 On Flash Next, decode is level with oMLX; first text is ahead at 127 to
-128 and at 2,233 input tokens, level (within 1%) at 36, 231, 413 and 1,492,
-2% behind at 803, and 3 to 12% behind from about 3,000 to 13,000 tokens. On
+128 and at 2,233 input tokens, level (within 1%) at 36, 231, 1,492 and
+2,961, 1 to 3% behind at 413 and 803, and 4 to 5% behind from 4,443 to
+13,023 tokens in a scan that runs the lengths back to back (1 to 2% with
+rest before each length: AX Engine draws more GPU power there and the host
+throttles it sooner). On
 the 27B, direct greedy is ahead of oMLX on decode (35.5 against 34.7 tok/s)
 and on first text: 0.16 against 0.22 s at 127 to 128 input tokens, and 1.49
 against 1.51 s at 1,492, where each of the six AX Engine probes is below
@@ -59,7 +62,8 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 [27B first text without the block-boundary split](docs/performance/qwen38-27b-prefill-schedule-2026-11-25.md) ·
 [First request after idle](docs/performance/idle-residency-refresh-2026-11-26.md) ·
 [Text requests without a tokenizer copy](docs/performance/server-tokenizer-shared-2026-11-26.md) ·
-[Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
+[Flash Next first text by prompt length](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md) ·
+[Flash Next long prompts on the tensor units](docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md).
 
 <!-- qwen38-m5-modes:begin -->
 
@@ -79,24 +83,24 @@ the wired weights GPU-resident while idle it took 1.2 to 1.5 s and 1.66 to
 
 † Median of three runs interleaved with the neighbouring † rows, with 150 seconds of rest before each run, in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
 
-**First text by input length**, one cold direct greedy request. The servers ran one after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before each; the AX Engine column is the mean of its two runs. Lower is better. [Measurements and method](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
+**First text by input length**, one cold direct greedy request. The servers ran one after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before each; the AX Engine column is the mean of its two runs. Lower is better. [Measurements and method](docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md).
 
 ![Qwen 3.8 Flash Next cold first text by input length on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-first-text-by-length.svg)
 
-| Input tokens | AX Engine 8.1.0+02ab4a08 (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
+| Input tokens | AX Engine 8.1.0+7a876708 (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
 | ---: | ---: | ---: | ---: |
-| 36 | 0.165 | 0.164 | +0% |
-| 127 | 0.204 | 0.351 | −42% |
-| 231 | 0.226 | 0.225 | +0% |
-| 413 | 0.294 | 0.292 | +1% |
-| 803 | 0.438 | 0.429 | +2% |
-| 1,492 | 0.689 | 0.689 | +0% |
-| 2,233 | 1.131 | 1.325 | −15% |
-| 2,961 | 1.458 | 1.420 | +3% |
-| 4,443 | 2.269 | 2.169 | +5% |
-| 6,523 | 3.385 | 3.192 | +6% |
-| 9,123 | 4.934 | 4.517 | +9% |
-| 13,023 | 7.210 | 6.431 | +12% |
+| 36 | 0.167 | 0.165 | +1% |
+| 127 | 0.205 | 0.353 | −42% |
+| 231 | 0.226 | 0.224 | +1% |
+| 413 | 0.296 | 0.292 | +2% |
+| 803 | 0.440 | 0.429 | +3% |
+| 1,492 | 0.686 | 0.690 | −1% |
+| 2,233 | 1.108 | 1.326 | −16% |
+| 2,961 | 1.422 | 1.421 | +0% |
+| 4,443 | 2.282 | 2.176 | +5% |
+| 6,523 | 3.346 | 3.208 | +4% |
+| 9,123 | 4.675 | 4.497 | +4% |
+| 13,023 | 6.745 | 6.443 | +5% |
 
 #### Qwen 3.8 27B MXFP4
 

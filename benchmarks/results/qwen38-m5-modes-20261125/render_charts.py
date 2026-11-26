@@ -43,7 +43,7 @@ RERUN_NOTE = (
 
 
 LENGTH_FIGURE = "perf-qwen38-flash-next-m5-first-text-by-length.svg"
-LENGTH_NOTE = "docs/performance/flash-next-qsa-masked-dense-2026-11-25.md"
+LENGTH_NOTE = "docs/performance/flash-next-qsa-tensor-unit-2026-11-26.md"
 # Past this many input tokens Flash Next attends over selected key blocks.
 LENGTH_SPLIT = 2_500
 

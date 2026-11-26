@@ -3267,6 +3267,32 @@ impl MlxRunner {
                 }
             }
         }
+        // Flash Next tensor-unit QSA prefill kernel, where it may run. Its
+        // template is the model geometry too, so this one launch compiles the
+        // pipeline every long-history chunk reuses.
+        if crate::model::shared::qwen4_exp_attention_indexed::tensor_unit_prefill_warmup_applies(
+            weights.qwen4_exp.is_some(),
+            crate::fastpath::load_kernel_warmup_enabled(),
+        ) {
+            let warm_started = std::time::Instant::now();
+            match crate::model::shared::qwen4_exp_attention_indexed::warm_tensor_unit_prefill_kernel(
+                cfg.n_heads as i32,
+                cfg.n_kv_heads as i32,
+                cfg.head_dim as i32,
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+            ) {
+                Ok(()) => tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    elapsed_ms = warm_started.elapsed().as_millis() as u64,
+                    "warmed the Flash Next tensor-unit QSA prefill kernel at model load"
+                ),
+                Err(error) => tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "tensor-unit QSA prefill warm-up failed; the first long prefill pays the compile"
+                ),
+            }
+        }
         // Flash Next indexed QSA prefill kernel. It is opt-in
         // (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`), so with the switch off
         // nothing is compiled. The kernel template is the model geometry
