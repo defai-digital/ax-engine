@@ -40,7 +40,7 @@ latencies are listed beside it. A zero means the tested configuration did
 not complete the workload.
 
 On Flash Next, decode is level with oMLX; first text is ahead at 127 to
-128 and at 2,233 input tokens, level at 1,492, and 2 to 12% behind from
+128 and at 2,233 input tokens, level at 1,492, and 2 to 11% behind from
 about 3,000 to 13,000 tokens. On the 27B, AX Engine's DFlash2 decode is
 ahead of Splash on this 64-token harness (111.0 against 109.2 tok/s) and
 behind it on prefill (first text 1.69 against 1.22 s at 1,492 input
@@ -65,6 +65,25 @@ tokens) and on 256-token outputs.
 | Splash 1.7.0 (DFlash2) | 0 | 0 | — | — |
 
 † Median of three runs interleaved with the neighbouring † rows in one later session on the same day; the other rows are single runs from the original session. See the [campaign notes](benchmarks/results/qwen38-m5-modes-20261125/README.md#paired-rerun).
+
+**First text by input length**, one cold direct greedy request. The servers ran one after another in the order AX Engine, oMLX, AX Engine, with 150 seconds of rest before each; the AX Engine column is the mean of its two runs. Lower is better. [Measurements and method](docs/performance/flash-next-qsa-masked-dense-2026-11-25.md).
+
+![Qwen 3.8 Flash Next cold first text by input length on M5 Max.](docs/assets/perf-qwen38-flash-next-m5-first-text-by-length.svg)
+
+| Input tokens | AX Engine 8.1.0+c688907a (s) | oMLX 0.8.2 (s) | AX Engine against oMLX |
+| ---: | ---: | ---: | ---: |
+| 36 | 0.174 | 0.164 | +6% |
+| 127 | 0.215 | 0.349 | −38% |
+| 231 | 0.236 | 0.225 | +5% |
+| 413 | 0.306 | 0.291 | +5% |
+| 803 | 0.450 | 0.441 | +2% |
+| 1,492 | 0.706 | 0.698 | +1% |
+| 2,233 | 1.174 | 1.335 | −12% |
+| 2,961 | 1.462 | 1.437 | +2% |
+| 4,443 | 2.284 | 2.195 | +4% |
+| 6,523 | 3.408 | 3.218 | +6% |
+| 9,123 | 4.970 | 4.574 | +9% |
+| 13,023 | 7.281 | 6.573 | +11% |
 
 #### Qwen 3.8 27B MXFP4
 

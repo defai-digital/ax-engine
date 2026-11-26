@@ -143,6 +143,31 @@ that field.
   this session (AX Engine 1.64 to 1.69 s, Splash 1.19 to 1.22 s).
 - The 256-token comparison quoted above was not repeated.
 
+### Flash Next first text by input length
+
+[first-text-by-length.jsonl](first-text-by-length.jsonl) holds a scan of
+cold first text over twelve input lengths from 36 to 13,023 tokens, after
+AX Engine began to attend long prompts with one masked dense call per
+sparse-attention layer
+([what changed](../../../docs/performance/flash-next-qsa-masked-dense-2026-11-25.md)).
+AX Engine was built from commit `c688907a6` with default settings.
+
+- Each server ran alone and the three ran one after another: AX Engine,
+  oMLX, AX Engine (`run_order` 1 to 3), with 150 seconds of rest before
+  each (`rest_seconds_before_run`).
+- A server takes three warmup requests, then three completions per length
+  with `max_tokens` 1 and `temperature` 0. The prompts of one length
+  differ in their first line, so no request can reuse a stored prefix.
+  `first_text_seconds` lists the three latencies.
+- AX Engine ran with MTP and n-gram acceleration disabled, oMLX with its
+  prompt cache off; both served one request at a time.
+- The README table and chart show, per engine and length, the mean over
+  that engine's runs of the run median.
+
+This scan and the two probes of the paired rows use different request
+wrappers, so their 127 and 1,492-token figures are close but not the same
+measurement.
+
 ## Replay
 
 Stage the binaries and packs using the
@@ -162,3 +187,7 @@ for model in dense flash; do
 done
 python "$campaign/render_charts.py" --check
 ```
+
+`render_charts.py` needs matplotlib 3.11.2 to reproduce the SVG files byte
+for byte. It draws with the shared [chart style](chart_style.py) and the
+engine colours of [`scripts/chart_palette.py`](../../../scripts/chart_palette.py).

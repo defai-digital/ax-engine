@@ -129,7 +129,7 @@ included.
 ## What is left
 
 A later change the same day attends those long prompts with one masked
-dense call per layer and brought the gap from 2,961 tokens up to 2 to 12%:
+dense call per layer and brought the gap from 2,961 tokens up to about 2 to 11%:
 [measurements](flash-next-qsa-masked-dense-2026-11-25.md).
 
 - **From 2,961 tokens up** the gap is unchanged in kind: past 2,051 tokens

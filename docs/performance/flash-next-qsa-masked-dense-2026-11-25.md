@@ -21,22 +21,29 @@ AX Engine, oMLX, AX Engine, with 150 seconds of rest before each:
 
 | Input tokens | AX Engine, first run (s) | oMLX 0.8.2 (s) | AX Engine, second run (s) | AX Engine against oMLX |
 | ---: | ---: | ---: | ---: | ---: |
-| 36 | 0.172 | 0.167 | 0.176 | +3 to +5% |
-| 127 | 0.214 | 0.354 | 0.211 | −40% |
-| 231 | 0.236 | 0.226 | 0.237 | +4 to +5% |
-| 413 | 0.307 | 0.296 | 0.302 | +2 to +4% |
-| 803 | 0.458 | 0.438 | 0.446 | +2 to +5% |
-| 1,492 | 0.707 | 0.696 | 0.700 | +1 to +2% |
-| 2,233 | 1.170 | 1.331 | 1.167 | −12% |
-| 2,961 | 1.467 | 1.432 | 1.472 | +2 to +3% |
-| 4,443 | 2.312 | 2.185 | 2.293 | +5 to +6% |
-| 6,523 | 3.455 | 3.215 | 3.423 | +6 to +7% |
-| 9,123 | 4.978 | 4.544 | 5.005 | +10% |
-| 13,023 | 7.322 | 6.519 | 7.326 | +12% |
+| 36 | 0.173 | 0.164 | 0.175 | +5 to +7% |
+| 127 | 0.215 | 0.349 | 0.215 | −38% |
+| 231 | 0.236 | 0.225 | 0.236 | +5% |
+| 413 | 0.307 | 0.291 | 0.306 | +5% |
+| 803 | 0.450 | 0.441 | 0.450 | +2% |
+| 1,492 | 0.712 | 0.698 | 0.700 | 0 to +2% |
+| 2,233 | 1.167 | 1.335 | 1.181 | −12 to −13% |
+| 2,961 | 1.458 | 1.437 | 1.465 | +1 to +2% |
+| 4,443 | 2.281 | 2.195 | 2.288 | +4% |
+| 6,523 | 3.414 | 3.218 | 3.402 | +6% |
+| 9,123 | 4.935 | 4.574 | 5.006 | +8 to +9% |
+| 13,023 | 7.255 | 6.573 | 7.307 | +10 to +11% |
+
+AX Engine was built from commit `c688907a6` with default settings. The
+per-prompt records are
+[first-text-by-length.jsonl](../../benchmarks/results/qwen38-m5-modes-20261125/first-text-by-length.jsonl),
+and the README chart is drawn from them. An earlier scan of the same
+kind, on a build that differed only outside the default path, read within
+0.07 s of these at every length.
 
 Up to 2,233 tokens the change does nothing, and those rows are the
 previous note's result measured again. From 2,961 tokens AX Engine was 26
-to 46% behind and is now 2 to 12% behind, more with length.
+to 46% behind and is now about 2 to 11% behind, more with length.
 
 The same binary with the new path switched off and on, each server on its
 own (the request adds a 25-token wrapper to the lengths above):
@@ -150,12 +157,13 @@ Two things for whoever merges this:
 
 ## What is left
 
-- **Long prompts.** From 2,961 tokens each further token costs about 0.57
-  to 0.60 ms against 0.50 to 0.51 ms for oMLX. The masked call's share
+- **Long prompts.** From 2,961 tokens each further token costs about 0.54
+  to 0.60 ms against 0.49 to 0.52 ms for oMLX. The masked call's share
   grows with the history (6 ms per layer at 4,096 tokens, 12 at 8,192).
   The peer attends the selected keys in place with a kernel on the tensor
   units, whose cost does not depend on the history.
-- **Up to 803 tokens** AX Engine is 0.01 to 0.02 s behind, as before.
+- **Up to 803 tokens** AX Engine is 0.01 to 0.02 s behind, as before,
+  except at 127 tokens, where it is ahead.
 - **Hosts without a Neural Accelerator**, as above.
 
 ## Reproduce
