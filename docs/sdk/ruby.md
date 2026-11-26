@@ -25,12 +25,6 @@ $LOAD_PATH.unshift "sdk/ruby/lib"
 require "ax_engine"
 ```
 
-Once the gem is published:
-
-```bash
-gem install ax-engine-sdk
-```
-
 ## Quick Start
 
 ```ruby
@@ -208,6 +202,8 @@ Or run individual files:
 ```bash
 ruby -Ilib -Itest test/test_sse_reader.rb
 ruby -Ilib -Itest test/test_client.rb
+ruby -Ilib -Itest test/test_langchain.rb
 ```
 
-Tests run fully offline — no server required (18 tests, 53 assertions).
+The suite uses local fixtures. Install `langchainrb` to exercise the optional
+adapter tests.

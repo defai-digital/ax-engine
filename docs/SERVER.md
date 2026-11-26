@@ -377,16 +377,13 @@ preview form. Each field below states its streaming behavior; unsupported
 streaming combinations are rejected with `400 unsupported_parameter` rather
 than silently dropped.
 
-- **`logprobs`** (completions and chat): when the engine observed sampled-token
-  logprobs, responses carry them in OpenAI-shaped `logprobs` blocks. The
-  blocks are all-or-nothing — partially observed values are omitted entirely
-  to keep token/logprob arrays aligned. `token` entries are currently token
-  ids rendered as strings (not decoded text), and completion `text_offset`
-  values are token indices. Field shapes follow OpenAI: chat takes a boolean
-  `logprobs`, while legacy completions take an integer where `0` opts into
-  sampled-token logprobs. Requests for top-N alternatives (chat
-  `top_logprobs > 0`, completions `logprobs > 0`) are rejected with
-  `400 unsupported_parameter` until the runner emits them.
+- **`logprobs`** (non-streaming completions and chat): use `logprobs: true`
+  for chat and `logprobs: 0` for legacy completions. When the engine records
+  every generated token's score and a tokenizer is available, responses include
+  decoded token text. Completion `text_offset` values are UTF-8 byte offsets
+  into the completion text. Streaming requests and requests for top-N
+  alternatives (chat `top_logprobs > 0`, completions `logprobs > 0`) return
+  `400 unsupported_parameter`.
 - **`reasoning`** (chat): opt-in. When set, known model-family reasoning is
   split into `message.reasoning_content`: Qwen `<think>…</think>` text and
   Gemma 4 thinking channels (extracted token-level during native decode).
@@ -1308,7 +1305,7 @@ curl -s http://127.0.0.1:31418/v1/model/unload -H 'content-type: application/jso
 
 **Allowlist (`load_mode=add`, and `replace` once more than one model is
 resident):** Qwen 3.5 9B, Qwen 3.6 35B/27B, Qwen 3.8 27B MXFP4 MTP,
-Qwen3-Coder-Next, Gemma 4 12B/26B/31B, EmbeddingGemma 300M/2, and
+Qwen3-Coder-Next, Qwen3-Next 80B-A3B, Gemma 4 12B/26B/31B, EmbeddingGemma 300M/2, and
 Qwen3-Embedding 0.6B/4B/8B only.
 [AutomatosX](https://huggingface.co/AutomatosX) `AX-`-branded package names
 (e.g. `AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`) resolve to the same targets. The

@@ -14,11 +14,12 @@ curl -fsSL https://download.automatosx.com/ax-engine-desktop/install | bash
 ```
 
 Quit AX Engine first. Open AX Engine from Applications after installation.
-Homebrew, Python and Xcode are not required. Run the same command again to
-upgrade; models, settings and conversations are preserved. Use
-`bash -s -- --verify-only` to verify the download without installing. Automatic
-app updates remain future work. See the [README](../README.md#install-ax-engine-for-macos)
-for requirements and installer options.
+The installer bundles the runtime and preserves models, settings and
+conversations on upgrade. Use `bash -s -- --verify-only` to verify the download
+without installing. Version 8.1.0 and later can check from
+**AX Engine → Check for Updates…**. Enable scheduled checks in
+**Settings → General → App updates**. See the [macOS update guide](MACOS-UPDATES.md)
+and the [installer options](../README.md#update-or-verify-the-app).
 
 ## Build and open from source
 
@@ -34,8 +35,7 @@ open "build/macos/AX Engine.app"
 Use `--release` for an optimized app build. The build is locally ad-hoc signed;
 it is not a published or notarized distribution. Developer ID signing,
 notarization and public cutover use the separate [distribution tooling](MACOS-DISTRIBUTION.md).
-A local source build does not activate that channel. Automatic signed updates
-remain future work. The icon is generated from
+A local source build does not activate that channel. The icon is generated from
 the supplied original artwork, with the same composition-preserving safe-zone,
 rounded-plate and multi-resolution checks used by AX Code Desktop.
 
@@ -200,12 +200,12 @@ Getting Started**.
    on a ready row starts the server on it when nothing is serving; while a
    server runs, **Select on Home** selects it there so Restart switches
    to it. The same action is on downloaded Catalog rows and finished
-   downloads. **Catalog** shows public AutomatosX packs (no Hugging Face
-   account or token) as cards grouped into those that fit this Mac's unified memory and
-   a collapsed group of larger ones; each row shows the runtime's approximate
-   pack size, whether MTP artifacts are included and its certification word
-   when recorded, plus the free space on the model volume. These are size
-   comparisons, not fit or qualification claims. A pack whose estimate exceeds
+   downloads. **Catalog** lists the runtime's AutomatosX entries as cards with
+   approximate pack size, MTP artifacts and certification status when recorded,
+   plus the free space on the model volume. The entries describe the installed
+   runtime's catalog. Downloads require an anonymously accessible Hub snapshot.
+   Compare the listed size with free space and the model's memory requirements.
+   A pack whose estimate exceeds
    the free space asks first: AX Engine checks the exact remaining size before
    downloading and stops without touching existing models when it does not
    fit, so **Download Anyway** is safe and a resumed download may need less.

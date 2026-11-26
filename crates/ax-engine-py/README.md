@@ -10,15 +10,14 @@ Use pip when your application imports `ax_engine` or needs AX Engine's optional
 Python integrations. Install the wheel in a dedicated Python 3.12+ environment.
 Without `uv` or Homebrew, install Python 3.13 using the macOS installer from
 [python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
-create the environment explicitly with `python3.13` (not the macOS-bundled
-`python3`, which is 3.9). Python 3.12–3.14 work; the `download` extra does not
-yet install on 3.15 because MLX has no 3.15 wheels:
+create the environment explicitly with `python3.13`. The wheel requires
+Python 3.12 or later:
 
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=8.0.6,<9"
+python -m pip install --upgrade "ax-engine>=8.1.0,<9"
 ax-engine doctor
 ```
 
@@ -28,7 +27,7 @@ Python version instead:
 ```bash
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=8.0.6,<9"
+uv pip install --upgrade "ax-engine>=8.1.0,<9"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -54,18 +53,14 @@ ax-engine doctor
 ax-engine-server --help
 ```
 
-### Native CLI and server (Homebrew, primary)
+### macOS app and native CLI
 
-For end users running the CLI, server, or benchmark tools, Homebrew is the
-primary installation channel:
+Use the [macOS app](https://github.com/defai-digital/ax-engine#install-ax-engine-for-macos)
+for model downloads, chat, and local server controls. For native CLI, server,
+or benchmark tools, install the Homebrew formula:
 
 ```bash
-brew tap defai-digital/ax-engine
-brew trust --formula \
-  defai-digital/ax-engine/ax-engine \
-  defai-digital/ax-engine/mlx \
-  defai-digital/ax-engine/mlx-c
-brew install defai-digital/ax-engine/ax-engine
+brew install defai-digital/tap/ax-engine
 ax-engine doctor
 ```
 
@@ -87,7 +82,7 @@ print(result.output_tokens)
 
 ### Native Unlimited-OCR image requests
 
-AX Engine 6.12 exposes native Unlimited-OCR global and high-resolution tile
+AX Engine exposes native Unlimited-OCR global and high-resolution tile
 paths without model repository code. Tokenize a prompt containing exactly one
 literal `<image>`, then let the helper expand and attach one local path or
 Pillow image:
@@ -144,11 +139,13 @@ Then point any OpenAI client at `http://127.0.0.1:31418`.
 
 ## Optional dependencies
 
-Install the OpenAI shim or image/audio helpers with the matching extra:
+Install the Python model downloader, OpenAI shim, or Pillow image helpers
+with the matching extra:
 
 ```bash
-python3 -m pip install --upgrade "ax-engine[openai]>=8.0.6,<9"
-python3 -m pip install --upgrade "ax-engine[multimodal]>=8.0.6,<9"
+python -m pip install --upgrade "ax-engine[download]>=8.1.0,<9"
+python -m pip install --upgrade "ax-engine[openai]>=8.1.0,<9"
+python -m pip install --upgrade "ax-engine[multimodal]>=8.1.0,<9"
 ```
 
 ## Requirements

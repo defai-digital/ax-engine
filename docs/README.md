@@ -164,4 +164,4 @@ Treat these as context unless a current results page links a fresh artifact.
 
 Public docs should not contain PRDs, ADRs, tech specs, implementation plans,
 internal rewrite notes, or engineering best-practice memos. Internal planning
-lives under `.internal/adr`, `.internal/prd`, and `.internal/tech-spec`.
+lives under `.internal/adr`, `.internal/prd`, and `.internal/specs`.

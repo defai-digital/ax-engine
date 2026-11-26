@@ -81,7 +81,9 @@ Models are downloaded separately and must fit the Mac's memory and disk.
 Run the same command again to upgrade after quitting the app. Models, settings
 and conversations are preserved. The installer verifies release signatures,
 Apple identity and Gatekeeper, stages replacement and restores the previous app
-on failure. Automatic app updates remain future work.
+on failure. In AX Engine 8.1.0 and later, use **AX Engine → Check for Updates…**
+or enable scheduled checks in **Settings → General → App updates**. See the
+[macOS update guide](MACOS-UPDATES.md).
 
 Use `bash -s -- --verify-only` in place of `bash` to verify without installing,
 or `bash -s -- --applications-dir "$HOME/Applications"` to use an existing
@@ -145,55 +147,35 @@ That installs `ax-engine`, `ax-engine-server`, `ax-engine-bench`, and the model
 helper scripts onto your `PATH`.
 
 > [!NOTE]
-> The self-contained release formula installs the release's pinned,
-> precompiled MLX runtime. It does not depend on or build the tap's `mlx` /
-> `mlx-c` formulas. Native inference from a ready local model directory needs
-> no Python, Xcode, or Metal Toolchain. Model aliases and preparation helpers
-> use Python 3.12+; online downloads also require `huggingface-hub`.
+> The formula bundles the pinned, precompiled MLX runtime. AX Engine 8.1.0
+> and later download public Hugging Face models and resolve public aliases
+> natively, without Python, Xcode, or the Metal Toolchain.
 
 #### Model download helpers
 
-Applies to the Homebrew and standalone installs (the pip install already
-carries its own helpers). Configure a separate Python environment for alias
-resolution, model preparation, and downloads. `AX_ENGINE_PYTHON` selects the
-helper interpreter while keeping the native CLI on your `PATH`.
+Current Homebrew and standalone builds share the native downloader:
 
-1. Install Python 3.12–3.14 if you do not have it. Without Homebrew, use the
-   official macOS installer from
-   [python.org](https://www.python.org/downloads/macos/) (3.13 recommended),
-   then reopen Terminal. With Homebrew, `brew install python@3.13` also works.
-   Do not rely on the bare `python3` that ships with macOS: it is 3.9 and may
-   open an Xcode Command Line Tools prompt.
-2. Create the helper environment:
+```bash
+ax-engine download qwen3.8-27b:axq
+ax-engine serve qwen3.8-27b:axq --offline
+```
+
+The native CLI accepts a public alias, public Hugging Face repository or
+local directory. For a gated or private model, acquire the artifacts with a
+client authenticated to that repository and pass the local directory to
+`ax-engine serve`. See [CLI download behavior](CLI.md#ax-engine).
+
+Commands that prepare MTP sidecars, such as `download-mtp` and
+`convert-mtplx`, still use Python. To use those helpers from a native CLI,
+point `AX_ENGINE_PYTHON` at a Python environment with the download
+dependencies installed:
 
 ```bash
 python3.13 -m venv "$HOME/.local/share/ax-engine/download-env"
-"$HOME/.local/share/ax-engine/download-env/bin/python" -m pip install huggingface-hub
-echo 'export AX_ENGINE_PYTHON="$HOME/.local/share/ax-engine/download-env/bin/python"' >> ~/.zprofile
+"$HOME/.local/share/ax-engine/download-env/bin/python" -m pip install \
+  "ax-engine[download]>=8.1.0,<9"
 export AX_ENGINE_PYTHON="$HOME/.local/share/ax-engine/download-env/bin/python"
 ```
-
-The `~/.zprofile` line keeps that export in every new Terminal. Offline
-aliases still use the Python helpers; serving an already prepared directory with
-`ax-engine serve /path/to/model` does not. The helper environment does not require the AX Engine wheel or Python MLX.
-
-Public Hugging Face repositories download anonymously: no account, no token, and
-no `hf` CLI are needed. An account is required only for gated or private
-repositories. If you already have model weights on disk, skip the Hub and this
-helper environment entirely — `ax-engine download /path/to/model` validates the
-directory and writes `model-manifest.json` offline, without `huggingface-hub`.
-
-An optional personal `hf auth login` or `HF_TOKEN` can increase request limits
-for public downloads. A 429 response means rate limiting; wait for the server's
-retry interval. A 401/403 response requires checking the login and repository
-access, rather than silently retrying with another identity. An invalid pinned
-revision must be corrected explicitly, never substituted with `main`.
-
-When `HF_ENDPOINT` points to a custom Hub-compatible endpoint, the download
-helper explicitly disables official HF credentials, including cached logins.
-Use that path only for anonymously accessible mirrors; R2 object storage is not
-a drop-in Hub API replacement. Cache paths selected through `HF_HOME` or
-`HF_HUB_CACHE` remain unchanged.
 
 #### Homebrew troubleshooting
 
@@ -287,10 +269,9 @@ ax-engine doctor
 ```
 
 Keep the binaries and the three runtime files in the same directory. To
-upgrade, repeat the commands: extraction overwrites the previous files. Alias
-downloads (`ax-engine serve qwen3.8-27b:axq`) need the
-[model download helpers](#model-download-helpers). Detached minisign
-signatures for every asset are described in [MINISIGN.md](MINISIGN.md).
+upgrade, repeat the commands. The standalone archive includes the native
+public-model downloader. See [Minisign verification](MINISIGN.md) for the
+detached signatures.
 
 ### Python wheel (SDK, no Homebrew needed)
 
@@ -306,9 +287,7 @@ If your application calls an existing AX Engine server, use its
 Without `uv` or Homebrew, use the official Python macOS installer:
 
 1. Download the **Python 3.13** macOS installer (any 3.13.x) from
-   [python.org](https://www.python.org/downloads/macos/) and run it. Python 3.12
-   through 3.14 work; 3.15 does not yet work with the `download` extra because
-   MLX publishes no 3.15 wheels.
+   [python.org](https://www.python.org/downloads/macos/) and run it.
 2. Quit and reopen Terminal, then check `python3.13 --version`. Use
    `python3.13` explicitly, not `python3`.
 3. Create a new environment and install AX Engine:
@@ -317,7 +296,7 @@ Without `uv` or Homebrew, use the official Python macOS installer:
 python3.13 -m venv "$HOME/.venvs/ax-engine"
 source "$HOME/.venvs/ax-engine/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=8.0.6,<9"
+python -m pip install --upgrade "ax-engine>=8.1.0,<9"
 ax-engine doctor
 ```
 
@@ -334,7 +313,7 @@ Python version instead:
 ```bash
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=8.0.6,<9"
+uv pip install --upgrade "ax-engine>=8.1.0,<9"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -379,7 +358,7 @@ Common failures and their fixes:
 | --- | --- | --- |
 | `No matching distribution found for ax-engine` | Python older than 3.12, or macOS older than 26 | Check `python --version` and `sw_vers -productVersion`. Recreate the environment with Python 3.13 below. |
 | pip accepts the wheel on macOS 26.0 or 26.1 | The `macosx_26_0_arm64` wheel tag uses the major macOS version. The bundled AX Engine binaries require 26.2. | Update macOS to 26.2 or later. |
-| `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=8.0.6,<9"` and `huggingface-hub` without the extra |
+| Dependency resolution fails with the `download` extra | A dependency lacks a compatible wheel or version for the environment | Install the base `ax-engine` wheel for in-process inference, or use a fresh Python 3.13 environment for the Python download helpers |
 | `ax-engine: command not found` in a new Terminal | The virtual environment is not active and not on `PATH` | `source "$HOME/.venvs/ax-engine/bin/activate"`, or add `$HOME/.venvs/ax-engine/bin` to `PATH` |
 | `python3.13: command not found` after the installer | Terminal opened before the install | Quit and reopen Terminal, or call `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` |
 | `xcode-select: note: No developer tools were found` prompt | Bare `python3`/`git` ran without Xcode Command Line Tools | Cancel it and use `python3.13` from python.org; AX Engine itself does not need Xcode |
@@ -395,7 +374,7 @@ python3.13 -m venv "$HOME/.venvs/ax-engine-py313"
 source "$HOME/.venvs/ax-engine-py313/bin/activate"
 python --version
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=8.0.6,<9"
+python -m pip install --upgrade "ax-engine>=8.1.0,<9"
 ax-engine doctor
 ```
 
@@ -466,7 +445,8 @@ suites, and only then trust results.
 Run the Python test slice from the same environment with:
 
 ```text
-python -m unittest discover -s python/tests -v
+python -m pip install pytest
+python -m pytest python/tests
 ```
 
 ## Repository Areas
@@ -529,13 +509,12 @@ apply. See [Tiel residency policy and overrides](mtp/tiel-prefill-diagnostics.md
 
 ## Getting a Model
 
-AX Engine requires pre-sanitized MLX weights. Prefer the curated
-[AutomatosX catalog](https://huggingface.co/AutomatosX) — those snapshots ship
-`model-manifest.json` plus their MTP/assistant extras, so one download is
-serve-ready. [mlx-community](https://huggingface.co/mlx-community) checkpoints
-work via raw `org/repo` ids; raw Hugging Face checkpoints need
-`mlx_lm.convert` first. Full alias lists live in
-[Supported Models](SUPPORTED-MODELS.md).
+AX Engine loads safetensors for supported architectures using a
+`model-manifest.json`. Public AutomatosX packs can include prepared MTP
+sidecars or assistant weights. Public community checkpoints can be fetched
+by exact `org/repo` ID. The runtime validates the model layout on load.
+See [Supported Models](SUPPORTED-MODELS.md) and the
+[live AutomatosX catalog](https://huggingface.co/AutomatosX/models).
 
 ### Path A — GUI or CLI
 
@@ -547,10 +526,10 @@ ax-engine download --list              # list managed aliases
 ax-engine serve qwen3.8-27b:axq --port 31418
 # Require the pinned Qwen 3.8 27B AXQ MXFP4 MTP cache
 ax-engine serve qwen3.8-27b:axq --offline --port 31418
-# Secondary dense AXQ candidate (not the primary pack)
-ax-engine serve qwen3.6-27b:axq --port 31418
-# Default is already 127.0.0.1:31418 if you omit --host/--port; see docs/PORTS.md
-ax-engine download ax-embeddinggemma-300m   # embedding sibling for /v1/embeddings
+# Compact community model for lower-memory Macs
+ax-engine serve qwen3.5-9b --port 31418
+# Embedding sibling for /v1/embeddings
+ax-engine download mlx-community/embeddinggemma-300m-8bit
 ```
 
 `qwen3.8-27b:axq` is the unique general-purpose default. Record:
@@ -580,7 +559,7 @@ from process start after the pack is available locally.
 
 ### Path B — Python API
 
-`download_model()` downloads LLM weights through `mlx-lm`, resolves the cache
+`download_model()` downloads weights through `huggingface-hub`, resolves the cache
 snapshot, and auto-generates the manifest:
 
 ```python
@@ -590,7 +569,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=8.0.6,<9"`.
+`python -m pip install --upgrade "ax-engine[download]>=8.1.0,<9"`.
 
 Or via the script:
 
@@ -599,32 +578,34 @@ python scripts/download_model.py mlx-community/Qwen3-4B-4bit
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
 ```
 
-Models land in the Hugging Face Hub cache layout shared with `mlx-lm`, so
-`ax-engine-server --resolve-model-artifacts hf-cache ...` can resolve a model
-downloaded outside AX Engine. Embedding models are not downloaded by AX Engine —
-download them manually and pass the local directory.
+Models land in the Hugging Face Hub cache shared with `mlx-lm`.
+The downloader accepts public embedding repositories as well. To verify that
+a specific model is available, check the repository and revision before
+downloading.
 
 ### Path C — raw Hugging Face checkpoint
 
-Raw checkpoints need sanitization before AX Engine can load them. Use
-`mlx_lm.convert`:
+For a supported raw checkpoint already on disk, generate its manifest and
+serve the directory. AX Engine applies the supported Hugging Face weight
+transforms at load time:
 
 ```text
-pip install mlx-lm
-mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
-ax-engine-bench generate-manifest /path/to/dest
-ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 31418
+ax-engine-bench generate-manifest /path/to/model
+ax-engine serve /path/to/model --offline
 ```
+
+Use a consistent source layout throughout the directory. A partially converted
+checkpoint can fail validation.
 
 ### Manifest generation
 
-Direct MLX models need a `model-manifest.json`. `ax-engine download`,
-`download_model()`, and `scripts/download_model.py` generate it when
-`ax-engine-bench` or `cargo` is available. To run it manually:
+Direct MLX models use a `model-manifest.json`. The native CLI generates it as
+needed. The Python download helpers use a bundled or installed
+`ax-engine-bench`, or Cargo in a source checkout. To run it manually:
 
 ```text
 ax-engine-bench generate-manifest /path/to/model     # installed
-cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # from source
+bash scripts/cargo-pinned.sh run -p ax-engine-core --bin generate-manifest -- /path/to/model  # from source
 ```
 
 ## First Commands

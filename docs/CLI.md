@@ -3,7 +3,8 @@
 AX Engine currently exposes four command surfaces:
 
 - `ax-engine` — recommended entrypoint for local serving, downloads, and MTP
-  package prep (`serve`, `download`, `download-mtp`, `doctor`)
+  package prep (`serve`, `download`, `download-mtp`, `convert-mtplx`, `doctor`).
+  The native executable also provides `models list|info|rm` and `mtp-capability`.
 - `ax-engine-server` — low-level HTTP/gRPC server when you need explicit runtime
   flags
 - `ax-engine-bench` — workload contracts, readiness, Metal
@@ -16,6 +17,12 @@ AX Engine currently exposes four command surfaces:
 [Ports](PORTS.md) · [Benchmarks](BENCHMARKS.md)
 
 ## `ax-engine`
+
+Homebrew and standalone installs provide the native executable described here.
+The PyPI console script uses the Python downloader, whose dependencies are in
+the `download` extra. Use a native install for `models`, `mtp-capability`,
+`download-mtp`, and the native download capability record served to the
+macOS app. See the [installation channels](GETTING-STARTED.md#installation).
 
 `ax-engine` is the product-level orchestration CLI. It wraps existing AX Engine
 components but does not replace them: `serve` launches `ax-engine-server`,
@@ -30,10 +37,10 @@ Use `serve` as the normal local-server entrypoint. Default listen is
 ax-engine serve /path/to/mlx-model --port 31418
 ax-engine serve qwen3.8-27b:axq --port 31418
 ax-engine serve qwen3.8-27b:axq --offline --port 31418
-ax-engine serve ax-qwen3.6-35b --port 31418
-ax-engine serve qwen3.6-27b:axq --port 31418
-ax-engine serve qwen36-35b --dry-run --json
-ax-engine serve qwen36-35b -- --max-batch-tokens 1024
+ax-engine serve qwen3.5-9b --port 31418
+ax-engine serve tiel-coder-35b:axq --port 31418
+ax-engine serve qwen3.8-27b:axq --dry-run --json
+ax-engine serve qwen3.8-27b:axq -- --max-batch-tokens 1024
 ```
 
 `serve --dry-run --json` emits an `ax.local_serve_plan.v1` document with the
@@ -95,32 +102,17 @@ including slash-containing branches):
 ```text
 ax-engine download --list
 ax-engine download qwen3.8-27b:axq
-ax-engine download ax-qwen3.5-9b
-ax-engine download ax-qwen3.6-27b
-ax-engine download ax-qwen3.6-27b-6bit
-ax-engine download qwen3.6-27b:axq
-ax-engine download qwen3.6-27b:axq-4bit
-ax-engine download ax-qwen3.6-35b
-ax-engine download qwen3.6-35b:axq
-ax-engine download ax-gemma4-12b
-ax-engine download gemma4-12b:axq
-ax-engine download ax-gemma4-26b
-ax-engine download ax-gemma4-31b
-ax-engine download muse-glimmer-30b
-ax-engine download muse-glimmer-30b:axq
-ax-engine download gpt-oss-20b:axq
-ax-engine download qwen3-coder-next:axq
-ax-engine download ax-ministral-3-8b
-ax-engine download nemotron-3-nano:axq
-ax-engine download ax-qwen3-coder-next
-ax-engine download ax-embeddinggemma-300m
-ax-engine download ax-qwen3-embedding-4b
-ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
-ax-engine download AutomatosX/model@revision
-ax-engine download AutomatosX/model/tree/feature/download-flow
-ax-engine download ax-qwen3.6-35b --dest /path/to/explicit-copy
-ax-engine download qwen3.6-27b:axq --local-only
+ax-engine download qwen3.5-9b
+ax-engine download tiel-coder-35b:axq
+ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP
+ax-engine download 'owner/model@revision'
+ax-engine download 'owner/model/tree/feature/download-flow'
+ax-engine download qwen3.8-27b:axq --dest /path/to/explicit-copy
+ax-engine download qwen3.8-27b:axq --local-only
 ```
+
+The alias listing comes from the installed runtime. Check the Hub repository
+and revision for live availability.
 
 Downloads verify free disk space against the repo size before fetching, copy
 `--dest` atomically (an interrupted copy never masquerades as complete), and
@@ -128,9 +120,8 @@ resume partial snapshots through the Hugging Face Hub cache.
 
 For graphical model management, resource charts, server controls and chat, use
 [AX Engine for macOS](MACOS-APP.md). The TUI and its terminal rendering dependencies
-have been removed, including the legacy Python download wizard. The old
-`ax-engine tui` and `ax-engine ui-downloader` commands only print a migration message
-and exit; CLI commands remain supported.
+have been removed. `ax-engine tui` prints a migration message and exits.
+The pip console script also prints that message for `ax-engine ui-downloader`.
 
 The native Rust `download` command uses anonymous HTTPS for public, unrestricted
 repositories. AutomatosX packs are the officially supported set; any other
@@ -191,7 +182,8 @@ ax-engine download-mtp qwen3.6-35b-a3b --json
 ax-engine download-mtp gemma-4-12b
 ax-engine download-mtp gemma-4-26b
 ax-engine download-mtp gemma-4-31b
-ax-engine download-mtp glm-4.7-flash
+ax-engine download-mtp gemma-4-e4b
+ax-engine download-mtp qwen3-coder-next
 
 ax-engine convert-mtplx mlx-community/Qwen3.6-27B-6bit \
   --mtp-source Qwen/Qwen3.6-27B \
@@ -199,10 +191,9 @@ ax-engine convert-mtplx mlx-community/Qwen3.6-27B-6bit \
   --json
 ```
 
-`download-mtp` is the normal path for supported local-agent MTP targets. The
-six 6-bit rows are the recommended practical benchmark matrix; 4-bit rows are
-kept only for peer-aligned MTP comparison, and `gemma-4-12b-4bit` remains the
-Quick Start target.
+`download-mtp` prepares one of the target pairs listed below. Some assistant
+repositories require separate Hugging Face access. A pack that already ships
+its MTP artifacts can be served directly.
 
 Without `--output`, generated MTP packages are written as synthetic Hugging
 Face Hub cache snapshots under the active HF cache root. For example,
@@ -224,15 +215,13 @@ the shared cache.
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
 | `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
 | `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
-| `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` into `glm_mtp.safetensors` |
+| `gemma-4-e4b` | `mlx-community/gemma-4-E4B-it-4bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-E4B-it-assistant-4bit` |
+| `qwen3-coder-next` | `mlx-community/Qwen3-Coder-Next-4bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3-Coder-Next` |
 
 For Qwen3.6 it downloads the MLX base through the standard `download` pipeline,
 infers the official `Qwen/Qwen3.6-*` MTP source, writes the AX MTP sidecar, and
 validates provenance. For Gemma 4 it downloads the target and assistant, then
 uses the Gemma assistant-MTP packager to create a self-contained model directory.
-For GLM-4.7-Flash it downloads the 6-bit MLX base, extracts the built-in MTP
-layer from the upstream `zai-org/GLM-4.7-Flash` checkpoint, and writes a
-`glm_mtp.safetensors` sidecar plus runtime/provenance metadata.
 
 `convert-mtplx` is the lower-level path when the base is already cached or you
 need an explicit source repo. It writes `mtp.safetensors`, `mtplx_runtime.json`,
