@@ -181,6 +181,19 @@ Two things for whoever merges this:
   call reads once it is padded to its widest.
 - **Up to 803 tokens** AX Engine is 0.01 to 0.02 s behind, as before,
   except at 127 tokens, where it is ahead.
+  Running the last prompt token inside the final prefill forward, instead
+  of as a step of its own, was measured on 2026-11-26 and not adopted. It
+  takes first text from 0.21 to 0.19 s at 127 tokens and from 0.71 to
+  0.69 s at 1,492 on the M5 Max. It is not a rounding-level change on this
+  model: over 38 natural-text prompts of up to 1,899 tokens the next-token
+  logits move by a median of 0.50 at most, the top token changes in 2 (by
+  margins of 0.75 and 1.1 logits, KL up to 2.7), and two of the three
+  64-token benchmark replies change. For scale, prefilling in chunks of
+  1,024 instead of 2,048 moves the same logits by up to 2.7 and changes no
+  top token among those prompts. 80 short scored questions are answered
+  identically either way. The comparison is the ignored test
+  `qwen_linear_prefill_logits_dump` with and without
+  `AX_QWEN_LOGITS_LAST_ROW_STEP=1`.
 - **Hosts without a Neural Accelerator**, as above.
 
 ## Reproduce

@@ -130,6 +130,8 @@ pub(crate) mod qwen4_exp;
 #[cfg(test)]
 mod qwen4_exp_integration_tests;
 pub(crate) mod qwen4_exp_mtp;
+#[cfg(test)]
+mod qwen_linear_profile_tests;
 pub(crate) mod shared;
 use shared::*;
 pub(crate) use shared::{replay_linear_attention_mtp_prefix, scale_hidden_pub};

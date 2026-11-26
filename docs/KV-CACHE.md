@@ -305,8 +305,65 @@ about 1.3 s to about 0.3 s, with replies identical to the cold run.
 The cold run also keeps its end-of-prompt state, keyed by the whole prompt,
 with its greedy first token and the DFlash2 prompt rows. A greedy request with
 the byte-identical prompt restores that state and emits the stored token
-without running the partial block at all; any other request still takes the
-boundary path above.
+without running the partial block at all.
+
+A text-only greedy request (temperature 0, no logits processors) keeps the end
+of its prompt as that end-of-prompt state alone. Its cold prefill does not
+split at the last block boundary: it runs the schedule of an uncached prefill,
+still capturing the grid rungs it crosses, and stores no boundary snapshot.
+Its replay restores the end-of-prompt state, or, when that state is missing,
+floors onto a grid rung like any other warm restore; it never starts from a
+block boundary, including one a sampled request stored, because its cold run
+did not compute the partial block as a step of its own. Which schedule a
+request takes depends only on the request, the model and the host, so its
+warm run always repeats its cold run. Requests that sample or use logits
+processors keep the split and the boundary replay described above.
+
+The split cost a single-row step plus a forward of 1 to 15 rows on every cold
+unaligned prompt. On the MacBook Pro M5 Max 128 GB with Qwen 3.8 27B MXFP4,
+cold first-token time of a greedy request:
+
+| Prompt tokens | Boundary split | End-of-prompt state only | Prefix cache off |
+|---:|---:|---:|---:|
+| 17 | 146 ms | 88 ms | 88 ms |
+| 31 | 200 ms | 93 ms | 94 ms |
+| 127 | 272 ms | 167 ms | 167 ms |
+| 131 | 229 ms | 216 ms | 217 ms |
+| 257 | 338 ms | 329 ms | 339 ms |
+| 1,498 | 1,609 ms | 1,516 ms | 1,502 ms |
+
+Hosts without the Neural Accelerator (M3, M4, M2) keep the split for a prompt
+that ends 1 to 7 tokens past a multiple of 32. MLX's quantized matmul works in
+32-row tiles there and a partly filled tile costs a whole one, so the split,
+whose head ends on the tile, is the cheaper schedule for those prompts. On the
+Mac mini M4 Pro 64 GB with the same pack:
+
+| Prompt tokens | Boundary split | Shipped schedule | Schedule taken |
+|---:|---:|---:|---|
+| 17 | 379 ms | 264 ms | end-of-prompt state only |
+| 31 | 573 ms | 271 ms | end-of-prompt state only |
+| 33 | 388 ms | 388 ms | boundary split |
+| 63 | 824 ms | 513 ms | end-of-prompt state only |
+| 97 | 932 ms | 887 ms | boundary split |
+| 127 | 1,352 ms | 1,049 ms | end-of-prompt state only |
+| 143 | 1,374 ms | 1,266 ms | end-of-prompt state only |
+| 257 | 2,166 ms | 2,108 ms | boundary split |
+
+Rows that take the split differ only by run-to-run variation (that host
+carried other work during the measurement). Without the rule the unsplit
+schedule read 495 ms at 33 tokens and 2,253 ms at 257.
+
+The cost of this choice is the replay that misses the end-of-prompt state: a
+greedy prompt whose state was evicted, or one that changes only its last 1 to
+15 tokens, now recomputes from the rung below (the whole prompt under 1,024
+tokens) instead of the partial block. On the same host a 1,498-token greedy
+prompt with its last three tokens changed replays in 518 to 557 ms from the
+1,024-token rung where the boundary replay took 93 to 97 ms; the exact repeat
+with its state resident still runs no forward (1 ms). Replies were compared on the real pack over 48 forced tokens for
+exact repeats, tail edits, one-token tails, follow-up turns, a greedy request
+after a sampled one stored a boundary snapshot and a sampled request after a
+greedy one: every reply equals its cold reply. `AX_MLX_PREFIX_END_STATE_ONLY=0`
+restores the split for every request.
 
 On these models the in-memory store keeps both snapshots live: a clone of the
 cache whose MLX buffers are shared and immutable, instead of a serialized

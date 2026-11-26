@@ -3776,8 +3776,12 @@ fn numerics_tier_suffix_differs_per_non_exact_switch() {
     push("gdn_prefill_mlx_min=64", gdn_mlx_min);
 
     let mut qwen_gdn = base;
-    qwen_gdn.qwen_gdn_prefill_mlx = true;
+    qwen_gdn.qwen_gdn_prefill_mlx = Some(true);
     push("qwen_gdn_mlx", qwen_gdn);
+
+    let mut qwen_gdn_off = base;
+    qwen_gdn_off.qwen_gdn_prefill_mlx = Some(false);
+    push("qwen_gdn_mlx=0", qwen_gdn_off);
 
     let mut dequant = base;
     dequant.dequant_dense = Some("dequant_dense=cached");
@@ -4056,4 +4060,28 @@ fn fused_gdn_verify_width_admits_the_dflash2_block_independently_of_mtp_depth() 
 fn flash_next_gdn_prefill_mlx_floor_drops_only_on_neural_accelerator_hosts() {
     assert_eq!(flash_next_gdn_prefill_mlx_default_min_seq(true), 32);
     assert_eq!(flash_next_gdn_prefill_mlx_default_min_seq(false), 128);
+}
+
+#[test]
+fn qwen_gdn_prefill_mlx_defaults_on_only_on_neural_accelerator_hosts() {
+    assert!(qwen_gated_delta_prefill_mlx_default(true));
+    assert!(!qwen_gated_delta_prefill_mlx_default(false));
+    // The tier records the route only where it leaves the host's default.
+    assert_eq!(qwen_gated_delta_prefill_mlx_deviation(true, true), None);
+    assert_eq!(qwen_gated_delta_prefill_mlx_deviation(false, false), None);
+    assert_eq!(
+        qwen_gated_delta_prefill_mlx_deviation(false, true),
+        Some(false)
+    );
+    assert_eq!(
+        qwen_gated_delta_prefill_mlx_deviation(true, false),
+        Some(true)
+    );
+    // Verifier windows and decode stay on the AX recurrence either way.
+    for seq in [1, 4, 32, 64, 127, 2049] {
+        assert!(!qwen_gated_delta_prefill_mlx_seq_eligible(seq));
+    }
+    for seq in [128, 468, 1024, 2048] {
+        assert!(qwen_gated_delta_prefill_mlx_seq_eligible(seq));
+    }
 }
