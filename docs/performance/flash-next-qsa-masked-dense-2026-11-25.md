@@ -170,10 +170,31 @@ Two things for whoever merges this:
 ## What is left
 
 - **Long prompts.** From 2,961 tokens each further token costs about 0.54
-  to 0.60 ms against 0.49 to 0.52 ms for oMLX. The masked call's share
-  grows with the history (6 ms per layer at 4,096 tokens, 12 at 8,192).
-  The peer attends the selected keys in place with a kernel on the tensor
-  units, whose cost does not depend on the history.
+  to 0.60 ms against 0.49 to 0.52 ms for oMLX. Measured again on
+  2026-11-26 inside one 13,023-token request on the M5 Max: the six
+  2,047-row forwards take 895, 962, 1,016, 1,061, 1,108 and 1,154 ms, each
+  followed by a one-row step of 17 to 18 ms that keeps the state at a
+  2,048-token boundary independent of the prompt's length; the last 740
+  rows take 513 ms and the final step 20. oMLX's whole request implies
+  about 1,020 ms per 2,048 tokens at every position.
+  - AX Engine is ahead for the first three blocks and behind from the
+    fourth. All of its growth is in the sparse-attention layers: a
+    synchronized stage profile puts the masked call at 67, 99, 133, 168
+    and 205 ms per block (12 layers) for blocks two to six and the block
+    selection at 15 to 58 ms, with the mixture and gated-delta stages flat.
+  - The peer attends the selected keys in place with a kernel on the
+    tensor units, whose cost does not depend on the history. If the rest of
+    its forward costs what AX Engine's does, that kernel takes about 150 ms
+    per block, which the masked call exceeds from about 8,000 tokens of
+    history. An in-place kernel at that cost would therefore save about
+    25 ms in the fifth block and 60 in the sixth: 1 to 2% at 13,023 tokens
+    and nothing below 8,000. It is the lever for contexts beyond the
+    measured range, not for this table. These are estimates from the
+    totals above, not measurements of the peer's kernel.
+  - The one-row boundary steps are 108 ms of a 13,023-token request.
+    Folding them into the block changes which rows share a forward, which
+    is not a rounding-level change on this model (see the last-token
+    measurement below).
   Attending per-tile unions of the selection instead does not get there:
   neighbouring queries share too little. At 14,336 tokens of history the
   16 queries of a tile select 6,142 distinct tokens on average and up to
