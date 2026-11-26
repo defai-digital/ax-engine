@@ -169,28 +169,26 @@ Two things for whoever merges this:
 
 ## What is left
 
-- **Long prompts.** From 2,961 tokens each further token costs about 0.54
-  to 0.60 ms against 0.49 to 0.52 ms for oMLX. Measured again on
-  2026-11-26 inside one 13,023-token request on the M5 Max: the six
-  2,047-row forwards take 895, 962, 1,016, 1,061, 1,108 and 1,154 ms, each
-  followed by a one-row step of 17 to 18 ms that keeps the state at a
-  2,048-token boundary independent of the prompt's length; the last 740
-  rows take 513 ms and the final step 20. oMLX's whole request implies
-  about 1,020 ms per 2,048 tokens at every position.
-  - AX Engine is ahead for the first three blocks and behind from the
-    fourth. All of its growth is in the sparse-attention layers: a
-    synchronized stage profile puts the masked call at 67, 99, 133, 168
-    and 205 ms per block (12 layers) for blocks two to six and the block
-    selection at 15 to 58 ms, with the mixture and gated-delta stages flat.
+- **Long prompts.** In the rested scan of 2026-11-26 each further token
+  costs AX Engine 0.55, 0.54, 0.60 and 0.58 ms over the four stretches
+  from 2,961 to 13,023 tokens, against 0.51, 0.49, 0.51 and 0.49 ms for
+  oMLX: 86 to 190 ms more per 2,048 tokens.
+  - Inside one 13,023-token request the six 2,047-row forwards take 895,
+    962, 1,016, 1,061, 1,108 and 1,154 ms on a cool host, each followed by
+    a one-row step of 17 to 18 ms that keeps the state at a 2,048-token
+    boundary independent of the prompt's length; the last 740 rows take
+    513 ms and the final step 20. The scan reads about 5% above their sum,
+    because it reaches this length after a minute of load.
+  - All of the growth is in the sparse-attention layers: a synchronized
+    stage profile puts the masked call at 67, 99, 133, 168 and 205 ms per
+    block (12 layers) for blocks two to six and the block selection at 15
+    to 58 ms, with the mixture and gated-delta stages flat.
   - The peer attends the selected keys in place with a kernel on the
-    tensor units, whose cost does not depend on the history. If the rest of
-    its forward costs what AX Engine's does, that kernel takes about 150 ms
-    per block, which the masked call exceeds from about 8,000 tokens of
-    history. An in-place kernel at that cost would therefore save about
-    25 ms in the fifth block and 60 in the sixth: 1 to 2% at 13,023 tokens
-    and nothing below 8,000. It is the lever for contexts beyond the
-    measured range, not for this table. These are estimates from the
-    totals above, not measurements of the peer's kernel.
+    tensor units, whose cost does not depend on the history; its blocks
+    cost the same at every position. To match it, sparse attention and
+    selection together would have to stay near what they cost AX Engine in
+    the second block, at any history. The peer's kernel was not measured
+    in isolation.
   - The one-row boundary steps are 108 ms of a 13,023-token request.
     Folding them into the block changes which rows share a forward, which
     is not a rounding-level change on this model (see the last-token
