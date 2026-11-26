@@ -2347,7 +2347,9 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
             );
             drifts.push(drift(gathered, indexed));
         }
-        if dispatched[1] == 0 {
+        // The control holds only until the candidate first runs: after that
+        // the two arms carry different states into every later chunk.
+        if dispatched[1] == 0 && dispatches_total == 0 {
             for sample in drifts.iter().filter(|d| d.chunk_offset == offset) {
                 assert_eq!(
                     sample.differing, 0,
@@ -2355,7 +2357,7 @@ fn flash_next_indexed_prefill_attention_drift_on_real_pack() {
                     sample.layer
                 );
             }
-        } else {
+        } else if dispatched[1] != 0 {
             assert_eq!(
                 dispatched[0], 0,
                 "chunk {offset}: the gathered arm dispatched the indexed kernel"
