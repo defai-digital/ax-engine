@@ -1,0 +1,6 @@
+blocks=512: current 0.705 ms, keys+flag kernels 0.345 ms, flagged rows 2047
+blocks=612: current 0.858 ms, keys+flag kernels 0.358 ms, flagged rows 1647
+blocks=1024: current 0.866 ms, keys+flag kernels 0.304 ms, flagged rows 0
+blocks=2112: current 0.930 ms, keys+flag kernels 0.406 ms, flagged rows 0
+blocks=3256: current 1.243 ms, keys+flag kernels 0.581 ms, flagged rows 0
+all identical: True

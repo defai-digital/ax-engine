@@ -2663,7 +2663,7 @@ fn decode_unique_block_ids(
     if scores.dtype() != MlxDtype::Float32 || scores.shape() != [batch, seq, n_complete] {
         return Ok(None);
     }
-    let (keys, _flags) = launch_prefill_block_keys(
+    let keys = launch_prefill_block_keys(
         scores,
         &host_i32(completes, &[seq]),
         batch,
@@ -3008,7 +3008,7 @@ const PREFILL_KEY_MIN_BUFFER: i32 = 8;
 /// The order key is built from those bits. No float compare: Metal flushes a
 /// subnormal in `score == 0`, which would tie it with zero and break the
 /// host order. `metal::isfinite` is the same class of float test, so the
-/// prefill flag uses the exponent bits instead.
+/// row-flag kernel ([`PREFILL_FLAG_SOURCE`]) uses the exponent bits instead.
 ///
 /// Finite causal keys stay in `0..=0x3fffffffffffffff`. A non-finite causal
 /// score uses `0x4000000000000000 | block` when `limits[4]` is 0 (prefill).
@@ -3019,15 +3019,11 @@ const PREFILL_KEY_MIN_BUFFER: i32 = 8;
 /// cannot win a prefix of length `completes[query]`. The block id keeps those
 /// keys unique, so the argsort order is determined.
 ///
-/// `flags[row]` is 1 when any causal score is non-finite or the number of
-/// finite causal blocks is below `limits[3]` (`block_topk`). Non-finite is
-/// the all-ones exponent, so a subnormal (exponent zero) stays in the finite
-/// count. The budget check is the integer `finite < keep_q`. The host sort
-/// handles every flagged prefill chunk. Decode writes 0 and does not read the
-/// flag. `limits` is `[count, blocks, seq, keep, decode]` plus padding. Those
-/// values used to be template arguments, which compiled a new pipeline for
-/// every chunk shape and put that compile on the first request. The mode is a
-/// buffer value, so decode reuses this pipeline.
+/// `limits` is `[count, blocks, seq, keep, decode]` plus padding (`keep` is
+/// read only by the row-flag kernel). Those values used to be template
+/// arguments, which compiled a new pipeline for every chunk shape and put that
+/// compile on the first request. The mode is a buffer value, so decode reuses
+/// this pipeline.
 const PREFILL_KEY_SOURCE: &str = r#"
 const int count_limit = limits[0];
 const int blocks_n = limits[1];
@@ -3059,23 +3055,42 @@ if (causal != 0) {
     }
 }
 keys[i] = key;
-if (block == 0) {
-    const size_t row = i / blocks;
-    if (decode_keys != 0) {
-        flags[row] = 0;
-    } else {
-        int finite = 0;
-        int bad = 0;
-        for (int b = 0; b < limit; ++b) {
-            const uint causal_bits = as_type<uint>(scores[row * blocks + (size_t)b]);
-            if (((causal_bits >> 23) & 0xffu) == 0xffu) {
-                bad = 1;
-            } else {
-                finite += 1;
-            }
-        }
-        flags[row] = (bad != 0 || finite < keep_q) ? 1 : 0;
-    }
+"#;
+
+/// Threads per row for the row-flag kernel: one simdgroup.
+const PREFILL_FLAG_THREADS: i32 = 32;
+
+/// `flags[row]` is 1 when any causal score of the row is non-finite or the row
+/// has fewer than `limits[3]` (`block_topk`) causal blocks. That is the old
+/// rule "non-finite, or fewer than `block_topk` finite causal blocks": with no
+/// non-finite score every causal block is finite. Non-finite is the all-ones
+/// exponent, so a subnormal (exponent zero) counts as finite. The host sort
+/// handles every flagged prefill chunk; decode does not use flags.
+///
+/// One simdgroup per row reads the causal prefix with a stride of 32, so the
+/// reads are coalesced. The block-key kernel used to do this scan in one
+/// thread per row, which read up to `blocks` scores serially and was most of
+/// that kernel's time at long context. The grid is one-dimensional, 32
+/// threads per row, so the row count is not bound by the grid height limit.
+/// `limits` is `[rows, blocks, seq, keep]` plus padding.
+const PREFILL_FLAG_SOURCE: &str = r#"
+const int rows_n = limits[0];
+const int blocks_n = limits[1];
+const int seq_n = limits[2];
+const int keep_q = limits[3];
+const uint lane = thread_index_in_simdgroup;
+const size_t row = thread_position_in_grid.x / 32;
+if (blocks_n <= 0 || seq_n <= 0 || row >= (size_t)rows_n) return;
+const int limit = completes[row % (size_t)seq_n];
+const size_t base = row * (size_t)blocks_n;
+uint bad = 0u;
+for (int b = (int)lane; b < limit; b += 32) {
+    const uint bits = as_type<uint>(scores[base + (size_t)b]);
+    bad |= (((bits >> 23) & 0xffu) == 0xffu) ? 1u : 0u;
+}
+bad = simd_max(bad);
+if (lane == 0u) {
+    flags[row] = (bad != 0u || limit < keep_q) ? 1 : 0;
 }
 "#;
 
@@ -3088,9 +3103,9 @@ fn prefill_key_kernel() -> Option<&'static MlxMetalKernel> {
     KERNEL
         .get_or_init(|| {
             match MlxMetalKernel::try_new(
-                "ax_qsa_prefill_block_key_v3",
+                "ax_qsa_prefill_block_key_v4",
                 &["scores", "completes", "limits"],
-                &["keys", "flags"],
+                &["keys"],
                 PREFILL_KEY_SOURCE,
                 PREFILL_KEY_HEADER,
                 true,
@@ -3108,10 +3123,39 @@ fn prefill_key_kernel() -> Option<&'static MlxMetalKernel> {
         .as_ref()
 }
 
+fn prefill_flag_kernel() -> Option<&'static MlxMetalKernel> {
+    #[cfg(test)]
+    if PREFILL_KEY_KERNEL_FORCE_OFF.with(std::cell::Cell::get) {
+        return None;
+    }
+    static KERNEL: OnceLock<Option<MlxMetalKernel>> = OnceLock::new();
+    KERNEL
+        .get_or_init(|| {
+            match MlxMetalKernel::try_new(
+                "ax_qsa_prefill_row_flag_v1",
+                &["scores", "completes", "limits"],
+                &["flags"],
+                PREFILL_FLAG_SOURCE,
+                PREFILL_KEY_HEADER,
+                true,
+            ) {
+                Ok(kernel) => Some(kernel),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "QSA prefill row-flag kernel failed to build; prefill selection uses the host sort"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
 /// Whether the block-key pipeline was built. A failed build stays `false`
 /// for the process, and prefill selection uses the host sort.
 pub(crate) fn prefill_block_key_kernel_available() -> bool {
-    prefill_key_kernel().is_some()
+    prefill_key_kernel().is_some() && prefill_flag_kernel().is_some()
 }
 
 fn host_i32(data: &[i32], shape: &[i32]) -> MlxArray {
@@ -3131,7 +3175,7 @@ fn launch_prefill_block_keys(
     n_blocks: i32,
     keep_q: i32,
     decode_keys: bool,
-) -> Result<(MlxArray, MlxArray)> {
+) -> Result<MlxArray> {
     let count = batch
         .checked_mul(seq)
         .and_then(|n| n.checked_mul(n_blocks))
@@ -3166,16 +3210,10 @@ fn launch_prefill_block_keys(
     let mut outputs = kernel
         .try_apply_with_template(
             &[scores, &completes, &limits],
-            &[
-                KernelOutputSpec {
-                    shape: vec![batch, seq, n_blocks],
-                    dtype: MlxDtype::Int64,
-                },
-                KernelOutputSpec {
-                    shape: vec![batch, seq],
-                    dtype: MlxDtype::Int32,
-                },
-            ],
+            &[KernelOutputSpec {
+                shape: vec![batch, seq, n_blocks],
+                dtype: MlxDtype::Int64,
+            }],
             template,
             (grid, 1, 1),
             (PREFILL_KEY_THREADS, 1, 1),
@@ -3186,16 +3224,66 @@ fn launch_prefill_block_keys(
             context: format!("batch={batch} seq={seq} blocks={n_blocks}"),
             detail,
         })?;
-    let flags = outputs
-        .pop()
-        .ok_or(QsaError::InvalidScalar("qsa prefill block-key kernel"))?;
     let keys = outputs
         .pop()
         .ok_or(QsaError::InvalidScalar("qsa prefill block-key kernel"))?;
     if !outputs.is_empty() {
         return Err(QsaError::InvalidScalar("qsa prefill block-key kernel"));
     }
-    Ok((keys, flags))
+    Ok(keys)
+}
+
+/// Row flags for a prefill chunk, `[batch, seq]` int32 (see
+/// [`PREFILL_FLAG_SOURCE`]).
+fn launch_prefill_row_flags(
+    scores: &MlxArray,
+    completes: &MlxArray,
+    batch: i32,
+    seq: i32,
+    n_blocks: i32,
+    keep_q: i32,
+) -> Result<MlxArray> {
+    let rows = batch
+        .checked_mul(seq)
+        .ok_or(QsaError::InvalidScalar("prefill row-flag count"))?;
+    if rows < 1 || n_blocks < 1 || keep_q < 1 {
+        return Err(QsaError::InvalidScalar("prefill row-flag count"));
+    }
+    let threads = rows
+        .checked_mul(PREFILL_FLAG_THREADS)
+        .ok_or(QsaError::InvalidScalar("prefill row-flag grid"))?;
+    let kernel =
+        prefill_flag_kernel().ok_or(QsaError::InvalidScalar("qsa prefill row-flag kernel"))?;
+    let completes = pad_prefill_key_i32(completes, seq)?;
+    let limits = host_i32(
+        &[rows, n_blocks, seq, keep_q, 0, 0, 0, 0],
+        &[PREFILL_KEY_MIN_BUFFER],
+    );
+    let template: &[KernelTemplateArg<'_>] = &[];
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[scores, &completes, &limits],
+            &[KernelOutputSpec {
+                shape: vec![batch, seq],
+                dtype: MlxDtype::Int32,
+            }],
+            template,
+            (threads, 1, 1),
+            (PREFILL_FLAG_THREADS, 1, 1),
+            None,
+        )
+        .map_err(|detail| QsaError::Evaluation {
+            stage: "qsa prefill row-flag kernel",
+            context: format!("batch={batch} seq={seq} blocks={n_blocks}"),
+            detail,
+        })?;
+    let flags = outputs
+        .pop()
+        .ok_or(QsaError::InvalidScalar("qsa prefill row-flag kernel"))?;
+    if !outputs.is_empty() {
+        return Err(QsaError::InvalidScalar("qsa prefill row-flag kernel"));
+    }
+    Ok(flags)
 }
 
 /// Pad a 1-d int32 prefix out to [`PREFILL_KEY_MIN_BUFFER`] so MLX keeps it in
@@ -3234,9 +3322,10 @@ pub(crate) fn warm_prefill_key_kernel() -> std::result::Result<(), String> {
     let blocks = PREFILL_KEY_MIN_BUFFER;
     let scores = zeros(&[1, seq, blocks], MlxDtype::Float32, None);
     let completes = host_i32(&[blocks; PREFILL_KEY_MIN_BUFFER as usize], &[seq]);
-    let (keys, flags) =
-        launch_prefill_block_keys(&scores, &completes, 1, seq, blocks, blocks, false)
-            .map_err(|error| format!("qsa prefill block-key warm-up failed: {error}"))?;
+    let keys = launch_prefill_block_keys(&scores, &completes, 1, seq, blocks, blocks, false)
+        .map_err(|error| format!("qsa prefill block-key warm-up failed: {error}"))?;
+    let flags = launch_prefill_row_flags(&scores, &completes, 1, seq, blocks, blocks)
+        .map_err(|error| format!("qsa prefill row-flag warm-up failed: {error}"))?;
     mlx_sys::try_eval(&[&keys, &flags])
         .map_err(|error| format!("qsa prefill block-key warm-up failed: {error}"))
 }
@@ -3542,18 +3631,19 @@ fn select_tokens_device_prefill(
                 pack_host_rows_as_device(&host, batch, seq, block_cols, tail_width, &segments)?;
             Ok((packed, segments.clone()))
         };
-        if prefill_key_kernel().is_none() {
+        if !prefill_block_key_kernel_available() {
             return use_host();
         }
-        let (keys, flags) = launch_prefill_block_keys(
-            scores,
-            &host_i32(&complete, &[seq]),
-            batch,
-            seq,
-            n_complete,
-            topk,
-            false,
-        )?;
+        // A row with fewer than `topk` complete blocks is always flagged, and
+        // the host knows the counts, so such a chunk goes to the host sort
+        // without the kernels and the read-back.
+        if complete.iter().any(|&blocks| blocks < topk) {
+            return use_host();
+        }
+        let completes = host_i32(&complete, &[seq]);
+        let keys =
+            launch_prefill_block_keys(scores, &completes, batch, seq, n_complete, topk, false)?;
+        let flags = launch_prefill_row_flags(scores, &completes, batch, seq, n_complete, topk)?;
         if prefill_row_flags_need_host(&flags, batch, seq)? {
             return use_host();
         }
@@ -4761,7 +4851,7 @@ mod tests {
             }
         }
         let array = array_f32(&flat, &[batch, seq, n]);
-        let (keys, _flags) = launch_prefill_block_keys(
+        let keys = launch_prefill_block_keys(
             &array,
             &host_i32(&completes, &[seq]),
             batch,
@@ -4831,9 +4921,9 @@ mod tests {
         let finite = [-0.0_f32, 0.0, 2.0, -1.0, 3.0, 3.0];
         let finite_array = array_f32(&finite, &[1, 1, 6]);
         let completes = host_i32(&[4], &[1]);
-        let (decode_keys, _) =
+        let decode_keys =
             launch_prefill_block_keys(&finite_array, &completes, 1, 1, 6, 2, true).unwrap();
-        let (prefill_keys, _) =
+        let prefill_keys =
             launch_prefill_block_keys(&finite_array, &completes, 1, 1, 6, 2, false).unwrap();
         eval(&[&decode_keys, &prefill_keys]);
         assert_eq!(
@@ -5050,7 +5140,7 @@ mod tests {
                     ordered_block_ids(&keys, keep_cols, keep_cols).unwrap()
                 };
                 let mut kernel_order = || {
-                    let (keys, _flags) = launch_prefill_block_keys(
+                    let keys = launch_prefill_block_keys(
                         &array,
                         &host_i32(&completes, &[seq]),
                         batch,
@@ -5405,6 +5495,115 @@ mod tests {
         }
     }
 
+    /// The serial scan the block-key kernel used to run: non-finite, or fewer
+    /// than `keep` finite causal blocks.
+    fn serial_row_flags(
+        scores: &[f32],
+        completes: &[i32],
+        rows: usize,
+        blocks: usize,
+        keep: i32,
+    ) -> Vec<i32> {
+        let seq = completes.len();
+        (0..rows)
+            .map(|row| {
+                let limit = completes[row % seq] as usize;
+                let line = &scores[row * blocks..row * blocks + limit];
+                let bad = line.iter().any(|v| (v.to_bits() >> 23) & 0xff == 0xff);
+                let finite = line.len()
+                    - line
+                        .iter()
+                        .filter(|v| (v.to_bits() >> 23) & 0xff == 0xff)
+                        .count();
+                i32::from(bad || (finite as i32) < keep)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prefill_row_flags_match_the_serial_scan() {
+        let poisons = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7f80_0001),
+            f32::from_bits(0x0000_0001),
+            f32::from_bits(0x8000_0001),
+            f32::MAX,
+            -0.0,
+        ];
+        // Block counts below, at and past one simdgroup, and a seq that is
+        // not a power of two. Batch 2 repeats the completes per row.
+        for &(batch, seq, blocks, keep) in &[
+            (1_i32, 3_i32, 5_i32, 2_i32),
+            (1, 7, 32, 4),
+            (2, 5, 33, 8),
+            (1, 9, 97, 16),
+            (2, 4, 300, 64),
+        ] {
+            let rows = (batch * seq) as usize;
+            let n = blocks as usize;
+            let completes: Vec<i32> = (0..seq).map(|q| (blocks - q * 3).max(1)).collect();
+            let mut scores: Vec<f32> = (0..rows * n)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.25)
+                .collect();
+            for (k, poison) in poisons.iter().enumerate() {
+                // Odd entries land on a causal block. Even ones land just past
+                // the causal limit of a row that does not see every block,
+                // where a non-finite score must not flag.
+                let start = (k * 5) % rows;
+                let row = if k % 2 == 1 {
+                    start
+                } else {
+                    (start..start + rows)
+                        .map(|r| r % rows)
+                        .find(|&r| (completes[r % seq as usize] as usize) < n)
+                        .unwrap()
+                };
+                let limit = completes[row % seq as usize] as usize;
+                let col = if k % 2 == 1 { (k * 7) % limit } else { limit };
+                scores[row * n + col] = *poison;
+            }
+            let expected = serial_row_flags(&scores, &completes, rows, n, keep);
+            let array = array_f32(&scores, &[batch, seq, blocks]);
+            let flags = launch_prefill_row_flags(
+                &array,
+                &host_i32(&completes, &[seq]),
+                batch,
+                seq,
+                blocks,
+                keep,
+            )
+            .unwrap();
+            let flags = astype(&flags, MlxDtype::Uint32, None);
+            eval(&[&flags]);
+            let expected: Vec<u32> = expected.iter().map(|&flag| flag as u32).collect();
+            assert_eq!(
+                flags.data_u32(),
+                expected.as_slice(),
+                "batch {batch} seq {seq} blocks {blocks} keep {keep}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefill_selection_sends_short_rows_to_the_host_without_a_read_back() {
+        let cfg = prefill_cfg(4, 16);
+        let before = prefill_route_hits();
+        let sync = row_flag_sync_hits();
+        // Offset 7, ratio 4: the first query sees two complete blocks, below
+        // block_topk 4, so the chunk is flagged before any kernel runs.
+        let scores: Vec<f32> = (0..3 * 4).map(|i| i as f32 * 0.5).collect();
+        assert_prefill_matches_host(cfg, 1, 3, 7, 4, Some(&scores));
+        let after = prefill_route_hits();
+        assert!(after.1 > before.1, "a short row must use the host sort");
+        assert_eq!(
+            row_flag_sync_hits(),
+            sync,
+            "a short row must not read flags back"
+        );
+    }
+
     #[test]
     fn prefill_device_selection_matches_host_on_subnormal_scores_zeros_ties_and_normals() {
         let cfg = prefill_cfg(4, 16);
@@ -5424,7 +5623,7 @@ mod tests {
         ]);
         assert_prefill_matches_host(cfg, 1, 2, 31, 8, Some(&scores));
         let array = array_f32(&scores, &[1, 2, 8]);
-        let (keys, _flags) =
+        let keys =
             launch_prefill_block_keys(&array, &host_i32(&[8, 8], &[2]), 1, 2, 8, 4, false).unwrap();
         eval(&[&keys]);
         let got = keys.data_i64();
