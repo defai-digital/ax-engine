@@ -259,7 +259,10 @@ Two things for whoever merges this:
 - **Block selection** still grows with the history: 15 to 36 ms for the
   indexer and 8 to 17 ms for the block scores per 2,048-token block at
   13,023 tokens (12 layers), because the partial sort that picks the 512
-  blocks sorts all of them.
+  blocks sorts all of them. The serial row-flag scan inside that step is
+  now a parallel kernel
+  ([2026-11-27](flash-next-qsa-row-flags-2026-11-27.md)); its effect on
+  the M5 Max is not yet measured.
 - **Short prompts.** 413 and 803 tokens are 1 to 3% behind oMLX, as
   before.
 - **MTP required.** Replies there depend on whether the prefix cache is on
